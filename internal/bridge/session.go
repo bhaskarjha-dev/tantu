@@ -219,15 +219,48 @@ func allowedCallbackRelayHeader(name string) bool {
 // header map with canonicalized keys. It is the B-side enforcement point: a
 // compromised or buggy peer must not be able to smuggle Authorization, Cookie,
 // or other sensitive headers into the localhost application request.
+// Duplicate keys that differ only by case resolve deterministically (sorted
+// order, first wins) so validation and delivery always agree on the value.
 func filterCallbackRelayHeaders(in map[string]string) map[string]string {
-	out := make(map[string]string, len(in))
-	for name, value := range in {
+	lowered := canonicalRelayHeaderMap(in)
+	out := make(map[string]string, len(lowered))
+	for name, value := range lowered {
 		if value == "" || !allowedCallbackRelayHeader(name) {
 			continue
 		}
 		out[http.CanonicalHeaderKey(name)] = value
 	}
 	return out
+}
+
+// canonicalRelayHeaderMap folds a relayed header map to lowercase names with
+// deterministic duplicate resolution (sorted keys, first wins). Wire headers
+// arrive as case-sensitive JSON keys, so a peer could otherwise send
+// "Content-Type" and "content-type" with different values and have the
+// validator and the deliverer disagree.
+func canonicalRelayHeaderMap(in map[string]string) map[string]string {
+	keys := make([]string, 0, len(in))
+	for k := range in {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make(map[string]string, len(in))
+	for _, k := range keys {
+		lower := strings.ToLower(strings.TrimSpace(k))
+		if lower == "" {
+			continue
+		}
+		if _, seen := out[lower]; !seen {
+			out[lower] = in[k]
+		}
+	}
+	return out
+}
+
+// canonicalRelayHeader looks up a relayed header case-insensitively with the
+// same deterministic duplicate resolution as the delivery filter.
+func canonicalRelayHeader(in map[string]string, name string) string {
+	return canonicalRelayHeaderMap(in)[strings.ToLower(name)]
 }
 
 // redactBridgeMessage keeps authorization URLs out of errors that may cross a

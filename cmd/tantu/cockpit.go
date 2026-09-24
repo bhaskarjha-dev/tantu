@@ -288,10 +288,18 @@ func handlePeerCommand(scanner *bufio.Scanner, h *hub.Hub) {
 func promptSendText(scanner *bufio.Scanner, h *hub.Hub, targetPeer string) {
 	fmt.Print("📝 Enter text snippet (end with blank line): ")
 	var lines []string
+	var total int64
 	for scanner.Scan() {
 		text := scanner.Text()
 		if text == "" {
 			break
+		}
+		// Cap local ingest at the wire text limit: an unbounded paste would
+		// otherwise balloon memory long before the receiver rejects it.
+		total += int64(len(text) + 1)
+		if total > standaloneTextDropLimit {
+			fmt.Println("❌ Snippet exceeds the 10MB text limit; truncated input discarded.")
+			return
 		}
 		lines = append(lines, text)
 	}
@@ -453,9 +461,21 @@ func RenderSnippetCard(item hub.ReceivedDropItem) {
 
 	fmt.Println()
 	fmt.Printf("┌── 📝 QuickDrop %s (%s • %s) ──────────────────────────────\n", kindLabel, from, timeStr)
-	lines := strings.Split(item.Content, "\n")
+	// Never dump megabytes into the terminal: a malicious or careless peer
+	// could otherwise scroll-bomb the cockpit with a 10MB text drop.
+	content := item.Content
+	const maxSnippetRender = 4096
+	truncated := false
+	if len(content) > maxSnippetRender {
+		content = content[:maxSnippetRender]
+		truncated = true
+	}
+	lines := strings.Split(content, "\n")
 	for _, line := range lines {
 		fmt.Printf("│  %s\n", line)
+	}
+	if truncated {
+		fmt.Printf("│  … (%d total bytes, truncated)\n", len(item.Content))
 	}
 	fmt.Println("└─────────────────────────────────────────────────────────────────────────────")
 	fmt.Println()

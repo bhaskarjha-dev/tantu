@@ -345,12 +345,28 @@ func (e *Engine) allowBeaconSource(source string) bool {
 	}
 	e.lastBeacons[source] = now
 	// Keep the rate limiter bounded even when an attacker rotates source
-	// addresses across a long-lived engine.
+	// addresses across a long-lived engine. Time-based GC alone is not
+	// enough: a flood of distinct spoofed sources within the 10s window
+	// would grow the map without bound, so evict the oldest entry past the
+	// cap unconditionally, mirroring recordNode.
 	if len(e.lastBeacons) > maxDiscoveredNodes*2 {
 		for key, seen := range e.lastBeacons {
 			if now.Sub(seen) > 10*time.Second {
 				delete(e.lastBeacons, key)
 			}
+		}
+		for len(e.lastBeacons) > maxDiscoveredNodes*2 {
+			var oldestKey string
+			var oldest time.Time
+			for key, seen := range e.lastBeacons {
+				if oldestKey == "" || seen.Before(oldest) {
+					oldestKey, oldest = key, seen
+				}
+			}
+			if oldestKey == "" {
+				break
+			}
+			delete(e.lastBeacons, oldestKey)
 		}
 	}
 	return true

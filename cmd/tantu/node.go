@@ -144,6 +144,9 @@ func runNode(args []string) {
 	fmt.Printf("🚀 tantu node active on %s (transport: %s)\n", listener.Addr().String(), *transportType)
 	fmt.Printf("   ├─ OAuth: ready to handle authorization callbacks\n")
 	fmt.Printf("   └─ QuickDrop: ready to receive files and text (saving to %s)\n", *outputDir)
+	if removed, _ := drop.SweepStalePartials(*outputDir, drop.DefaultStagingMaxAge); removed > 0 && *verbose {
+		fmt.Printf("Cleaned %d stale partial file(s)\n", removed)
+	}
 	if *verbose {
 		fmt.Printf("Verbose output enabled. Multiplexing OAuth and QuickDrop traffic on port %s\n", listener.Addr().String())
 	}

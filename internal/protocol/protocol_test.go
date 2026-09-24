@@ -320,3 +320,27 @@ func TestEncodeEnforcesControlFrameLimit(t *testing.T) {
 		t.Fatalf("Encode drop_data frame = %v, want nil", err)
 	}
 }
+
+func FuzzDecode(f *testing.F) {
+	seeds := [][]byte{
+		[]byte("\x00\x00\x00\x02{}"),
+		[]byte("\x00\x00\x00\x1b{\"type\":\"heartbeat\",\"payload\":{}}"),
+		[]byte("short"),
+		[]byte("\xff\xff\xff\xff"),
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		env, err := NewDecoder(bytes.NewReader(data)).Decode()
+		if err != nil {
+			return
+		}
+		if env.Type == "" {
+			t.Fatal("decoded envelope with empty type")
+		}
+		if len(env.Payload) == 0 || string(env.Payload) == "null" {
+			t.Fatal("decoded envelope with empty payload")
+		}
+	})
+}

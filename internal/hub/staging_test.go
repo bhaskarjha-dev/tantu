@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -133,5 +134,50 @@ func TestOpenResumePart_MissingFileIsRetryable(t *testing.T) {
 	var retry *retryStagingOpen
 	if !errors.As(err, &retry) {
 		t.Fatalf("openResumePart missing file error = %v, want retryStagingOpen", err)
+	}
+}
+
+func TestEnsureStagingDir_RejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	if err := os.Mkdir(real, 0700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "staging-link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	if err := ensureStagingDir(link); err == nil {
+		t.Fatal("symlinked staging dir accepted, want error")
+	}
+	if err := ensureStagingDir(real); err != nil {
+		t.Fatalf("real staging dir rejected: %v", err)
+	}
+}
+
+func TestOpenResumePart_RejectsHardlink(t *testing.T) {
+	// Link-count enforcement is Unix-only (Windows FileInfo hides nlink).
+	if runtime.GOOS == "windows" {
+		t.Skip("hardlink detection requires Unix file modes")
+	}
+	dir := t.TempDir()
+	real := filepath.Join(dir, "victim.dat")
+	if err := os.WriteFile(real, []byte("victim-contents"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "drop123.part")
+	if err := os.Link(real, link); err != nil {
+		t.Skipf("hardlinks not supported: %v", err)
+	}
+	inspected, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f, err := openResumePart(link, inspected); err == nil {
+		_ = f.Close()
+		t.Fatal("multi-linked partial opened for resume, want error")
+	}
+	if got, _ := os.ReadFile(real); string(got) != "victim-contents" {
+		t.Fatalf("victim modified: %q", got)
 	}
 }

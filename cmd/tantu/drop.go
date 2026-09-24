@@ -545,6 +545,9 @@ func runDrop(args []string) {
 		fmt.Fprintf(os.Stderr, "Error: create output directory: %v\n", err)
 		os.Exit(1)
 	}
+	if removed, _ := drop.SweepStalePartials(outDir, drop.DefaultStagingMaxAge); removed > 0 && *verbose {
+		fmt.Printf("Cleaned %d stale partial file(s)\n", removed)
+	}
 
 	var lanStore *pairing.PeerStore
 	switch *transportType {
@@ -628,6 +631,9 @@ func runDrop(args []string) {
 		tr, err = transport.NewLANTransport(transport.LANTransportConfig{
 			Cert:                tlsCert,
 			TrustedFingerprints: trustedFPs,
+			// Live store lookup in addition to the snapshot: a peer removed
+			// between ListPeers and Dial must not remain dialable.
+			IsTrusted: lanStore.IsTrusted,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: failed to configure LAN transport: %v\n", err)
@@ -669,11 +675,27 @@ func runDrop(args []string) {
 	var dropHistoryBytes int64
 	newDropChan := make(chan string, 32)
 	sessionSlots := make(chan struct{}, maxStandaloneDropSessions)
-	lookupDrop := func(id string) (dropReceivedItem, bool) {
+	// deliveredDrops tracks which queued items a poller has already served.
+	// The wakeup channel above is a lossy hint (non-blocking sends drop
+	// notifications under burst); the poll handler always scans the queue
+	// for an unserved item instead of trusting a single channel delivery,
+	// so a dropped hint can delay but never lose a notification.
+	deliveredDrops := make(map[string]struct{})
+	takeUndelivered := func() (dropReceivedItem, bool) {
 		dropMu.Lock()
 		defer dropMu.Unlock()
-		item, exists := dropItems[id]
-		return item, exists
+		for _, id := range dropOrder {
+			item, ok := dropItems[id]
+			if !ok {
+				continue
+			}
+			if _, seen := deliveredDrops[id]; seen {
+				continue
+			}
+			deliveredDrops[id] = struct{}{}
+			return item, true
+		}
+		return dropReceivedItem{}, false
 	}
 
 	// Start background transport listener if --listen is provided
@@ -818,6 +840,7 @@ func runDrop(args []string) {
 								dropHistoryBytes -= standaloneDropItemBytes(oldest)
 								delete(dropItems, oldestID)
 							}
+							delete(deliveredDrops, oldestID)
 							dropOrder = dropOrder[1:]
 						}
 						dropMu.Unlock()
@@ -1038,20 +1061,12 @@ func runDrop(args []string) {
 			return
 		}
 
-		// Check if there is an immediately available item
-		select {
-		case id := <-newDropChan:
-			item, exists := lookupDrop(id)
-			if !exists {
-				writeJSON(w, http.StatusOK, map[string]string{
-					"status":  "timeout",
-					"message": "No incoming drops",
-				})
-				return
-			}
+		// Serve an already-queued but unserved item first: wakeup hints on
+		// newDropChan are lossy under burst, so the queue itself is the
+		// source of truth, never a single channel delivery.
+		if item, ok := takeUndelivered(); ok {
 			writeDropResponse(w, item)
 			return
-		default:
 		}
 
 		// Otherwise wait with a 25-second timeout
@@ -1059,9 +1074,8 @@ func runDrop(args []string) {
 		defer pollTimer.Stop()
 
 		select {
-		case id := <-newDropChan:
-			item, exists := lookupDrop(id)
-			if exists {
+		case <-newDropChan:
+			if item, ok := takeUndelivered(); ok {
 				writeDropResponse(w, item)
 				return
 			}

@@ -233,6 +233,22 @@ func invokeConfirm(confirmFn func(string, string) bool, peerSAS, localSAS string
 	return confirmFn(peerSAS, localSAS)
 }
 
+// confirmWithContext runs the blocking human SAS confirmation while honoring
+// cancellation: checking ctx.Err() only after confirm returns would hang an
+// unattended prompt forever. On expiry the connection is closed by the caller
+// (deferred Close); the buffered channel lets a late answer drain instead of
+// leaking the goroutine.
+func confirmWithContext(ctx context.Context, confirmFn func(string, string) bool, peerSAS, localSAS string) (bool, error) {
+	decisionCh := make(chan bool, 1)
+	go func() { decisionCh <- invokeConfirm(confirmFn, peerSAS, localSAS) }()
+	select {
+	case accepted := <-decisionCh:
+		return accepted, ctx.Err()
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+}
+
 func getOrGenerateIdentity(store *PeerStore) (*Identity, error) {
 	if store == nil {
 		return nil, errors.New("peer store is nil")
@@ -361,8 +377,8 @@ func PairInitiatorWithListener(store *PeerStore, l net.Listener, confirmFn func(
 	// 3. User confirmation. Do not keep the network deadline running while a
 	// human compares SAS values; re-arm it for the decision exchange below.
 	_ = conn.SetDeadline(time.Time{})
-	localAccepted := invokeConfirm(confirmFn, peerSAS, localSAS)
-	if err := ctx.Err(); err != nil {
+	localAccepted, err := confirmWithContext(ctx, confirmFn, peerSAS, localSAS)
+	if err != nil {
 		return nil, err
 	}
 	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
@@ -499,8 +515,8 @@ func pairResponderWithContext(parent context.Context, store *PeerStore, peerAddr
 	// 3. User confirmation. Do not keep the network deadline running while a
 	// human compares SAS values; re-arm it for the decision exchange below.
 	_ = conn.SetDeadline(time.Time{})
-	localAccepted := invokeConfirm(confirmFn, peerSAS, localSAS)
-	if err := ctx.Err(); err != nil {
+	localAccepted, err := confirmWithContext(ctx, confirmFn, peerSAS, localSAS)
+	if err != nil {
 		return nil, err
 	}
 	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))

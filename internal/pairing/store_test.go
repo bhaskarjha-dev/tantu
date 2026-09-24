@@ -1,6 +1,7 @@
 package pairing
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -433,7 +434,8 @@ func TestPeerStore_AddressValidation(t *testing.T) {
 			t.Errorf("AddPeer(%q) = %v, want nil", addr, err)
 		}
 	}
-	invalid := []string{"host:notaport", "host:", ":9877", "has space:9877", "bad\x01addr:9877"}
+	invalid := []string{"host:notaport", "host:", ":9877", "has space:9877", "bad\x01addr:9877",
+		"https://evil.com:9877", "evil.com/path:9877", "user@host:9877", "host:0", "host:65536", "host:http"}
 	for _, addr := range invalid {
 		p := Peer{Fingerprint: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff00", Name: "x", Address: addr}
 		if err := store.AddPeer(p); err == nil {
@@ -487,5 +489,88 @@ func TestPeerStore_PermissionRepair(t *testing.T) {
 	}
 	if info, err := os.Stat(filepath.Join(tmpDir, "identity.json")); err != nil || info.Mode().Perm()&0077 != 0 {
 		t.Fatalf("identity file perms not repaired: %v %v", info.Mode(), err)
+	}
+}
+
+func TestConfirmWithContext(t *testing.T) {
+	// Immediate answer honored.
+	accepted, err := confirmWithContext(context.Background(), func(_, _ string) bool { return true }, "aaaaaa", "bbbbbb")
+	if err != nil || !accepted {
+		t.Fatalf("confirm = %v, %v; want true, nil", accepted, err)
+	}
+	// Blocking prompt unblocks on cancellation instead of hanging forever.
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if _, err := confirmWithContext(ctx, func(_, _ string) bool {
+			select {}
+		}, "aaaaaa", "bbbbbb"); err == nil {
+			t.Error("expected cancellation error, got nil")
+		}
+	}()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("confirmWithContext did not respect cancellation")
+	}
+	// Expired context fails closed even with an accepting prompt.
+	expired, cancel2 := context.WithCancel(context.Background())
+	cancel2()
+	if _, err := confirmWithContext(expired, func(_, _ string) bool { return true }, "a", "b"); err == nil {
+		t.Error("expected error for expired context, got nil")
+	}
+}
+
+func TestPeerStore_ResolveCrossTierAmbiguity(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewPeerStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewPeerStore: %v", err)
+	}
+	// Peer A has SAS "aabbcc"; peer B's fingerprint starts with "aabbcc".
+	pA := Peer{Fingerprint: "aabbcc0000000000000000000000000000000000000000000000000000000001", Name: "a", Address: "10.0.0.1:9877"}
+	pB := Peer{Fingerprint: "aabbccffffffffffffffffffffffffffffffffffffffffffffffffffff0002", Name: "b", Address: "10.0.0.2:9877"}
+	if err := store.AddPeer(pA); err != nil {
+		t.Fatalf("AddPeer A: %v", err)
+	}
+	if err := store.AddPeer(pB); err != nil {
+		t.Fatalf("AddPeer B: %v", err)
+	}
+	if _, err := store.ResolvePeer("aabbcc"); err == nil {
+		t.Fatal("cross-tier SAS/prefix collision resolved silently, want ambiguity error")
+	}
+}
+
+func TestPeerStore_ResolveEmptyRequiresDefaultOrSingle(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewPeerStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewPeerStore: %v", err)
+	}
+	pA := Peer{Fingerprint: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Name: "a", Address: "10.0.0.1:9877"}
+	if err := store.AddPeer(pA); err != nil {
+		t.Fatalf("AddPeer A: %v", err)
+	}
+	// Single peer resolves implicitly.
+	if resolved, err := store.ResolvePeer(""); err != nil || resolved.Fingerprint != pA.Fingerprint {
+		t.Fatalf("single-peer empty resolve = %v, %v; want A, nil", resolved, err)
+	}
+	pB := Peer{Fingerprint: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Name: "b", Address: "10.0.0.2:9877"}
+	if err := store.AddPeer(pB); err != nil {
+		t.Fatalf("AddPeer B: %v", err)
+	}
+	// Multiple peers without default must not silently pick one.
+	if _, err := store.ResolvePeer(""); err == nil {
+		t.Fatal("multi-peer empty resolve succeeded, want error")
+	}
+	// Designating a default restores implicit resolution.
+	if err := store.SetDefault(pB.Fingerprint); err != nil {
+		t.Fatalf("SetDefault: %v", err)
+	}
+	if resolved, err := store.ResolvePeer(""); err != nil || resolved.Fingerprint != pB.Fingerprint {
+		t.Fatalf("default empty resolve = %v, %v; want B, nil", resolved, err)
 	}
 }

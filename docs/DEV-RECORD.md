@@ -77,6 +77,30 @@ share its session/token model (reusable per-process tokens in HTML/bookmarklet).
 | I-26 | hub | P3 | FIXED | `openDirectoryInOS` dash-prefixed dir flag parsing — resolved to absolute path before exec |
 | I-27 | ssh | P3 | OPEN | Private-PEM accepted as server authorized key (ssh.go:147) — conflates auth domains for CLI convenience |
 
+## Round-2 findings (adversarial re-review + fresh discovery, 2026-09-24)
+
+| ID | Area | Severity | Status | Summary |
+|----|------|----------|--------|---------|
+| C-01 | hub/transport | P2→P3 | HARDENED | Start-time trust snapshot + live check (OR) meant `unpair` relied on the dispatcher app gate alone. Investigated with a live revocation test: the dispatcher gate was always live, so no data path existed — kept live-only transport config as defense-in-depth + added `TestHub_UnpairRevokesDropAccess` end-to-end regression |
+| C-02 | standalone relay | P2 | FIXED | Single shared ticket per render (form use burned the bookmarklet); tickets now minted separately per surface; URL-presence validated before ticket consumption so bad requests never burn tickets |
+| C-03 | hub/drop | P1 | FIXED | Hardlink-planted partials pass SameFile resume checks → victim truncation. Resume now rejects multi-linked files (Unix link-count, build-tagged; documented no-op elsewhere); staging dir must Lstat as a real directory (Hub + standalone) |
+| C-04 | bridge | P2 | FIXED | Duplicate-case header keys let validator and deliverer disagree; Content-Type/Host lookup now deterministic canonical (sorted, first-wins); B-side loopback checks widened to 127/8 symmetric with A-side; relay header map capped (64 entries, 16 KiB) |
+| C-05 | pairing | P2 | FIXED | `ctx.Err()` checked only after the blocking SAS prompt — all four pairing prompts (legacy initiator/responder, in-band both) now use `confirmWithContext` (prompt in goroutine, select on ctx) |
+| C-06 | pairing/store | P3 | FIXED | Address validation rejects URL/scheme/userinfo/whitespace hosts and non-numeric/out-of-range ports; `UpdatePeerAddress("")` clears symmetrically with `AddPeer` |
+| C-07 | pairing/store | P2 | FIXED | Cross-tier collisions (SAS of A == fp-prefix of B) error instead of shadowing; empty query with >1 peers and no default errors instead of silently picking first |
+| C-08 | hub | P3 | FIXED | Text uploads (16 slots) and outbound pair attempts (4 slots) capped with 503, same pattern as multipart uploads |
+| C-09 | bridge | P2 | FIXED | CallbackRelay header map unbounded inside the 4 MiB frame exemption — capped at 64 headers / 16 KiB total in `validateCallbackRelay` |
+| C-10 | transport | P3 | FIXED | Strict-DialPinned contract now pinned by unit test (fp on unpinned transport errors; empty fp dials) |
+| F-01 | hub/bridge | P2 | FIXED | Post-success replay returned false success without delivery (Hub relayCoordinator 45s + bridge Replay ack). Coordinator replay removed (in-flight coalescing kept) + regression tests; B-side Replay now warn-logs "no callback delivered for this request" |
+| F-02 | discovery | P3 | FIXED | `allowBeaconSource` limiter map unbounded under source-IP rotation — unconditional oldest-eviction past cap, mirroring `recordNode` |
+| F-03 | hub/drop/cli | P2 | FIXED | Aborted transfers leave staging orphans forever (DropIDs random per attempt, never resumed). New `drop.SweepStalePartials` (24h default) wired into Hub start + `drop`/`node`/`receive` startup + unit test |
+| F-04 | hub | P3 | FIXED | Same as C-08 (pair slots) |
+| F-05 | cli | P3 | FIXED | Cockpit `promptSendText` uncapped ingest (now 10MB) + `RenderSnippetCard` terminal bomb (now 4KB truncation notice) |
+| F-06 | cli | P3 | FIXED | `tantu drop` long-poll relied on lossy 32-slot wakeup channel — poll now scans queue for unserved items (delivered-set), eviction prunes the set |
+| F-07 | cli | P3 | FIXED | `drop`/`relay` LAN transports lacked live `IsTrusted` (added, matching `send`/`node`/`receive`) |
+| F-08 | hub | P3 | ACCEPTED | Roaming probes are paired-gated + mTLS-pinned + 30s/FP-throttled; residual LAN port-scan oracle via unreadable logs is negligible |
+| F-09 | all parsers | — | DONE | Fuzz targets added for frame decode, beacon validation, drop metadata; 25s each, millions of execs, no crashes |
+
 Severity: P0 critical/exploitable remotely · P1 exploitable by paired/local attacker or data-loss · P2 hardening/correctness with realistic trigger · P3 minor/compat/doc.
 
 ## Decisions and assumptions
@@ -85,22 +109,30 @@ Severity: P0 critical/exploitable remotely · P1 exploitable by paired/local att
 - D-02: `DialPinned` strictness errors only when expectedFP != "" AND transport lacks pinning — all current callers pass "" for ssh/loopback (verified send/relay/open/drop/hub), so behavior-preserving + fail-closed for future misuse.
 - D-03: unpair `--fingerprint` minimum 6 chars aligns with `ResolvePeer` Tier-1 prefix rule (store.go:432); `--name` widened to Alias + case-insensitive to match ResolvePeer tiers 3-4.
 - D-04: B-side header filter mirrors A-side `callbackHeaders` allowlist (Accept, Accept-Language, Content-Type, X-Requested-With) — single source `allowedCallbackRelayHeader` in session.go; Content-Length/Host/Cookie/Authorization can never be injected.
-- D-05: Standalone relay/drop token issues (I-16, I-17) left OPEN pending design decision: migrating standalone servers to one-time tickets is a breaking workflow change; documenting + scoping first, fix next cycle if evidence supports.
+- D-05: Standalone relay/drop token issues: relay migrated to per-request one-time tickets with legacy fallback (mirrors Hub); drop keeps its header-only per-process token with a documented SR16 exception (header tokens never enter URLs/history/logs; page is no-store; Origin/Referer/Host still enforced).
 - D-06: No commits pushed (per mandate: never push without explicit request). Local commits only.
+- D-07: Adversarial finding "stale trust survives unpair" (C-01) investigated with a live two-connection test: rejected as a vulnerability — the dispatcher application gate was always live (`IsPeerTrusted` reads the store per connection), so no data path existed. Live-only transport config kept as defense-in-depth cleanup.
+- D-08: Post-success replay removed (not "fixed to redeliver"): request keys normalize away per-attempt OAuth values, so any replay of a past success is semantically false. Duplicates redo the flow (correct); in-flight coalescing (the actual browser-storm fix) is retained everywhere.
+- D-09: `temp/` is gitignored — the durable record lives at `docs/DEV-RECORD.md` (committed) instead.
 
 ## Validation matrix
 
 - [x] go build ./... (baseline + after each batch)
-- [x] go vet ./... (baseline + batch A)
-- [x] go test -count=1 ./... (baseline + batch A, all pass)
+- [x] go vet ./... (baseline + each batch)
+- [x] go test -count=1 ./... (baseline + batches A–D, all pass)
+- [x] go test -count=2 ./internal/hub/ ./internal/bridge/ (lifecycle/concurrency rerun, pass)
 - [ ] go test -race ./... — BLOCKED: no C compiler in environment
   (`-race requires cgo`), no gcc/cc/clang. Mitigation: -count=2 rerun of
-  concurrency-heavy packages (pending). Never claim race safety.
-- [ ] cross-compile GOOS=linux/darwin (pending)
-- [x] new regression tests per fix (batch A: headers, staging, codec,
-  SAS ambiguity, cert binding, address validation, perm repair (Unix),
-  beacon validation, transport deadline fixture)
-- [ ] release artifact smoke test (pending, end of engagement)
+  concurrency-heavy packages (done, pass). Never claim race safety.
+- [x] cross-compile GOOS=linux/amd64, darwin/arm64 (pass; windows vet pass)
+- [x] new regression tests per fix (batches A–D; see ledger)
+- [x] fuzz: FuzzDecode, FuzzValidBeacon, FuzzValidateDropMetadata — 25s each,
+  millions of execs, no crashes
+- [x] release artifact smoke test: binary builds, version ok, headless Hub
+  start/healthz/401-without-cap/IPC-authed status+recent/multipart+text
+  uploads end-to-end (loopback self-delivery)/relay-403-without-ticket/
+  dashboard-200/stale-hub.json takeover by next Hub. Stop()/restart covered
+  by unit tests; smoke temp files removed.
 
 ## Open questions
 
@@ -114,6 +146,7 @@ Severity: P0 critical/exploitable remotely · P1 exploitable by paired/local att
 3. [x] Triage Batch B (I-16..I-18, I-25, I-26): standalone token model, upload cap, docs.
 4. [x] Cross-platform compile checks (linux/amd64, darwin/arm64 OK).
 5. [x] Commit Batch A locally (1361d60, no push).
-6. Adversarial re-review pass + fresh discovery (second-order effects of Batch A/B).
-7. Release artifact build + smoke test.
-8. Final report.
+6. [x] Batch B committed (9efd35a, no push).
+7. [x] Adversarial re-review + fresh discovery → Batches C/D implemented.
+8. [x] Fuzzing (3 targets, clean) + release smoke test.
+9. Commit Batches C/D locally (no push); final report.

@@ -15,9 +15,7 @@ import (
 )
 
 const (
-	defaultRelayReplayWindow = 45 * time.Second
-	maxRelayReplayEntries    = 256
-	maxRelayActiveEntries    = 128
+	maxRelayActiveEntries = 128
 )
 
 // relayCoordinator coalesces duplicate OAuth requests before they reach the
@@ -27,8 +25,6 @@ const (
 type relayCoordinator struct {
 	mu     sync.Mutex
 	active map[string]*relayCall
-	recent map[string]time.Time
-	window time.Duration
 }
 
 type relayCall struct {
@@ -39,35 +35,16 @@ type relayCall struct {
 func newRelayCoordinator() *relayCoordinator {
 	return &relayCoordinator{
 		active: make(map[string]*relayCall),
-		recent: make(map[string]time.Time),
-		window: defaultRelayReplayWindow,
 	}
 }
 
-func (c *relayCoordinator) pruneLocked(now time.Time) {
-	for key, expires := range c.recent {
-		if now.After(expires) {
-			delete(c.recent, key)
-		}
-	}
-	for len(c.recent) > maxRelayReplayEntries {
-		var oldestKey string
-		var oldest time.Time
-		for key, expires := range c.recent {
-			if oldestKey == "" || expires.Before(oldest) {
-				oldestKey, oldest = key, expires
-			}
-		}
-		if oldestKey == "" {
-			break
-		}
-		delete(c.recent, oldestKey)
-	}
-}
-
-// Do runs fn once for key. Concurrent callers wait for the same result, and a
-// successful result is replayable for a short window. Failures are not cached
-// so a user can retry a transient dial/browser error immediately.
+// Do runs fn once for key. Concurrent callers wait for the leader's result.
+// Deliberately there is no post-success replay: the request key normalizes
+// away per-attempt OAuth values (state, PKCE, loopback port), so replaying a
+// past success would report "completed" for a login whose own callback was
+// never delivered. A duplicate after completion runs the flow again, which is
+// slower but correct. Failures are not cached either, so a transient
+// dial/browser error is immediately retryable.
 func (c *relayCoordinator) Do(ctx context.Context, key string, fn func() error) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -76,12 +53,6 @@ func (c *relayCoordinator) Do(ctx context.Context, key string, fn func() error) 
 		return fn()
 	}
 	c.mu.Lock()
-	now := time.Now()
-	c.pruneLocked(now)
-	if expires, ok := c.recent[key]; ok && now.Before(expires) {
-		c.mu.Unlock()
-		return nil
-	}
 	if call, ok := c.active[key]; ok {
 		c.mu.Unlock()
 		select {
@@ -105,10 +76,6 @@ func (c *relayCoordinator) Do(ctx context.Context, key string, fn func() error) 
 	c.mu.Lock()
 	call.err = err
 	delete(c.active, key)
-	if err == nil {
-		c.recent[key] = time.Now().Add(c.window)
-		c.pruneLocked(time.Now())
-	}
 	close(call.done)
 	c.mu.Unlock()
 	return err

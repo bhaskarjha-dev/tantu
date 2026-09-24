@@ -282,3 +282,29 @@ func TestValidBeacon_RejectsMalformedIdentity(t *testing.T) {
 		}
 	}
 }
+
+func FuzzValidBeacon(f *testing.F) {
+	seeds := []string{
+		`{"v":1,"name":"n","port":9877,"sas":"a1b2c3","fp":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`,
+		`{"v":2,"port":-1}`,
+		`not json`,
+		``,
+	}
+	for _, s := range seeds {
+		f.Add([]byte(s))
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		var b beaconPayload
+		if err := json.Unmarshal(data, &b); err != nil {
+			return
+		}
+		if validBeacon(b) {
+			if !isHexFingerprint(b.FP) || !isSASCode(b.SAS) {
+				t.Fatalf("valid beacon with malformed identity: %+v", b)
+			}
+			if b.Version != 1 || b.Port <= 0 || b.Port > 65535 {
+				t.Fatalf("valid beacon with bad version/port: %+v", b)
+			}
+		}
+	})
+}

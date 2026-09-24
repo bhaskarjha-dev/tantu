@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
@@ -918,5 +919,112 @@ func TestHub_InBandPairing_OnPort9877(t *testing.T) {
 
 	if len(peersA) != 1 {
 		t.Fatalf("expected 1 peer in hub storeA, got %d", len(peersA))
+	}
+}
+
+func dialDropAck(t *testing.T, addr, serverFP string, clientCert tls.Certificate, meta drop.DropSend) drop.DropAck {
+	t.Helper()
+	tr, err := transport.NewLANTransport(transport.LANTransportConfig{
+		Cert:                clientCert,
+		TrustedFingerprints: []string{serverFP},
+	})
+	if err != nil {
+		t.Fatalf("client transport: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	conn, err := transport.DialPinnedContext(ctx, tr, addr, serverFP)
+	if err != nil {
+		t.Fatalf("dial pinned: %v", err)
+	}
+	defer conn.Close()
+	if dl, ok := conn.(transport.Deadliner); ok {
+		_ = dl.SetReadDeadline(time.Now().Add(10 * time.Second))
+	}
+	if err := conn.Send(drop.TypeDropSend, meta); err != nil {
+		t.Fatalf("send drop_send: %v", err)
+	}
+	env, err := conn.Receive()
+	if err != nil {
+		t.Fatalf("receive drop_ack: %v", err)
+	}
+	if env.Type != drop.TypeDropAck {
+		t.Fatalf("expected %q, got %q", drop.TypeDropAck, env.Type)
+	}
+	var ack drop.DropAck
+	if err := env.DecodePayload(&ack); err != nil {
+		t.Fatalf("decode drop_ack: %v", err)
+	}
+	return ack
+}
+
+// Unpairing a peer must revoke its data access end to end: after RemovePeer a
+// drop_send from that peer is rejected even though the TLS handshake still
+// completes (AllowPairing keeps the listener open for new inbound pairings;
+// the dispatcher enforces live trust).
+func TestHub_UnpairRevokesDropAccess(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "hub-revoke-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	h, err := NewHub(HubConfig{
+		TransportType: "lan",
+		ListenAddr:    "127.0.0.1:0",
+		WebAddr:       "127.0.0.1:0",
+		StoreDir:      tempDir,
+		OutputDir:     filepath.Join(tempDir, "drops"),
+		Headless:      true,
+	})
+	if err != nil {
+		t.Fatalf("NewHub: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = h.Start(ctx) }()
+	select {
+	case <-h.Ready():
+	case <-time.After(10 * time.Second):
+		t.Fatal("hub not ready")
+	}
+	if h.P2PAddr() == nil {
+		t.Fatal("no P2P addr")
+	}
+	serverAddr := h.P2PAddr().String()
+	serverFP := h.Identity().Fingerprint
+
+	clientID, err := pairing.GenerateIdentity()
+	if err != nil {
+		t.Fatalf("GenerateIdentity: %v", err)
+	}
+	clientTLS, err := tls.X509KeyPair(clientID.CertPEM, clientID.KeyPEM)
+	if err != nil {
+		t.Fatalf("client keypair: %v", err)
+	}
+	if err := h.Store().AddPeer(pairing.Peer{
+		Fingerprint: clientID.Fingerprint,
+		Name:        "revoke-client",
+		Address:     "127.0.0.1:9877",
+		CertPEM:     clientID.CertPEM,
+	}); err != nil {
+		t.Fatalf("AddPeer: %v", err)
+	}
+
+	ack := dialDropAck(t, serverAddr, serverFP, clientTLS, drop.DropSend{
+		DropID: "revoke-test-1", Kind: drop.DropKindText, Name: "t", Size: 4, ChunkSize: 1 << 20,
+	})
+	if !ack.Accepted {
+		t.Fatalf("trusted peer drop rejected: %q", ack.Error)
+	}
+
+	if err := h.Store().RemovePeer(clientID.Fingerprint); err != nil {
+		t.Fatalf("RemovePeer: %v", err)
+	}
+	ack = dialDropAck(t, serverAddr, serverFP, clientTLS, drop.DropSend{
+		DropID: "revoke-test-2", Kind: drop.DropKindText, Name: "t", Size: 4, ChunkSize: 1 << 20,
+	})
+	if ack.Accepted {
+		t.Fatal("unpaired peer drop accepted, want rejection")
 	}
 }

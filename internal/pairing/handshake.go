@@ -329,8 +329,11 @@ func HandleInboundPairingWithOptions(ctx context.Context, conn Conn, firstEnv *p
 		return nil, fmt.Errorf("send pair hello: %w", err)
 	}
 
-	// 2. SAS Confirmation
-	localAccepted := invokeConfirm(confirmFn, peerSAS, localSAS)
+	// 2. SAS Confirmation, bounded by the session context.
+	localAccepted, err := confirmWithContext(ctx, confirmFn, peerSAS, localSAS)
+	if err != nil {
+		return nil, err
+	}
 
 	// 3. Send local decision
 	if err := conn.Send(TypePairDecision, PairDecisionPayload{
@@ -440,8 +443,11 @@ func PairResponderInBandWithOptions(ctx context.Context, conn Conn, store *PeerS
 	localSAS := SASCode(id.Fingerprint)
 	peerSAS := SASCode(peerFP)
 
-	// 3. User SAS verification
-	localAccepted := invokeConfirm(confirmFn, peerSAS, localSAS)
+	// 3. User SAS verification, bounded by the session context.
+	localAccepted, err := confirmWithContext(ctx, confirmFn, peerSAS, localSAS)
+	if err != nil {
+		return nil, err
+	}
 
 	// 4. Send local decision
 	if err := conn.Send(TypePairDecision, PairDecisionPayload{

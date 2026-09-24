@@ -348,6 +348,9 @@ func runRelay(args []string) {
 		tr, err = transport.NewLANTransport(transport.LANTransportConfig{
 			Cert:                tlsCert,
 			TrustedFingerprints: trustedFPs,
+			// Live store lookup in addition to the snapshot: a peer removed
+			// between ListPeers and Dial must not remain dialable.
+			IsTrusted: lanStore.IsTrusted,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: failed to configure LAN transport: %v\n", err)
@@ -383,14 +386,20 @@ func runRelay(args []string) {
 	// bookmarklets rendered before this change.
 	relayTickets := newLocalTicketPool()
 	peerInfo := fmt.Sprintf("%s (%s)", dialTarget, *transportType)
-	renderRelayPage := func(ticket string) string {
-		if ticket == "" {
-			ticket = relayToken
+	renderRelayPage := func(bookmarkletTicket, formTicket string) string {
+		// The bookmarklet and the manual form each get their own ticket:
+		// using one capability for both would burn the saved bookmarklet
+		// the first time the form is submitted (and vice versa).
+		if bookmarkletTicket == "" {
+			bookmarkletTicket = relayToken
 		}
-		bookmarkletJS := fmt.Sprintf("javascript:void(window.open('http://127.0.0.1:%d/relay?ticket=%s&url='+encodeURIComponent(location.href),'_blank','width=550,height=380'))", *port, ticket)
+		if formTicket == "" {
+			formTicket = relayToken
+		}
+		bookmarkletJS := fmt.Sprintf("javascript:void(window.open('http://127.0.0.1:%d/relay?ticket=%s&url='+encodeURIComponent(location.href),'_blank','width=550,height=380'))", *port, bookmarkletTicket)
 		pageContent := strings.ReplaceAll(relayPageHTML, "{{PORT}}", strconv.Itoa(*port))
 		pageContent = strings.ReplaceAll(pageContent, "{{PEER}}", escapeHTML(peerInfo))
-		pageContent = strings.ReplaceAll(pageContent, "{{RELAY_TOKEN}}", ticket)
+		pageContent = strings.ReplaceAll(pageContent, "{{RELAY_TOKEN}}", formTicket)
 		return strings.ReplaceAll(pageContent, "{{BOOKMARKLET_HREF}}", bookmarkletJS)
 	}
 
@@ -411,7 +420,7 @@ func runRelay(args []string) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte(renderRelayPage(relayTickets.Issue())))
+		_, _ = w.Write([]byte(renderRelayPage(relayTickets.Issue(), relayTickets.Issue())))
 	})
 
 	mux.HandleFunc("/relay", func(w http.ResponseWriter, r *http.Request) {
@@ -441,25 +450,10 @@ func runRelay(args []string) {
 			writeJSON(w, status, resp)
 		}
 
-		// Capability check: prefer single-use tickets (header for the manual
-		// form, query for bookmarklet navigations which cannot set headers).
-		// The per-process token remains accepted for pages and bookmarklets
-		// rendered before one-time tickets existed.
-		headerCap := r.Header.Get("X-Tantu-IPC-Token")
-		queryTicket := r.URL.Query().Get("ticket")
-		queryToken := r.URL.Query().Get("token")
-		authorized := relayTickets.Consume(headerCap) || relayTickets.Consume(queryTicket) ||
-			localRequestTokenMatches(headerCap, relayToken) ||
-			localRequestTokenMatches(queryTicket, relayToken) ||
-			localRequestTokenMatches(queryToken, relayToken)
-		if !authorized {
-			respond(http.StatusForbidden, relayResponse{
-				Status:  "error",
-				Message: "invalid or missing local relay token",
-			})
-			return
-		}
-
+		// URL presence is validated before the capability check so malformed
+		// or empty requests never burn a single-use ticket. This reveals
+		// nothing sensitive: it distinguishes "no URL" from "bad token"
+		// only, mirroring the Hub's legacy endpoint behavior.
 		rawURL := ""
 		if r.Method == http.MethodPost {
 			r.Body = http.MaxBytesReader(w, r.Body, 128*1024)
@@ -483,6 +477,25 @@ func runRelay(args []string) {
 			respond(http.StatusBadRequest, relayResponse{
 				Status:  "error",
 				Message: "missing or empty url parameter",
+			})
+			return
+		}
+
+		// Capability check: prefer single-use tickets (header for the manual
+		// form, query for bookmarklet navigations which cannot set headers).
+		// The per-process token remains accepted for pages and bookmarklets
+		// rendered before one-time tickets existed.
+		headerCap := r.Header.Get("X-Tantu-IPC-Token")
+		queryTicket := r.URL.Query().Get("ticket")
+		queryToken := r.URL.Query().Get("token")
+		authorized := relayTickets.Consume(headerCap) || relayTickets.Consume(queryTicket) ||
+			localRequestTokenMatches(headerCap, relayToken) ||
+			localRequestTokenMatches(queryTicket, relayToken) ||
+			localRequestTokenMatches(queryToken, relayToken)
+		if !authorized {
+			respond(http.StatusForbidden, relayResponse{
+				Status:  "error",
+				Message: "invalid or missing local relay token",
 			})
 			return
 		}

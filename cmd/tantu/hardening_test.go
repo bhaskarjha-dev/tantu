@@ -284,3 +284,16 @@ func TestLocalTicketPool_Bounded(t *testing.T) {
 		t.Fatalf("pool holds %d tickets, cap is %d", n, maxLocalRelayTickets)
 	}
 }
+
+func TestCreateIncomingPart_RejectsSymlinkedStagingDir(t *testing.T) {
+	outDir := t.TempDir()
+	victimDir := t.TempDir()
+	staging := filepath.Join(outDir, ".tantu-staging")
+	if err := os.Symlink(victimDir, staging); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	if f, _, _, err := createIncomingPart(outDir, "drop.bin"); err == nil {
+		_ = f.Close()
+		t.Fatal("symlinked staging dir accepted, want error")
+	}
+}

@@ -217,7 +217,11 @@ type Hub struct {
 	// uploadSlots bounds concurrent multipart file uploads (up to 5 GiB
 	// each, 32 MiB parsed in RAM plus temp-disk spill). Without it any
 	// capability holder could exhaust disk/RAM with parallel uploads.
-	uploadSlots             chan struct{}
+	uploadSlots chan struct{}
+	// textSlots bounds concurrent JSON text uploads; pairSlots bounds
+	// concurrent outbound pairing attempts. Same rationale, smaller units.
+	textSlots chan struct{}
+	pairSlots chan struct{}
 	onSnippetReceived       func(ReceivedDropItem)
 	openBrowser             func(string) error
 	readyCh                 chan struct{}
@@ -244,26 +248,45 @@ type Hub struct {
 // of queueing behind multi-gigabyte transfers.
 const maxHubConcurrentUploads = 4
 
+// maxHubConcurrentTextUploads bounds simultaneous JSON text uploads. Each may
+// hold up to 11 MiB plus a wire connection; without a cap an authenticated
+// caller could exhaust memory with parallel text drops.
+const maxHubConcurrentTextUploads = 16
+
+// maxHubConcurrentPairings bounds simultaneous outbound pairing attempts.
+// Each may block for minutes on TCP+TLS dials and human SAS approval.
+const maxHubConcurrentPairings = 4
+
 // acquireUploadSlot takes one multipart-upload slot without blocking. A nil
 // slot channel (zero-value Hub outside NewHub) imposes no limit.
 func (h *Hub) acquireUploadSlot() bool {
-	if h.uploadSlots == nil {
+	return acquireSlot(h.uploadSlots)
+}
+
+func (h *Hub) releaseUploadSlot() {
+	releaseSlot(h.uploadSlots)
+}
+
+// acquireSlot takes one token from a bounded semaphore channel without
+// blocking. A nil channel (zero-value Hub outside NewHub) imposes no limit.
+func acquireSlot(slots chan struct{}) bool {
+	if slots == nil {
 		return true
 	}
 	select {
-	case h.uploadSlots <- struct{}{}:
+	case slots <- struct{}{}:
 		return true
 	default:
 		return false
 	}
 }
 
-func (h *Hub) releaseUploadSlot() {
-	if h.uploadSlots == nil {
+func releaseSlot(slots chan struct{}) {
+	if slots == nil {
 		return
 	}
 	select {
-	case <-h.uploadSlots:
+	case <-slots:
 	default:
 	}
 }
@@ -332,6 +355,28 @@ func EnsurePeerLANPort(addr string) string {
 	return net.JoinHostPort(addr, transport.DefaultLANPort)
 }
 
+// ensureStagingDir verifies the staging directory is a real directory, not a
+// symlink planted to redirect partial-file writes outside the output dir.
+// MkdirAll follows symlinks, so the check must come after creation.
+func ensureStagingDir(dir string) error {
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("inspect staging directory: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("staging path is not a directory: %s", dir)
+	}
+	return nil
+}
+
+// stagingHardlinked reports whether fi has more than one hard link. It is
+// implemented per-OS: Unix exposes the link count, other platforms cannot,
+// so the resume-path check degrades to a no-op there (documented at the call
+// site).
+func stagingHardlinked(fi os.FileInfo) bool {
+	return stagingHardlinkedOS(fi)
+}
+
 // retryStagingOpen reports that a staging partial could not be opened for
 // resume (usually raced away). The caller must fall back to exclusive
 // creation, which surfaces persistent errors. It is distinct from a hard
@@ -369,6 +414,13 @@ func openResumePart(partPath string, inspected os.FileInfo) (*os.File, error) {
 			return nil, fmt.Errorf("inspect partial file: %w", statErr)
 		}
 		return nil, fmt.Errorf("partial file changed during open: %s", partPath)
+	}
+	// A hardlink to a victim file passes the identity check above (same
+	// inode); never resume into a multi-linked file. Fresh creation below
+	// already unlinks planted entries instead of following them.
+	if stagingHardlinked(finfo) {
+		_ = f.Close()
+		return nil, fmt.Errorf("partial file has multiple links: %s", partPath)
 	}
 	return f, nil
 }
@@ -510,6 +562,8 @@ func NewHub(cfg HubConfig) (*Hub, error) {
 		dashboardSessions:       make(map[string]time.Time),
 		relayTickets:            make(map[string]time.Time),
 		uploadSlots:             make(chan struct{}, maxHubConcurrentUploads),
+		textSlots:               make(chan struct{}, maxHubConcurrentTextUploads),
+		pairSlots:               make(chan struct{}, maxHubConcurrentPairings),
 		openBrowser:             ob,
 		readyCh:                 make(chan struct{}),
 		stopCh:                  make(chan struct{}),
@@ -1115,9 +1169,11 @@ func (h *Hub) Start(parent context.Context) error {
 			return fmt.Errorf("parse local TLS certificate: %w", err)
 		}
 		var trustedFPs []string
-		for _, p := range h.store.ListPeers() {
-			trustedFPs = append(trustedFPs, p.Fingerprint)
-		}
+		// Trust is evaluated live against the peer store on every handshake.
+		// A start-time snapshot must NOT be passed here: snapshot OR live
+		// semantics would keep a peer trusted at the transport layer after
+		// `unpair` removed it, until the next Hub restart. The dispatcher
+		// applies the same live check at the application layer.
 		tr, err = transport.NewLANTransport(transport.LANTransportConfig{
 			Cert:                tlsCert,
 			TrustedFingerprints: trustedFPs,
@@ -1310,6 +1366,9 @@ func (h *Hub) Start(parent context.Context) error {
 					stagingDir := filepath.Join(outDir, ".tantu-staging")
 					if err := os.MkdirAll(stagingDir, 0700); err != nil {
 						return nil, fmt.Errorf("create transfer staging directory: %w", err)
+					}
+					if err := ensureStagingDir(stagingDir); err != nil {
+						return nil, err
 					}
 					partPath := filepath.Join(stagingDir, meta.DropID+".part")
 					var f *os.File
@@ -1787,6 +1846,13 @@ func (h *Hub) Start(parent context.Context) error {
 		return fmt.Errorf("publish runtime info: %w", err)
 	}
 	defer func() { _ = RemoveRuntimeInfoIfOwned(storeDir, runtimeInfo) }()
+
+	// Reclaim staging orphans from aborted transfers. Sender DropIDs are
+	// random per attempt, so most leftover .part files can never be resumed
+	// and would otherwise accumulate without bound.
+	if removed, freed := drop.SweepStalePartials(h.OutputDir(), drop.DefaultStagingMaxAge); removed > 0 {
+		h.logger.Action(DomainDrop, fmt.Sprintf("Cleaned %d stale partial file(s) (%s reclaimed)", removed, formatBytes(freed)))
+	}
 
 	// Both serving loops are now accepting requests and runtime metadata is
 	// published, so callers may safely use the Hub.

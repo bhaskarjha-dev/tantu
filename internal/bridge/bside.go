@@ -100,9 +100,9 @@ func ExtractCallbackPort(oauthURL string) (int, error) {
 		return 0, errors.New("invalid redirect_uri parameter in oauth url")
 	}
 	redirectHost := strings.ToLower(redirectURI.Hostname())
-	if redirectHost != "localhost" && redirectHost != "127.0.0.1" && redirectHost != "::1" {
+	if !isLoopbackHost(redirectHost) {
 		stateURL, stateErr := url.Parse(stateStr)
-		if stateErr == nil && (strings.ToLower(stateURL.Hostname()) == "localhost" || strings.ToLower(stateURL.Hostname()) == "127.0.0.1" || strings.ToLower(stateURL.Hostname()) == "::1") && strings.EqualFold(stateURL.Scheme, "http") {
+		if stateErr == nil && isLoopbackHost(strings.ToLower(stateURL.Hostname())) && strings.EqualFold(stateURL.Scheme, "http") {
 			if statePort, ok := extractPortFromURLStr(stateStr); ok {
 				return statePort, nil
 			}
@@ -145,7 +145,7 @@ func redirectCallbackHostIsLoopback(oauthURL string) error {
 		return errors.New("parse redirect_uri failed")
 	}
 	redirectHost := strings.ToLower(redirectURL.Hostname())
-	if redirectHost == "localhost" || redirectHost == "127.0.0.1" || redirectHost == "::1" {
+	if isLoopbackHost(redirectHost) {
 		if !strings.EqualFold(redirectURL.Scheme, "http") {
 			return errors.New("loopback redirect_uri must use http")
 		}
@@ -157,7 +157,7 @@ func redirectCallbackHostIsLoopback(oauthURL string) error {
 	stateURL, stateErr := url.Parse(state)
 	if stateErr == nil && strings.EqualFold(stateURL.Scheme, "http") {
 		stateHost := strings.ToLower(stateURL.Hostname())
-		if stateHost == "localhost" || stateHost == "127.0.0.1" || stateHost == "::1" {
+		if isLoopbackHost(stateHost) {
 			return nil
 		}
 	}
@@ -190,6 +190,20 @@ func validateCallbackRelay(expected callbackExpectationSpec, relay protocol.Call
 	if len(relay.Body) > 1<<20 {
 		return errors.New("callback relay body is too large")
 	}
+	// The frame budget exempts callback relays, so bound the header map
+	// explicitly: a peer could otherwise stuff megabytes of headers into a
+	// 4 MiB frame that the allowlist filter would only drop after a full
+	// scan. Legitimate relays carry at most a handful of small headers.
+	if len(relay.Headers) > 64 {
+		return errors.New("callback relay has too many headers")
+	}
+	headerBytes := 0
+	for name, value := range relay.Headers {
+		headerBytes += len(name) + len(value)
+		if headerBytes > 16*1024 {
+			return errors.New("callback relay headers are too large")
+		}
+	}
 	if relay.Method != "" && relay.Method != http.MethodGet && relay.Method != http.MethodPost {
 		return errors.New("unsupported callback method")
 	}
@@ -205,15 +219,7 @@ func validateCallbackRelay(expected callbackExpectationSpec, relay protocol.Call
 	}
 	state := parsed.Query().Get("state")
 	if relay.Method == http.MethodPost && len(relay.Body) > 0 && len(relay.Body) <= 1<<20 {
-		contentType := relay.Headers["Content-Type"]
-		if contentType == "" {
-			for key, value := range relay.Headers {
-				if strings.EqualFold(key, "Content-Type") {
-					contentType = value
-					break
-				}
-			}
-		}
+		contentType := canonicalRelayHeader(relay.Headers, "Content-Type")
 		if strings.HasPrefix(strings.ToLower(contentType), "application/x-www-form-urlencoded") {
 			if form, parseErr := url.ParseQuery(string(relay.Body)); parseErr == nil {
 				formState := form.Get("state")
@@ -307,7 +313,13 @@ func (b *BSide) Run(parent context.Context, oauthURL string) error {
 			return fmt.Errorf("bridge ack error: %s", redactBridgeMessage(ack.Error))
 		}
 		if ack.Replay {
-			b.logf("✅ Replayed completed OAuth session %s", reqID)
+			// A coalesced duplicate: a matching flow completed (or is
+			// completing) on the A-side. No callback is delivered for THIS
+			// request — the request key normalizes away per-attempt OAuth
+			// values such as state — so say so explicitly instead of
+			// implying this login's own code was handed to the local app.
+			// Callers that need their own code must start a distinct flow.
+			b.logf("⚠️ Duplicate OAuth request coalesced with a recently completed flow %s; no callback was delivered for this request", reqID)
 			return nil
 		}
 		if ack.ListeningPort <= 0 || ack.ListeningPort > 65535 {
@@ -388,7 +400,7 @@ func (b *BSide) Run(parent context.Context, oauthURL string) error {
 		for k, v := range filterCallbackRelayHeaders(relay.Headers) {
 			httpReq.Header.Set(k, v)
 		}
-		if host := relay.Headers["Host"]; host != "" && requestHostIsLoopback(host) {
+		if host := canonicalRelayHeader(relay.Headers, "Host"); host != "" && requestHostIsLoopback(host) {
 			httpReq.Host = host
 		}
 		resp, err := client.Do(httpReq)

@@ -2174,6 +2174,12 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 
 		// JSON text drop
 		if strings.HasPrefix(contentType, "application/json") {
+			if !acquireSlot(h.textSlots) {
+				w.Header().Set("Retry-After", "10")
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "error", "message": "too many concurrent uploads, retry later"})
+				return
+			}
+			defer releaseSlot(h.textSlots)
 			var textReq struct {
 				Text string `json:"text"`
 				Name string `json:"name"`
@@ -2411,6 +2417,11 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 		}
 		peerAddr := strings.TrimSpace(req.PeerAddr)
 		h.logger.Action(DomainPeer, fmt.Sprintf("Initiating in-band pairing with %s", peerAddr))
+		if !acquireSlot(h.pairSlots) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "error", "message": "too many concurrent pairing attempts, retry later"})
+			return
+		}
+		defer releaseSlot(h.pairSlots)
 		pairCtx, pairCancel := h.withRunContext(r.Context())
 		defer pairCancel()
 		pairingOptions := pairing.PairingOptions{}
@@ -2763,10 +2774,13 @@ func openDirectoryInOS(dir string) error {
 	cleanDir := filepath.Clean(dir)
 	// Resolve to an absolute path: a relative OutputDir such as "-n" would
 	// otherwise be parsed as a helper flag by open/xdg-open. Absolute paths
-	// can never begin with '-'.
-	if absDir, err := filepath.Abs(cleanDir); err == nil {
-		cleanDir = absDir
+	// can never begin with '-'. A resolution failure fails closed rather
+	// than executing the helper with the raw relative value.
+	absDir, err := filepath.Abs(cleanDir)
+	if err != nil {
+		return fmt.Errorf("resolve directory path: %w", err)
 	}
+	cleanDir = absDir
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":

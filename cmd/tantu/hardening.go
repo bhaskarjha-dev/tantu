@@ -114,6 +114,12 @@ func createIncomingPart(outDir, rawName string) (*os.File, string, string, error
 	if err := os.MkdirAll(stagingDir, 0700); err != nil {
 		return nil, "", "", fmt.Errorf("create transfer staging directory: %w", err)
 	}
+	if info, err := os.Lstat(stagingDir); err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		if err == nil {
+			err = fmt.Errorf("staging path is not a directory: %s", stagingDir)
+		}
+		return nil, "", "", fmt.Errorf("inspect staging directory: %w", err)
+	}
 	var f *os.File
 	var partPath string
 	for i := 0; i < 10000; i++ {

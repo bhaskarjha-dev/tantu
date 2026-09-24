@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -262,7 +263,8 @@ func validatePeerLabel(label string) error {
 
 // validatePeerAddress rejects malformed host:port values before they persist.
 // Bare hosts without a port are accepted: NormalizePeers assigns the default
-// LAN port later. Explicit ports must be numeric or resolvable service names.
+// LAN port later. Explicit ports must be numeric (service names are rejected
+// so a stored address can never resolve to a surprising port).
 func validatePeerAddress(addr string) error {
 	addr = strings.TrimSpace(addr)
 	if addr == "" || len(addr) > 256 {
@@ -274,14 +276,11 @@ func validatePeerAddress(addr string) error {
 		}
 	}
 	if host, port, err := net.SplitHostPort(addr); err == nil {
-		if strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
-			return errors.New("peer address must be host:port")
+		if err := validatePeerHost(host); err != nil {
+			return err
 		}
-		if strings.ContainsAny(host, " \t") {
-			return errors.New("peer address host contains whitespace")
-		}
-		if _, err := net.LookupPort("tcp", port); err != nil {
-			return errors.New("peer address has an invalid port")
+		if err := validatePeerPort(port); err != nil {
+			return err
 		}
 		return nil
 	}
@@ -291,8 +290,27 @@ func validatePeerAddress(addr string) error {
 	if strings.Contains(addr, ":") {
 		return errors.New("peer address must be host:port")
 	}
-	if strings.Contains(addr, " ") {
-		return errors.New("peer address contains a space")
+	return validatePeerHost(addr)
+}
+
+// validatePeerHost rejects values that are not plain DNS names or IP
+// literals: no URLs, paths, userinfo, or whitespace.
+func validatePeerHost(host string) error {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return errors.New("peer address must be host:port")
+	}
+	if strings.ContainsAny(host, " \t/@") || strings.Contains(host, "://") {
+		return errors.New("peer address host is invalid")
+	}
+	return nil
+}
+
+// validatePeerPort requires an explicit numeric port in range.
+func validatePeerPort(port string) error {
+	n, err := strconv.Atoi(strings.TrimSpace(port))
+	if err != nil || n < 1 || n > 65535 {
+		return errors.New("peer address has an invalid port")
 	}
 	return nil
 }
@@ -473,10 +491,13 @@ func (s *PeerStore) SetDefault(fingerprint string) error {
 }
 
 // UpdatePeerAddress updates a peer's network host:port address and updates LastSeen.
+// An empty address clears the stored value.
 func (s *PeerStore) UpdatePeerAddress(fingerprint, newAddress string) error {
 	fingerprint = strings.ToLower(strings.TrimSpace(fingerprint))
-	if err := validatePeerAddress(newAddress); err != nil {
-		return err
+	if strings.TrimSpace(newAddress) != "" {
+		if err := validatePeerAddress(newAddress); err != nil {
+			return err
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -496,12 +517,18 @@ func (s *PeerStore) UpdatePeerAddress(fingerprint, newAddress string) error {
 }
 
 // ResolvePeer deterministically resolves a query to a Peer using a 5-tier fuzzy match.
-// If query is empty: returns the designated default peer if one exists; otherwise the first peer.
+// If query is empty: returns the designated default peer if one exists; a
+// single peer if exactly one is paired; otherwise an error (silently picking
+// the first peer in sort order could misroute a transfer to the wrong machine).
 // Tier 1: Exact or prefix match against Fingerprint.
 // Tier 2: Exact case-insensitive match against 6-char SAS code.
 // Tier 3: Exact case-insensitive match against user-defined Alias.
 // Tier 4: Exact case-insensitive match against machine Name.
 // Tier 5: Match against Address host:port or IP.
+//
+// Tiers are evaluated in order, but when a query matches different peers in
+// different tiers (e.g. peer A's SAS equals a fingerprint prefix of peer B)
+// the result is ambiguous and an error is returned instead of shadowing.
 func (s *PeerStore) ResolvePeer(query string) (*Peer, error) {
 	peers := s.ListPeers()
 	if len(peers) == 0 {
@@ -516,29 +543,29 @@ func (s *PeerStore) ResolvePeer(query string) (*Peer, error) {
 				return &res, nil
 			}
 		}
-		res := peers[0]
-		return &res, nil
+		if len(peers) == 1 {
+			res := peers[0]
+			return &res, nil
+		}
+		return nil, errors.New("multiple paired peers and no default; specify a peer or set one as default")
 	}
 
-	// Tier 1: Fingerprint match (exact or prefix if prefix >= 6 chars)
+	// Tier 1: Fingerprint match (exact or prefix if prefix >= 6 chars).
+	// An exact fingerprint match is authoritative and never ambiguous.
 	for _, p := range peers {
 		if strings.EqualFold(p.Fingerprint, trimmed) {
 			res := p
 			return &res, nil
 		}
 	}
+	var prefixMatches []Peer
 	if len(trimmed) >= 6 {
-		var matches []Peer
 		for _, p := range peers {
 			if strings.HasPrefix(strings.ToLower(p.Fingerprint), strings.ToLower(trimmed)) {
-				matches = append(matches, p)
+				prefixMatches = append(prefixMatches, p)
 			}
 		}
-		if len(matches) == 1 {
-			res := matches[0]
-			return &res, nil
-		}
-		if len(matches) > 1 {
+		if len(prefixMatches) > 1 {
 			return nil, fmt.Errorf("fingerprint prefix %q is ambiguous", trimmed)
 		}
 	}
@@ -552,12 +579,23 @@ func (s *PeerStore) ResolvePeer(query string) (*Peer, error) {
 			sasMatches = append(sasMatches, p)
 		}
 	}
+	if len(sasMatches) > 1 {
+		return nil, fmt.Errorf("SAS code %q is ambiguous; use a fingerprint prefix", trimmed)
+	}
+
+	// Cross-tier guard: a lone prefix match and a lone SAS match for different
+	// peers means the query is genuinely ambiguous, not Tier-1-wins.
+	if len(prefixMatches) == 1 && len(sasMatches) == 1 &&
+		!strings.EqualFold(prefixMatches[0].Fingerprint, sasMatches[0].Fingerprint) {
+		return nil, fmt.Errorf("query %q matches multiple peers; use a longer fingerprint prefix", trimmed)
+	}
+	if len(prefixMatches) == 1 {
+		res := prefixMatches[0]
+		return &res, nil
+	}
 	if len(sasMatches) == 1 {
 		res := sasMatches[0]
 		return &res, nil
-	}
-	if len(sasMatches) > 1 {
-		return nil, fmt.Errorf("SAS code %q is ambiguous; use a fingerprint prefix", trimmed)
 	}
 
 	// Tier 3: Exact Alias match

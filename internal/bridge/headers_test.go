@@ -3,6 +3,8 @@ package bridge
 import (
 	"net/http"
 	"testing"
+
+	"github.com/bhaskarjha-dev/tantu/internal/protocol"
 )
 
 func TestAllowedCallbackRelayHeader(t *testing.T) {
@@ -85,5 +87,57 @@ func TestCallbackHeadersFromHTTP(t *testing.T) {
 		if _, ok := got[k]; ok {
 			t.Errorf("callbackHeaders leaked %q", k)
 		}
+	}
+}
+
+func TestValidateCallbackRelay_HeaderLimits(t *testing.T) {
+	base := protocol.CallbackRelay{
+		Method: "GET",
+		Path:   "/callback?code=x",
+		Body:   []byte{},
+	}
+	many := make(map[string]string)
+	for i := 0; i < 65; i++ {
+		many["X-Pad-"+string(rune('a'+i%26))+string(rune('0'+i%10))] = "v"
+	}
+	if err := validateCallbackRelay(callbackExpectation(""), protocol.CallbackRelay{
+		Method: "GET", Path: "/callback", Headers: many,
+	}); err == nil {
+		t.Error("65 headers accepted, want error")
+	}
+	bigBytes := make([]byte, 17*1024)
+	for i := range bigBytes {
+		bigBytes[i] = 'a'
+	}
+	big := map[string]string{"X-Big": string(bigBytes)}
+	if err := validateCallbackRelay(callbackExpectation(""), protocol.CallbackRelay{
+		Method: "GET", Path: "/callback", Headers: big,
+	}); err == nil {
+		t.Error("17KiB headers accepted, want error")
+	}
+	if err := validateCallbackRelay(callbackExpectation(""), base); err != nil {
+		t.Errorf("minimal relay rejected: %v", err)
+	}
+}
+
+func TestCanonicalRelayHeader_Deterministic(t *testing.T) {
+	in := map[string]string{
+		"Content-Type": "text/plain",
+		"content-type": "application/x-www-form-urlencoded",
+		"HOST":         "127.0.0.1:8080",
+	}
+	// Sorted keys: "Content-Type" < "content-type", so the canonical form wins.
+	if got := canonicalRelayHeader(in, "Content-Type"); got != "text/plain" {
+		t.Errorf("canonical Content-Type = %q, want text/plain", got)
+	}
+	if got := canonicalRelayHeader(in, "host"); got != "127.0.0.1:8080" {
+		t.Errorf("canonical Host = %q, want 127.0.0.1:8080", got)
+	}
+	filtered := filterCallbackRelayHeaders(in)
+	if filtered["Content-Type"] != "text/plain" {
+		t.Errorf("filtered Content-Type = %q, want text/plain", filtered["Content-Type"])
+	}
+	if _, ok := filtered["Host"]; ok {
+		t.Errorf("Host must never be forwarded: %v", filtered)
 	}
 }

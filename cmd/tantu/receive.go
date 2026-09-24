@@ -139,6 +139,9 @@ func runReceive(args []string) {
 	defer listener.Close()
 
 	fmt.Fprintf(os.Stderr, "Listening for drops on %s (transport: %s)...\n", listener.Addr().String(), *transportType)
+	if removed, _ := drop.SweepStalePartials(*outputDir, drop.DefaultStagingMaxAge); removed > 0 && *verbose {
+		fmt.Fprintf(os.Stderr, "Cleaned %d stale partial file(s)\n", removed)
+	}
 	if *verbose {
 		fmt.Fprintf(os.Stderr, "Verbose output enabled. Ready to receive drops.\n")
 	}
