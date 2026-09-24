@@ -254,3 +254,15 @@ evidence (no fix needed — the worried-about behavior does not exist):
   maintenance burden grows.
 - `go test -race` re-checked: still no C compiler (gcc/cc/clang absent) —
   remains blocked with `-count=2` mitigation. Race safety never claimed.
+
+## Batch J — performance baseline (2026-09-24, measured local binary)
+
+- Cold start (fresh store incl. ECDSA P-256 identity + cert generation) to
+  dashboard 200: ~693 ms on this Windows machine.
+- Idle footprint after 10 s (headless Hub, no peers/transfers): VmRSS
+  ~14 MB. No idle hot loops by design (3 s status poll is client-driven;
+  discovery beacon every 3 s; SSE long-lived but quiet).
+- Unauthenticated `GET /api/status` → 401 live-verified in the same run.
+- No limits were changed on this evidence: 14 MB idle / sub-second start
+  needs no tuning. Large-file behavior remains streaming-bounded (2 MiB
+  chunks, 32 MiB RAM spill per upload × 4 slots).
