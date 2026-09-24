@@ -33,6 +33,13 @@ const (
 	maxStandaloneDropSessions     = 32
 	maxLocalRelayActive           = 64
 
+	// One-time relay tickets bound the blast radius of a leaked capability
+	// URL (browser history, synced bookmarks, server logs). A ticket is
+	// single-use with a short TTL; the per-process token remains as a legacy
+	// fallback for previously rendered pages and bookmarklets.
+	maxLocalRelayTickets = 128
+	localRelayTicketTTL  = 10 * time.Minute
+
 	localHTTPMaxHeaderBytes    = 64 << 10
 	localHTTPReadHeaderTimeout = 5 * time.Second
 	localHTTPIdleTimeout       = 60 * time.Second
@@ -243,6 +250,69 @@ func escapeHTML(value string) string {
 
 func localRequestTokenMatches(got, want string) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
+// localTicketPool mints single-use capability tickets for standalone servers,
+// mirroring the Hub's relay-ticket model. Tickets are consumed on first use
+// and expire quickly, so a ticket captured from browser history, a synced
+// bookmark, or a log entry is worthless after use or after the TTL.
+type localTicketPool struct {
+	mu      sync.Mutex
+	tickets map[string]time.Time
+}
+
+func newLocalTicketPool() *localTicketPool {
+	return &localTicketPool{tickets: make(map[string]time.Time)}
+}
+
+// Issue mints a fresh ticket valid for localRelayTicketTTL. The pool is
+// bounded; expired entries are reclaimed first, then arbitrary live entries
+// when under sustained pressure.
+func (p *localTicketPool) Issue() string {
+	var ticket [32]byte
+	if _, err := rand.Read(ticket[:]); err != nil {
+		return ""
+	}
+	value := hex.EncodeToString(ticket[:])
+	now := time.Now()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for issued, expires := range p.tickets {
+		if now.After(expires) {
+			delete(p.tickets, issued)
+		}
+	}
+	for len(p.tickets) >= maxLocalRelayTickets {
+		for issued := range p.tickets {
+			delete(p.tickets, issued)
+			break
+		}
+	}
+	p.tickets[value] = now.Add(localRelayTicketTTL)
+	return value
+}
+
+// Consume validates and burns a ticket. It returns false for empty, unknown,
+// expired, or already-used tickets. Comparison is constant-time per candidate
+// so no valid ticket is prefix-revealed by timing.
+func (p *localTicketPool) Consume(presented string) bool {
+	if presented == "" {
+		return false
+	}
+	now := time.Now()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for issued, expires := range p.tickets {
+		if now.After(expires) {
+			delete(p.tickets, issued)
+			continue
+		}
+		if subtle.ConstantTimeCompare([]byte(presented), []byte(issued)) == 1 {
+			delete(p.tickets, issued)
+			return true
+		}
+	}
+	return false
 }
 
 func isLoopbackHostname(host string) bool {

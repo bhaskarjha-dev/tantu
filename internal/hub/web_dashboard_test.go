@@ -1276,3 +1276,48 @@ func TestWebDashboard_InboundPairing_PendingApprovalAndRejection(t *testing.T) {
 		t.Errorf("expected 1 peer in hB store, got %d", len(hB.Store().ListPeers()))
 	}
 }
+
+func TestWebDashboard_UploadConcurrencyCapped(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+
+	// Exhaust every upload slot directly, then a multipart upload must fail
+	// fast with 503 before buffering any body.
+	for i := 0; i < maxHubConcurrentUploads; i++ {
+		if !h.acquireUploadSlot() {
+			t.Fatalf("slot %d unexpectedly unavailable", i)
+		}
+	}
+	defer func() {
+		for i := 0; i < maxHubConcurrentUploads; i++ {
+			h.releaseUploadSlot()
+		}
+	}()
+
+	var b bytes.Buffer
+	w := multipart.NewWriter(&b)
+	part, err := w.CreateFormFile("file", "test.txt")
+	if err != nil {
+		t.Fatalf("CreateFormFile failed: %v", err)
+	}
+	_, _ = part.Write([]byte("capped"))
+	_ = w.Close()
+
+	req, err := http.NewRequest(http.MethodPost, "http://"+h.WebAddr()+"/api/drop/upload", &b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Header.Set(IPCTokenHeader, h.ipcToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 with exhausted upload slots, got %d", resp.StatusCode)
+	}
+	if resp.Header.Get("Retry-After") == "" {
+		t.Error("expected Retry-After header on 503")
+	}
+}

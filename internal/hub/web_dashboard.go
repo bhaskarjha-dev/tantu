@@ -2221,7 +2221,14 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			return
 		}
 
-		// Multipart file drop (up to 5GB)
+		// Multipart file drop (up to 5GB). Slot acquisition comes before any
+		// body buffering so rejected uploads cost nothing.
+		if !h.acquireUploadSlot() {
+			w.Header().Set("Retry-After", "30")
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "error", "message": "too many concurrent uploads, retry later"})
+			return
+		}
+		defer h.releaseUploadSlot()
 		r.Body = http.MaxBytesReader(w, r.Body, 5*1024*1024*1024)
 		if err := r.ParseMultipartForm(32 * 1024 * 1024); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"status": "error", "message": fmt.Sprintf("multipart parse error (max 5GB): %v", err)})
@@ -2754,6 +2761,12 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 
 func openDirectoryInOS(dir string) error {
 	cleanDir := filepath.Clean(dir)
+	// Resolve to an absolute path: a relative OutputDir such as "-n" would
+	// otherwise be parsed as a helper flag by open/xdg-open. Absolute paths
+	// can never begin with '-'.
+	if absDir, err := filepath.Abs(cleanDir); err == nil {
+		cleanDir = absDir
+	}
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":

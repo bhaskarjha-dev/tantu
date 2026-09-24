@@ -214,6 +214,10 @@ type Hub struct {
 	dashboardMu             sync.Mutex
 	dashboardSessions       map[string]time.Time
 	relayTickets            map[string]time.Time
+	// uploadSlots bounds concurrent multipart file uploads (up to 5 GiB
+	// each, 32 MiB parsed in RAM plus temp-disk spill). Without it any
+	// capability holder could exhaust disk/RAM with parallel uploads.
+	uploadSlots             chan struct{}
 	onSnippetReceived       func(ReceivedDropItem)
 	openBrowser             func(string) error
 	readyCh                 chan struct{}
@@ -231,6 +235,37 @@ type Hub struct {
 	pendingPairings         map[string]*PendingPairing
 	roamingProbesMu         sync.Mutex
 	roamingProbes           map[string]time.Time
+}
+
+// maxHubConcurrentUploads bounds simultaneous multipart file uploads through
+// POST /api/drop/upload. Each upload may buffer up to 32 MiB in RAM and spill
+// up to 5 GiB to temp disk, so unbounded parallelism lets any capability
+// holder exhaust local resources. Excess uploads fail fast with 503 instead
+// of queueing behind multi-gigabyte transfers.
+const maxHubConcurrentUploads = 4
+
+// acquireUploadSlot takes one multipart-upload slot without blocking. A nil
+// slot channel (zero-value Hub outside NewHub) imposes no limit.
+func (h *Hub) acquireUploadSlot() bool {
+	if h.uploadSlots == nil {
+		return true
+	}
+	select {
+	case h.uploadSlots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *Hub) releaseUploadSlot() {
+	if h.uploadSlots == nil {
+		return
+	}
+	select {
+	case <-h.uploadSlots:
+	default:
+	}
 }
 
 // SanitizeDropFilename cleanses an untrusted incoming filename to prevent directory traversal,
@@ -474,6 +509,7 @@ func NewHub(cfg HubConfig) (*Hub, error) {
 		dashboardBootstrapToken: hex.EncodeToString(dashboardBootstrapBytes),
 		dashboardSessions:       make(map[string]time.Time),
 		relayTickets:            make(map[string]time.Time),
+		uploadSlots:             make(chan struct{}, maxHubConcurrentUploads),
 		openBrowser:             ob,
 		readyCh:                 make(chan struct{}),
 		stopCh:                  make(chan struct{}),

@@ -240,3 +240,47 @@ func TestBROWSERArgsQuoteSpacesAndMetacharacters(t *testing.T) {
 		t.Fatalf("BROWSER argument is missing a quote: %q", quoted)
 	}
 }
+
+func TestLocalTicketPool_SingleUse(t *testing.T) {
+	pool := newLocalTicketPool()
+	ticket := pool.Issue()
+	if ticket == "" {
+		t.Fatal("Issue returned empty ticket")
+	}
+	if !pool.Consume(ticket) {
+		t.Fatal("first Consume failed")
+	}
+	if pool.Consume(ticket) {
+		t.Fatal("second Consume succeeded, ticket must be single-use")
+	}
+}
+
+func TestLocalTicketPool_RejectsUnknownAndEmpty(t *testing.T) {
+	pool := newLocalTicketPool()
+	if pool.Consume("") {
+		t.Fatal("empty ticket accepted")
+	}
+	if pool.Consume("0000000000000000000000000000000000000000000000000000000000000000") {
+		t.Fatal("unknown ticket accepted")
+	}
+	// A ticket from one pool is unknown to another.
+	other := newLocalTicketPool()
+	if other.Consume(pool.Issue()) {
+		t.Fatal("foreign ticket accepted")
+	}
+}
+
+func TestLocalTicketPool_Bounded(t *testing.T) {
+	pool := newLocalTicketPool()
+	for i := 0; i < maxLocalRelayTickets+50; i++ {
+		if pool.Issue() == "" {
+			t.Fatalf("Issue failed at iteration %d", i)
+		}
+	}
+	pool.mu.Lock()
+	n := len(pool.tickets)
+	pool.mu.Unlock()
+	if n > maxLocalRelayTickets {
+		t.Fatalf("pool holds %d tickets, cap is %d", n, maxLocalRelayTickets)
+	}
+}

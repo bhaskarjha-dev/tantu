@@ -228,7 +228,11 @@ const relayPageHTML = `<!DOCTYPE html>
       status.innerHTML = '⏳ Relaying OAuth URL through bridge...';
 
       try {
-        const resp = await fetch('/relay?token={{RELAY_TOKEN}}&url=' + encodeURIComponent(url));
+        const resp = await fetch('/relay', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Tantu-IPC-Token': '{{RELAY_TOKEN}}' },
+          body: JSON.stringify({ url: url })
+        });
         const data = await resp.json();
         if (resp.ok && data.status === 'success') {
           status.className = 'success';
@@ -372,12 +376,23 @@ func runRelay(args []string) {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	bookmarkletJS := fmt.Sprintf("javascript:void(window.open('http://127.0.0.1:%d/relay?token=%s&url='+encodeURIComponent(location.href),'_blank','width=550,height=380'))", *port, relayToken)
+	// One-time tickets are the preferred capability: unlike the per-process
+	// token they are single-use with a short TTL, so a ticket captured from
+	// browser history, a synced bookmark, or a log entry cannot be replayed.
+	// The per-process token remains as a legacy fallback for pages and
+	// bookmarklets rendered before this change.
+	relayTickets := newLocalTicketPool()
 	peerInfo := fmt.Sprintf("%s (%s)", dialTarget, *transportType)
-	pageContent := strings.ReplaceAll(relayPageHTML, "{{PORT}}", strconv.Itoa(*port))
-	pageContent = strings.ReplaceAll(pageContent, "{{PEER}}", escapeHTML(peerInfo))
-	pageContent = strings.ReplaceAll(pageContent, "{{RELAY_TOKEN}}", relayToken)
-	pageContent = strings.ReplaceAll(pageContent, "{{BOOKMARKLET_HREF}}", bookmarkletJS)
+	renderRelayPage := func(ticket string) string {
+		if ticket == "" {
+			ticket = relayToken
+		}
+		bookmarkletJS := fmt.Sprintf("javascript:void(window.open('http://127.0.0.1:%d/relay?ticket=%s&url='+encodeURIComponent(location.href),'_blank','width=550,height=380'))", *port, ticket)
+		pageContent := strings.ReplaceAll(relayPageHTML, "{{PORT}}", strconv.Itoa(*port))
+		pageContent = strings.ReplaceAll(pageContent, "{{PEER}}", escapeHTML(peerInfo))
+		pageContent = strings.ReplaceAll(pageContent, "{{RELAY_TOKEN}}", ticket)
+		return strings.ReplaceAll(pageContent, "{{BOOKMARKLET_HREF}}", bookmarkletJS)
+	}
 
 	type relayResponse struct {
 		Status  string `json:"status"`
@@ -396,7 +411,7 @@ func runRelay(args []string) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte(pageContent))
+		_, _ = w.Write([]byte(renderRelayPage(relayTickets.Issue())))
 	})
 
 	mux.HandleFunc("/relay", func(w http.ResponseWriter, r *http.Request) {
@@ -404,10 +419,10 @@ func runRelay(args []string) {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		if r.Method != http.MethodGet {
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
 			writeJSON(w, http.StatusMethodNotAllowed, relayResponse{
 				Status:  "error",
-				Message: "method not allowed, use GET",
+				Message: "method not allowed, use GET or POST",
 			})
 			return
 		}
@@ -426,7 +441,18 @@ func runRelay(args []string) {
 			writeJSON(w, status, resp)
 		}
 
-		if !localRequestTokenMatches(r.URL.Query().Get("token"), relayToken) {
+		// Capability check: prefer single-use tickets (header for the manual
+		// form, query for bookmarklet navigations which cannot set headers).
+		// The per-process token remains accepted for pages and bookmarklets
+		// rendered before one-time tickets existed.
+		headerCap := r.Header.Get("X-Tantu-IPC-Token")
+		queryTicket := r.URL.Query().Get("ticket")
+		queryToken := r.URL.Query().Get("token")
+		authorized := relayTickets.Consume(headerCap) || relayTickets.Consume(queryTicket) ||
+			localRequestTokenMatches(headerCap, relayToken) ||
+			localRequestTokenMatches(queryTicket, relayToken) ||
+			localRequestTokenMatches(queryToken, relayToken)
+		if !authorized {
 			respond(http.StatusForbidden, relayResponse{
 				Status:  "error",
 				Message: "invalid or missing local relay token",
@@ -434,7 +460,25 @@ func runRelay(args []string) {
 			return
 		}
 
-		rawURL := strings.TrimSpace(r.URL.Query().Get("url"))
+		rawURL := ""
+		if r.Method == http.MethodPost {
+			r.Body = http.MaxBytesReader(w, r.Body, 128*1024)
+			var postReq struct {
+				URL string `json:"url"`
+			}
+			if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+				if err := json.NewDecoder(r.Body).Decode(&postReq); err == nil {
+					rawURL = postReq.URL
+				}
+			} else {
+				rawURL = r.FormValue("url")
+			}
+		}
+		if rawURL == "" {
+			rawURL = strings.TrimSpace(r.URL.Query().Get("url"))
+		} else {
+			rawURL = strings.TrimSpace(rawURL)
+		}
 		if rawURL == "" {
 			respond(http.StatusBadRequest, relayResponse{
 				Status:  "error",

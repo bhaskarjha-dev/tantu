@@ -60,7 +60,7 @@
 |-------|--------|
 | **Threat** | Unpaired network entity attempts to connect to port 9877 |
 | **Impact** | High — potential reconnaissance or exploit attempt |
-| **Mitigation** | Strict defense-in-depth: non-TLS traffic is rejected at the transport layer. While TLS 1.3 handshake succeeds to allow zero-friction in-band pairing (`AllowPairing: true`), the application Dispatcher enforces a 30-second read deadline and strictly inspects the first envelope. Only `pair_hello` envelopes can enter pairing (requiring interactive visual SAS confirmation via Web UI / Cockpit before trust is recorded). Any other operation (`drop_send`, `bridge_request`) requires peer certificate verification (`IsPeerTrusted`) against `peers.json`; unauthenticated requests are immediately rejected with 401/rejection frames and cannot trigger browser execution or file storage |
+| **Mitigation** | Strict defense-in-depth: non-TLS traffic is rejected at the transport layer. While TLS 1.3 handshake succeeds to allow zero-friction in-band pairing (`AllowPairing: true`), the application Dispatcher enforces a 30-second read deadline and strictly inspects the first envelope. Only `pair_hello` envelopes can enter pairing (requiring interactive visual SAS confirmation via Web UI / Cockpit before trust is recorded). On the LAN transport, any other operation (`drop_send`, `bridge_request`) requires peer certificate verification (`IsPeerTrusted`) against `peers.json`; unauthenticated requests are immediately rejected with 401/rejection frames and cannot trigger browser execution or file storage. Loopback and SSH transports use their own trust policies: loopback accepts any local connection (same-user boundary — any local process is already inside it) and SSH accepts any key-authenticated client; both still gate unauthenticated *remote* access because they never bind non-loopback interfaces (loopback) or skip key auth (SSH) |
 | **Residual Risk** | Negligible |
 
 ### T4: Port Collision / Hijacking on Callback Listener
@@ -84,7 +84,7 @@
 |-------|--------|
 | **Threat** | Flooding bridge with spurious requests, hanging connections, or massive payloads |
 | **Impact** | Low to Medium — process resource exhaustion |
-| **Mitigation** | 4 MiB general frame cap and 64 KiB typed control-frame cap; 5GB file transfer cap; 1MB streaming chunks directly to disk; 30-second handshake deadline on wire connections via `Deadliner`; active connection tracking with immediate teardown on shutdown |
+| **Mitigation** | 4 MiB general frame cap and 64 KiB typed control-frame cap (enforced on encode and decode); 5GB file transfer cap; 1MB streaming chunks directly to disk; Hub dashboard caps concurrent 5 GiB multipart uploads at 4 (excess fails fast with 503 + Retry-After); 30-second handshake deadline on wire connections via `Deadliner`; active connection tracking with immediate teardown on shutdown |
 | **Residual Risk** | Low |
 
 ### T7: Man-in-the-Middle on LAN During Initial Pairing
@@ -164,7 +164,7 @@
 | **SR13**| Received files must be sanitized via `SanitizeDropFilename` (traversal, NTFS ADS, DOS devices, control chars) and saved in sandboxed dir | T11 |
 | **SR14**| Existing files must not be silently overwritten by incoming drops | T11 |
 | **SR15**| Dynamic port fallbacks apply only to local loopback web/IPC, never to OAuth callbacks | T4 |
-| **SR16**| Web Dashboard REST API (`/api/*`) must enforce exact-authority anti-CSRF validation and capability/session authorization; wildcard CORS and reusable HTML-embedded tokens are prohibited | T13 |
+| **SR16**| Web Dashboard REST API (`/api/*`) must enforce exact-authority anti-CSRF validation and capability/session authorization; wildcard CORS and reusable HTML-embedded tokens are prohibited. Scoped exception: the legacy standalone `tantu drop` UI (not the Hub dashboard) embeds a per-process loopback CSRF token in its page for `/api/*` header auth. Rationale: that token never appears in URLs (no history/bookmark/log exposure), the page is served `no-store`, and every request still requires exact loopback authority plus Origin/Referer validation, so it is unusable cross-origin. Residual: any local process running as the same user can read the page and call the API — inside the same-user trust boundary (see T10/SR12). The standalone `tantu relay` page instead renders per-request one-time tickets (single-use, 10-minute TTL) with the per-process token only as a legacy fallback for previously rendered bookmarklets. | T13 |
 | **SR17**| Inbound wire connections must enforce read deadlines during initial handshake via `Deadliner` | T6 |
 
 ---
