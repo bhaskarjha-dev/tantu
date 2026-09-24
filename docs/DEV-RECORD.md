@@ -504,3 +504,12 @@ Independent review of batches M–S returned 11 findings; all addressed:
   received (3-line log forensics confirmed no leak; earlier grep hit was
   the pre-unpair delivery).
 - Validation: build + vet + full suite green (above).
+
+## Batch W — live pairing ceremony proof (2026-09-24)
+
+- Full legacy pairing ceremony exercised live with two temp stores:
+  initiator (`pair --port 19892`, piped `y`) + responder (`pair
+  --peer=127.0.0.1:19892`, piped `y`). Both sides displayed matching
+  SAS codes (02b655/71d020), both confirmed, mutual `status` shows 1
+  peer each with correct SAS. Operational address correctly recorded as
+  `:9877` (not the pairing port). Temp artifacts removed.
