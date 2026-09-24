@@ -3,6 +3,7 @@ package hub
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
@@ -19,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bhaskarjha-dev/tantu/internal/bridge"
 	"github.com/bhaskarjha-dev/tantu/internal/browser"
@@ -50,41 +52,53 @@ func SetHubVersion(v string) {
 
 // HubConfig configures the Unified Symmetric Hub.
 type HubConfig struct {
-	Name          string             // Node instance name for LAN discovery (default: hostname)
-	TransportType string             // "lan", "loopback", "ssh" (empty = smart auto-detect)
-	ListenAddr    string             // P2P listener address (default: 0.0.0.0:9877 for LAN, 127.0.0.1:9877 for loopback)
-	WebAddr       string             // Web/IPC listener address (default: 127.0.0.1:9876)
-	StoreDir      string             // Directory for storing identity and peers
-	OutputDir     string             // Directory to save received QuickDrop files (default: ".")
-	Headless      bool               // Run in headless mode without opening browser
-	Server        bool               // Alias for Headless
-	Timeout       time.Duration      // Timeout for sessions and transfers (default: 5m)
-	Verbose       bool               // Enable detailed logging
-	SSHHostKey        string             // Path to SSH host private key (when TransportType == "ssh")
-	AutoAcceptPairing bool               // Automatically accept incoming pairings without interactive confirmation
-	OpenBrowser       func(string) error // Optional hook for opening browser (defaults to browser.OpenURL)
-	Logger            *log.Logger        // Optional logger
+	Name                      string             // Node instance name for LAN discovery (default: hostname)
+	TransportType             string             // "lan", "loopback", "ssh" (empty = smart auto-detect)
+	ListenAddr                string             // P2P listener address (default: 0.0.0.0:9877 for LAN, 127.0.0.1:9877 for loopback)
+	WebAddr                   string             // Web/IPC listener address (default: 127.0.0.1:9876)
+	StoreDir                  string             // Directory for storing identity and peers
+	OutputDir                 string             // Directory to save received QuickDrop files (default: ".")
+	Headless                  bool               // Run in headless mode without opening browser
+	Server                    bool               // Alias for Headless
+	Timeout                   time.Duration      // Timeout for sessions and transfers (default: 5m)
+	Verbose                   bool               // Enable detailed logging
+	SSHHostKey                string             // Path to SSH host private key (when TransportType == "ssh")
+	SSHAuthorizedKeys         [][]byte           // Public/client keys authorized to use the SSH Hub
+	SSHAllowLegacyHostKeyAuth bool               // Explicit compatibility mode: authorize the host key for SSH clients
+	AutoAcceptPairing         bool               // Automatically accept incoming pairings without interactive confirmation
+	OpenBrowser               func(string) error // Optional hook for opening browser (defaults to browser.OpenURL)
+	Logger                    *log.Logger        // Optional logger
 }
 
 // ReceivedDropItem represents a received text snippet or file transfer.
 type ReceivedDropItem struct {
-	ID        string    `json:"id"`
-	Timestamp time.Time `json:"timestamp"`
-	Kind      string    `json:"kind"` // "text" or "file"
-	Name      string    `json:"name"`
-	Size      int64     `json:"size"`
-	Content   string    `json:"content,omitempty"`
+	ID                string    `json:"id"`
+	Timestamp         time.Time `json:"timestamp"`
+	Kind              string    `json:"kind"` // "text" or "file"
+	Name              string    `json:"name"`
+	Size              int64     `json:"size"`
+	Content           string    `json:"content,omitempty"`
 	SavedPath         string    `json:"saved_path,omitempty"`
 	FromPeer          string    `json:"from_peer"`
 	SenderFingerprint string    `json:"sender_fingerprint,omitempty"`
 	IsURL             bool      `json:"is_url"`
 }
 
-// RecentDropsBuffer stores up to 50 recent drop items in memory.
+// RecentDropsBuffer stores recent drop metadata and text in memory.  The
+// byte budget prevents a sequence of large snippets from turning the history
+// feature into an unbounded RAM sink.
 type RecentDropsBuffer struct {
 	mu       sync.RWMutex
 	capacity int
+	maxBytes int
+	bytes    int
 	items    []ReceivedDropItem
+}
+
+const defaultRecentDropsByteLimit = 50 * 1024 * 1024
+
+func recentDropBytes(item ReceivedDropItem) int {
+	return len(item.ID) + len(item.Name) + len(item.Content) + len(item.SavedPath) + len(item.FromPeer) + len(item.SenderFingerprint)
 }
 
 // NewRecentDropsBuffer creates a new buffer with the given capacity.
@@ -94,18 +108,57 @@ func NewRecentDropsBuffer(capacity int) *RecentDropsBuffer {
 	}
 	return &RecentDropsBuffer{
 		capacity: capacity,
+		maxBytes: defaultRecentDropsByteLimit,
 		items:    make([]ReceivedDropItem, 0, capacity),
 	}
 }
 
-// Add appends an item, retaining at most capacity items (oldest evicted first).
+// Add appends an item, retaining at most capacity items and a bounded total
+// amount of text/metadata (oldest evicted first).
+func truncateUTF8(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(s) <= maxBytes {
+		return s
+	}
+	cut := maxBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
 func (b *RecentDropsBuffer) Add(item ReceivedDropItem) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if len(b.items) >= b.capacity {
+	if b.maxBytes <= 0 {
+		return
+	}
+	// A single pathological item must not evict the entire history or remain
+	// larger than the byte budget. Truncate every metadata field, not just the
+	// text body, because peer names and paths are attacker-controlled too.
+	if recentDropBytes(item) > b.maxBytes {
+		remaining := b.maxBytes
+		item.Content = truncateUTF8(item.Content, remaining)
+		remaining -= len(item.Content)
+		item.Name = truncateUTF8(item.Name, remaining)
+		remaining -= len(item.Name)
+		item.ID = truncateUTF8(item.ID, remaining)
+		remaining -= len(item.ID)
+		item.SavedPath = truncateUTF8(item.SavedPath, remaining)
+		remaining -= len(item.SavedPath)
+		item.FromPeer = truncateUTF8(item.FromPeer, remaining)
+		remaining -= len(item.FromPeer)
+		item.SenderFingerprint = truncateUTF8(item.SenderFingerprint, remaining)
+	}
+	itemSize := recentDropBytes(item)
+	for len(b.items) > 0 && (len(b.items) >= b.capacity || b.bytes+itemSize > b.maxBytes) {
+		b.bytes -= recentDropBytes(b.items[0])
 		b.items = b.items[1:]
 	}
 	b.items = append(b.items, item)
+	b.bytes += itemSize
 }
 
 // GetAll returns all stored items in chronological order.
@@ -133,35 +186,51 @@ type PendingPairing struct {
 	PeerFingerprint string    `json:"peer_fingerprint"`
 	PeerName        string    `json:"peer_name"`
 	CreatedAt       time.Time `json:"created_at"`
-	decisionCh      chan bool
+	// decisionCh is closed exactly once when the request reaches a terminal
+	// decision. decision is read under pendingPairingsMu after the channel is
+	// closed, avoiding the send/timeout race of a buffered decision channel.
+	decisionCh chan struct{}
+	decision   bool
+	resolved   bool
 }
 
 // Hub orchestrates P2P wire multiplexing and local Web/IPC services.
 type Hub struct {
-	cfg               HubConfig
-	store             *pairing.PeerStore
-	identity          *pairing.Identity
-	tr                transport.Transport
-	p2pLn             transport.Listener
-	httpServer        *http.Server
-	actualP2P         net.Addr
-	actualWeb         string
-	startTime         time.Time
-	logger            *EventLogger
-	recentDrops       *RecentDropsBuffer
-	onSnippetReceived func(ReceivedDropItem)
-	openBrowser       func(string) error
-	readyCh           chan struct{}
-	stopCh            chan struct{}
-	mu                sync.RWMutex
-	running           bool
-	activePeer        string
-	discoveryEngine   *discovery.Engine
-	discoveryCancel   context.CancelFunc
-	pendingPairingsMu sync.Mutex
-	pendingPairings   map[string]*PendingPairing
-	roamingProbesMu   sync.Mutex
-	roamingProbes     map[string]bool
+	cfg                     HubConfig
+	store                   *pairing.PeerStore
+	identity                *pairing.Identity
+	tr                      transport.Transport
+	p2pLn                   transport.Listener
+	httpServer              *http.Server
+	actualP2P               net.Addr
+	actualWeb               string
+	startTime               time.Time
+	logger                  *EventLogger
+	recentDrops             *RecentDropsBuffer
+	relayCoordinator        *relayCoordinator
+	relayToken              string
+	ipcToken                string
+	dashboardBootstrapToken string
+	dashboardMu             sync.Mutex
+	dashboardSessions       map[string]time.Time
+	relayTickets            map[string]time.Time
+	onSnippetReceived       func(ReceivedDropItem)
+	openBrowser             func(string) error
+	readyCh                 chan struct{}
+	stopCh                  chan struct{}
+	runCancel               context.CancelFunc
+	runContext              context.Context
+	runDone                 chan struct{}
+	mu                      sync.RWMutex
+	running                 bool
+	started                 bool
+	activePeer              string
+	discoveryEngine         *discovery.Engine
+	discoveryCancel         context.CancelFunc
+	pendingPairingsMu       sync.Mutex
+	pendingPairings         map[string]*PendingPairing
+	roamingProbesMu         sync.Mutex
+	roamingProbes           map[string]time.Time
 }
 
 // SanitizeDropFilename cleanses an untrusted incoming filename to prevent directory traversal,
@@ -226,6 +295,23 @@ func EnsurePeerLANPort(addr string) string {
 		return addr
 	}
 	return net.JoinHostPort(addr, transport.DefaultLANPort)
+}
+
+func sameConfiguredEndpoint(a, b string) bool {
+	ah, ap, aerr := net.SplitHostPort(strings.TrimSpace(a))
+	bh, bp, berr := net.SplitHostPort(strings.TrimSpace(b))
+	if aerr != nil || berr != nil {
+		return false
+	}
+	ah = strings.ToLower(strings.Trim(ah, "[]"))
+	bh = strings.ToLower(strings.Trim(bh, "[]"))
+	if ah == "localhost" {
+		ah = "127.0.0.1"
+	}
+	if bh == "localhost" {
+		bh = "127.0.0.1"
+	}
+	return ah == bh && ap == bp
 }
 
 // findAvailableWebPort attempts to bind a TCP listener on 127.0.0.1 starting at startPort.
@@ -296,17 +382,43 @@ func NewHub(cfg HubConfig) (*Hub, error) {
 	if ob == nil {
 		ob = browser.OpenURL
 	}
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return nil, fmt.Errorf("generate relay token: %w", err)
+	}
+	ipcTokenBytes := make([]byte, 32)
+	if _, err := rand.Read(ipcTokenBytes); err != nil {
+		return nil, fmt.Errorf("generate IPC token: %w", err)
+	}
+	dashboardBootstrapBytes := make([]byte, 32)
+	if _, err := rand.Read(dashboardBootstrapBytes); err != nil {
+		return nil, fmt.Errorf("generate dashboard bootstrap token: %w", err)
+	}
 
 	return &Hub{
-		cfg:             cfg,
-		logger:          NewEventLogger(DefaultRingBufferSize),
-		recentDrops:     NewRecentDropsBuffer(50),
-		openBrowser:     ob,
-		readyCh:         make(chan struct{}),
-		stopCh:          make(chan struct{}),
-		pendingPairings: make(map[string]*PendingPairing),
-		roamingProbes:   make(map[string]bool),
+		cfg:                     cfg,
+		logger:                  NewEventLogger(DefaultRingBufferSize),
+		recentDrops:             NewRecentDropsBuffer(50),
+		relayCoordinator:        newRelayCoordinator(),
+		relayToken:              hex.EncodeToString(tokenBytes),
+		ipcToken:                hex.EncodeToString(ipcTokenBytes),
+		dashboardBootstrapToken: hex.EncodeToString(dashboardBootstrapBytes),
+		dashboardSessions:       make(map[string]time.Time),
+		relayTickets:            make(map[string]time.Time),
+		openBrowser:             ob,
+		readyCh:                 make(chan struct{}),
+		stopCh:                  make(chan struct{}),
+		pendingPairings:         make(map[string]*PendingPairing),
+		roamingProbes:           make(map[string]time.Time),
 	}, nil
+}
+
+func newPendingPairingID() string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return fmt.Sprintf("pair-%d", time.Now().UnixNano())
+	}
+	return "pair-" + hex.EncodeToString(raw[:])
 }
 
 // ListPendingPairings returns all active inbound pairing requests awaiting confirmation.
@@ -323,17 +435,32 @@ func (h *Hub) ListPendingPairings() []*PendingPairing {
 // ResolvePendingPairing records an approval or rejection for a pending pairing request.
 func (h *Hub) ResolvePendingPairing(id string, accept bool) bool {
 	h.pendingPairingsMu.Lock()
+	defer h.pendingPairingsMu.Unlock()
 	p, ok := h.pendingPairings[id]
-	h.pendingPairingsMu.Unlock()
-	if !ok {
+	if !ok || p.resolved || p.decisionCh == nil {
 		return false
 	}
-	select {
-	case p.decisionCh <- accept:
-		return true
-	default:
+	p.decision = accept
+	p.resolved = true
+	close(p.decisionCh)
+	return true
+}
+
+func (h *Hub) terminatePendingPairing(p *PendingPairing, decision bool) bool {
+	if p == nil {
 		return false
 	}
+	h.pendingPairingsMu.Lock()
+	defer h.pendingPairingsMu.Unlock()
+	if p.resolved {
+		return p.decision
+	}
+	p.decision = decision
+	p.resolved = true
+	if p.decisionCh != nil {
+		close(p.decisionCh)
+	}
+	return decision
 }
 
 // EnsureIdentity checks if identity.json exists; if absent, generates and persists a new one.
@@ -342,7 +469,13 @@ func (h *Hub) EnsureIdentity() (*pairing.Identity, error) {
 		return nil, errors.New("peer store not initialized")
 	}
 	id, err := h.store.LoadIdentity()
-	if err != nil || id == nil {
+	if err != nil {
+		// Never replace an existing identity because its file is temporarily
+		// unreadable or corrupt.  Rotating it silently invalidates every paired
+		// peer and can turn a recoverable error into a permanent lockout.
+		return nil, fmt.Errorf("load identity: %w", err)
+	}
+	if id == nil {
 		id, err = pairing.GenerateIdentity()
 		if err != nil {
 			return nil, fmt.Errorf("generate identity: %w", err)
@@ -351,7 +484,9 @@ func (h *Hub) EnsureIdentity() (*pairing.Identity, error) {
 			return nil, fmt.Errorf("save identity: %w", err)
 		}
 	}
+	h.mu.Lock()
 	h.identity = id
+	h.mu.Unlock()
 	return id, nil
 }
 
@@ -371,7 +506,21 @@ func (h *Hub) NormalizePeers() {
 
 // Ready returns a channel that is closed when the Hub listeners are fully bound and ready.
 func (h *Hub) Ready() <-chan struct{} {
-	return h.readyCh
+	h.mu.Lock()
+	// If a previous generation has completed, reserve the next generation's
+	// channel before returning. This closes the race where a caller invokes
+	// Ready immediately after Stop and before the next Start goroutine has
+	// installed its state.
+	if h.started && !h.running && h.runDone != nil {
+		select {
+		case <-h.runDone:
+			h.readyCh = make(chan struct{})
+		default:
+		}
+	}
+	ch := h.readyCh
+	h.mu.Unlock()
+	return ch
 }
 
 // P2PAddr returns the bound P2P listener address.
@@ -386,6 +535,143 @@ func (h *Hub) WebAddr() string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.actualWeb
+}
+
+// DashboardURL returns a browser URL carrying a one-time bootstrap value in
+// the URL fragment. The fragment is consumed by the dashboard JavaScript and
+// exchanged for an HttpOnly session cookie; the long-lived IPC capability is
+// never rendered into the page or placed in a query string/referrer.
+func (h *Hub) DashboardURL() string {
+	webAddr := h.WebAddr()
+	if webAddr == "" {
+		return ""
+	}
+
+	h.dashboardMu.Lock()
+	defer h.dashboardMu.Unlock()
+	if h.dashboardBootstrapToken == "" {
+		buf := make([]byte, 32)
+		if _, err := rand.Read(buf); err != nil {
+			return ""
+		}
+		h.dashboardBootstrapToken = hex.EncodeToString(buf)
+	}
+	return (&url.URL{
+		Scheme:   "http",
+		Host:     webAddr,
+		Path:     "/",
+		Fragment: "tantu_bootstrap=" + h.dashboardBootstrapToken,
+	}).String()
+}
+
+// resetDashboardSessions invalidates browser sessions and bootstrap values at
+// the beginning of a new Hub run. A browser authorized for an old generation
+// must not silently control a restarted listener.
+func (h *Hub) resetDashboardSessions() {
+	h.dashboardMu.Lock()
+	h.dashboardSessions = make(map[string]time.Time)
+	h.relayTickets = make(map[string]time.Time)
+	h.dashboardBootstrapToken = ""
+	h.dashboardMu.Unlock()
+}
+
+func (h *Hub) newRelayTicket() string {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return ""
+	}
+	ticket := hex.EncodeToString(buf)
+	h.dashboardMu.Lock()
+	defer h.dashboardMu.Unlock()
+	if h.relayTickets == nil {
+		h.relayTickets = make(map[string]time.Time)
+	}
+	now := time.Now()
+	for id, expires := range h.relayTickets {
+		if !expires.After(now) {
+			delete(h.relayTickets, id)
+		}
+	}
+	const maxRelayTickets = 128
+	if len(h.relayTickets) >= maxRelayTickets {
+		return ""
+	}
+	h.relayTickets[ticket] = now.Add(10 * time.Minute)
+	return ticket
+}
+
+func (h *Hub) consumeRelayTicket(ticket string) bool {
+	if ticket == "" {
+		return false
+	}
+	h.dashboardMu.Lock()
+	defer h.dashboardMu.Unlock()
+	expires, ok := h.relayTickets[ticket]
+	if !ok || !expires.After(time.Now()) {
+		delete(h.relayTickets, ticket)
+		return false
+	}
+	delete(h.relayTickets, ticket)
+	return true
+}
+
+func (h *Hub) newDashboardSession() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	id := hex.EncodeToString(buf)
+	h.dashboardMu.Lock()
+	defer h.dashboardMu.Unlock()
+	if h.dashboardSessions == nil {
+		h.dashboardSessions = make(map[string]time.Time)
+	}
+	now := time.Now()
+	for id, expires := range h.dashboardSessions {
+		if !expires.After(now) {
+			delete(h.dashboardSessions, id)
+		}
+	}
+	const maxDashboardSessions = 32
+	if len(h.dashboardSessions) >= maxDashboardSessions {
+		return "", errors.New("too many dashboard sessions")
+	}
+	h.dashboardSessions[id] = now.Add(30 * time.Minute)
+	return id, nil
+}
+
+func (h *Hub) dashboardSessionValid(id string) bool {
+	if id == "" {
+		return false
+	}
+	h.dashboardMu.Lock()
+	defer h.dashboardMu.Unlock()
+	expires, ok := h.dashboardSessions[id]
+	if !ok || !expires.After(time.Now()) {
+		if ok {
+			delete(h.dashboardSessions, id)
+		}
+		return false
+	}
+	return true
+}
+
+func (h *Hub) withRunContext(parent context.Context) (context.Context, func()) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	h.mu.RLock()
+	runCtx := h.runContext
+	h.mu.RUnlock()
+	if runCtx == nil {
+		return ctx, cancel
+	}
+	stop := context.AfterFunc(runCtx, cancel)
+	return ctx, func() {
+		stop()
+		cancel()
+	}
 }
 
 // EventLogger returns the Hub's structured event logger and ring buffer.
@@ -466,29 +752,59 @@ func (h *Hub) SetOnSnippetReceived(fn func(ReceivedDropItem)) {
 	h.onSnippetReceived = fn
 }
 
+func shutdownHTTPServer(server *http.Server) {
+	if server == nil {
+		return
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		// Shutdown deliberately leaves hijacked/long-lived handlers (notably
+		// SSE) alone. Force-close them so Stop has a bounded, observable
+		// lifecycle instead of returning while requests remain active.
+		_ = server.Close()
+	}
+}
+
 // Stop gracefully shuts down the Hub HTTP server, P2P listener, and discovery engine.
 func (h *Hub) Stop() error {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	if !h.running {
+		h.mu.Unlock()
 		return nil
 	}
-	h.running = false
-	if h.discoveryCancel != nil {
-		h.discoveryCancel()
-		h.discoveryCancel = nil
+	cancel := h.runCancel
+	runDone := h.runDone
+	discoveryCancel := h.discoveryCancel
+	discoveryEngine := h.discoveryEngine
+	httpServer := h.httpServer
+	p2pLn := h.p2pLn
+	h.mu.Unlock()
+
+	// Never hold h.mu while shutting down services. HTTP handlers and
+	// discovery callbacks legitimately take that lock, so doing so here can
+	// deadlock a running Hub. Keep running=true until the run defer completes;
+	// this prevents a concurrent Start from replacing live resources.
+	if cancel != nil {
+		cancel()
 	}
-	if h.discoveryEngine != nil {
-		_ = h.discoveryEngine.Close()
-		h.discoveryEngine = nil
+	if discoveryCancel != nil {
+		discoveryCancel()
 	}
-	if h.httpServer != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = h.httpServer.Shutdown(ctx)
+	if discoveryEngine != nil {
+		_ = discoveryEngine.Close()
 	}
-	if h.p2pLn != nil {
-		_ = h.p2pLn.Close()
+	if p2pLn != nil {
+		_ = p2pLn.Close()
+	}
+	shutdownHTTPServer(httpServer)
+	if runDone != nil {
+		select {
+		case <-runDone:
+			return nil
+		case <-time.After(5 * time.Second):
+			return errors.New("hub stop timed out waiting for run completion")
+		}
 	}
 	return nil
 }
@@ -508,27 +824,122 @@ func (h *Hub) SetDiscoveryEngine(e *discovery.Engine) {
 }
 
 // Start launches the Hub P2P listener and Web/IPC server.
-func (h *Hub) Start(ctx context.Context) error {
-	h.mu.Lock()
-	if h.running {
-		h.mu.Unlock()
-		return errors.New("hub is already running")
+func (h *Hub) Start(parent context.Context) error {
+	if parent == nil {
+		parent = context.Background()
 	}
-	h.running = true
-	h.mu.Unlock()
+	if err := parent.Err(); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithCancel(parent)
+
+	// Do not let a new generation replace channels or listeners while the
+	// previous generation is still unwinding. A closed old run is cleared and a
+	// live one produces an explicit stopping error.
+	var (
+		readyCh     chan struct{}
+		readyClosed bool
+		runDone     chan struct{}
+		markReady   func()
+	)
+	for {
+		h.mu.Lock()
+		if h.running {
+			h.mu.Unlock()
+			cancel()
+			return errors.New("hub is already running")
+		}
+		if h.runDone != nil {
+			select {
+			case <-h.runDone:
+				h.runDone = nil
+				if h.started {
+					select {
+					case <-h.readyCh:
+						h.readyCh = make(chan struct{})
+					default:
+					}
+				}
+				h.mu.Unlock()
+				continue
+			default:
+				h.mu.Unlock()
+				cancel()
+				return errors.New("hub is stopping")
+			}
+		}
+
+		if h.started {
+			// Reuse the channel reserved by Ready, or create it if Start is
+			// the first observer after the previous generation completed.
+			select {
+			case <-h.readyCh:
+				h.readyCh = make(chan struct{})
+			default:
+			}
+			readyCh = h.readyCh
+		} else {
+			// Preserve the channel returned by Ready before the first Start so
+			// callers cannot race with startup and wait on an orphaned channel.
+			readyCh = h.readyCh
+		}
+		readyClosed = false
+		markReady = func() {
+			if !readyClosed {
+				readyClosed = true
+				close(readyCh)
+			}
+		}
+		h.running = true
+		h.started = true
+		h.readyCh = readyCh
+		h.httpServer = nil
+		h.p2pLn = nil
+		h.runCancel = cancel
+		h.runContext = ctx
+		h.runDone = make(chan struct{})
+		runDone = h.runDone
+		h.relayCoordinator = newRelayCoordinator()
+		h.mu.Unlock()
+		h.resetDashboardSessions()
+		break
+	}
 
 	defer func() {
+		// Only the current generation may clear shared state. In particular,
+		// an old deferred cleanup must never close a replacement readyCh or
+		// clear a newer discovery engine.
 		h.mu.Lock()
-		if h.discoveryCancel != nil {
-			h.discoveryCancel()
+		current := h.runDone == runDone
+		var discoveryCancel context.CancelFunc
+		var discoveryEngine *discovery.Engine
+		if current {
+			h.running = false
+			h.runCancel = nil
+			h.runContext = nil
+			discoveryCancel = h.discoveryCancel
 			h.discoveryCancel = nil
-		}
-		if h.discoveryEngine != nil {
-			_ = h.discoveryEngine.Close()
+			discoveryEngine = h.discoveryEngine
 			h.discoveryEngine = nil
+			h.httpServer = nil
+			h.p2pLn = nil
+		} else {
+			// A defensive branch for future lifecycle changes: never cancel or
+			// clear resources owned by a newer generation.
 		}
-		h.running = false
 		h.mu.Unlock()
+		if !readyClosed {
+			readyClosed = true
+			close(readyCh)
+		}
+		if discoveryCancel != nil {
+			discoveryCancel()
+		}
+		if discoveryEngine != nil {
+			_ = discoveryEngine.Close()
+		}
+		cancel()
+		close(runDone)
 	}()
 
 	// 1. PeerStore
@@ -544,7 +955,9 @@ func (h *Hub) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("init peer store: %w", err)
 	}
+	h.mu.Lock()
 	h.store = store
+	h.mu.Unlock()
 
 	// 2. Self-healing identity
 	id, err := h.EnsureIdentity()
@@ -556,10 +969,14 @@ func (h *Hub) Start(ctx context.Context) error {
 	h.NormalizePeers()
 
 	// 4. Smart Default Transport
+	h.mu.RLock()
 	transportType := h.cfg.TransportType
+	h.mu.RUnlock()
 	if transportType == "" {
 		transportType = DefaultTransport(h.store)
+		h.mu.Lock()
 		h.cfg.TransportType = transportType
+		h.mu.Unlock()
 	}
 
 	// 5. Determine listen address
@@ -619,7 +1036,9 @@ func (h *Hub) Start(ctx context.Context) error {
 			return fmt.Errorf("read ssh host key: %w", err)
 		}
 		tr, err = transport.NewSSHTransport(transport.SSHTransportConfig{
-			HostKey: keyBytes,
+			HostKey:                keyBytes,
+			AuthorizedKeys:         h.cfg.SSHAuthorizedKeys,
+			AllowLegacyHostKeyAuth: h.cfg.SSHAllowLegacyHostKeyAuth,
 		})
 		if err != nil {
 			return fmt.Errorf("configure ssh transport: %w", err)
@@ -670,8 +1089,10 @@ func (h *Hub) Start(ctx context.Context) error {
 	// 9. Dispatcher for P2P traffic
 	var dropMu sync.Mutex
 	openedFiles := make(map[string]*os.File)
+	reservedDrops := make(map[string]struct{})
 	savedPaths := make(map[string]string)
 	partPaths := make(map[string]string)
+	publishedPaths := make(map[string]string)
 	textBuffers := make(map[string]*boundedBuffer)
 
 	var asideFallback, dispatcherFallback io.Writer
@@ -682,6 +1103,16 @@ func (h *Hub) Start(ctx context.Context) error {
 	asideLogger := log.New(&eventLogWriter{logger: h.logger, domain: DomainOAuth, fallback: asideFallback}, "", 0)
 	dispatcherLogger := log.New(&eventLogWriter{logger: h.logger, domain: DomainNet, fallback: dispatcherFallback}, "", 0)
 
+	localPairingOptions := pairing.PairingOptions{}
+	if p2pLn.Addr() != nil {
+		_, p2pPortText, splitErr := net.SplitHostPort(p2pLn.Addr().String())
+		if splitErr == nil {
+			if port, convErr := strconv.Atoi(p2pPortText); convErr == nil {
+				localPairingOptions.LocalListenPort = port
+			}
+		}
+	}
+
 	dispatcherCfg := bridge.DispatcherConfig{
 		ASideConfig: bridge.ASideConfig{
 			Timeout:     h.cfg.Timeout,
@@ -689,47 +1120,109 @@ func (h *Hub) Start(ctx context.Context) error {
 			Logger:      asideLogger,
 		},
 		DropConfig: drop.ReceiveDropConfig{
-			Timeout: h.cfg.Timeout,
-			MaxSize: -1,
-			OnMeta: func(meta drop.DropSend) (io.Writer, error) {
+			Timeout:     h.cfg.Timeout,
+			MaxSize:     drop.DefaultMaxDropSize,
+			MaxTextSize: 10 * 1024 * 1024,
+			BeforeComplete: func(res *drop.ReceiveDropResult) error {
+				if res.Meta.Kind != drop.DropKindFile {
+					return nil
+				}
+				dropMu.Lock()
+				f := openedFiles[res.Meta.DropID]
+				partPath := partPaths[res.Meta.DropID]
+				desiredPath := savedPaths[res.Meta.DropID]
+				dropMu.Unlock()
+				if f != nil {
+					if err := f.Sync(); err != nil {
+						_ = f.Close()
+						return fmt.Errorf("sync completed drop: %w", err)
+					}
+					if err := f.Close(); err != nil {
+						return fmt.Errorf("close completed drop: %w", err)
+					}
+				}
+				if partPath == "" || desiredPath == "" {
+					return errors.New("completed file has no staging path")
+				}
+				published, err := finalizePartFile(partPath, desiredPath)
+				if err != nil {
+					return fmt.Errorf("publish completed drop: %w", err)
+				}
+				dropMu.Lock()
+				publishedPaths[res.Meta.DropID] = published
+				dropMu.Unlock()
+				return nil
+			},
+			OnMeta: func(meta drop.DropSend) (writer io.Writer, err error) {
+				dropMu.Lock()
+				_, duplicateDrop := openedFiles[meta.DropID]
+				_, duplicateText := textBuffers[meta.DropID]
+				_, alreadyReserved := reservedDrops[meta.DropID]
+				if !duplicateDrop && !duplicateText && !alreadyReserved {
+					reservedDrops[meta.DropID] = struct{}{}
+				}
+				dropMu.Unlock()
+				if duplicateDrop || duplicateText || alreadyReserved {
+					return nil, fmt.Errorf("duplicate drop_id %q", meta.DropID)
+				}
+				defer func() {
+					if err != nil {
+						dropMu.Lock()
+						delete(reservedDrops, meta.DropID)
+						dropMu.Unlock()
+					}
+				}()
 				if meta.Kind == drop.DropKindFile {
 					fileName := SanitizeDropFilename(meta.Name)
 					outDir := h.OutputDir()
 					if outDir == "" {
 						outDir = "."
 					}
-					if err := os.MkdirAll(outDir, 0755); err != nil {
+					if err := os.MkdirAll(outDir, 0700); err != nil {
 						return nil, fmt.Errorf("create output directory: %w", err)
 					}
 					destPath := filepath.Join(outDir, fileName)
-					if _, err := os.Stat(destPath); err == nil {
+					if _, err := os.Lstat(destPath); err == nil {
 						ext := filepath.Ext(fileName)
 						base := strings.TrimSuffix(fileName, ext)
 						idx := 1
 						for {
 							cand := filepath.Join(outDir, fmt.Sprintf("%s (%d)%s", base, idx, ext))
-							if _, err := os.Stat(cand); os.IsNotExist(err) {
+							_, statErr := os.Lstat(cand)
+							if os.IsNotExist(statErr) {
 								destPath = cand
 								break
 							}
+							if statErr != nil {
+								return nil, fmt.Errorf("inspect destination: %w", statErr)
+							}
 							idx++
 						}
+					} else if !os.IsNotExist(err) {
+						return nil, fmt.Errorf("inspect destination: %w", err)
 					}
 
-					partPath := destPath + ".part"
+					stagingDir := filepath.Join(outDir, ".tantu-staging")
+					if err := os.MkdirAll(stagingDir, 0700); err != nil {
+						return nil, fmt.Errorf("create transfer staging directory: %w", err)
+					}
+					partPath := filepath.Join(stagingDir, meta.DropID+".part")
 					var f *os.File
 					var validBytes int64
 
-					if info, err := os.Stat(partPath); err == nil {
+					if info, err := os.Lstat(partPath); err == nil {
+						if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+							return nil, fmt.Errorf("partial path is not a regular file: %s", partPath)
+						}
 						existingBytes := info.Size()
 						chunkSize := int64(meta.ChunkSize)
 						if chunkSize <= 0 {
 							chunkSize = 1 << 20
 						}
 						validBytes = (existingBytes / chunkSize) * chunkSize
-						if meta.Size > 0 && validBytes > 0 && validBytes < meta.Size {
+						if meta.Size > 0 && validBytes > 0 && validBytes < meta.Size && meta.HeadHash != "" {
 							var openErr error
-							f, openErr = os.OpenFile(partPath, os.O_RDWR, 0644)
+							f, openErr = os.OpenFile(partPath, os.O_RDWR, 0600)
 							if openErr == nil {
 								if meta.HeadHash != "" && validBytes >= 64*1024 {
 									headBuf := make([]byte, 64*1024)
@@ -737,14 +1230,20 @@ func (h *Hub) Start(ctx context.Context) error {
 										validBytes = 0
 									} else {
 										hsum := sha256.Sum256(headBuf[:n])
-										if hex.EncodeToString(hsum[:]) != meta.HeadHash {
+										if !strings.EqualFold(hex.EncodeToString(hsum[:]), meta.HeadHash) {
 											validBytes = 0
 										}
 									}
 								}
 								if validBytes > 0 {
-									_ = f.Truncate(validBytes)
-									_, _ = f.Seek(validBytes, io.SeekStart)
+									if truncateErr := f.Truncate(validBytes); truncateErr != nil {
+										_ = f.Close()
+										return nil, fmt.Errorf("truncate partial file: %w", truncateErr)
+									}
+									if _, seekErr := f.Seek(validBytes, io.SeekStart); seekErr != nil {
+										_ = f.Close()
+										return nil, fmt.Errorf("seek partial file: %w", seekErr)
+									}
 									pct := int64(0)
 									if meta.Size > 0 {
 										pct = (validBytes * 100) / meta.Size
@@ -760,13 +1259,22 @@ func (h *Hub) Start(ctx context.Context) error {
 						} else {
 							validBytes = 0
 						}
+					} else if !os.IsNotExist(err) {
+						return nil, fmt.Errorf("inspect partial file: %w", err)
 					}
 
 					if f == nil {
 						var err error
-						f, err = os.OpenFile(partPath, os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0644)
+						f, err = os.OpenFile(partPath, os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0600)
 						if err != nil {
 							return nil, fmt.Errorf("create part file: %w", err)
+						}
+						if info, statErr := f.Stat(); statErr != nil || !info.Mode().IsRegular() {
+							if statErr == nil {
+								statErr = fmt.Errorf("partial path is not a regular file")
+							}
+							_ = f.Close()
+							return nil, fmt.Errorf("inspect created partial file: %w", statErr)
 						}
 					}
 
@@ -796,28 +1304,22 @@ func (h *Hub) Start(ctx context.Context) error {
 				_ = f.Close()
 				delete(openedFiles, res.Meta.DropID)
 			}
-			partPath := partPaths[res.Meta.DropID]
-			savedPath := savedPaths[res.Meta.DropID]
+			finalSavedPath := publishedPaths[res.Meta.DropID]
 			delete(partPaths, res.Meta.DropID)
 			delete(savedPaths, res.Meta.DropID)
+			delete(publishedPaths, res.Meta.DropID)
 			var textContent string
 			if buf, ok := textBuffers[res.Meta.DropID]; ok && buf != nil {
 				textContent = buf.String()
 			}
 			dropMu.Unlock()
 
-			if res.Meta.Kind == drop.DropKindFile && partPath != "" && savedPath != "" {
-				if res.SHA256 != "" {
-					shaShort := res.SHA256
-					if len(shaShort) > 12 {
-						shaShort = shaShort[:12] + "..."
-					}
-					h.logger.Action(DomainDrop, fmt.Sprintf("✓ SHA-256 verified (%s)", shaShort))
+			if res.Meta.Kind == drop.DropKindFile && res.SHA256 != "" {
+				shaShort := res.SHA256
+				if len(shaShort) > 12 {
+					shaShort = shaShort[:12] + "..."
 				}
-				_ = os.Remove(savedPath)
-				if err := os.Rename(partPath, savedPath); err != nil {
-					h.logger.Action(DomainDrop, fmt.Sprintf("⚠️ Failed to rename .part to %s: %v", savedPath, err))
-				}
+				h.logger.Action(DomainDrop, fmt.Sprintf("✓ SHA-256 verified (%s)", shaShort))
 			}
 
 			isURL := false
@@ -852,7 +1354,7 @@ func (h *Hub) Start(ctx context.Context) error {
 				Name:              res.Meta.Name,
 				Size:              res.BytesWritten,
 				Content:           textContent,
-				SavedPath:         savedPath,
+				SavedPath:         finalSavedPath,
 				FromPeer:          peerName,
 				SenderFingerprint: res.PeerFingerprint,
 				IsURL:             isURL,
@@ -863,7 +1365,7 @@ func (h *Hub) Start(ctx context.Context) error {
 			h.recentDrops.Add(item)
 
 			if res.Meta.Kind == drop.DropKindFile {
-				h.logger.Action(DomainDrop, fmt.Sprintf("QuickDrop received file %q (%d bytes) from %s saved to %s", res.Meta.Name, res.BytesWritten, peerName, savedPath))
+				h.logger.Action(DomainDrop, fmt.Sprintf("QuickDrop received file %q (%d bytes) from %s saved to %s", res.Meta.Name, res.BytesWritten, peerName, finalSavedPath))
 			} else {
 				h.logger.Action(DomainDrop, fmt.Sprintf("QuickDrop received text (%d bytes) from %s", res.BytesWritten, peerName))
 				h.mu.RLock()
@@ -875,9 +1377,9 @@ func (h *Hub) Start(ctx context.Context) error {
 			}
 			if h.cfg.Verbose {
 				if res.Meta.Kind == drop.DropKindFile {
-					log.Printf("📥 QuickDrop received file %q (%d bytes) from %s", res.Meta.Name, res.BytesWritten, peerName)
+					log.Printf("📥 QuickDrop received file %q (%d bytes) from %q", res.Meta.Name, res.BytesWritten, peerName)
 				} else {
-					log.Printf("📥 QuickDrop received text (%d bytes) from %s", res.BytesWritten, peerName)
+					log.Printf("📥 QuickDrop received text (%d bytes) from %q", res.BytesWritten, peerName)
 				}
 			}
 
@@ -909,10 +1411,12 @@ func (h *Hub) Start(ctx context.Context) error {
 			delete(partPaths, dropID)
 			delete(savedPaths, dropID)
 			delete(textBuffers, dropID)
+			delete(publishedPaths, dropID)
+			delete(reservedDrops, dropID)
 			dropMu.Unlock()
 
 			if err != nil && partPath != "" {
-				if info, statErr := os.Stat(partPath); statErr == nil && info.Size() == 0 {
+				if info, statErr := os.Lstat(partPath); statErr == nil && info.Mode().IsRegular() && info.Size() == 0 {
 					_ = os.Remove(partPath)
 				}
 			}
@@ -928,18 +1432,25 @@ func (h *Hub) Start(ctx context.Context) error {
 			}
 		},
 		IsPeerTrusted: func(fp string) bool {
-			if h.cfg.TransportType == "loopback" || h.cfg.TransportType == "ssh" {
+			h.mu.RLock()
+			transportName := h.cfg.TransportType
+			store := h.store
+			h.mu.RUnlock()
+			if transportName == "loopback" {
 				return true
 			}
-			if fp == "" || h.store == nil {
+			if transportName == "ssh" {
+				return fp != ""
+			}
+			if fp == "" || store == nil {
 				return false
 			}
-			_, ok := h.store.GetPeer(fp)
+			_, ok := store.GetPeer(fp)
 			return ok
 		},
 		OnPairing: func(conn transport.Conn, firstEnv *protocol.Envelope) {
 			h.logger.Action(DomainPeer, fmt.Sprintf("Incoming pairing handshake from %s", conn.RemoteAddr()))
-			res, err := pairing.HandleInboundPairing(ctx, conn, firstEnv, h.store, func(peerSAS, localSAS string) bool {
+			res, err := pairing.HandleInboundPairingWithOptions(ctx, conn, firstEnv, h.store, func(peerSAS, localSAS string) bool {
 				if h.cfg.AutoAcceptPairing {
 					h.logger.Action(DomainPeer, fmt.Sprintf("Auto-accepted pairing SAS match: %s vs %s", peerSAS, localSAS))
 					return true
@@ -953,8 +1464,8 @@ func (h *Hub) Start(ctx context.Context) error {
 					peerName = conn.RemoteAddr().String()
 				}
 
-				pairID := fmt.Sprintf("pair-%d", time.Now().UnixNano())
-				decisionCh := make(chan bool, 1)
+				pairID := newPendingPairingID()
+				decisionCh := make(chan struct{})
 
 				pending := &PendingPairing{
 					ID:              pairID,
@@ -985,7 +1496,10 @@ func (h *Hub) Start(ctx context.Context) error {
 				h.logger.Action(DomainPeer, fmt.Sprintf("🔐 Inbound pairing approval required: %s (SAS: %s, ID: %s)", peerName, peerSAS, pairID))
 
 				select {
-				case accepted := <-decisionCh:
+				case <-decisionCh:
+					h.pendingPairingsMu.Lock()
+					accepted := pending.decision
+					h.pendingPairingsMu.Unlock()
 					if accepted {
 						h.logger.Action(DomainPeer, fmt.Sprintf("✅ Pairing approved for %s (SAS: %s)", peerName, peerSAS))
 					} else {
@@ -994,11 +1508,11 @@ func (h *Hub) Start(ctx context.Context) error {
 					return accepted
 				case <-time.After(60 * time.Second):
 					h.logger.Action(DomainPeer, fmt.Sprintf("⏱️ Pairing request from %s timed out after 60s (rejected)", peerName))
-					return false
+					return h.terminatePendingPairing(pending, false)
 				case <-ctx.Done():
-					return false
+					return h.terminatePendingPairing(pending, false)
 				}
-			})
+			}, localPairingOptions)
 			if err != nil {
 				h.logger.Error(DomainPeer, fmt.Sprintf("Pairing handshake failed: %v", err))
 				return
@@ -1020,103 +1534,98 @@ func (h *Hub) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 	h.registerDashboardRoutes(mux)
 
-	h.httpServer = &http.Server{
-		Handler:      h.securityMiddleware(mux),
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
+	httpServer := &http.Server{
+		Handler:           h.securityMiddleware(mux),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    32 * 1024,
+		// Transfers and SSE are intentionally long-lived.  Body size and
+		// request contexts provide their bounds; a 30s WriteTimeout would kill
+		// valid multi-GB uploads and OAuth sessions.
+		WriteTimeout: 0,
+		ReadTimeout:  0,
 	}
+	h.mu.Lock()
+	h.httpServer = httpServer
+	h.mu.Unlock()
 
-	// Write hub.json runtime info for local daemon discovery
-	p2pAddrStr := h.actualP2P.String()
+	p2pAddrStr := h.P2PAddr().String()
 	_, p2pPortStr, _ := net.SplitHostPort(p2pAddrStr)
 	p2pPort, _ := strconv.Atoi(p2pPortStr)
-	runtimeInfo := RuntimeHubInfo{
-		PID:       os.Getpid(),
-		StartedAt: h.startTime,
-		WebAddr:   h.actualWeb,
-		WebPort:   boundPort,
-		P2PAddr:   p2pAddrStr,
-		P2PPort:   p2pPort,
-		Transport: h.cfg.TransportType,
-	}
-	if err := WriteRuntimeInfo(storeDir, runtimeInfo); err != nil {
-		h.logger.Action(DomainNet, fmt.Sprintf("Warning: failed to write hub.json runtime info: %v", err))
-	}
-	defer func() {
-		_ = RemoveRuntimeInfo(storeDir)
-	}()
 
-	// 11. Start LAN Discovery Engine
-	nodeName := h.cfg.Name
-	if nodeName == "" {
-		if hn, err := os.Hostname(); err == nil && hn != "" {
-			nodeName = hn
-		} else {
-			nodeName = "tantu-" + pairing.SASCode(id.Fingerprint)
-		}
-	}
-
-	discCfg := discovery.DiscoveryConfig{
-		NodeName:    nodeName,
-		WirePort:    p2pPort,
-		SAS:         pairing.SASCode(id.Fingerprint),
-		Fingerprint: id.Fingerprint,
-	}
-	discEngine, dErr := discovery.NewEngine(discCfg)
-	if dErr != nil {
-		h.logger.Action(DomainNet, fmt.Sprintf("Discovery engine warning: %v", dErr))
-	} else {
-		var (
-			discSeenMu sync.Mutex
-			discSeen   = make(map[string]bool)
-		)
-		discEngine.OnNodeDiscovered(func(node discovery.DiscoveredNode) {
-			if h.store == nil {
-				return
-			}
-			p, isPaired := h.store.GetPeer(node.Fingerprint)
-			if !isPaired {
-				discSeenMu.Lock()
-				seen := discSeen[node.Fingerprint]
-				discSeen[node.Fingerprint] = true
-				discSeenMu.Unlock()
-				if !seen {
-					h.logger.Action(DomainNet, fmt.Sprintf("Nearby hub discovered on LAN: %s at %s (SAS: %s)", node.InstanceName, node.Address, node.SAS))
-				}
+	// 11. Start LAN Discovery Engine only when LAN transport is explicitly in
+	// use. Loopback/SSH modes must not broadcast identity metadata on the LAN.
+	if transportType == "lan" {
+		nodeName := h.cfg.Name
+		if nodeName == "" {
+			if hn, err := os.Hostname(); err == nil && hn != "" {
+				nodeName = hn
 			} else {
-				if p.Address != node.Address {
-					go h.verifyAndApplyPeerRoaming(p.Fingerprint, node.Address, p.DisplayName())
+				nodeName = "tantu-" + pairing.SASCode(id.Fingerprint)
+			}
+		}
+
+		discCfg := discovery.DiscoveryConfig{
+			NodeName:    nodeName,
+			WirePort:    p2pPort,
+			SAS:         pairing.SASCode(id.Fingerprint),
+			Fingerprint: id.Fingerprint,
+		}
+		discEngine, dErr := discovery.NewEngine(discCfg)
+		if dErr != nil {
+			h.logger.Action(DomainNet, fmt.Sprintf("Discovery engine warning: %v", dErr))
+		} else {
+			var (
+				discSeenMu sync.Mutex
+				discSeen   = make(map[string]time.Time)
+			)
+			discEngine.OnNodeDiscovered(func(node discovery.DiscoveredNode) {
+				h.mu.RLock()
+				store := h.store
+				h.mu.RUnlock()
+				if store == nil {
+					return
 				}
-			}
-		})
+				p, isPaired := store.GetPeer(node.Fingerprint)
+				if !isPaired {
+					now := time.Now()
+					discSeenMu.Lock()
+					lastSeen := discSeen[node.Fingerprint]
+					seen := now.Sub(lastSeen) < 15*time.Second
+					discSeen[node.Fingerprint] = now
+					if len(discSeen) > 256 {
+						for fp, seenAt := range discSeen {
+							if now.Sub(seenAt) > time.Minute {
+								delete(discSeen, fp)
+							}
+						}
+					}
+					discSeenMu.Unlock()
+					if !seen {
+						h.logger.Action(DomainNet, fmt.Sprintf("Nearby hub discovered on LAN: %s at %s (SAS: %s)", node.InstanceName, node.Address, node.SAS))
+					}
+				} else if p.Address != node.Address {
+					go h.verifyAndApplyPeerRoaming(ctx, p.Fingerprint, node.Address, p.DisplayName())
+				}
+			})
 
-		discCtx, discCancel := context.WithCancel(ctx)
-		h.mu.Lock()
-		h.discoveryEngine = discEngine
-		h.discoveryCancel = discCancel
-		h.mu.Unlock()
+			discCtx, discCancel := context.WithCancel(ctx)
+			h.mu.Lock()
+			h.discoveryEngine = discEngine
+			h.discoveryCancel = discCancel
+			h.mu.Unlock()
 
-		go func() {
-			if err := discEngine.Start(discCtx); err != nil && !errors.Is(err, context.Canceled) {
-				h.logger.Action(DomainNet, fmt.Sprintf("Discovery engine network warning: %v", err))
-			}
-		}()
-	}
-
-	// Close readyCh to notify waiters that listeners are bound and runtime info is ready
-	close(h.readyCh)
-
-	// Browser launch if not headless
-	if !h.cfg.Headless && !h.cfg.Server {
-		go func() {
-			time.Sleep(50 * time.Millisecond)
-			_ = h.openBrowser("http://" + h.actualWeb)
-		}()
+			go func() {
+				if err := discEngine.Start(discCtx); err != nil && !errors.Is(err, context.Canceled) {
+					h.logger.Action(DomainNet, fmt.Sprintf("Discovery engine network warning: %v", err))
+				}
+			}()
+		}
 	}
 
 	errGroupCh := make(chan error, 2)
 	go func() {
-		if err := h.httpServer.Serve(webLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := httpServer.Serve(webLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errGroupCh <- fmt.Errorf("http server: %w", err)
 		}
 	}()
@@ -1127,18 +1636,85 @@ func (h *Hub) Start(ctx context.Context) error {
 		}
 	}()
 
+	// Wait until the HTTP listener is actually accepting requests before
+	// publishing readiness or runtime metadata. This closes the small window
+	// in which a caller could observe a "ready" Hub that cannot serve a probe.
+	healthClient := &http.Client{
+		Timeout:   200 * time.Millisecond,
+		Transport: &http.Transport{Proxy: nil},
+	}
+	defer healthClient.CloseIdleConnections()
+	healthURL := "http://" + h.WebAddr() + "/healthz"
+	ready := false
+	for attempt := 0; attempt < 40; attempt++ {
+		if ctx.Err() != nil {
+			shutdownHTTPServer(httpServer)
+			_ = p2pLn.Close()
+			return nil
+		}
+		resp, probeErr := healthClient.Get(healthURL)
+		if probeErr == nil {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				ready = true
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !ready {
+		shutdownHTTPServer(httpServer)
+		_ = p2pLn.Close()
+		return errors.New("web listener did not become ready")
+	}
+
+	runtimeInfo := RuntimeHubInfo{
+		PID:       os.Getpid(),
+		StartedAt: h.startTime,
+		WebAddr:   h.WebAddr(),
+		WebPort:   boundPort,
+		P2PAddr:   p2pAddrStr,
+		P2PPort:   p2pPort,
+		Transport: h.cfg.TransportType,
+		IPCToken:  h.ipcToken,
+	}
+	if err := WriteRuntimeInfo(storeDir, runtimeInfo); err != nil {
+		shutdownHTTPServer(httpServer)
+		_ = p2pLn.Close()
+		return fmt.Errorf("publish runtime info: %w", err)
+	}
+	defer func() { _ = RemoveRuntimeInfoIfOwned(storeDir, runtimeInfo) }()
+
+	// Both serving loops are now accepting requests and runtime metadata is
+	// published, so callers may safely use the Hub.
+	markReady()
+
+	if !h.cfg.Headless && !h.cfg.Server {
+		dashboardURL := h.DashboardURL()
+		go func(openCtx context.Context, target string) {
+			timer := time.NewTimer(50 * time.Millisecond)
+			defer timer.Stop()
+			select {
+			case <-openCtx.Done():
+				return
+			case <-timer.C:
+				_ = h.openBrowser(target)
+			}
+		}(ctx, dashboardURL)
+	}
+
 	select {
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = h.httpServer.Shutdown(shutdownCtx)
+		shutdownHTTPServer(httpServer)
 		_ = p2pLn.Close()
 		return nil
 	case err := <-errGroupCh:
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = h.httpServer.Shutdown(shutdownCtx)
+		shutdownHTTPServer(httpServer)
 		_ = p2pLn.Close()
+		if errors.Is(err, context.Canceled) {
+			return nil
+		}
 		return err
 	}
 }
@@ -1149,6 +1725,8 @@ func (h *Hub) DialPeer(target string) (transport.Conn, error) {
 	tr := h.tr
 	store := h.store
 	active := h.activePeer
+	transportName := h.cfg.TransportType
+	configuredListen := h.cfg.ListenAddr
 	h.mu.RUnlock()
 
 	if tr == nil {
@@ -1156,7 +1734,7 @@ func (h *Hub) DialPeer(target string) (transport.Conn, error) {
 	}
 
 	dialTarget := target
-	if h.cfg.TransportType == "lan" {
+	if transportName == "lan" {
 		if store == nil {
 			return nil, errors.New("peer store not available")
 		}
@@ -1166,18 +1744,50 @@ func (h *Hub) DialPeer(target string) (transport.Conn, error) {
 		}
 		resolved, err := store.ResolvePeer(query)
 		if err != nil {
-			// If target was an explicit host:port or IP, allow direct dial
-			if target != "" && (strings.Contains(target, ":") || net.ParseIP(target) != nil) {
-				dialTarget = EnsurePeerLANPort(target)
+			return nil, fmt.Errorf("peer target is not a trusted paired peer: %w", err)
+		}
+		dialTarget = EnsurePeerLANPort(resolved.Address)
+		return transport.DialPinned(tr, dialTarget, resolved.Fingerprint)
+	} else {
+		actual := h.P2PAddr()
+		configured := configuredListen
+		query := target
+		if query == "" && active != "" {
+			query = active
+		}
+		if query != "" && store != nil {
+			resolved, err := store.ResolvePeer(query)
+			if err != nil {
+				return nil, fmt.Errorf("peer target is not a trusted paired peer: %w", err)
+			}
+			dialTarget = resolved.Address
+			if transportName == "loopback" {
+				dialTarget = EnsurePeerLANPort(dialTarget)
+			}
+			return tr.Dial(dialTarget)
+		}
+		if dialTarget == "" {
+			if actual != nil {
+				dialTarget = actual.String()
+			} else if configured != "" {
+				dialTarget = configured
 			} else {
-				return nil, err
+				dialTarget = "127.0.0.1:9877"
 			}
 		} else {
-			dialTarget = EnsurePeerLANPort(resolved.Address)
-		}
-	} else {
-		if dialTarget == "" {
-			dialTarget = "127.0.0.1:9877"
+			// If no trusted store entry matched, never pass an arbitrary
+			// HTTP/JSON target through as a local proxy; raw targets may select
+			// only the configured listener endpoint.
+			allowed := ""
+			if actual != nil {
+				allowed = actual.String()
+			} else if configured != "" {
+				allowed = configured
+			}
+			if allowed == "" || !sameConfiguredEndpoint(dialTarget, allowed) {
+				return nil, errors.New("peer target is not the configured local endpoint")
+			}
+			dialTarget = allowed
 		}
 	}
 	return tr.Dial(dialTarget)
@@ -1190,16 +1800,17 @@ type eventLogWriter struct {
 }
 
 func (w *eventLogWriter) Write(p []byte) (n int, err error) {
+	rawMsg := strings.TrimSpace(string(p))
 	if w.fallback != nil {
-		_, _ = w.fallback.Write(p)
+		_, _ = w.fallback.Write([]byte(redactLogText(rawMsg) + "\n"))
 	}
 	if w.logger == nil {
 		return len(p), nil
 	}
-	msg := strings.TrimSpace(string(p))
-	if msg == "" {
+	if rawMsg == "" {
 		return len(p), nil
 	}
+	msg := redactLogText(rawMsg)
 	level := LevelInfo
 	domain := w.domain
 	if domain == "" {
@@ -1207,23 +1818,23 @@ func (w *eventLogWriter) Write(p []byte) (n int, err error) {
 	}
 
 	meta := make(map[string]string)
-	for _, word := range strings.Fields(msg) {
+	for _, word := range strings.Fields(rawMsg) {
 		clean := strings.TrimRight(word, ",.;)]}")
 		if strings.HasPrefix(clean, "http://") || strings.HasPrefix(clean, "https://") {
-			meta["url"] = clean
+			meta["url"] = ShortenURL(clean, 120)
 			break
 		}
 	}
 
 	switch {
-	case strings.Contains(msg, "[DEBUG]") || strings.Contains(msg, "routing connection"):
+	case strings.Contains(rawMsg, "[DEBUG]") || strings.Contains(rawMsg, "routing connection"):
 		level = LevelDebug
 		domain = DomainNet
-	case strings.Contains(msg, "❌") || strings.Contains(msg, "Error") || strings.Contains(msg, "error") || strings.Contains(msg, "failed"):
+	case strings.Contains(rawMsg, "❌") || strings.Contains(rawMsg, "Error") || strings.Contains(rawMsg, "error") || strings.Contains(rawMsg, "failed"):
 		level = LevelError
-	case strings.Contains(msg, "⚠️"):
+	case strings.Contains(rawMsg, "⚠️"):
 		level = LevelWarn
-	case strings.Contains(msg, "✅") || strings.Contains(msg, "completed successfully") || strings.Contains(msg, "Session started"):
+	case strings.Contains(rawMsg, "✅") || strings.Contains(rawMsg, "completed successfully") || strings.Contains(rawMsg, "Session started"):
 		level = LevelAction
 	}
 
@@ -1247,6 +1858,74 @@ func (b *boundedBuffer) String() string {
 	return b.buf.String()
 }
 
+// finalizePartFile publishes a completed .part file without ever deleting an
+// existing destination.  Hard-linking gives us an atomic no-overwrite publish
+// on the same filesystem; the rename fallback is retained for filesystems that
+// do not support links.
+func finalizePartFile(partPath, desiredPath string) (string, error) {
+	ext := filepath.Ext(desiredPath)
+	base := strings.TrimSuffix(desiredPath, ext)
+	for i := 0; i < 10000; i++ {
+		candidate := desiredPath
+		if i > 0 {
+			candidate = fmt.Sprintf("%s (%d)%s", base, i, ext)
+		}
+		if _, err := os.Lstat(candidate); err == nil {
+			continue
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+		if err := os.Link(partPath, candidate); err == nil {
+			if removeErr := os.Remove(partPath); removeErr != nil {
+				// The published candidate is still valid; report its path so
+				// callers do not report a false transfer failure merely because
+				// cleanup of the duplicate inode failed.
+				return candidate, nil
+			}
+			return candidate, nil
+		} else if !errors.Is(err, os.ErrExist) {
+			// Hard links are unavailable on some filesystems. Fall back to an
+			// exclusive copy rather than os.Rename, which can overwrite a
+			// destination created by another process on Unix.
+			out, openErr := os.OpenFile(candidate, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+			if os.IsExist(openErr) {
+				continue
+			}
+			if openErr != nil {
+				return "", openErr
+			}
+			in, openErr := os.Open(partPath)
+			if openErr != nil {
+				_ = out.Close()
+				_ = os.Remove(candidate)
+				return "", openErr
+			}
+			_, copyErr := io.Copy(out, in)
+			closeInErr := in.Close()
+			syncErr := out.Sync()
+			closeOutErr := out.Close()
+			if copyErr != nil || closeInErr != nil || syncErr != nil || closeOutErr != nil {
+				_ = os.Remove(candidate)
+				if copyErr != nil {
+					return "", copyErr
+				}
+				if closeInErr != nil {
+					return "", closeInErr
+				}
+				if syncErr != nil {
+					return "", syncErr
+				}
+				return "", closeOutErr
+			}
+			if removeErr := os.Remove(partPath); removeErr != nil {
+				return candidate, nil
+			}
+			return candidate, nil
+		}
+	}
+	return "", errors.New("too many existing file candidates")
+}
+
 func formatBytes(b int64) string {
 	const unit = 1024
 	if b < unit {
@@ -1260,40 +1939,51 @@ func formatBytes(b int64) string {
 	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
-func (h *Hub) verifyAndApplyPeerRoaming(expectedFP, candidateAddr, peerName string) {
-	if h.tr == nil || h.store == nil {
+func (h *Hub) verifyAndApplyPeerRoaming(ctx context.Context, expectedFP, candidateAddr, peerName string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	h.mu.RLock()
+	tr := h.tr
+	store := h.store
+	h.mu.RUnlock()
+	if tr == nil || store == nil {
 		return
 	}
 
+	now := time.Now()
 	h.roamingProbesMu.Lock()
-	if h.roamingProbes[expectedFP] {
+	if last, ok := h.roamingProbes[expectedFP]; ok && now.Sub(last) < 30*time.Second {
 		h.roamingProbesMu.Unlock()
 		return
 	}
-	h.roamingProbes[expectedFP] = true
+	h.roamingProbes[expectedFP] = now
+	if len(h.roamingProbes) > 256 {
+		for fp, seen := range h.roamingProbes {
+			if now.Sub(seen) > 10*time.Minute {
+				delete(h.roamingProbes, fp)
+			}
+		}
+	}
 	h.roamingProbesMu.Unlock()
 
-	defer func() {
-		h.roamingProbesMu.Lock()
-		delete(h.roamingProbes, expectedFP)
-		h.roamingProbesMu.Unlock()
-	}()
-
-	conn, err := h.tr.Dial(candidateAddr)
+	conn, err := transport.DialPinnedContext(ctx, tr, candidateAddr, expectedFP)
 	if err != nil {
-		h.logger.Action(DomainNet, fmt.Sprintf("Roaming probe to %s for peer '%s' failed mTLS verification: %v", candidateAddr, peerName, err))
+		if ctx.Err() == nil {
+			h.logger.Action(DomainNet, fmt.Sprintf("Roaming probe to %s for peer '%s' failed mTLS verification: %v", candidateAddr, peerName, err))
+		}
 		return
 	}
 	defer conn.Close()
 
 	remoteFP := transport.GetPeerFingerprint(conn)
+	if ctx.Err() != nil {
+		return
+	}
 	if strings.EqualFold(remoteFP, expectedFP) {
-		_ = h.store.UpdatePeerAddress(expectedFP, candidateAddr)
+		_ = store.UpdatePeerAddress(expectedFP, candidateAddr)
 		h.logger.Action(DomainPeer, fmt.Sprintf("✅ Authenticated roaming update: peer '%s' verified at %s via mTLS", peerName, candidateAddr))
 	} else {
 		h.logger.Action(DomainNet, fmt.Sprintf("⚠️ Roaming probe to %s presented fingerprint %s (expected %s) — update rejected", candidateAddr, remoteFP, expectedFP))
 	}
 }
-
-
-

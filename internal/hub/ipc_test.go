@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -8,16 +9,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
-
 )
 
 func TestProbeHub_Success(t *testing.T) {
 	h, _, cleanup := startTestHub(t)
 	defer cleanup()
 
-	status, ok := ProbeHub(h.WebAddr())
+	status, ok := ProbeHubWithStoreDir(h.WebAddr(), h.cfg.StoreDir)
 	if !ok {
 		t.Fatalf("expected ProbeHub to succeed on active hub")
 	}
@@ -42,6 +43,26 @@ func TestProbeHub_Unreachable(t *testing.T) {
 	}
 	if elapsed > 400*time.Millisecond {
 		t.Errorf("ProbeHub took too long to timeout: %v", elapsed)
+	}
+}
+
+func TestDelegateSendFromStore_UsesExplicitIPCToken(t *testing.T) {
+	const token = "explicit-runtime-token"
+	var gotToken string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotToken = r.Header.Get(IPCTokenHeader)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	storeDir := t.TempDir()
+	if err := WriteRuntimeInfo(storeDir, RuntimeHubInfo{WebAddr: strings.TrimPrefix(server.URL, "http://"), IPCToken: token}); err != nil {
+		t.Fatal(err)
+	}
+	if err := DelegateSendFromStore(storeDir, strings.TrimPrefix(server.URL, "http://"), "", "hello", ""); err != nil {
+		t.Fatalf("DelegateSendFromStore failed: %v", err)
+	}
+	if gotToken != token {
+		t.Fatalf("expected explicit runtime token %q, got %q", token, gotToken)
 	}
 }
 
@@ -369,6 +390,143 @@ func TestProbeHub_DiscoversViaHubJSON(t *testing.T) {
 	}
 	if status.WebAddr != h.WebAddr() {
 		t.Errorf("expected status.WebAddr %s, got %s", h.WebAddr(), status.WebAddr)
+	}
+	status, ok = ProbeHub(DefaultWebAddr)
+	if !ok || status == nil || status.WebAddr != h.WebAddr() {
+		t.Fatalf("default-address discovery sentinel did not follow dynamic runtime port: ok=%v status=%+v", ok, status)
+	}
+}
+
+func TestProbeHub_RequiresCapabilityAndMatchingInstance(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/probe" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get(IPCTokenHeader) != "probe-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_, _ = io.WriteString(w, `{"status":"online","version":"1.0.0","transport":"loopback","web_addr":"`+r.Host+`","pid":12345,"started_at":"2026-01-01T00:00:00Z"}`)
+	}))
+	defer server.Close()
+	addr := strings.TrimPrefix(server.URL, "http://")
+	dir := t.TempDir()
+	info := RuntimeHubInfo{
+		PID:       12345,
+		StartedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		WebAddr:   addr,
+		WebPort:   0,
+		IPCToken:  "probe-token",
+	}
+	if err := WriteRuntimeInfo(dir, info); err != nil {
+		t.Fatal(err)
+	}
+	status, ok := ProbeHubWithStoreDir(addr, dir)
+	if !ok || status == nil || status.PID != info.PID {
+		t.Fatalf("authenticated matching probe failed: ok=%v status=%+v", ok, status)
+	}
+
+	// A runtime file without a capability must not turn an arbitrary local
+	// listener into a Hub discovery result.
+	noTokenDir := t.TempDir()
+	if status, ok := ProbeHubWithStoreDir(addr, noTokenDir); ok || status != nil {
+		t.Fatalf("probe without runtime capability succeeded: ok=%v status=%+v", ok, status)
+	}
+
+	// A token-bearing response with a different process identity is rejected.
+	wrongDir := t.TempDir()
+	wrongInfo := info
+	wrongInfo.PID++
+	if err := WriteRuntimeInfo(wrongDir, wrongInfo); err != nil {
+		t.Fatal(err)
+	}
+	if status, ok := ProbeHubWithStoreDir(addr, wrongDir); ok || status != nil {
+		t.Fatalf("probe with mismatched process identity succeeded: ok=%v status=%+v", ok, status)
+	}
+}
+
+func TestRuntimeIPCTokenIsBoundToRuntimeEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteRuntimeInfo(dir, RuntimeHubInfo{WebAddr: "127.0.0.1:9875", IPCToken: "bound-token"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := RuntimeIPCTokenForAddr(dir, "localhost:9875"); got != "bound-token" {
+		t.Fatalf("matching endpoint token = %q", got)
+	}
+	if got := RuntimeIPCTokenForAddr(dir, "127.0.0.1:9876"); got != "" {
+		t.Fatalf("mismatched endpoint received token %q", got)
+	}
+}
+
+func TestRuntimeInfo_RejectsOversizedAndCorruptFiles(t *testing.T) {
+	dir := t.TempDir()
+	path := GetRuntimeFilePath(dir)
+	if err := os.WriteFile(path, bytes.Repeat([]byte("x"), maxRuntimeInfoSize+1), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadRuntimeInfo(dir); err == nil {
+		t.Fatal("expected oversized runtime metadata to be rejected")
+	}
+	if err := os.WriteFile(path, []byte(`{"pid":`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadRuntimeInfo(dir); err == nil {
+		t.Fatal("expected corrupt runtime metadata to be rejected")
+	}
+}
+
+func TestRuntimeInfo_ConcurrentWritersRemainValid(t *testing.T) {
+	dir := t.TempDir()
+	const writers = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, writers)
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs <- WriteRuntimeInfo(dir, RuntimeHubInfo{PID: i + 1, StartedAt: time.Now(), Transport: "loopback"})
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent runtime writer failed: %v", err)
+		}
+	}
+	info, err := ReadRuntimeInfo(dir)
+	if err != nil || info == nil || info.PID < 1 || info.PID > writers {
+		t.Fatalf("invalid final runtime metadata: info=%+v err=%v", info, err)
+	}
+}
+
+func TestRuntimeInfo_OwnershipAndLiveLeaseChecks(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+	oldInfo, err := ReadRuntimeInfo(h.cfg.StoreDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteRuntimeInfo(h.cfg.StoreDir, RuntimeHubInfo{PID: oldInfo.PID + 1, StartedAt: time.Now(), WebAddr: oldInfo.WebAddr, IPCToken: "replacement"}); err == nil {
+		t.Fatal("live runtime metadata was overwritten by a second owner")
+	}
+
+	// Once the old owner is stopped, a replacement may publish metadata. A
+	// delayed cleanup from the old owner must not remove it.
+	if err := h.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	newInfo := RuntimeHubInfo{PID: oldInfo.PID + 1, StartedAt: time.Now(), WebAddr: oldInfo.WebAddr, IPCToken: "replacement"}
+	if err := WriteRuntimeInfo(h.cfg.StoreDir, newInfo); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveRuntimeInfoIfOwned(h.cfg.StoreDir, *oldInfo); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadRuntimeInfo(h.cfg.StoreDir)
+	if err != nil || got == nil || got.IPCToken != newInfo.IPCToken {
+		t.Fatalf("old cleanup removed replacement metadata: got=%+v err=%v", got, err)
 	}
 }
 

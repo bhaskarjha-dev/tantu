@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,27 @@ import (
 
 	"github.com/bhaskarjha-dev/tantu/internal/pairing"
 )
+
+func testGet(token, endpoint string) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	if token != "" {
+		req.Header.Set(IPCTokenHeader, token)
+	}
+	return http.DefaultClient.Do(req)
+}
+
+func testPost(token, endpoint, contentType string, body io.Reader) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodPost, endpoint, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set(IPCTokenHeader, token)
+	return http.DefaultClient.Do(req)
+}
 
 func startTestHub(t *testing.T) (*Hub, context.CancelFunc, func()) {
 	t.Helper()
@@ -90,8 +112,6 @@ func TestWebDashboard_ServeSPA(t *testing.T) {
 		"OAuth Relay",
 		"Peers & Network",
 		"Live Logs",
-		"javascript:void(window.open('http://",
-		"/relay?url=",
 		"/api/drop/upload",
 		"/api/relay/open",
 		"/api/events",
@@ -101,6 +121,156 @@ func TestWebDashboard_ServeSPA(t *testing.T) {
 		if !strings.Contains(content, s) {
 			t.Errorf("dashboard HTML missing expected substring %q", s)
 		}
+	}
+}
+
+func TestWebDashboard_ProtectedReadsRequireCapability(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+
+	paths := []string{"/api/status", "/api/logs", "/api/drop/recent", "/api/pair/pending", "/api/discovery/peers"}
+	for _, path := range paths {
+		resp, err := http.Get("http://" + h.WebAddr() + path)
+		if err != nil {
+			t.Fatalf("GET %s failed: %v", path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("expected unauthenticated GET %s to be unauthorized, got %d", path, resp.StatusCode)
+		}
+	}
+
+	resp, err := testGet(h.ipcToken, "http://"+h.WebAddr()+"/api/drop/recent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("capability-bearing GET returned %d", resp.StatusCode)
+	}
+}
+
+func TestWebDashboard_BootstrapSessionAndNoEmbeddedTokens(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+
+	rootResp, err := http.Get("http://" + h.WebAddr() + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootBody, _ := io.ReadAll(rootResp.Body)
+	rootResp.Body.Close()
+	if rootResp.StatusCode != http.StatusOK {
+		t.Fatalf("root status = %d", rootResp.StatusCode)
+	}
+	if strings.Contains(string(rootBody), h.ipcToken) || strings.Contains(string(rootBody), h.relayToken) {
+		t.Fatal("dashboard HTML exposed a long-lived local capability")
+	}
+	if got := rootResp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("root Cache-Control = %q, want no-store", got)
+	}
+
+	dashboardURL, err := url.Parse(h.DashboardURL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrap := strings.TrimPrefix(dashboardURL.Fragment, "tantu_bootstrap=")
+	if bootstrap == "" {
+		t.Fatal("DashboardURL did not contain a bootstrap fragment")
+	}
+
+	exchange, err := http.NewRequest(http.MethodPost, "http://"+h.WebAddr()+"/api/session", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exchange.Header.Set("X-Tantu-Dashboard-Bootstrap", bootstrap)
+	exchangeResp, err := http.DefaultClient.Do(exchange)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exchangeResp.Body.Close()
+	if exchangeResp.StatusCode != http.StatusOK {
+		t.Fatalf("bootstrap exchange status = %d", exchangeResp.StatusCode)
+	}
+	cookies := exchangeResp.Cookies()
+	if len(cookies) != 1 || cookies[0].Name != "tantu_dashboard_session" || !cookies[0].HttpOnly {
+		t.Fatalf("bootstrap response did not set an HttpOnly session cookie: %+v", cookies)
+	}
+
+	second, err := http.NewRequest(http.MethodPost, "http://"+h.WebAddr()+"/api/session", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second.Header.Set("X-Tantu-Dashboard-Bootstrap", bootstrap)
+	secondResp, err := http.DefaultClient.Do(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondResp.Body.Close()
+	if secondResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("reused bootstrap status = %d, want 403", secondResp.StatusCode)
+	}
+
+	statusReq, err := http.NewRequest(http.MethodGet, "http://"+h.WebAddr()+"/api/status", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusReq.AddCookie(cookies[0])
+	statusResp, err := http.DefaultClient.Do(statusReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusResp.Body.Close()
+	if statusResp.StatusCode != http.StatusOK {
+		t.Fatalf("session-authorized status = %d", statusResp.StatusCode)
+	}
+	authenticatedRoot, err := http.NewRequest(http.MethodGet, "http://"+h.WebAddr()+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authenticatedRoot.AddCookie(cookies[0])
+	authenticatedRootResp, err := http.DefaultClient.Do(authenticatedRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authenticatedRootBody, _ := io.ReadAll(authenticatedRootResp.Body)
+	authenticatedRootResp.Body.Close()
+	if !strings.Contains(string(authenticatedRootBody), "/relay?url=") || !strings.Contains(string(authenticatedRootBody), "ticket=") {
+		t.Fatal("authenticated dashboard did not receive a one-use relay ticket")
+	}
+	cookieOnlyRelay, err := http.NewRequest(http.MethodGet, "http://"+h.WebAddr()+"/relay?url=https%3A%2F%2Fexample.com%2F", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookieOnlyRelay.AddCookie(cookies[0])
+	cookieOnlyRelayResp, err := http.DefaultClient.Do(cookieOnlyRelay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookieOnlyRelayResp.Body.Close()
+	if cookieOnlyRelayResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("cookie-only legacy relay status = %d, want 403", cookieOnlyRelayResp.StatusCode)
+	}
+}
+
+func TestWebDashboard_ForgedAuthorityRejected(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+
+	req, err := http.NewRequest(http.MethodGet, "http://"+h.WebAddr()+"/api/status", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "127.0.0.1:1"
+	req.Header.Set("Origin", "http://127.0.0.1:1")
+	req.Header.Set(IPCTokenHeader, h.ipcToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("forged authority status = %d, want 403", resp.StatusCode)
 	}
 }
 
@@ -147,9 +317,9 @@ func TestWebDashboard_LegacyRelayBookmarkletEndpoint(t *testing.T) {
 		t.Errorf("expected HTML body to contain 'Relay Error', got: %s", string(htmlBody))
 	}
 
-	// 3. CORS header check
-	if origin := resp.Header.Get("Access-Control-Allow-Origin"); origin != "*" {
-		t.Errorf("expected CORS Access-Control-Allow-Origin '*', got %q", origin)
+	// Missing-URL validation must not emit wildcard CORS.
+	if origin := resp.Header.Get("Access-Control-Allow-Origin"); origin != "" {
+		t.Errorf("expected no wildcard CORS header, got %q", origin)
 	}
 }
 
@@ -157,7 +327,7 @@ func TestWebDashboard_APIStatus(t *testing.T) {
 	h, _, cleanup := startTestHub(t)
 	defer cleanup()
 
-	resp, err := http.Get("http://" + h.WebAddr() + "/api/status")
+	resp, err := testGet(h.ipcToken, "http://"+h.WebAddr()+"/api/status")
 	if err != nil {
 		t.Fatalf("GET /api/status failed: %v", err)
 	}
@@ -203,6 +373,7 @@ func TestWebDashboard_EventsSSE(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create request failed: %v", err)
 	}
+	req.Header.Set(IPCTokenHeader, h.ipcToken)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -229,7 +400,7 @@ func TestWebDashboard_DropRecent(t *testing.T) {
 	defer cleanup()
 
 	// Initially empty
-	resp, err := http.Get("http://" + h.WebAddr() + "/api/drop/recent")
+	resp, err := testGet(h.ipcToken, "http://"+h.WebAddr()+"/api/drop/recent")
 	if err != nil {
 		t.Fatalf("GET /api/drop/recent failed: %v", err)
 	}
@@ -258,7 +429,7 @@ func TestWebDashboard_DropRecent(t *testing.T) {
 		IsURL:     false,
 	})
 
-	resp2, err := http.Get("http://" + h.WebAddr() + "/api/drop/recent")
+	resp2, err := testGet(h.ipcToken, "http://"+h.WebAddr()+"/api/drop/recent")
 	if err != nil {
 		t.Fatalf("GET /api/drop/recent failed: %v", err)
 	}
@@ -276,12 +447,32 @@ func TestWebDashboard_DropRecent(t *testing.T) {
 	}
 }
 
+func TestWebDashboard_MutatingEndpointRequiresIPCToken(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+
+	body := strings.NewReader(`{"output_dir":"/tmp/tantu-token-test"}`)
+	req, err := http.NewRequest(http.MethodPost, "http://"+h.WebAddr()+"/api/config", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected token-less mutation to be unauthorized, got %d", resp.StatusCode)
+	}
+}
+
 func TestWebDashboard_ConfigEndpoints(t *testing.T) {
 	h, _, cleanup := startTestHub(t)
 	defer cleanup()
 
 	// 1. GET /api/config
-	resp, err := http.Get("http://" + h.WebAddr() + "/api/config")
+	resp, err := testGet(h.ipcToken, "http://"+h.WebAddr()+"/api/config")
 	if err != nil {
 		t.Fatalf("GET /api/config failed: %v", err)
 	}
@@ -301,7 +492,7 @@ func TestWebDashboard_ConfigEndpoints(t *testing.T) {
 	// 2. POST /api/config
 	newDir := filepath.Join(os.TempDir(), "new-drops-dir")
 	postBody, _ := json.Marshal(map[string]string{"output_dir": newDir})
-	postResp, err := http.Post("http://"+h.WebAddr()+"/api/config", "application/json", strings.NewReader(string(postBody)))
+	postResp, err := testPost(h.ipcToken, "http://"+h.WebAddr()+"/api/config", "application/json", strings.NewReader(string(postBody)))
 	if err != nil {
 		t.Fatalf("POST /api/config failed: %v", err)
 	}
@@ -319,7 +510,7 @@ func TestWebDashboard_OpenFolderEndpoint(t *testing.T) {
 	h, _, cleanup := startTestHub(t)
 	defer cleanup()
 
-	resp, err := http.Post("http://"+h.WebAddr()+"/api/open-folder", "application/json", nil)
+	resp, err := testPost(h.ipcToken, "http://"+h.WebAddr()+"/api/open-folder", "application/json", nil)
 	if err != nil {
 		t.Fatalf("POST /api/open-folder failed: %v", err)
 	}
@@ -366,7 +557,7 @@ func TestWebDashboard_PeersManagementEndpoints(t *testing.T) {
 		"fingerprint": "fp-1111111111111111",
 		"alias":       "MacBook Pro",
 	})
-	resp, err := http.Post("http://"+webAddr+"/api/peers/alias", "application/json", bytes.NewReader(aliasReq))
+	resp, err := testPost(h.ipcToken, "http://"+webAddr+"/api/peers/alias", "application/json", bytes.NewReader(aliasReq))
 	if err != nil {
 		t.Fatalf("POST /api/peers/alias failed: %v", err)
 	}
@@ -384,7 +575,7 @@ func TestWebDashboard_PeersManagementEndpoints(t *testing.T) {
 	defReq, _ := json.Marshal(map[string]string{
 		"fingerprint": "fp-2222222222222222",
 	})
-	resp2, err := http.Post("http://"+webAddr+"/api/peers/default", "application/json", bytes.NewReader(defReq))
+	resp2, err := testPost(h.ipcToken, "http://"+webAddr+"/api/peers/default", "application/json", bytes.NewReader(defReq))
 	if err != nil {
 		t.Fatalf("POST /api/peers/default failed: %v", err)
 	}
@@ -402,7 +593,7 @@ func TestWebDashboard_PeersManagementEndpoints(t *testing.T) {
 	actReq, _ := json.Marshal(map[string]string{
 		"peer": "fp-1111111111111111",
 	})
-	resp3, err := http.Post("http://"+webAddr+"/api/peers/active", "application/json", bytes.NewReader(actReq))
+	resp3, err := testPost(h.ipcToken, "http://"+webAddr+"/api/peers/active", "application/json", bytes.NewReader(actReq))
 	if err != nil {
 		t.Fatalf("POST /api/peers/active failed: %v", err)
 	}
@@ -415,7 +606,7 @@ func TestWebDashboard_PeersManagementEndpoints(t *testing.T) {
 	}
 
 	// 4. GET /api/status reflection
-	respStatus, err := http.Get("http://" + webAddr + "/api/status")
+	respStatus, err := testGet(h.ipcToken, "http://"+webAddr+"/api/status")
 	if err != nil {
 		t.Fatalf("GET /api/status failed: %v", err)
 	}
@@ -453,7 +644,7 @@ func TestWebDashboard_PeersManagementEndpoints(t *testing.T) {
 	remReq, _ := json.Marshal(map[string]string{
 		"fingerprint": "fp-1111111111111111",
 	})
-	resp4, err := http.Post("http://"+webAddr+"/api/peers/remove", "application/json", bytes.NewReader(remReq))
+	resp4, err := testPost(h.ipcToken, "http://"+webAddr+"/api/peers/remove", "application/json", bytes.NewReader(remReq))
 	if err != nil {
 		t.Fatalf("POST /api/peers/remove failed: %v", err)
 	}
@@ -480,7 +671,7 @@ func TestWebDashboard_DropUploadWithTargetPeer(t *testing.T) {
 		"text": "Hello Peer Forwarding",
 		"peer": "127.0.0.1:59992",
 	})
-	resp1, err := http.Post("http://"+webAddr+"/api/drop/upload", "application/json", bytes.NewReader(textReq))
+	resp1, err := testPost(h.ipcToken, "http://"+webAddr+"/api/drop/upload", "application/json", bytes.NewReader(textReq))
 	if err != nil {
 		t.Fatalf("POST /api/drop/upload text failed: %v", err)
 	}
@@ -505,6 +696,7 @@ func TestWebDashboard_DropUploadWithTargetPeer(t *testing.T) {
 		t.Fatalf("create multipart request failed: %v", err)
 	}
 	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Header.Set(IPCTokenHeader, h.ipcToken)
 
 	resp2, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -523,7 +715,7 @@ func TestWebDashboard_DiscoveryPeersEndpoint(t *testing.T) {
 	webAddr := h.WebAddr()
 
 	// 1. GET /api/discovery/peers returns 200 and a valid JSON list
-	resp, err := http.Get("http://" + webAddr + "/api/discovery/peers")
+	resp, err := testGet(h.ipcToken, "http://"+webAddr+"/api/discovery/peers")
 	if err != nil {
 		t.Fatalf("GET /api/discovery/peers failed: %v", err)
 	}
@@ -548,7 +740,7 @@ func TestWebDashboard_DiscoveryPeersEndpoint(t *testing.T) {
 	}
 
 	// 2. GET /api/status includes discovered_count / discovered_peers
-	statusResp, err := http.Get("http://" + webAddr + "/api/status")
+	statusResp, err := testGet(h.ipcToken, "http://"+webAddr+"/api/status")
 	if err != nil {
 		t.Fatalf("GET /api/status failed: %v", err)
 	}
@@ -567,7 +759,7 @@ func TestWebDashboard_DiscoveryPeersEndpoint(t *testing.T) {
 	}
 
 	// 3. Test method not allowed for POST
-	postResp, err := http.Post("http://"+webAddr+"/api/discovery/peers", "application/json", strings.NewReader("{}"))
+	postResp, err := testPost(h.ipcToken, "http://"+webAddr+"/api/discovery/peers", "application/json", strings.NewReader("{}"))
 	if err == nil {
 		defer postResp.Body.Close()
 		if postResp.StatusCode != http.StatusMethodNotAllowed {
@@ -630,7 +822,8 @@ func TestWebDashboard_CrossOriginProtection(t *testing.T) {
 
 	// 4. Allowed local origin request to /api/status succeeds (200 OK) and receives Access-Control-Allow-Origin
 	req, _ = http.NewRequest(http.MethodGet, "http://"+webAddr+"/api/status", nil)
-	req.Header.Set("Origin", "http://127.0.0.1:9876")
+	req.Header.Set("Origin", "http://"+h.WebAddr())
+	req.Header.Set(IPCTokenHeader, h.ipcToken)
 	resp, err = client.Do(req)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
@@ -639,13 +832,13 @@ func TestWebDashboard_CrossOriginProtection(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected status 200 for local origin, got %d", resp.StatusCode)
 	}
-	if allowOrigin := resp.Header.Get("Access-Control-Allow-Origin"); allowOrigin != "http://127.0.0.1:9876" {
-		t.Errorf("expected Access-Control-Allow-Origin 'http://127.0.0.1:9876', got %q", allowOrigin)
+	if allowOrigin := resp.Header.Get("Access-Control-Allow-Origin"); allowOrigin != "http://"+h.WebAddr() {
+		t.Errorf("expected Access-Control-Allow-Origin %q, got %q", "http://"+h.WebAddr(), allowOrigin)
 	}
 
 	// 5. Preflight OPTIONS request from allowed local origin returns 204 No Content
 	req, _ = http.NewRequest(http.MethodOptions, "http://"+webAddr+"/api/status", nil)
-	req.Header.Set("Origin", "http://localhost:9876")
+	req.Header.Set("Origin", "http://localhost:"+strings.Split(h.WebAddr(), ":")[1])
 	resp, err = client.Do(req)
 	if err != nil {
 		t.Fatalf("OPTIONS request failed: %v", err)
@@ -682,11 +875,12 @@ func TestWebDashboard_PairInitiate_Success(t *testing.T) {
 	}
 
 	hB, err := NewHub(HubConfig{
-		TransportType: "lan",
-		ListenAddr:    "127.0.0.1:0",
-		WebAddr:       "127.0.0.1:0",
-		StoreDir:      tempDirB,
-		Headless:      true,
+		TransportType:     "lan",
+		ListenAddr:        "127.0.0.1:0",
+		WebAddr:           "127.0.0.1:0",
+		StoreDir:          tempDirB,
+		Headless:          true,
+		AutoAcceptPairing: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -721,7 +915,8 @@ func TestWebDashboard_PairInitiate_Success(t *testing.T) {
 	})
 	req, _ := http.NewRequest(http.MethodPost, "http://"+hB.WebAddr()+"/api/pair/initiate", bytes.NewReader(pairReqBody))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Origin", "http://127.0.0.1:9876")
+	req.Header.Set("Origin", "http://"+hB.WebAddr())
+	req.Header.Set(IPCTokenHeader, hB.ipcToken)
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
@@ -770,6 +965,115 @@ func TestWebDashboard_PairInitiate_Success(t *testing.T) {
 	}
 }
 
+func TestWebDashboard_RejectedPairingIsNotReportedSuccess(t *testing.T) {
+	newPairHub := func(t *testing.T) *Hub {
+		t.Helper()
+		h, err := NewHub(HubConfig{
+			TransportType:     "lan",
+			ListenAddr:        "127.0.0.1:0",
+			WebAddr:           "127.0.0.1:0",
+			StoreDir:          t.TempDir(),
+			Headless:          true,
+			AutoAcceptPairing: false,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	hA, hB := newPairHub(t), newPairHub(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errA, errB := make(chan error, 1), make(chan error, 1)
+	go func() { errA <- hA.Start(ctx) }()
+	go func() { errB <- hB.Start(ctx) }()
+	waitReady := func(h *Hub, errCh <-chan error) {
+		t.Helper()
+		select {
+		case <-h.Ready():
+		case err := <-errCh:
+			t.Fatalf("Hub failed to start: %v", err)
+		case <-time.After(5 * time.Second):
+			t.Fatal("Hub start timed out")
+		}
+	}
+	waitReady(hA, errA)
+	waitReady(hB, errB)
+	defer func() { _ = hA.Stop(); _ = hB.Stop() }()
+
+	initiate := make(chan *http.Response, 1)
+	initiateErr := make(chan error, 1)
+	go func() {
+		body, _ := json.Marshal(map[string]string{"peer_addr": hA.P2PAddr().String()})
+		req, _ := http.NewRequest(http.MethodPost, "http://"+hB.WebAddr()+"/api/pair/initiate", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(IPCTokenHeader, hB.ipcToken)
+		resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+		if err != nil {
+			initiateErr <- err
+			return
+		}
+		initiate <- resp
+	}()
+
+	waitPending := func(h *Hub) *PendingPairing {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			resp, err := testGet(h.ipcToken, "http://"+h.WebAddr()+"/api/pair/pending")
+			if err == nil {
+				var list []*PendingPairing
+				_ = json.NewDecoder(resp.Body).Decode(&list)
+				resp.Body.Close()
+				if len(list) > 0 {
+					return list[0]
+				}
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+		t.Fatal("pending pairing did not appear")
+		return nil
+	}
+	pendingA := waitPending(hA)
+	pendingB := waitPending(hB)
+	decodeDecision := func(h *Hub, p *PendingPairing) {
+		t.Helper()
+		body, _ := json.Marshal(map[string]any{"id": p.ID, "accept": false})
+		req, _ := http.NewRequest(http.MethodPost, "http://"+h.WebAddr()+"/api/pair/decision", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(IPCTokenHeader, h.ipcToken)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("pair decision status = %d", resp.StatusCode)
+		}
+	}
+	decodeDecision(hA, pendingA)
+	decodeDecision(hB, pendingB)
+
+	select {
+	case err := <-initiateErr:
+		t.Fatalf("pair initiation request failed: %v", err)
+	case resp := <-initiate:
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusConflict {
+			t.Fatalf("rejected pairing status = %d, want 409", resp.StatusCode)
+		}
+		var result map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			t.Fatal(err)
+		}
+		if result["status"] != "rejected" || result["accepted"] != false {
+			t.Fatalf("unexpected rejected response: %+v", result)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("pair initiation did not finish")
+	}
+}
+
 func TestWebDashboard_InboundPairing_PendingApprovalAndRejection(t *testing.T) {
 	tempDirA := t.TempDir()
 	tempDirB := t.TempDir()
@@ -787,11 +1091,12 @@ func TestWebDashboard_InboundPairing_PendingApprovalAndRejection(t *testing.T) {
 	}
 
 	hB, err := NewHub(HubConfig{
-		TransportType: "lan",
-		ListenAddr:    "127.0.0.1:0",
-		WebAddr:       "127.0.0.1:0",
-		StoreDir:      tempDirB,
-		Headless:      true,
+		TransportType:     "lan",
+		ListenAddr:        "127.0.0.1:0",
+		WebAddr:           "127.0.0.1:0",
+		StoreDir:          tempDirB,
+		Headless:          true,
+		AutoAcceptPairing: false, // Require approval on both sides.
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -820,7 +1125,7 @@ func TestWebDashboard_InboundPairing_PendingApprovalAndRejection(t *testing.T) {
 	}()
 
 	// 1. Initially, no pending pairings
-	pendingResp, err := http.Get("http://" + hA.WebAddr() + "/api/pair/pending")
+	pendingResp, err := testGet(hA.ipcToken, "http://"+hA.WebAddr()+"/api/pair/pending")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -843,7 +1148,8 @@ func TestWebDashboard_InboundPairing_PendingApprovalAndRejection(t *testing.T) {
 		})
 		req, _ := http.NewRequest(http.MethodPost, "http://"+hB.WebAddr()+"/api/pair/initiate", bytes.NewReader(pairReqBody))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Origin", "http://127.0.0.1:9876")
+		req.Header.Set("Origin", "http://"+hB.WebAddr())
+		req.Header.Set(IPCTokenHeader, hB.ipcToken)
 		client := &http.Client{Timeout: 10 * time.Second}
 		res, rErr := client.Do(req)
 		pairResultCh <- pairResult{resp: res, err: rErr}
@@ -853,7 +1159,7 @@ func TestWebDashboard_InboundPairing_PendingApprovalAndRejection(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	var activePending []*PendingPairing
 	for time.Now().Before(deadline) {
-		pResp, pErr := http.Get("http://" + hA.WebAddr() + "/api/pair/pending")
+		pResp, pErr := testGet(hA.ipcToken, "http://"+hA.WebAddr()+"/api/pair/pending")
 		if pErr == nil {
 			var list []*PendingPairing
 			_ = json.NewDecoder(pResp.Body).Decode(&list)
@@ -882,7 +1188,8 @@ func TestWebDashboard_InboundPairing_PendingApprovalAndRejection(t *testing.T) {
 	})
 	decReq, _ := http.NewRequest(http.MethodPost, "http://"+hA.WebAddr()+"/api/pair/decision", bytes.NewReader(decisionBody))
 	decReq.Header.Set("Content-Type", "application/json")
-	decReq.Header.Set("Origin", "http://127.0.0.1:9876")
+	decReq.Header.Set("Origin", "http://"+hA.WebAddr())
+	decReq.Header.Set(IPCTokenHeader, hA.ipcToken)
 	decResp, dErr := http.DefaultClient.Do(decReq)
 	if dErr != nil {
 		t.Fatalf("POST /api/pair/decision failed: %v", dErr)
@@ -892,7 +1199,45 @@ func TestWebDashboard_InboundPairing_PendingApprovalAndRejection(t *testing.T) {
 	}
 	decResp.Body.Close()
 
-	// 5. Verify Hub B's initiate call completes successfully
+	// 5. Hub B must also explicitly approve the outbound side of the
+	// handshake. This prevents a web request from silently auto-accepting a
+	// peer that the initiating user has not reviewed.
+	outboundDeadline := time.Now().Add(5 * time.Second)
+	var outboundPending []*PendingPairing
+	for time.Now().Before(outboundDeadline) {
+		pResp, pErr := testGet(hB.ipcToken, "http://"+hB.WebAddr()+"/api/pair/pending")
+		if pErr == nil {
+			var list []*PendingPairing
+			_ = json.NewDecoder(pResp.Body).Decode(&list)
+			pResp.Body.Close()
+			if len(list) > 0 {
+				outboundPending = list
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if len(outboundPending) == 0 {
+		t.Fatal("expected outbound pairing approval request on Hub B")
+	}
+	outboundDecision, _ := json.Marshal(map[string]any{
+		"id":     outboundPending[0].ID,
+		"accept": true,
+	})
+	outReq, _ := http.NewRequest(http.MethodPost, "http://"+hB.WebAddr()+"/api/pair/decision", bytes.NewReader(outboundDecision))
+	outReq.Header.Set("Content-Type", "application/json")
+	outReq.Header.Set("Origin", "http://"+hB.WebAddr())
+	outReq.Header.Set(IPCTokenHeader, hB.ipcToken)
+	outResp, outErr := http.DefaultClient.Do(outReq)
+	if outErr != nil {
+		t.Fatalf("POST outbound pairing decision failed: %v", outErr)
+	}
+	outResp.Body.Close()
+	if outResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK for outbound decision, got %d", outResp.StatusCode)
+	}
+
+	// 6. Verify Hub B's initiate call completes successfully
 	select {
 	case pr := <-pairResultCh:
 		if pr.err != nil {
@@ -923,7 +1268,3 @@ func TestWebDashboard_InboundPairing_PendingApprovalAndRejection(t *testing.T) {
 		t.Errorf("expected 1 peer in hB store, got %d", len(hB.Store().ListPeers()))
 	}
 }
-
-
-
-

@@ -2,20 +2,21 @@ package hub
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
-	"io"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"time"
 
-	"github.com/bhaskarjha-dev/tantu/internal/bridge"
-	"github.com/bhaskarjha-dev/tantu/internal/browser"
 	"github.com/bhaskarjha-dev/tantu/internal/drop"
 	"github.com/bhaskarjha-dev/tantu/internal/pairing"
 )
@@ -662,6 +663,39 @@ const dashboardHTML = `<!DOCTYPE html>
   </main>
 
   <script>
+    async function bootstrapDashboard() {
+      const params = new URLSearchParams(location.hash.slice(1));
+      const token = params.get('tantu_bootstrap');
+      if (!token) return false;
+      try {
+        const response = await fetch('/api/session', {
+          method: 'POST',
+          headers: { 'X-Tantu-Dashboard-Bootstrap': token },
+          credentials: 'same-origin'
+        });
+        if (!response.ok) return false;
+        history.replaceState(null, '', location.pathname + location.search);
+        // Reload once so the server can render a relay bookmarklet only after
+        // the HttpOnly session cookie has been established.
+        window.location.reload();
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+    let dashboardReady = bootstrapDashboard();
+    function apiFetch(path, options) {
+      options = options || {};
+      return dashboardReady.then(() => {
+        const headers = new Headers(options.headers || {});
+        const requestOptions = Object.assign({}, options, {
+          headers: headers,
+          credentials: options.credentials || 'same-origin'
+        });
+        return fetch(path, requestOptions);
+      });
+    }
+
     function switchTab(tabId) {
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
       document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
@@ -694,7 +728,7 @@ const dashboardHTML = `<!DOCTYPE html>
         metaHTML = '<details style="margin-top:0.25rem; font-size:0.75rem; color:#94a3b8;"><summary style="cursor:pointer; color:#60a5fa;">inspect metadata</summary><pre style="background:rgba(0,0,0,0.3); padding:0.4rem; border-radius:4px; margin-top:0.25rem; overflow-x:auto;">' + escapeHTML(JSON.stringify(meta, null, 2)) + '</pre></details>';
       }
 
-      row.innerHTML = '<span style="color:#64748b; margin-right:0.5rem;">' + timeStr + '</span><span class="tag ' + tagClass + '">' + domain + '</span> ' + escapeHTML(msg) + metaHTML;
+      row.innerHTML = '<span style="color:#64748b; margin-right:0.5rem;">' + timeStr + '</span><span class="tag ' + tagClass + '">' + escapeHTML(domain) + '</span> ' + escapeHTML(msg) + metaHTML;
       console.appendChild(row);
 
       if (console.children.length > 500) {
@@ -755,7 +789,7 @@ const dashboardHTML = `<!DOCTYPE html>
 
     async function exportLogs() {
       try {
-        const res = await fetch('/api/logs');
+        const res = await apiFetch('/api/logs');
         if (!res.ok) {
           alert('Failed to fetch logs: ' + res.statusText);
           return;
@@ -778,7 +812,7 @@ const dashboardHTML = `<!DOCTYPE html>
 
     async function loadInitialLogs() {
       try {
-        const res = await fetch('/api/logs');
+        const res = await apiFetch('/api/logs');
         if (!res.ok) return;
         const events = await res.json();
         if (Array.isArray(events) && events.length > 0) {
@@ -799,7 +833,7 @@ const dashboardHTML = `<!DOCTYPE html>
 
     async function updateStatus() {
       try {
-        const res = await fetch('/api/status');
+        const res = await apiFetch('/api/status');
         if (!res.ok) return;
         const data = await res.json();
         
@@ -856,7 +890,7 @@ const dashboardHTML = `<!DOCTYPE html>
               const isSelected = (p.fingerprint === selectedPeerTarget);
               const pillClass = isSelected ? 'pill active' : 'pill';
               const defTag = p.is_default ? ' ⭐️' : '';
-              return '<button type="button" class="' + pillClass + '" onclick="selectDropPeer(\'' + escapeHTML(p.fingerprint) + '\')">' + escapeHTML(p.name) + defTag + '</button>';
+              return '<button type="button" class="' + pillClass + '" onclick=\'selectDropPeer(' + jsArg(p.fingerprint) + ')\'>' + escapeHTML(p.name) + defTag + '</button>';
             }).join('');
           }
 
@@ -869,7 +903,7 @@ const dashboardHTML = `<!DOCTYPE html>
 
       // Query discovered LAN peers
       try {
-        const discRes = await fetch('/api/discovery/peers');
+        const discRes = await apiFetch('/api/discovery/peers');
         if (discRes.ok) {
           const discPeers = await discRes.json();
           renderDiscoveredHubs(discPeers);
@@ -884,7 +918,7 @@ const dashboardHTML = `<!DOCTYPE html>
 
     async function loadPendingPairings() {
       try {
-        const res = await fetch('/api/pair/pending');
+        const res = await apiFetch('/api/pair/pending');
         if (!res.ok) return;
         const list = await res.json();
         const banner = document.getElementById('pendingPairingsBanner');
@@ -907,8 +941,8 @@ const dashboardHTML = `<!DOCTYPE html>
               '<div style="font-size: 0.85rem; color: #cbd5e1; margin-top: 0.25rem;">Compare SAS Code with remote screen: <strong style="color: #38bdf8; font-family: monospace; font-size: 1.05rem; letter-spacing: 0.05em; background: rgba(56,189,248,0.15); padding: 0.15rem 0.5rem; border-radius: 4px;">' + sas + '</strong></div>' +
             '</div>' +
             '<div style="display: flex; gap: 0.5rem;">' +
-              '<button class="btn-sm" style="background: #10b981; color: white; border: none; font-weight: 600; padding: 0.4rem 1rem; cursor: pointer; border-radius: 6px;" onclick="decidePairing(\'' + id + '\', true)">✓ Approve</button>' +
-              '<button class="btn-sm" style="background: #ef4444; color: white; border: none; font-weight: 600; padding: 0.4rem 1rem; cursor: pointer; border-radius: 6px;" onclick="decidePairing(\'' + id + '\', false)">✕ Reject</button>' +
+              '<button class="btn-sm" style="background: #10b981; color: white; border: none; font-weight: 600; padding: 0.4rem 1rem; cursor: pointer; border-radius: 6px;" onclick=\'decidePairing(' + jsArg(id) + ', true)\'>✓ Approve</button>' +
+              '<button class="btn-sm" style="background: #ef4444; color: white; border: none; font-weight: 600; padding: 0.4rem 1rem; cursor: pointer; border-radius: 6px;" onclick=\'decidePairing(' + jsArg(id) + ', false)\'>✕ Reject</button>' +
             '</div>' +
           '</div>';
         }).join('');
@@ -919,7 +953,7 @@ const dashboardHTML = `<!DOCTYPE html>
 
     async function decidePairing(id, accept) {
       try {
-        const res = await fetch('/api/pair/decision', {
+        const res = await apiFetch('/api/pair/decision', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ id, accept })
@@ -951,7 +985,7 @@ const dashboardHTML = `<!DOCTYPE html>
             '<div style="font-weight: 600; font-size: 0.9rem; color: var(--text);">💻 ' + escapeHTML(d.name) + '</div>' +
             '<div style="font-size: 0.75rem; color: var(--text-muted); font-family: monospace;">' + escapeHTML(d.address) + ' · SAS: <span style="color: var(--accent); font-weight: 600;">' + escapeHTML(d.sas) + '</span></div>' +
           '</div>' +
-          '<button class="btn btn-primary" style="padding: 0.3rem 0.75rem; font-size: 0.8rem;" onclick="prefillPairModal(\'' + escapeHTML(d.address) + '\', \'' + escapeHTML(d.sas) + '\')">⚡ Pair</button>' +
+          '<button class="btn btn-primary" style="padding: 0.3rem 0.75rem; font-size: 0.8rem;" onclick=\'prefillPairModal(' + jsArg(d.address) + ', ' + jsArg(d.sas) + ')\'>⚡ Pair</button>' +
         '</div>';
       }).join('');
     }
@@ -978,7 +1012,7 @@ const dashboardHTML = `<!DOCTYPE html>
 
     async function switchActivePeer(fp) {
       try {
-        const res = await fetch('/api/peers/active', {
+        const res = await apiFetch('/api/peers/active', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ peer: fp })
@@ -1000,7 +1034,7 @@ const dashboardHTML = `<!DOCTYPE html>
       peersList.innerHTML = peers.map(function(pr) {
         const defaultBadge = pr.is_default ? '<span class="tag tag-oauth">Default</span>' : '';
         const activeBadge = pr.active ? '<span class="tag tag-drop">Active</span>' : '';
-        const defaultBtn = !pr.is_default ? '<button class="btn-sm" onclick="setDefaultPeer(\'' + escapeHTML(pr.fingerprint) + '\')">⭐️ Set Default</button>' : '';
+        const defaultBtn = !pr.is_default ? '<button class="btn-sm" onclick=\'setDefaultPeer(' + jsArg(pr.fingerprint) + ')\'>⭐️ Set Default</button>' : '';
         const fpShort = pr.fingerprint ? (pr.fingerprint.slice(0, 16) + '...') : '-';
 
         return '<div style="background: rgba(255,255,255,0.02); border:1px solid var(--border); border-radius:8px; padding:0.85rem 1rem; margin-bottom:0.75rem;">' +
@@ -1010,9 +1044,9 @@ const dashboardHTML = `<!DOCTYPE html>
               defaultBadge + activeBadge +
             '</div>' +
             '<div style="display:flex; gap:0.35rem;">' +
-              '<button class="btn-sm" onclick="promptEditAlias(\'' + escapeHTML(pr.fingerprint) + '\', \'' + escapeHTML(pr.alias || pr.name || '') + '\')">✏️ Alias</button>' +
+              '<button class="btn-sm" onclick=\'promptEditAlias(' + jsArg(pr.fingerprint) + ', ' + jsArg(pr.alias || pr.name || '') + ')\'>✏️ Alias</button>' +
               defaultBtn +
-              '<button class="btn-sm" style="color:#f87171; border-color:rgba(239,68,68,0.3);" onclick="confirmUnpair(\'' + escapeHTML(pr.fingerprint) + '\', \'' + escapeHTML(pr.name || '') + '\')">🗑️ Unpair</button>' +
+              '<button class="btn-sm" style="color:#f87171; border-color:rgba(239,68,68,0.3);" onclick=\'confirmUnpair(' + jsArg(pr.fingerprint) + ', ' + jsArg(pr.name || '') + ')\'>🗑️ Unpair</button>' +
             '</div>' +
           '</div>' +
           '<div style="font-size:0.8rem; color:var(--text-muted); margin-top:0.5rem; display:flex; gap:1rem; flex-wrap:wrap;">' +
@@ -1028,7 +1062,7 @@ const dashboardHTML = `<!DOCTYPE html>
       const newAlias = prompt('Enter friendly nickname / alias for this peer:', currentAlias || '');
       if (newAlias === null) return;
       try {
-        const res = await fetch('/api/peers/alias', {
+        const res = await apiFetch('/api/peers/alias', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ fingerprint: fp, alias: newAlias.trim() })
@@ -1046,7 +1080,7 @@ const dashboardHTML = `<!DOCTYPE html>
 
     async function setDefaultPeer(fp) {
       try {
-        const res = await fetch('/api/peers/default', {
+        const res = await apiFetch('/api/peers/default', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ fingerprint: fp })
@@ -1067,7 +1101,7 @@ const dashboardHTML = `<!DOCTYPE html>
         return;
       }
       try {
-        const res = await fetch('/api/peers/remove', {
+        const res = await apiFetch('/api/peers/remove', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ fingerprint: fp })
@@ -1138,17 +1172,20 @@ const dashboardHTML = `<!DOCTYPE html>
       statusMsg.innerText = 'Connecting to ' + addr + ' for in-band pairing handshake...';
 
       try {
-        const res = await fetch('/api/pair/initiate', {
+        const res = await apiFetch('/api/pair/initiate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ peer_addr: addr })
         });
         const data = await res.json();
-        if (res.ok) {
+        if (res.ok && data.accepted === true) {
           statusMsg.style.color = '#4ade80';
           statusMsg.innerText = '✅ Successfully paired with ' + (data.peer_name || addr) + ' (SAS: ' + data.peer_sas + ')';
           input.value = '';
           updateStatus();
+        } else if (data.status === 'rejected' || data.accepted === false) {
+          statusMsg.style.color = '#f87171';
+          statusMsg.innerText = '❌ Pairing was rejected by the remote device.';
         } else {
           statusMsg.style.color = '#f87171';
           statusMsg.innerText = '❌ Pairing failed: ' + (data.error || res.statusText);
@@ -1207,7 +1244,7 @@ const dashboardHTML = `<!DOCTYPE html>
 
       try {
         fill.style.width = '60%';
-        const res = await fetch('/api/drop/upload', {
+        const res = await apiFetch('/api/drop/upload', {
           method: 'POST',
           body: fd
         });
@@ -1215,16 +1252,16 @@ const dashboardHTML = `<!DOCTYPE html>
         const data = await res.json();
         if (res.ok && data.status === 'success') {
           status.className = 'status-banner success';
-          status.innerHTML = '✅ <strong>File transferred successfully to peer!</strong>';
+          status.textContent = '✅ File transferred successfully to peer!';
           addLog('DROP', 'Completed transfer of ' + file.name);
         } else {
           status.className = 'status-banner error';
-          status.innerHTML = '❌ <strong>Transfer failed:</strong> ' + (data.message || 'Unknown error');
+          status.textContent = '❌ Transfer failed: ' + (data.message || 'Unknown error');
           addLog('ERROR', 'Drop failed: ' + (data.message || 'Unknown error'));
         }
       } catch (err) {
         status.className = 'status-banner error';
-        status.innerHTML = '❌ <strong>Connection error:</strong> ' + err.message;
+        status.textContent = '❌ Connection error: ' + err.message;
         addLog('ERROR', 'Upload error: ' + err.message);
       } finally {
         setTimeout(() => { progress.style.display = 'none'; fill.style.width = '0%'; }, 2500);
@@ -1246,7 +1283,7 @@ const dashboardHTML = `<!DOCTYPE html>
       }
 
       try {
-        const res = await fetch('/api/drop/upload', {
+        const res = await apiFetch('/api/drop/upload', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
@@ -1275,8 +1312,8 @@ const dashboardHTML = `<!DOCTYPE html>
 
       btn.disabled = true;
       status.className = 'status-banner relaying';
-      status.innerHTML = '⏳ Relaying OAuth callback through bridge...';
-      addLog('OAUTH', 'Forwarding URL: ' + url.slice(0, 60) + '...');
+      status.textContent = '⏳ Relaying OAuth callback through bridge...';
+      addLog('OAUTH', 'Forwarding URL: ' + redactForLog(url));
 
       const payload = { url: url };
       if (selectedPeerTarget) {
@@ -1284,7 +1321,7 @@ const dashboardHTML = `<!DOCTYPE html>
       }
 
       try {
-        const res = await fetch('/api/relay/open', {
+        const res = await apiFetch('/api/relay/open', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
@@ -1292,17 +1329,17 @@ const dashboardHTML = `<!DOCTYPE html>
         const data = await res.json();
         if (res.ok && data.status === 'success') {
           status.className = 'status-banner success';
-          status.innerHTML = '✅ <strong>Authentication completed successfully!</strong>';
+          status.textContent = '✅ Authentication completed successfully!';
           input.value = '';
           addLog('OAUTH', 'OAuth flow completed successfully.');
         } else {
           status.className = 'status-banner error';
-          status.innerHTML = '❌ <strong>Relay failed:</strong> ' + (data.message || 'Unknown error');
+          status.textContent = '❌ Relay failed: ' + (data.message || 'Unknown error');
           addLog('ERROR', 'Relay failed: ' + (data.message || 'Unknown error'));
         }
       } catch (err) {
         status.className = 'status-banner error';
-        status.innerHTML = '❌ <strong>Connection error:</strong> ' + err.message;
+        status.textContent = '❌ Connection error: ' + err.message;
         addLog('ERROR', 'Relay error: ' + err.message);
       } finally {
         btn.disabled = false;
@@ -1344,12 +1381,16 @@ const dashboardHTML = `<!DOCTYPE html>
     }
 
     function openURL(url) {
-      window.open(url, '_blank');
+      try {
+        const parsed = new URL(url);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return;
+        window.open(parsed.href, '_blank', 'noopener,noreferrer');
+      } catch (_) {}
     }
 
     async function openDownloadFolder() {
       try {
-        const res = await fetch('/api/open-folder', { method: 'POST' });
+        const res = await apiFetch('/api/open-folder', { method: 'POST' });
         const data = await res.json();
         if (!res.ok || data.status !== 'success') {
           alert('Failed to open folder: ' + (data.message || 'unknown error'));
@@ -1364,7 +1405,7 @@ const dashboardHTML = `<!DOCTYPE html>
       const newDir = prompt('Enter new downloads directory path:', current);
       if (!newDir || newDir.trim() === '' || newDir.trim() === current) return;
       try {
-        const res = await fetch('/api/config', {
+        const res = await apiFetch('/api/config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ output_dir: newDir.trim() })
@@ -1382,7 +1423,7 @@ const dashboardHTML = `<!DOCTYPE html>
 
     async function loadConfig() {
       try {
-        const res = await fetch('/api/config');
+        const res = await apiFetch('/api/config');
         if (res.ok) {
           const cfg = await res.json();
           if (cfg.output_dir) {
@@ -1394,7 +1435,7 @@ const dashboardHTML = `<!DOCTYPE html>
 
     async function loadRecentDrops() {
       try {
-        const res = await fetch('/api/drop/recent');
+        const res = await apiFetch('/api/drop/recent');
         if (!res.ok) return;
         const items = await res.json();
         renderRecentDrops(items);
@@ -1414,6 +1455,7 @@ const dashboardHTML = `<!DOCTYPE html>
         const isURL = item.is_url;
         const icon = isFile ? '📁' : (isURL ? '🌐' : '📝');
         const title = isFile ? (item.name || 'Received File') : (isURL ? 'Web URL' : 'Text Snippet');
+        const safeTitle = escapeHTML(title);
         const sizeStr = formatBytes(item.size);
 
         let contentHTML = '';
@@ -1425,10 +1467,10 @@ const dashboardHTML = `<!DOCTYPE html>
 
         let actionsHTML = '<div class="received-item-actions">';
         if (!isFile && item.content) {
-          actionsHTML += '<button class="btn-sm" onclick="copySnippet(' + JSON.stringify(item.content) + ', this)">📋 Copy</button>';
+          actionsHTML += '<button class="btn-sm" onclick=\'copySnippet(' + jsArg(item.content) + ', this)\'>📋 Copy</button>';
           if (isURL || item.content.startsWith('http://') || item.content.startsWith('https://')) {
             const cleanURL = item.content.trim();
-            actionsHTML += '<button class="btn-sm" onclick="openURL(' + JSON.stringify(cleanURL) + ')">🌐 Open in Browser</button>';
+            actionsHTML += '<button class="btn-sm" onclick=\'openURL(' + jsArg(cleanURL) + ')\'>🌐 Open in Browser</button>';
           }
         } else if (isFile && item.saved_path) {
           actionsHTML += '<button class="btn-sm" onclick="openDownloadFolder()">📂 Open in Folder</button>';
@@ -1437,7 +1479,7 @@ const dashboardHTML = `<!DOCTYPE html>
 
         return '<div class="received-item">' +
           '<div class="received-item-header">' +
-            '<span><strong>' + icon + ' ' + title + '</strong> from ' + escapeHTML(item.from_peer || 'Peer') + '</span>' +
+            '<span><strong>' + icon + ' ' + safeTitle + '</strong> from ' + escapeHTML(item.from_peer || 'Peer') + '</span>' +
             '<span>' + timeStr + ' &bull; ' + sizeStr + '</span>' +
           '</div>' +
           contentHTML +
@@ -1453,6 +1495,19 @@ const dashboardHTML = `<!DOCTYPE html>
       return (bytes / (1024*1024)).toFixed(1) + ' MB';
     }
 
+    function redactForLog(rawURL) {
+      try {
+        const parsed = new URL(rawURL);
+        parsed.username = '';
+        parsed.password = '';
+        parsed.hash = '';
+        if (parsed.search) parsed.search = '?redacted';
+        return parsed.toString();
+      } catch (_) {
+        return '<invalid-url>';
+      }
+    }
+
     function escapeHTML(str) {
       return String(str).replace(/[&<>'"]/g, tag => ({
         '&': '&amp;',
@@ -1463,29 +1518,48 @@ const dashboardHTML = `<!DOCTYPE html>
       }[tag] || tag));
     }
 
-    // Connect SSE for live logs
-    if (window.EventSource) {
-      const sse = new EventSource('/api/events');
-      sse.onmessage = (e) => {
-        try {
-          const item = JSON.parse(e.data);
-          const domain = item.domain || item.tag || 'SYS';
-          addLog(domain, item.message || JSON.stringify(item), item.level, item.metadata);
-          if (domain === 'DROP') {
-            loadRecentDrops();
-          }
-        } catch (_) {
-          addLog('SYS', e.data, 'INFO');
-        }
+    // Encode a value for use inside a single-quoted inline event handler.
+    // JSON.stringify alone is not an HTML/JS-context encoder: a value such as
+    // </script> or an apostrophe could otherwise terminate the handler.
+    function jsArg(value) {
+      const encoded = JSON.stringify(String(value == null ? '' : value));
+      const replacements = {
+        '<': '\\u003c',
+        '>': '\\u003e',
+        '&': '\\u0026',
+        "'": '\\u0027',
+        '\u2028': '\\u2028',
+        '\u2029': '\\u2029'
       };
-      sse.onerror = () => { /* reconnects automatically */ };
+      return encoded.replace(/[<>&'\u2028\u2029]/g, ch => replacements[ch] ?? ch);
     }
 
-    setInterval(updateStatus, 3000);
-    updateStatus();
-    loadConfig();
-    loadRecentDrops();
-    loadInitialLogs();
+    // Connect SSE and start polling only after a one-time bootstrap exchange
+    // has succeeded. HttpOnly session cookies are sent automatically.
+    dashboardReady.then(() => {
+      if (window.EventSource) {
+        const sse = new EventSource('/api/events', { withCredentials: true });
+        sse.onmessage = (e) => {
+          try {
+            const item = JSON.parse(e.data);
+            const domain = item.domain || item.tag || 'SYS';
+            addLog(domain, item.message || JSON.stringify(item), item.level, item.metadata);
+            if (domain === 'DROP') {
+              loadRecentDrops();
+            }
+          } catch (_) {
+            addLog('SYS', e.data, 'INFO');
+          }
+        };
+        sse.onerror = () => { /* reconnects automatically */ };
+      }
+
+      setInterval(updateStatus, 3000);
+      updateStatus();
+      loadConfig();
+      loadRecentDrops();
+      loadInitialLogs();
+    });
   </script>
 </body>
 </html>`
@@ -1495,24 +1569,180 @@ type relayResponse struct {
 	Message string `json:"message"`
 }
 
+func escapeHTMLText(s string) string {
+	return strings.NewReplacer(
+		"&", "&amp;",
+		"<", "&lt;",
+		">", "&gt;",
+		`"`, "&quot;",
+		"'", "&#39;",
+	).Replace(s)
+}
+
 func isAllowedOrigin(originHeader string) bool {
-	if originHeader == "" {
-		return true
+	return isAllowedOriginForHost(originHeader, "")
+}
+
+func isAllowedOriginForHost(originHeader, requestHost string) bool {
+	if originHeader == "" || strings.EqualFold(originHeader, "null") {
+		return originHeader == ""
 	}
 	u, err := url.Parse(originHeader)
-	if err != nil {
+	if err != nil || u.User != nil {
 		return false
 	}
-	host := u.Hostname()
+	if u.Scheme != "http" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host != "127.0.0.1" && host != "localhost" && host != "::1" {
+		return false
+	}
+	if requestHost == "" {
+		return true
+	}
+	requestName, requestPort, splitErr := net.SplitHostPort(requestHost)
+	if splitErr != nil {
+		requestName = strings.Trim(requestHost, "[]")
+		requestPort = ""
+	}
+	if requestName != "" {
+		requestName = strings.ToLower(requestName)
+		if requestName != "127.0.0.1" && requestName != "localhost" && requestName != "::1" {
+			return false
+		}
+	}
+	originPort := u.Port()
+	if originPort == "" {
+		if u.Scheme == "https" {
+			originPort = "443"
+		} else {
+			originPort = "80"
+		}
+	}
+	if requestPort == "" {
+		return originPort == "80" || originPort == "443"
+	}
+	return originPort == requestPort
+}
+
+func requestHostIsLoopbackHeader(hostHeader string) bool {
+	host := strings.TrimSpace(hostHeader)
+	if host == "" {
+		return false
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	} else {
+		host = strings.Trim(host, "[]")
+	}
+	host = strings.ToLower(host)
 	return host == "127.0.0.1" || host == "localhost" || host == "::1"
+}
+
+func canonicalLoopbackHost(host string) string {
+	host = strings.ToLower(strings.Trim(strings.TrimSpace(host), "[]"))
+	if host == "localhost" {
+		return "127.0.0.1"
+	}
+	return host
+}
+
+func splitAuthority(authority string) (host, port string, ok bool) {
+	authority = strings.TrimSpace(authority)
+	if authority == "" {
+		return "", "", false
+	}
+	host, port, err := net.SplitHostPort(authority)
+	if err != nil {
+		return "", "", false
+	}
+	host = canonicalLoopbackHost(host)
+	if host != "127.0.0.1" && host != "::1" {
+		return "", "", false
+	}
+	if port == "" {
+		return "", "", false
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		return "", "", false
+	}
+	return host, port, true
+}
+
+func sameLoopbackAuthority(actual, candidate string) bool {
+	actualHost, actualPort, actualOK := splitAuthority(actual)
+	candidateHost, candidatePort, candidateOK := splitAuthority(candidate)
+	return actualOK && candidateOK && actualHost == candidateHost && actualPort == candidatePort
+}
+
+func isAllowedOriginForActual(originHeader, actualAuthority string) bool {
+	if originHeader == "" || strings.EqualFold(originHeader, "null") {
+		return false
+	}
+	u, err := url.Parse(originHeader)
+	if err != nil || u.User != nil || u.Scheme != "http" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	return sameLoopbackAuthority(actualAuthority, u.Host)
+}
+
+func (h *Hub) requestHasDashboardCapability(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	if h.ipcToken != "" {
+		provided := r.Header.Get(IPCTokenHeader)
+		if subtle.ConstantTimeCompare([]byte(provided), []byte(h.ipcToken)) == 1 {
+			return true
+		}
+	}
+	if cookie, err := r.Cookie("tantu_dashboard_session"); err == nil && h.dashboardSessionValid(cookie.Value) {
+		return true
+	}
+	return false
+}
+
+func (h *Hub) consumeDashboardBootstrap(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	provided := strings.TrimSpace(r.Header.Get("X-Tantu-Dashboard-Bootstrap"))
+	if provided == "" {
+		return false
+	}
+	h.dashboardMu.Lock()
+	expected := h.dashboardBootstrapToken
+	if expected == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
+		h.dashboardMu.Unlock()
+		return false
+	}
+	// A bootstrap value is one-use. It is removed before allocating a session,
+	// so concurrent requests cannot exchange it twice.
+	h.dashboardBootstrapToken = ""
+	h.dashboardMu.Unlock()
+	return true
 }
 
 func (h *Hub) securityMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Protect all internal /api/ routes against unauthorized cross-origin access and CSRF
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Cache-Control", "no-store")
+
+		// Validate the complete authority, including its port. Checking only
+		// the hostname lets a raw client forge a different local authority and
+		// makes Origin validation depend on an attacker-controlled Host value.
+		actualWeb := h.WebAddr()
+		if actualWeb == "" || !sameLoopbackAuthority(actualWeb, r.Host) {
+			http.Error(w, "local-only request rejected", http.StatusForbidden)
+			return
+		}
+
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			origin := r.Header.Get("Origin")
-			if origin != "" && !isAllowedOrigin(origin) {
+			if origin != "" && !isAllowedOriginForActual(origin, actualWeb) {
 				writeJSON(w, http.StatusForbidden, map[string]string{
 					"status":  "error",
 					"message": "forbidden cross-origin request",
@@ -1520,17 +1750,58 @@ func (h *Hub) securityMiddleware(next http.Handler) http.Handler {
 				return
 			}
 			referer := r.Header.Get("Referer")
-			if referer != "" && !isAllowedOrigin(referer) {
-				writeJSON(w, http.StatusForbidden, map[string]string{
+			if referer != "" {
+				refererURL, err := url.Parse(referer)
+				if err != nil || !isAllowedOriginForActual(refererURL.Scheme+"://"+refererURL.Host, actualWeb) {
+					writeJSON(w, http.StatusForbidden, map[string]string{
+						"status":  "error",
+						"message": "forbidden cross-origin request",
+					})
+					return
+				}
+			}
+
+			// The bootstrap exchange is the only unauthenticated API operation.
+			// It consumes a one-time value delivered in a browser URL fragment
+			// and returns an HttpOnly, same-site session cookie.
+			if r.URL.Path == "/api/session" {
+				if r.Method != http.MethodPost {
+					writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"status": "error", "message": "method not allowed"})
+					return
+				}
+				if !h.consumeDashboardBootstrap(r) {
+					writeJSON(w, http.StatusForbidden, map[string]string{"status": "error", "message": "dashboard bootstrap capability required"})
+					return
+				}
+				sessionID, err := h.newDashboardSession()
+				if err != nil {
+					writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "error", "message": "dashboard session unavailable"})
+					return
+				}
+				http.SetCookie(w, &http.Cookie{
+					Name:     "tantu_dashboard_session",
+					Value:    sessionID,
+					Path:     "/",
+					MaxAge:   1800,
+					HttpOnly: true,
+					SameSite: http.SameSiteStrictMode,
+				})
+				writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+				return
+			}
+
+			if r.Method != http.MethodOptions && !h.requestHasDashboardCapability(r) {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{
 					"status":  "error",
-					"message": "forbidden cross-origin request",
+					"message": "dashboard session or local IPC capability required",
 				})
 				return
 			}
 			if origin != "" {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Tantu-IPC-Token, X-Tantu-Dashboard-Bootstrap")
+				w.Header().Add("Vary", "Origin")
 			}
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)
@@ -1542,10 +1813,38 @@ func (h *Hub) securityMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+func publicRelayError(err error) string {
+	if err == nil {
+		return "relay flow failed"
+	}
+	return "relay flow failed"
+}
+
 func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(data)
+}
+
+const maxControlBodySize = 64 * 1024
+
+func boundControlBody(w http.ResponseWriter, r *http.Request, maxBytes int64) func() {
+	if r == nil || r.Body == nil {
+		return func() {}
+	}
+	if maxBytes <= 0 {
+		maxBytes = maxControlBodySize
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	// ReadHeaderTimeout does not cover a slow body. Control requests are
+	// small, so give them a short absolute read deadline while leaving the
+	// long-lived upload endpoint's transfer budget intact. Clear it before
+	// returning so a keep-alive connection is not poisoned for its next
+	// request.
+	controller := http.NewResponseController(w)
+	_ = controller.SetReadDeadline(time.Now().Add(15 * time.Second))
+	return func() { _ = controller.SetReadDeadline(time.Time{}) }
 }
 
 type statusResponse struct {
@@ -1559,6 +1858,17 @@ type statusResponse struct {
 	DiscoveredCount int            `json:"discovered_count"`
 	DiscoveredPeers int            `json:"discovered_peers"`
 	Peers           []peerStatus   `json:"peers"`
+	PID             int            `json:"pid,omitempty"`
+	StartedAt       time.Time      `json:"started_at,omitempty"`
+}
+
+type probeStatusResponse struct {
+	Status    string    `json:"status"`
+	Version   string    `json:"version"`
+	Transport string    `json:"transport"`
+	WebAddr   string    `json:"web_addr"`
+	PID       int       `json:"pid"`
+	StartedAt time.Time `json:"started_at"`
 }
 
 type discoveredPeerResponse struct {
@@ -1594,15 +1904,23 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
 
-		webAddr := h.actualWeb
+		webAddr := h.WebAddr()
 		if webAddr == "" {
+			h.mu.RLock()
 			webAddr = h.cfg.WebAddr
+			h.mu.RUnlock()
 		}
-		bookmarkletJS := fmt.Sprintf("javascript:void(window.open('http://%s/relay?url='+encodeURIComponent(location.href),'_blank','width=550,height=380'))", webAddr)
+		bookmarkletJS := "javascript:void(0)"
+		if h.requestHasDashboardCapability(r) {
+			if relayTicket := h.newRelayTicket(); relayTicket != "" {
+				bookmarkletJS = fmt.Sprintf("javascript:void(window.open('http://%s/relay?url='+encodeURIComponent(location.href)+'&ticket=%s','_blank','width=550,height=380'))", webAddr, url.QueryEscape(relayTicket))
+			}
+		}
 
-		page := strings.ReplaceAll(dashboardHTML, "{{VERSION}}", HubVersion)
-		page = strings.ReplaceAll(page, "{{BOOKMARKLET_HREF}}", bookmarkletJS)
+		page := strings.ReplaceAll(dashboardHTML, "{{VERSION}}", escapeHTMLText(HubVersion))
+		page = strings.ReplaceAll(page, "{{BOOKMARKLET_HREF}}", escapeHTMLText(bookmarkletJS))
 		_, _ = w.Write([]byte(page))
 	})
 
@@ -1612,15 +1930,59 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 		_, _ = w.Write([]byte("ok"))
 	})
 
+	// 2a. POST /api/session — exchange a one-time browser bootstrap value for
+	// an HttpOnly dashboard session. The handler is completed by the security
+	// middleware above so the bootstrap value is never accepted by another API.
+	mux.HandleFunc("/api/session", func(w http.ResponseWriter, r *http.Request) {
+		// Kept as an explicit route for documentation and for direct handler
+		// tests; the middleware performs the one-time validation and response.
+		http.NotFound(w, r)
+	})
+
+	// 2b. GET /api/probe — minimal authenticated runtime identity response.
+	// Unlike /api/status it contains no identity SAS, peer list, logs, or
+	// received content.
+	mux.HandleFunc("/api/probe", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"status": "error", "message": "method not allowed"})
+			return
+		}
+		h.mu.RLock()
+		webAddr := h.actualWeb
+		transportName := h.cfg.TransportType
+		pid := os.Getpid()
+		startedAt := h.startTime
+		h.mu.RUnlock()
+		writeJSON(w, http.StatusOK, probeStatusResponse{
+			Status:    "online",
+			Version:   HubVersion,
+			Transport: transportName,
+			WebAddr:   webAddr,
+			PID:       pid,
+			StartedAt: startedAt,
+		})
+	})
+
 	// 3. GET /api/status
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"status": "error", "message": "method not allowed"})
+			return
+		}
 		h.mu.RLock()
 		activeFP := h.activePeer
-		defer h.mu.RUnlock()
+		store := h.store
+		transportName := h.cfg.TransportType
+		webAddrSnapshot := h.actualWeb
+		p2pSnapshot := h.actualP2P
+		identitySnapshot := h.identity
+		startedAtSnapshot := h.startTime
+		engine := h.discoveryEngine
+		h.mu.RUnlock()
 
 		var peers []peerStatus
-		if h.store != nil {
-			allPeers := h.store.ListPeers()
+		if store != nil {
+			allPeers := store.ListPeers()
 			for _, p := range allPeers {
 				isActive := false
 				if activeFP != "" && p.Fingerprint == activeFP {
@@ -1641,28 +2003,29 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 		}
 
 		discCount := 0
-		if engine := h.DiscoveryEngine(); engine != nil {
+		if engine != nil {
 			discCount = len(engine.ListNodes())
 		}
 
 		resp := statusResponse{
 			Status:          "online",
 			Version:         HubVersion,
-			Transport:       h.cfg.TransportType,
-			P2PAddr:         "",
-			WebAddr:         h.actualWeb,
+			Transport:       transportName,
+			WebAddr:         webAddrSnapshot,
 			ActivePeer:      activeFP,
 			DiscoveredCount: discCount,
 			DiscoveredPeers: discCount,
 			Peers:           peers,
+			PID:             os.Getpid(),
+			StartedAt:       startedAtSnapshot,
 		}
-		if h.actualP2P != nil {
-			resp.P2PAddr = h.actualP2P.String()
+		if p2pSnapshot != nil {
+			resp.P2PAddr = p2pSnapshot.String()
 		}
-		if h.identity != nil {
+		if identitySnapshot != nil {
 			resp.Identity = identityStatus{
-				Fingerprint: h.identity.Fingerprint,
-				SAS:         pairing.SASCode(h.identity.Fingerprint),
+				Fingerprint: identitySnapshot.Fingerprint,
+				SAS:         pairing.SASCode(identitySnapshot.Fingerprint),
 			}
 		}
 
@@ -1671,9 +2034,8 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 
 	// 4. GET /relay — Legacy bookmarklet handler
 	mux.HandleFunc("/relay", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Tantu-IPC-Token")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -1691,9 +2053,9 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
 				w.WriteHeader(status)
 				if resp.Status == "success" {
-					fmt.Fprintf(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>✅ Auth Relayed</title><style>body{background:#090b10;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}.box{background:#131722;border:1px solid #232a3b;border-radius:12px;padding:2rem;max-width:450px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,0.5);}.icon{font-size:2.5rem;margin-bottom:0.75rem;}h2{color:#34d399;margin:0 0 0.5rem 0;}p{color:#8b949e;font-size:0.9rem;margin:0 0 1rem 0;}.hint{color:#64748b;font-size:0.8rem;}</style></head><body><div class="box"><div class="icon">✅</div><h2>Authentication Relayed!</h2><p>%s</p><div class="hint">This window will close automatically in 3 seconds...</div></div><script>setTimeout(function(){window.close();},3000);</script></body></html>`, resp.Message)
+					fmt.Fprintf(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>✅ Auth Relayed</title><style>body{background:#090b10;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}.box{background:#131722;border:1px solid #232a3b;border-radius:12px;padding:2rem;max-width:450px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,0.5);}.icon{font-size:2.5rem;margin-bottom:0.75rem;}h2{color:#34d399;margin:0 0 0.5rem 0;}p{color:#8b949e;font-size:0.9rem;margin:0 0 1rem 0;}.hint{color:#64748b;font-size:0.8rem;}</style></head><body><div class="box"><div class="icon">✅</div><h2>Authentication Relayed!</h2><p>%s</p><div class="hint">This window will close automatically in 3 seconds...</div></div><script>setTimeout(function(){window.close();},3000);</script></body></html>`, escapeHTMLText(resp.Message))
 				} else {
-					fmt.Fprintf(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>❌ Relay Error</title><style>body{background:#090b10;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}.box{background:#131722;border:1px solid #232a3b;border-radius:12px;padding:2rem;max-width:450px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,0.5);}.icon{font-size:2.5rem;margin-bottom:0.75rem;}h2{color:#f87171;margin:0 0 0.5rem 0;}p{color:#8b949e;font-size:0.9rem;margin:0 0 1rem 0;}.hint{color:#64748b;font-size:0.8rem;}</style></head><body><div class="box"><div class="icon">❌</div><h2>Relay Error</h2><p>%s</p><div class="hint">Check terminal logs or verify your peer is connected.</div></div></body></html>`, resp.Message)
+					fmt.Fprintf(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>❌ Relay Error</title><style>body{background:#090b10;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}.box{background:#131722;border:1px solid #232a3b;border-radius:12px;padding:2rem;max-width:450px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,0.5);}.icon{font-size:2.5rem;margin-bottom:0.75rem;}h2{color:#f87171;margin:0 0 0.5rem 0;}p{color:#8b949e;font-size:0.9rem;margin:0 0 1rem 0;}.hint{color:#64748b;font-size:0.8rem;}</style></head><body><div class="box"><div class="icon">❌</div><h2>Relay Error</h2><p>%s</p><div class="hint">Check terminal logs or verify your peer is connected.</div></div></body></html>`, escapeHTMLText(resp.Message))
 				}
 				return
 			}
@@ -1702,32 +2064,36 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 
 		rawURL := strings.TrimSpace(r.URL.Query().Get("url"))
 		if rawURL == "" {
+			// Keep the legacy endpoint's harmless validation response readable
+			// for old callers; no relay work is performed without a URL.
 			respond(http.StatusBadRequest, relayResponse{
 				Status:  "error",
 				Message: "missing or empty url parameter",
 			})
 			return
 		}
-
-		oauthURL := browser.SanitizeURL(rawURL)
-		conn, err := h.DialPeer("")
-		if err != nil {
-			respond(http.StatusBadGateway, relayResponse{
-				Status:  "error",
-				Message: fmt.Sprintf("failed to dial peer: %v", err),
-			})
+		// The legacy GET endpoint deliberately does not accept the browser
+		// session cookie: a cross-site top-level navigation must not be able to
+		// turn that cookie into a relay capability. Authenticated dashboard
+		// mutations use POST /api/relay/open; the bookmarklet uses a one-use
+		// ticket.
+		relayAuthorized := h.ipcToken != "" && subtle.ConstantTimeCompare([]byte(r.Header.Get(IPCTokenHeader)), []byte(h.ipcToken)) == 1
+		if !relayAuthorized {
+			relayAuthorized = h.consumeRelayTicket(r.URL.Query().Get("ticket"))
+		}
+		if !relayAuthorized {
+			providedRelayToken := r.URL.Query().Get("token")
+			relayAuthorized = h.relayToken != "" && subtle.ConstantTimeCompare([]byte(providedRelayToken), []byte(h.relayToken)) == 1
+		}
+		if !relayAuthorized {
+			http.Error(w, "relay token or dashboard session required", http.StatusForbidden)
 			return
 		}
-		defer conn.Close()
 
-		relayCtx, cancel := context.WithTimeout(r.Context(), h.cfg.Timeout)
-		defer cancel()
-
-		bcfg := bridge.BSideConfig{Timeout: h.cfg.Timeout}
-		if err := bridge.HandleBSide(relayCtx, conn, oauthURL, bcfg); err != nil {
-			respond(http.StatusInternalServerError, relayResponse{
+		if err := h.relayOAuth(r.Context(), "", rawURL); err != nil {
+			respond(http.StatusBadGateway, relayResponse{
 				Status:  "error",
-				Message: fmt.Sprintf("bridge flow failed: %v", err),
+				Message: publicRelayError(err),
 			})
 			return
 		}
@@ -1740,9 +2106,8 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 
 	// 5. POST /api/relay/open — Manual URL forwarder
 	mux.HandleFunc("/api/relay/open", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Tantu-IPC-Token")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -1759,6 +2124,8 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			URL  string `json:"url"`
 			Peer string `json:"peer"`
 		}
+		releaseBody := boundControlBody(w, r, 128*1024)
+		defer releaseBody()
 		if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				writeJSON(w, http.StatusBadRequest, relayResponse{Status: "error", Message: "invalid json body"})
@@ -1775,25 +2142,10 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			return
 		}
 
-		oauthURL := browser.SanitizeURL(rawURL)
-		conn, err := h.DialPeer(req.Peer)
-		if err != nil {
+		if err := h.relayOAuth(r.Context(), req.Peer, rawURL); err != nil {
 			writeJSON(w, http.StatusBadGateway, relayResponse{
 				Status:  "error",
-				Message: fmt.Sprintf("failed to dial peer: %v", err),
-			})
-			return
-		}
-		defer conn.Close()
-
-		relayCtx, cancel := context.WithTimeout(r.Context(), h.cfg.Timeout)
-		defer cancel()
-
-		bcfg := bridge.BSideConfig{Timeout: h.cfg.Timeout}
-		if err := bridge.HandleBSide(relayCtx, conn, oauthURL, bcfg); err != nil {
-			writeJSON(w, http.StatusInternalServerError, relayResponse{
-				Status:  "error",
-				Message: fmt.Sprintf("bridge flow failed: %v", err),
+				Message: publicRelayError(err),
 			})
 			return
 		}
@@ -1806,9 +2158,8 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 
 	// 6. POST /api/drop/upload — File & Text QuickDrop transfer
 	mux.HandleFunc("/api/drop/upload", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Tantu-IPC-Token")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -1827,12 +2178,17 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 				Name string `json:"name"`
 				Peer string `json:"peer"`
 			}
-			if err := json.NewDecoder(io.LimitReader(r.Body, 50*1024*1024)).Decode(&textReq); err != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, 11*1024*1024)
+			if err := json.NewDecoder(r.Body).Decode(&textReq); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"status": "error", "message": "invalid json payload"})
 				return
 			}
 			if textReq.Text == "" {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"status": "error", "message": "empty text payload"})
+				return
+			}
+			if len(textReq.Text) > 10*1024*1024 {
+				writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"status": "error", "message": "text payload exceeds 10 MiB limit"})
 				return
 			}
 
@@ -1949,9 +2305,8 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 
 	// 10. GET /api/config & POST /api/config — Retrieve or update Hub config
 	mux.HandleFunc("/api/config", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Tantu-IPC-Token")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -1965,6 +2320,8 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			return
 		}
 		if r.Method == http.MethodPost {
+			releaseBody := boundControlBody(w, r, maxControlBodySize)
+			defer releaseBody()
 			var req struct {
 				OutputDir string `json:"output_dir"`
 			}
@@ -1977,7 +2334,7 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"status": "error", "message": "output_dir cannot be empty"})
 				return
 			}
-			if err := os.MkdirAll(req.OutputDir, 0755); err != nil {
+			if err := os.MkdirAll(req.OutputDir, 0700); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"status": "error", "message": fmt.Sprintf("cannot create directory: %v", err)})
 				return
 			}
@@ -1994,9 +2351,8 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 
 	// 11. POST /api/open-folder — Launches OS file explorer for output_dir
 	mux.HandleFunc("/api/open-folder", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Tantu-IPC-Token")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -2009,7 +2365,7 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 		if dir == "" {
 			dir = "."
 		}
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, 0700); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"status": "error", "message": fmt.Sprintf("cannot create directory: %v", err)})
 			return
 		}
@@ -2026,9 +2382,8 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 
 	// 12. POST /api/pair/initiate — Initiates in-band pairing with a remote peer address
 	mux.HandleFunc("/api/pair/initiate", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Tantu-IPC-Token")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -2040,24 +2395,99 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 		var req struct {
 			PeerAddr string `json:"peer_addr"`
 		}
+		releaseBody := boundControlBody(w, r, 8*1024)
+		defer releaseBody()
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.PeerAddr) == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"status": "error", "message": "invalid request: peer_addr is required"})
 			return
 		}
 		peerAddr := strings.TrimSpace(req.PeerAddr)
 		h.logger.Action(DomainPeer, fmt.Sprintf("Initiating in-band pairing with %s", peerAddr))
-		res, err := pairing.DialInBandPairing(peerAddr, h.store, func(peerSAS, localSAS string) bool {
-			h.logger.Action(DomainPeer, fmt.Sprintf("Pairing SAS match with %s: %s vs %s", peerAddr, peerSAS, localSAS))
-			return true
-		})
+		pairCtx, pairCancel := h.withRunContext(r.Context())
+		defer pairCancel()
+		pairingOptions := pairing.PairingOptions{}
+		if actual := h.P2PAddr(); actual != nil {
+			_, portText, splitErr := net.SplitHostPort(actual.String())
+			if splitErr == nil {
+				if port, convErr := strconv.Atoi(portText); convErr == nil {
+					pairingOptions.LocalListenPort = port
+				}
+			}
+		}
+		res, err := pairing.DialInBandPairingWithOptions(pairCtx, peerAddr, h.store, func(peerSAS, localSAS string) bool {
+			if h.cfg.AutoAcceptPairing {
+				h.logger.Action(DomainPeer, fmt.Sprintf("Auto-accepted pairing SAS match with %s: %s vs %s", peerAddr, peerSAS, localSAS))
+				return true
+			}
+
+			pairID := newPendingPairingID()
+			decisionCh := make(chan struct{})
+			pending := &PendingPairing{
+				ID:         pairID,
+				RemoteAddr: peerAddr,
+				PeerSAS:    peerSAS,
+				LocalSAS:   localSAS,
+				PeerName:   "Remote Device",
+				CreatedAt:  time.Now(),
+				decisionCh: decisionCh,
+			}
+			h.pendingPairingsMu.Lock()
+			if len(h.pendingPairings) >= 10 {
+				h.pendingPairingsMu.Unlock()
+				h.logger.Warn(DomainPeer, "Pairing request rejected: too many pending requests")
+				return false
+			}
+			h.pendingPairings[pairID] = pending
+			h.pendingPairingsMu.Unlock()
+			defer func() {
+				h.pendingPairingsMu.Lock()
+				delete(h.pendingPairings, pairID)
+				h.pendingPairingsMu.Unlock()
+			}()
+
+			h.logger.Action(DomainPeer, fmt.Sprintf("🔐 Web pairing approval required: %s (SAS: %s, ID: %s)", peerAddr, peerSAS, pairID))
+			select {
+			case <-decisionCh:
+				h.pendingPairingsMu.Lock()
+				accepted := pending.decision
+				h.pendingPairingsMu.Unlock()
+				return accepted
+			case <-pairCtx.Done():
+				return h.terminatePendingPairing(pending, false)
+			case <-time.After(60 * time.Second):
+				h.logger.Warn(DomainPeer, fmt.Sprintf("Pairing request from %s timed out", peerAddr))
+				return h.terminatePendingPairing(pending, false)
+			}
+		}, pairingOptions)
 		if err != nil {
 			h.logger.Error(DomainPeer, fmt.Sprintf("Pairing with %s failed: %v", peerAddr, err))
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"status": "error", "error": err.Error()})
 			return
 		}
-		if res.Accepted {
-			h.logger.Action(DomainPeer, fmt.Sprintf("✅ Successfully paired with %s (SAS: %s)", peerAddr, res.PeerSAS))
+		if res == nil || !res.Accepted {
+			peerName := ""
+			peerSAS := ""
+			peerFP := ""
+			if res != nil {
+				peerSAS = res.PeerSAS
+				peerFP = res.PeerFingerprint
+				if h.store != nil {
+					if p, ok := h.store.GetPeer(peerFP); ok {
+						peerName = p.DisplayName()
+					}
+				}
+			}
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"status":           "rejected",
+				"accepted":         false,
+				"peer_addr":        peerAddr,
+				"peer_name":        peerName,
+				"peer_sas":         peerSAS,
+				"peer_fingerprint": peerFP,
+			})
+			return
 		}
+		h.logger.Action(DomainPeer, fmt.Sprintf("✅ Successfully paired with %s (SAS: %s)", peerAddr, res.PeerSAS))
 		peerName := ""
 		if h.store != nil {
 			if p, ok := h.store.GetPeer(res.PeerFingerprint); ok {
@@ -2066,7 +2496,7 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":           "paired",
-			"accepted":         res.Accepted,
+			"accepted":         true,
 			"peer_addr":        peerAddr,
 			"peer_name":        peerName,
 			"peer_sas":         res.PeerSAS,
@@ -2089,6 +2519,8 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"status": "error", "message": "method not allowed"})
 			return
 		}
+		releaseBody := boundControlBody(w, r, 8*1024)
+		defer releaseBody()
 		var req struct {
 			ID     string `json:"id"`
 			Accept bool   `json:"accept"`
@@ -2111,9 +2543,8 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 
 	// 13. POST /api/peers/active — Set active peer
 	mux.HandleFunc("/api/peers/active", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Tantu-IPC-Token")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -2122,6 +2553,8 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"status": "error", "message": "method not allowed"})
 			return
 		}
+		releaseBody := boundControlBody(w, r, maxControlBodySize)
+		defer releaseBody()
 		var req struct {
 			Peer string `json:"peer"`
 		}
@@ -2146,9 +2579,8 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 
 	// 14. POST /api/peers/alias — Set peer alias
 	mux.HandleFunc("/api/peers/alias", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Tantu-IPC-Token")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -2157,6 +2589,8 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"status": "error", "message": "method not allowed"})
 			return
 		}
+		releaseBody := boundControlBody(w, r, maxControlBodySize)
+		defer releaseBody()
 		var req struct {
 			Fingerprint string `json:"fingerprint"`
 			Alias       string `json:"alias"`
@@ -2191,9 +2625,8 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 
 	// 15. POST /api/peers/default — Set default peer
 	mux.HandleFunc("/api/peers/default", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Tantu-IPC-Token")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -2202,6 +2635,8 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"status": "error", "message": "method not allowed"})
 			return
 		}
+		releaseBody := boundControlBody(w, r, maxControlBodySize)
+		defer releaseBody()
 		var req struct {
 			Fingerprint string `json:"fingerprint"`
 		}
@@ -2234,9 +2669,8 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 
 	// 16. POST /api/peers/remove — Remove / unpair peer
 	mux.HandleFunc("/api/peers/remove", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Tantu-IPC-Token")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -2245,6 +2679,8 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"status": "error", "message": "method not allowed"})
 			return
 		}
+		releaseBody := boundControlBody(w, r, maxControlBodySize)
+		defer releaseBody()
 		var req struct {
 			Fingerprint string `json:"fingerprint"`
 		}
@@ -2280,9 +2716,8 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 
 	// 17. GET /api/discovery/peers — Discovered nearby Hubs on LAN
 	mux.HandleFunc("/api/discovery/peers", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Tantu-IPC-Token")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -2327,5 +2762,9 @@ func openDirectoryInOS(dir string) error {
 	default:
 		cmd = exec.Command("xdg-open", cleanDir)
 	}
-	return cmd.Start()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() { _ = cmd.Wait() }()
+	return nil
 }

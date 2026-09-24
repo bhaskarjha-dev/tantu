@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -124,12 +125,27 @@ func NewEventBroadcaster() *EventBroadcaster {
 	}
 }
 
-// Subscribe registers a new subscriber channel.
-func (b *EventBroadcaster) Subscribe() chan LogEvent {
+const maxSSEClients = 32
+
+// TrySubscribe registers a subscriber if the bounded client budget allows it.
+func (b *EventBroadcaster) TrySubscribe() (chan LogEvent, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if len(b.clients) >= maxSSEClients {
+		return nil, false
+	}
 	ch := make(chan LogEvent, 64)
 	b.clients[ch] = struct{}{}
+	return ch, true
+}
+
+// Subscribe registers a new subscriber channel. It is retained for callers
+// that do not need admission control; HTTP handlers should use TrySubscribe.
+func (b *EventBroadcaster) Subscribe() chan LogEvent {
+	ch, ok := b.TrySubscribe()
+	if !ok {
+		return nil
+	}
 	return ch
 }
 
@@ -168,6 +184,7 @@ type EventLogger struct {
 	ring        *RingBuffer
 	broadcaster *EventBroadcaster
 	nextID      uint64
+	onEventMu   sync.RWMutex
 	onEvent     func(LogEvent)
 }
 
@@ -181,11 +198,37 @@ func NewEventLogger(capacity int) *EventLogger {
 
 // SetOnEvent sets an optional callback invoked on every logged event (e.g. for terminal output).
 func (l *EventLogger) SetOnEvent(fn func(LogEvent)) {
+	l.onEventMu.Lock()
 	l.onEvent = fn
+	l.onEventMu.Unlock()
+}
+
+func sanitizeLogText(value string) string {
+	value = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' {
+			return r
+		}
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, value)
+	if len(value) > 4096 {
+		value = value[:4096] + "…"
+	}
+	return value
 }
 
 // Log records and broadcasts a new structured LogEvent.
 func (l *EventLogger) Log(level EventLevel, domain EventDomain, msg string, meta map[string]string) LogEvent {
+	msg = redactLogText(sanitizeLogText(msg))
+	if meta != nil {
+		copyMeta := make(map[string]string, len(meta))
+		for key, value := range meta {
+			copyMeta[sanitizeLogText(key)] = redactLogText(sanitizeLogText(value))
+		}
+		meta = copyMeta
+	}
 	id := atomic.AddUint64(&l.nextID, 1)
 	ev := LogEvent{
 		ID:        id,
@@ -197,8 +240,11 @@ func (l *EventLogger) Log(level EventLevel, domain EventDomain, msg string, meta
 	}
 	l.ring.Append(ev)
 	l.broadcaster.Broadcast(ev)
-	if l.onEvent != nil {
-		l.onEvent(ev)
+	l.onEventMu.RLock()
+	onEvent := l.onEvent
+	l.onEventMu.RUnlock()
+	if onEvent != nil {
+		onEvent(ev)
 	}
 	return ev
 }
@@ -236,16 +282,15 @@ func (l *EventLogger) GetRecent() []LogEvent {
 // HandleLogs serves historical logs as JSON for dashboard hydration (GET /api/logs).
 func (l *EventLogger) HandleLogs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(l.GetRecent())
 }
 
 // HandleEvents streams events over Server-Sent Events (GET /api/events).
 func (l *EventLogger) HandleEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -253,7 +298,11 @@ func (l *EventLogger) HandleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ch := l.broadcaster.Subscribe()
+	ch, admitted := l.broadcaster.TrySubscribe()
+	if !admitted {
+		http.Error(w, "too many event subscribers", http.StatusServiceUnavailable)
+		return
+	}
 	defer l.broadcaster.Unsubscribe(ch)
 
 	// Send initial connection comment
@@ -290,10 +339,7 @@ func ShortenURL(rawURL string, maxLen int) string {
 	}
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Host == "" {
-		if len(rawURL) > maxLen && maxLen > 3 {
-			return rawURL[:maxLen-3] + "..."
-		}
-		return rawURL
+		return "<invalid-url>"
 	}
 
 	summary := u.Host + u.Path
@@ -316,6 +362,17 @@ func replaceURLs(msg string, maxLen int) string {
 		}
 	}
 	return strings.Join(words, " ")
+}
+
+var sensitiveQueryValue = regexp.MustCompile(`(?i)([?&](?:code|state|access_token|refresh_token|id_token|token|assertion|code_verifier|client_secret|error_description)=)[^&\s]+`)
+
+// redactLogText removes OAuth query values even when a caller bypasses the
+// normal URL formatting helpers.  The key names remain visible for debugging,
+// but authorization codes, state values, and token material never enter the
+// ring buffer or terminal fallback.
+func redactLogText(msg string) string {
+	msg = replaceURLs(msg, 120)
+	return sensitiveQueryValue.ReplaceAllString(msg, `${1}<redacted>`)
 }
 
 // FormatTerminalSignal renders a clean, single-line colorized badge:

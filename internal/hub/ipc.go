@@ -7,14 +7,18 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/bhaskarjha-dev/tantu/internal/pairing"
 )
+
+const IPCTokenHeader = "X-Tantu-IPC-Token"
 
 // RuntimeHubInfo holds runtime discovery metadata for a running Hub process.
 type RuntimeHubInfo struct {
@@ -25,6 +29,7 @@ type RuntimeHubInfo struct {
 	P2PAddr   string    `json:"p2p_addr"`
 	P2PPort   int       `json:"p2p_port"`
 	Transport string    `json:"transport"`
+	IPCToken  string    `json:"ipc_token,omitempty"`
 }
 
 var (
@@ -66,54 +71,238 @@ func GetRuntimeFilePath(storeDir string) string {
 	return filepath.Join(storeDir, "hub.json")
 }
 
-// WriteRuntimeInfo writes RuntimeHubInfo to hub.json atomically via a temporary file with 0600 permissions.
-func WriteRuntimeInfo(storeDir string, info RuntimeHubInfo) error {
-	filePath := GetRuntimeFilePath(storeDir)
-	dir := filepath.Dir(filePath)
+const (
+	maxRuntimeInfoSize = 64 * 1024
+	runtimeLockName    = ".hub.json.lock"
+	runtimeLockWait    = 2 * time.Second
+	runtimeLockStale   = 30 * time.Second
+)
+
+// withRuntimeLock serializes the complete read/write/remove transaction across
+// Hub processes sharing a store directory. The lock is a directory rather than
+// an advisory in-process mutex, so it also protects against a second process
+// replacing hub.json between an ownership check and removal.
+func withRuntimeLock(storeDir string, fn func() error) error {
+	dir := filepath.Dir(GetRuntimeFilePath(storeDir))
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("create store dir: %w", err)
 	}
-
-	data, err := json.MarshalIndent(info, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal runtime info: %w", err)
+	lockPath := filepath.Join(dir, runtimeLockName)
+	deadline := time.Now().Add(runtimeLockWait)
+	for {
+		err := os.Mkdir(lockPath, 0700)
+		if err == nil {
+			break
+		}
+		if !os.IsExist(err) {
+			return fmt.Errorf("acquire runtime lock: %w", err)
+		}
+		if stat, statErr := os.Stat(lockPath); statErr == nil && time.Since(stat.ModTime()) > runtimeLockStale {
+			// Runtime operations are short. Reclaim only an abandoned lock;
+			// never remove a live lock merely because a caller is impatient.
+			_ = os.RemoveAll(lockPath)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("runtime metadata lock timeout")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
+	defer func() { _ = os.RemoveAll(lockPath) }()
+	return fn()
+}
 
-	tmpPath := filePath + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
-		return fmt.Errorf("write tmp runtime info: %w", err)
+func validateRuntimeInfo(info RuntimeHubInfo) error {
+	if info.PID < 0 {
+		return fmt.Errorf("runtime PID is invalid")
 	}
-
-	// Remove target first on Windows to avoid access denied error on rename
-	_ = os.Remove(filePath)
-	if err := os.Rename(tmpPath, filePath); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("rename runtime info: %w", err)
+	if info.WebPort < 0 || info.WebPort > 65535 || info.P2PPort < 0 || info.P2PPort > 65535 {
+		return fmt.Errorf("runtime port is invalid")
+	}
+	if info.WebAddr != "" && !validLoopbackWebAddr(info.WebAddr) {
+		return fmt.Errorf("runtime web address is not loopback")
+	}
+	if len(info.IPCToken) > 256 {
+		return fmt.Errorf("runtime IPC token is too large")
 	}
 	return nil
 }
 
-// RemoveRuntimeInfo removes the hub.json file.
-func RemoveRuntimeInfo(storeDir string) error {
+func readRuntimeInfoUnlocked(storeDir string) (*RuntimeHubInfo, error) {
 	filePath := GetRuntimeFilePath(storeDir)
-	if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxRuntimeInfoSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxRuntimeInfoSize {
+		return nil, fmt.Errorf("runtime metadata exceeds %d bytes", maxRuntimeInfoSize)
+	}
+	var info RuntimeHubInfo
+	if err := json.Unmarshal(data, &info); err != nil {
+		return nil, fmt.Errorf("decode runtime metadata: %w", err)
+	}
+	if err := validateRuntimeInfo(info); err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
+func removeRuntimeInfoUnlocked(storeDir string) error {
+	if err := os.Remove(GetRuntimeFilePath(storeDir)); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil
 }
 
-// ReadRuntimeInfo reads and unmarshals hub.json.
+func replaceRuntimeFile(tempPath, destination string) error {
+	if err := os.Rename(tempPath, destination); err == nil {
+		return nil
+	} else {
+		firstErr := err
+		if destinationInfo, statErr := os.Lstat(destination); statErr == nil && destinationInfo.IsDir() {
+			return fmt.Errorf("replace runtime info: destination is a directory")
+		}
+		// Windows does not replace an existing destination with Rename. Move
+		// the old file aside first, and restore it if publishing the new file
+		// fails. This preserves the previous metadata on unexpected failures.
+		backup, backupErr := os.CreateTemp(filepath.Dir(destination), ".hub.json.old-*")
+		if backupErr != nil {
+			return fmt.Errorf("replace runtime info: %w", firstErr)
+		}
+		backupPath := backup.Name()
+		_ = backup.Close()
+		_ = os.Remove(backupPath)
+		if err := os.Rename(destination, backupPath); err != nil {
+			return fmt.Errorf("replace runtime info: %w", firstErr)
+		}
+		if err := os.Rename(tempPath, destination); err != nil {
+			if restoreErr := os.Rename(backupPath, destination); restoreErr != nil {
+				return fmt.Errorf("replace runtime info: %w (restore failed: %v)", err, restoreErr)
+			}
+			return fmt.Errorf("rename runtime info: %w", err)
+		}
+		_ = os.Remove(backupPath)
+		return nil
+	}
+}
+
+// WriteRuntimeInfo writes RuntimeHubInfo to hub.json atomically via a unique
+// temporary file with 0600 permissions. A cross-process lock covers the whole
+// publication transaction, and a failed replacement preserves the prior file.
+func WriteRuntimeInfo(storeDir string, info RuntimeHubInfo) error {
+	if err := validateRuntimeInfo(info); err != nil {
+		return err
+	}
+	return withRuntimeLock(storeDir, func() error {
+		filePath := GetRuntimeFilePath(storeDir)
+		dir := filepath.Dir(filePath)
+		if existing, readErr := readRuntimeInfoUnlocked(storeDir); readErr == nil && existing != nil && existing.IPCToken != "" && existing.WebAddr != "" {
+			if _, live := probeAddr(existing.WebAddr, existing.IPCToken, existing); live {
+				return fmt.Errorf("runtime metadata is already owned by a live Hub")
+			}
+		}
+		data, err := json.MarshalIndent(info, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal runtime info: %w", err)
+		}
+		tmp, err := os.CreateTemp(dir, "hub.json.tmp-*")
+		if err != nil {
+			return fmt.Errorf("create runtime temp file: %w", err)
+		}
+		tmpPath := tmp.Name()
+		cleanup := func() {
+			_ = tmp.Close()
+			_ = os.Remove(tmpPath)
+		}
+		if err := tmp.Chmod(0600); err != nil {
+			cleanup()
+			return fmt.Errorf("set runtime temp permissions: %w", err)
+		}
+		if _, err := tmp.Write(data); err != nil {
+			cleanup()
+			return fmt.Errorf("write runtime temp file: %w", err)
+		}
+		if err := tmp.Sync(); err != nil {
+			cleanup()
+			return fmt.Errorf("sync runtime temp file: %w", err)
+		}
+		if err := tmp.Close(); err != nil {
+			_ = os.Remove(tmpPath)
+			return fmt.Errorf("close runtime temp file: %w", err)
+		}
+		if err := replaceRuntimeFile(tmpPath, filePath); err != nil {
+			_ = os.Remove(tmpPath)
+			return err
+		}
+		return nil
+	})
+}
+
+// RuntimeIPCToken returns the capability token from the active runtime file.
+// An empty result means no Hub runtime metadata is available.
+func RuntimeIPCToken(storeDir string) string {
+	info, err := ReadRuntimeInfo(storeDir)
+	if err != nil || info == nil {
+		return ""
+	}
+	return strings.TrimSpace(info.IPCToken)
+}
+
+// RuntimeIPCTokenForAddr returns the token only when the destination matches
+// the runtime file's authenticated loopback endpoint. This prevents a caller
+// from accidentally forwarding the capability to an unrelated local listener.
+func RuntimeIPCTokenForAddr(storeDir, webAddr string) string {
+	info, err := ReadRuntimeInfo(storeDir)
+	if err != nil || info == nil || info.IPCToken == "" || info.WebAddr == "" {
+		return ""
+	}
+	if !sameLoopbackEndpoint(info.WebAddr, webAddr) {
+		return ""
+	}
+	return strings.TrimSpace(info.IPCToken)
+}
+
+// RemoveRuntimeInfoIfOwned removes runtime metadata only when it still belongs
+// to the expected Hub instance. The check and removal are one locked
+// transaction, so an older process cannot delete a replacement's metadata.
+func RemoveRuntimeInfoIfOwned(storeDir string, expected RuntimeHubInfo) error {
+	return withRuntimeLock(storeDir, func() error {
+		info, err := readRuntimeInfoUnlocked(storeDir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if info.PID != expected.PID || !info.StartedAt.Equal(expected.StartedAt) || info.IPCToken != expected.IPCToken {
+			return nil
+		}
+		return removeRuntimeInfoUnlocked(storeDir)
+	})
+}
+
+// RemoveRuntimeInfo removes the hub.json file.
+func RemoveRuntimeInfo(storeDir string) error {
+	return withRuntimeLock(storeDir, func() error { return removeRuntimeInfoUnlocked(storeDir) })
+}
+
+// ReadRuntimeInfo reads and validates hub.json.
 func ReadRuntimeInfo(storeDir string) (*RuntimeHubInfo, error) {
-	filePath := GetRuntimeFilePath(storeDir)
-	data, err := os.ReadFile(filePath)
+	var info *RuntimeHubInfo
+	err := withRuntimeLock(storeDir, func() error {
+		var err error
+		info, err = readRuntimeInfoUnlocked(storeDir)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
-	var info RuntimeHubInfo
-	if err := json.Unmarshal(data, &info); err != nil {
-		return nil, err
-	}
-	return &info, nil
+	return info, nil
 }
 
 // HubStatus represents the status response from GET /api/status.
@@ -125,6 +314,8 @@ type HubStatus struct {
 	P2PAddr   string         `json:"p2p_addr"`
 	WebAddr   string         `json:"web_addr"`
 	Peers     []PeerStatus   `json:"peers"`
+	PID       int            `json:"pid,omitempty"`
+	StartedAt time.Time      `json:"started_at,omitempty"`
 }
 
 // IdentityStatus holds local node identity metadata.
@@ -145,18 +336,81 @@ func cleanWebAddr(addr string) string {
 	if addr == "" {
 		return DefaultWebAddr
 	}
+	addr = strings.TrimSpace(addr)
 	addr = strings.TrimPrefix(addr, "http://")
 	addr = strings.TrimPrefix(addr, "https://")
-	return addr
+	return strings.TrimRight(addr, "/")
 }
 
-func probeAddr(webAddr string) (*HubStatus, bool) {
-	webAddr = cleanWebAddr(webAddr)
-	client := &http.Client{
-		Timeout: 200 * time.Millisecond,
+func validLoopbackWebAddr(addr string) bool {
+	cleaned := cleanWebAddr(addr)
+	u, err := url.Parse("http://" + cleaned)
+	if err != nil || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return false
 	}
-	url := fmt.Sprintf("http://%s/api/status", webAddr)
-	resp, err := client.Get(url)
+	host := u.Hostname()
+	if host != "127.0.0.1" && host != "localhost" && host != "::1" {
+		return false
+	}
+	if port := u.Port(); port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return false
+		}
+	}
+	return true
+}
+
+func sameLoopbackEndpoint(a, b string) bool {
+	if !validLoopbackWebAddr(a) || !validLoopbackWebAddr(b) {
+		return false
+	}
+	ua, _ := url.Parse("http://" + cleanWebAddr(a))
+	ub, _ := url.Parse("http://" + cleanWebAddr(b))
+	hostA := strings.ToLower(ua.Hostname())
+	hostB := strings.ToLower(ub.Hostname())
+	if hostA == "localhost" {
+		hostA = "127.0.0.1"
+	}
+	if hostB == "localhost" {
+		hostB = "127.0.0.1"
+	}
+	return hostA == hostB && effectivePort(ua) == effectivePort(ub)
+}
+
+func effectivePort(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	if port := u.Port(); port != "" {
+		return port
+	}
+	if u.Scheme == "https" {
+		return "443"
+	}
+	return "80"
+}
+
+func probeAddr(webAddr, token string, expected *RuntimeHubInfo) (*HubStatus, bool) {
+	webAddr = cleanWebAddr(webAddr)
+	if !validLoopbackWebAddr(webAddr) || strings.TrimSpace(token) == "" {
+		return nil, false
+	}
+	client := &http.Client{
+		Timeout:   200 * time.Millisecond,
+		Transport: &http.Transport{Proxy: nil},
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	defer client.CloseIdleConnections()
+	endpoint := fmt.Sprintf("http://%s/api/probe", webAddr)
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, false
+	}
+	req.Header.Set(IPCTokenHeader, token)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, false
 	}
@@ -167,17 +421,42 @@ func probeAddr(webAddr string) (*HubStatus, bool) {
 	}
 
 	var status HubStatus
-	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+	decoder := json.NewDecoder(io.LimitReader(resp.Body, 64*1024))
+	if err := decoder.Decode(&status); err != nil {
 		return nil, false
 	}
-
+	if status.Status != "online" || status.WebAddr == "" || !sameLoopbackEndpoint(webAddr, status.WebAddr) {
+		return nil, false
+	}
+	if expected != nil {
+		if expected.IPCToken != "" && token != expected.IPCToken {
+			return nil, false
+		}
+		if expected.PID > 0 && status.PID != expected.PID {
+			return nil, false
+		}
+		if !expected.StartedAt.IsZero() && !status.StartedAt.Equal(expected.StartedAt) {
+			return nil, false
+		}
+	}
 	return &status, true
 }
 
-// ProbeHub checks if a local tantu Hub is running.
-// If webAddr is explicitly passed (and not equal to DefaultWebAddr), it probes that address.
-// Otherwise, it checks hub.json for dynamic port discovery before falling back to DefaultWebAddr.
+// ProbeHub checks if a local tantu Hub is running using the default runtime
+// metadata location. Callers that operate a Hub with a custom store directory
+// should use ProbeHubWithStoreDir.
 func ProbeHub(webAddr string) (*HubStatus, bool) {
+	return probeHub(webAddr, "")
+}
+
+// ProbeHubWithStoreDir is ProbeHub with an explicit runtime metadata
+// directory. This keeps CLI delegation paired with `tantu hub --store-dir ...`
+// instead of silently reading a different process's hub.json.
+func ProbeHubWithStoreDir(webAddr, storeDir string) (*HubStatus, bool) {
+	return probeHub(webAddr, storeDir)
+}
+
+func probeHub(webAddr, storeDir string) (*HubStatus, bool) {
 	fallbackAddr := DefaultWebAddr
 	overrideMu.RLock()
 	overrideWeb := defaultWebAddrOverride
@@ -186,26 +465,65 @@ func ProbeHub(webAddr string) (*HubStatus, bool) {
 		fallbackAddr = overrideWeb
 	}
 
+	// Runtime metadata is the source of the capability and the process
+	// identity. Never probe an unauthenticated status-shaped endpoint: a local
+	// fake service could otherwise impersonate a Hub and receive delegated
+	// OAuth URLs or file bytes.
+	info, infoErr := ReadRuntimeInfo(storeDir)
 	cleaned := cleanWebAddr(webAddr)
 	if webAddr != "" && cleaned != DefaultWebAddr && cleaned != fallbackAddr {
-		return probeAddr(cleaned)
+		if infoErr != nil || info == nil || info.IPCToken == "" || info.WebAddr == "" || !sameLoopbackEndpoint(cleaned, info.WebAddr) {
+			return nil, false
+		}
+		return probeAddr(cleaned, info.IPCToken, info)
 	}
 
-	// 1. Attempt daemon discovery via hub.json
-	if info, err := ReadRuntimeInfo(""); err == nil && info != nil && info.WebAddr != "" {
-		if status, ok := probeAddr(info.WebAddr); ok {
+	if infoErr == nil && info != nil && info.WebAddr != "" && validLoopbackWebAddr(info.WebAddr) && info.IPCToken != "" {
+		// The default address is a discovery sentinel, not a demand to probe
+		// port 9876 literally; this preserves dynamic-port fallback. Any
+		// non-default explicit address was checked against the descriptor above.
+		if status, ok := probeAddr(info.WebAddr, info.IPCToken, info); ok {
 			return status, true
 		}
 	}
 
-	// 2. Fall back to default web addr
-	return probeAddr(fallbackAddr)
+	// A caller may have supplied an explicit endpoint while using the default
+	// runtime store. Do not silently fall back to a different unauthenticated
+	// endpoint when the runtime capability is unavailable.
+	return nil, false
 }
 
 // DelegateSend transmits a file or text snippet via the local Hub's POST /api/drop/upload endpoint.
 // If targetPeer is non-empty, it instructs the Hub to send to that specific peer.
+func newLoopbackIPCClient(timeout time.Duration) *http.Client {
+	if timeout <= 0 {
+		timeout = 5*time.Minute + 30*time.Second
+	}
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: &http.Transport{Proxy: nil},
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
 func DelegateSend(webAddr string, filePath string, text string, targetPeer string) error {
+	return DelegateSendFromStore("", webAddr, filePath, text, targetPeer)
+}
+
+// DelegateSendFromStore is DelegateSend with an explicit Hub runtime store
+// directory used to retrieve the local IPC capability token.
+func DelegateSendFromStore(storeDir, webAddr string, filePath string, text string, targetPeer string) error {
+	return delegateSend(storeDir, webAddr, filePath, text, targetPeer)
+}
+
+func delegateSend(storeDir, webAddr string, filePath string, text string, targetPeer string) error {
 	webAddr = cleanWebAddr(webAddr)
+	if !validLoopbackWebAddr(webAddr) {
+		return fmt.Errorf("hub web address must be loopback: %q", webAddr)
+	}
+	client := newLoopbackIPCClient(5*time.Minute + 30*time.Second)
 	targetURL := fmt.Sprintf("http://%s/api/drop/upload", webAddr)
 
 	if filePath != "" {
@@ -253,15 +571,18 @@ func DelegateSend(webAddr string, filePath string, text string, targetPeer strin
 		}
 		req.Header.Set("Content-Type", writer.FormDataContentType())
 		req.Header.Set("X-CLI-Version", HubVersion)
+		if token := RuntimeIPCTokenForAddr(storeDir, webAddr); token != "" {
+			req.Header.Set(IPCTokenHeader, token)
+		}
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			return fmt.Errorf("delegate upload request: %w", err)
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 			return fmt.Errorf("hub returned error (status %d): %s", resp.StatusCode, string(body))
 		}
 		return nil
@@ -281,15 +602,18 @@ func DelegateSend(webAddr string, filePath string, text string, targetPeer strin
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-CLI-Version", HubVersion)
+	if token := RuntimeIPCTokenForAddr(storeDir, webAddr); token != "" {
+		req.Header.Set(IPCTokenHeader, token)
+	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("delegate text request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		return fmt.Errorf("hub returned error (status %d): %s", resp.StatusCode, string(body))
 	}
 	return nil
@@ -298,7 +622,17 @@ func DelegateSend(webAddr string, filePath string, text string, targetPeer strin
 // DelegateOpen forwards an OAuth authorization URL via the local Hub's POST /api/relay/open endpoint.
 // If targetPeer is non-empty, it instructs the Hub to open with that specific peer.
 func DelegateOpen(webAddr string, targetURL string, targetPeer string) error {
+	return DelegateOpenFromStore("", webAddr, targetURL, targetPeer)
+}
+
+// DelegateOpenFromStore is DelegateOpen with an explicit Hub runtime store
+// directory used to retrieve the local IPC capability token.
+func DelegateOpenFromStore(storeDir, webAddr string, targetURL string, targetPeer string) error {
 	webAddr = cleanWebAddr(webAddr)
+	if !validLoopbackWebAddr(webAddr) {
+		return fmt.Errorf("hub web address must be loopback: %q", webAddr)
+	}
+	client := newLoopbackIPCClient(5*time.Minute + 30*time.Second)
 	endpoint := fmt.Sprintf("http://%s/api/relay/open", webAddr)
 
 	bodyMap := map[string]string{
@@ -314,15 +648,18 @@ func DelegateOpen(webAddr string, targetURL string, targetPeer string) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-CLI-Version", HubVersion)
+	if token := RuntimeIPCTokenForAddr(storeDir, webAddr); token != "" {
+		req.Header.Set(IPCTokenHeader, token)
+	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("delegate relay request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		return fmt.Errorf("hub returned relay error (status %d): %s", resp.StatusCode, string(body))
 	}
 	return nil

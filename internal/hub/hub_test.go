@@ -1,15 +1,19 @@
 package hub
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -193,6 +197,95 @@ func TestNormalizePeers(t *testing.T) {
 	}
 }
 
+func TestHub_StartStopRestart(t *testing.T) {
+	storeDir := t.TempDir()
+	h, err := NewHub(HubConfig{
+		TransportType: "loopback",
+		ListenAddr:    "127.0.0.1:0",
+		WebAddr:       "127.0.0.1:0",
+		StoreDir:      storeDir,
+		OutputDir:     filepath.Join(storeDir, "drops"),
+		Headless:      true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	startAndWait := func() {
+		t.Helper()
+		ctx, cancel := context.WithCancel(context.Background())
+		errCh := make(chan error, 1)
+		go func() { errCh <- h.Start(ctx) }()
+		select {
+		case <-h.Ready():
+		case err := <-errCh:
+			cancel()
+			t.Fatalf("hub start failed: %v", err)
+		case <-time.After(5 * time.Second):
+			cancel()
+			t.Fatal("timed out waiting for hub readiness")
+		}
+		if err := h.Stop(); err != nil {
+			cancel()
+			t.Fatalf("hub stop failed: %v", err)
+		}
+		cancel()
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("hub returned error during stop: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("hub did not finish after stop")
+		}
+	}
+
+	startAndWait()
+	startAndWait()
+}
+
+func TestHub_StopClosesActiveSSE(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+	req, err := http.NewRequest(http.MethodGet, "http://"+h.WebAddr()+"/api/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set(IPCTokenHeader, h.ipcToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	reader := bufio.NewReader(resp.Body)
+	if _, err := reader.ReadString('\n'); err != nil {
+		t.Fatalf("read SSE preamble: %v", err)
+	}
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- h.Stop() }()
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("Stop returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop did not finish while SSE was active")
+	}
+	_ = resp.Body.Close()
+}
+
+func TestHub_DialPeerRejectsArbitraryNonLANTarget(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+	conn, err := h.DialPeer("127.0.0.1:1")
+	if err == nil {
+		if conn != nil {
+			conn.Close()
+		}
+		t.Fatal("loopback Hub accepted an arbitrary caller-supplied target")
+	}
+}
+
 func TestHub_WebPortFallback(t *testing.T) {
 	// Occupy port 9876 with a dummy listener
 	dummyLn, err := net.Listen("tcp", "127.0.0.1:9876")
@@ -317,7 +410,12 @@ func TestHub_Startup_Loopback(t *testing.T) {
 	resp.Body.Close()
 
 	// 2. Verify /api/status
-	resp, err = http.Get("http://" + webAddr + "/api/status")
+	reqStatus, err := http.NewRequest(http.MethodGet, "http://"+webAddr+"/api/status", nil)
+	if err != nil {
+		t.Fatalf("failed to create status request: %v", err)
+	}
+	reqStatus.Header.Set(IPCTokenHeader, h.ipcToken)
+	resp, err = http.DefaultClient.Do(reqStatus)
 	if err != nil {
 		t.Fatalf("GET /api/status failed: %v", err)
 	}
@@ -447,10 +545,15 @@ func TestHub_DropResumption(t *testing.T) {
 	payload := bytes.Repeat([]byte("HubDropResumptionTestPayload123!"), 3200) // 102,400 bytes (exactly 3.125 chunks)
 	fileName := "resumable-file.bin"
 
-	// Pre-seed <outDir>/resumable-file.bin.part with first 2 chunks (64KB)
+	// Pre-seed the private staging file with the first two chunks.
+	dropID := "resume-drop"
 	preSeededBytes := int64(2 * chunkSize)
-	partPath := filepath.Join(outDir, fileName+".part")
-	if err := os.WriteFile(partPath, payload[:preSeededBytes], 0644); err != nil {
+	stagingDir := filepath.Join(outDir, ".tantu-staging")
+	if err := os.MkdirAll(stagingDir, 0700); err != nil {
+		t.Fatalf("failed to create staging directory: %v", err)
+	}
+	partPath := filepath.Join(stagingDir, dropID+".part")
+	if err := os.WriteFile(partPath, payload[:preSeededBytes], 0600); err != nil {
 		t.Fatalf("failed to pre-seed part file: %v", err)
 	}
 
@@ -490,11 +593,14 @@ func TestHub_DropResumption(t *testing.T) {
 	}
 	defer conn.Close()
 
+	head := sha256.Sum256(payload[:64*1024])
 	meta := drop.DropSend{
+		DropID:    dropID,
 		Kind:      drop.DropKindFile,
 		Name:      fileName,
 		Size:      int64(len(payload)),
 		ChunkSize: chunkSize,
+		HeadHash:  hex.EncodeToString(head[:]),
 	}
 
 	sendErr := drop.SendDrop(ctx, conn, meta, bytes.NewReader(payload), drop.SendDropConfig{})
@@ -656,6 +762,80 @@ func TestOnDropReceived_UnauthenticatedNotAttributedToPeer(t *testing.T) {
 	}
 }
 
+func TestHub_InBandPairing_DynamicPortsRoundTrip(t *testing.T) {
+	newDynamicHub := func(t *testing.T) (*Hub, context.CancelFunc) {
+		t.Helper()
+		h, err := NewHub(HubConfig{
+			TransportType:     "lan",
+			ListenAddr:        "127.0.0.1:0",
+			WebAddr:           "127.0.0.1:0",
+			StoreDir:          t.TempDir(),
+			Headless:          true,
+			AutoAcceptPairing: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		errCh := make(chan error, 1)
+		go func() { errCh <- h.Start(ctx) }()
+		select {
+		case <-h.Ready():
+		case err := <-errCh:
+			cancel()
+			t.Fatalf("Hub failed to start: %v", err)
+		case <-time.After(5 * time.Second):
+			cancel()
+			t.Fatal("Hub start timed out")
+		}
+		return h, func() {
+			_ = h.Stop()
+			cancel()
+		}
+	}
+
+	hA, stopA := newDynamicHub(t)
+	defer stopA()
+	hB, stopB := newDynamicHub(t)
+	defer stopB()
+
+	_, portText, err := net.SplitHostPort(hB.P2PAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	localPort, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	res, err := pairing.DialInBandPairingWithOptions(pairCtx, hA.P2PAddr().String(), hB.Store(), func(string, string) bool { return true }, pairing.PairingOptions{LocalListenPort: localPort})
+	if err != nil {
+		t.Fatalf("dynamic-port pairing failed: %v", err)
+	}
+	if !res.Accepted {
+		t.Fatal("dynamic-port pairing was not accepted")
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	var peerA, peerB pairing.Peer
+	for time.Now().Before(deadline) {
+		peersA := hA.Store().ListPeers()
+		peersB := hB.Store().ListPeers()
+		if len(peersA) == 1 && len(peersB) == 1 {
+			peerA, peerB = peersA[0], peersB[0]
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if peerA.Address != hB.P2PAddr().String() {
+		t.Fatalf("Hub A stored peer at %q, want %q", peerA.Address, hB.P2PAddr().String())
+	}
+	if peerB.Address != hA.P2PAddr().String() {
+		t.Fatalf("Hub B stored peer at %q, want %q", peerB.Address, hA.P2PAddr().String())
+	}
+}
+
 func TestHub_InBandPairing_OnPort9877(t *testing.T) {
 	tempDirA, err := os.MkdirTemp("", "hub-pair-test-a-*")
 	if err != nil {
@@ -740,6 +920,3 @@ func TestHub_InBandPairing_OnPort9877(t *testing.T) {
 		t.Fatalf("expected 1 peer in hub storeA, got %d", len(peersA))
 	}
 }
-
-
-
