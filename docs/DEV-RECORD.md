@@ -233,3 +233,24 @@ evidence (no fix needed — the worried-about behavior does not exist):
 - Cockpit stdin note: the hotkey goroutine blocks in `scanner.Scan()` and
   cannot observe ctx cancellation until stdin EOF — process-lifetime scoped,
   no Hub lifecycle impact; accepted without change.
+
+## Batch I — SSH server review + Q-01 decision (2026-09-24)
+
+- SSH server posture VERIFIED GOOD (no change): `MaxAuthTries: 3`,
+  `NoClientAuth: false` with public-key-only auth (no password callback
+  exists — password auth impossible), channel type restricted to `"tantu"`
+  (`session`/`direct-tcpip` rejected), global + per-channel requests
+  discarded, pre-auth handshakes bounded by `MaxConcurrentHandshakes` slots.
+  Multi-channel exhaustion requires an already-authenticated
+  (authorized_keys) peer — inside the trust boundary, equivalent to opening
+  many TCP connections on any transport. Accepted without change. I-27
+  (private-PEM as authorized key) stays OPEN as documented compat.
+- Q-01 RESOLVED (retain standalone commands): `serve`/`relay`/`node`/`drop`
+  stay. Relay already migrated to per-request tickets; drop's header-only
+  per-process token is inside the same-user boundary with SR16 rationale
+  (never in URLs, no-store page, exact-authority + Origin/Referer still
+  enforced). Migrating standalone drop to the Hub session model would be
+  major surgery for negligible gain within that boundary. Revisit only if
+  maintenance burden grows.
+- `go test -race` re-checked: still no C compiler (gcc/cc/clang absent) —
+  remains blocked with `-count=2` mitigation. Race safety never claimed.
