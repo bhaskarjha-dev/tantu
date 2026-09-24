@@ -1321,3 +1321,48 @@ func TestWebDashboard_UploadConcurrencyCapped(t *testing.T) {
 		t.Error("expected Retry-After header on 503")
 	}
 }
+
+func TestWebDashboard_UploadProgressAndPeerRenderMarkers(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+
+	resp, err := http.Get("http://" + h.WebAddr() + "/")
+	if err != nil {
+		t.Fatalf("GET / failed: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read body: %v", err)
+	}
+	content := string(body)
+
+	// Real upload progress (XHR) + cancel + accessible progress/status.
+	for _, s := range []string{
+		"xhr.upload.onprogress",
+		"cancelUpload",
+		"btnCancelUpload",
+		`role="progressbar"`,
+		`aria-live="polite"`,
+		"lastPeerSignature",
+		"headerPeerSelect",
+	} {
+		if !strings.Contains(content, s) {
+			t.Errorf("dashboard HTML missing %q (upload-progress / focus-preservation UX)", s)
+		}
+	}
+	// The old faked progress must be gone: no hard-coded staged percentages.
+	for _, s := range []string{
+		"fill.style.width = '20%'",
+		"fill.style.width = '60%'",
+		"'Streaming...'",
+	} {
+		if strings.Contains(content, s) {
+			t.Errorf("dashboard HTML still contains faked upload progress %q", s)
+		}
+	}
+	// Multi-GB units must render beyond MB.
+	if !strings.Contains(content, "'GB'") || !strings.Contains(content, "'TB'") {
+		t.Error("formatBytes lacks GB/TB units")
+	}
+}

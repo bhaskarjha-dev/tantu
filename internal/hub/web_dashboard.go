@@ -488,15 +488,16 @@ const dashboardHTML = `<!DOCTYPE html>
             <input type="file" id="fileInput" style="display: none;">
             
             <div class="progress-container" id="uploadProgress">
-              <div class="progress-bar">
+              <div class="progress-bar" role="progressbar" aria-label="File upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progressBar">
                 <div class="progress-fill" id="progressFill"></div>
               </div>
               <div class="progress-meta">
                 <span id="progressFile">Uploading...</span>
-                <span id="progressPercent">0%</span>
+                <span id="progressPercent" aria-live="polite">0%</span>
+                <button type="button" class="btn-sm" id="btnCancelUpload" onclick="cancelUpload()" style="display: none;">✕ Cancel</button>
               </div>
             </div>
-            <div class="status-banner" id="dropStatus"></div>
+            <div class="status-banner" id="dropStatus" role="status" aria-live="polite"></div>
           </div>
 
           <div class="card">
@@ -830,6 +831,12 @@ const dashboardHTML = `<!DOCTYPE html>
     }
 
     let selectedPeerTarget = '';
+    // Signature of the last rendered peer DOM. updateStatus polls every 3s;
+    // rewriting the header <select>, pills, and peer list on every poll
+    // steals focus/selection and breaks keyboard interaction, so the peer
+    // DOM is only re-rendered when this signature changes (and never while
+    // the header select holds focus — the render is deferred to a later poll).
+    let lastPeerSignature = '';
 
     async function updateStatus() {
       try {
@@ -852,15 +859,32 @@ const dashboardHTML = `<!DOCTYPE html>
         const peerDot = document.getElementById('peerDot');
         const peerLabel = document.getElementById('peerLabel');
 
+        // Normalize selection first so the render signature below is stable.
         if (peers.length === 0) {
           selectedPeerTarget = '';
+        } else if (peers.length === 1) {
+          selectedPeerTarget = peers[0].fingerprint;
+        } else {
+          const activePeer = peers.find(p => p.active) || peers[0];
+          if (!selectedPeerTarget || !peers.some(p => p.fingerprint === selectedPeerTarget)) {
+            selectedPeerTarget = activePeer.fingerprint;
+          }
+        }
+
+        const peerSig = JSON.stringify(peers.map(p => [p.fingerprint, p.name, p.alias, p.active, p.is_default, p.address])) + '|' + (selectedPeerTarget || '');
+        const headerFocused = document.activeElement && document.activeElement.id === 'headerPeerSelect';
+        // Skip re-render while the user interacts with the header select;
+        // lastPeerSignature stays stale so the deferred update lands on a
+        // later poll after blur.
+        if (peerSig !== lastPeerSignature && !headerFocused) {
+          lastPeerSignature = peerSig;
+        if (peers.length === 0) {
           peerLabel.innerText = 'Loopback Mode (No LAN Peers)';
           peerDot.className = 'status-dot offline';
           peersList.innerHTML = '<p style="color: var(--text-muted); font-size: 0.9rem;">No paired LAN peers yet. Run <code>tantu pair</code> to connect another machine.</p>';
           if (dropSelector) dropSelector.style.display = 'none';
         } else if (peers.length === 1) {
           const p = peers[0];
-          selectedPeerTarget = p.fingerprint;
           peerLabel.innerText = (p.name || 'Peer') + ' [Online 🟢]';
           peerDot.className = 'status-dot';
           if (dropSelector) dropSelector.style.display = 'none';
@@ -868,12 +892,7 @@ const dashboardHTML = `<!DOCTYPE html>
         } else {
           // Multiple peers
           peerDot.className = 'status-dot';
-          let activePeer = peers.find(p => p.active) || peers[0];
-          if (!selectedPeerTarget) {
-            selectedPeerTarget = activePeer.fingerprint;
-          } else if (!peers.some(p => p.fingerprint === selectedPeerTarget)) {
-            selectedPeerTarget = activePeer.fingerprint;
-          }
+          const activePeer = peers.find(p => p.active) || peers[0];
 
           // Header dropdown
           const optionsHTML = peers.map(p => {
@@ -895,6 +914,7 @@ const dashboardHTML = `<!DOCTYPE html>
           }
 
           renderPeersList(peers);
+        }
         }
       } catch (err) {
         document.getElementById('peerLabel').innerText = 'Disconnected';
@@ -1221,17 +1241,44 @@ const dashboardHTML = `<!DOCTYPE html>
       }
     });
 
+    // At most one dashboard file upload at a time. A second upload while one
+    // is in flight is rejected with a message (rather than queued or
+    // silently orphaned) so progress, completion, and cancellation always
+    // refer to exactly one transfer.
+    let uploadXhr = null;
+
+    function cancelUpload() {
+      if (uploadXhr) {
+        uploadXhr.abort();
+      }
+    }
+
     async function uploadFile(file) {
       const progress = document.getElementById('uploadProgress');
+      const bar = document.getElementById('progressBar');
       const fill = document.getElementById('progressFill');
       const pFile = document.getElementById('progressFile');
       const pPercent = document.getElementById('progressPercent');
       const status = document.getElementById('dropStatus');
+      const cancelBtn = document.getElementById('btnCancelUpload');
+      const fileInput = document.getElementById('fileInput');
+
+      if (uploadXhr) {
+        status.style.display = 'block';
+        status.className = 'status-banner error';
+        status.textContent = '⚠️ An upload is already in progress — cancel it before starting another.';
+        return;
+      }
+      // apiFetch waits for the bootstrap exchange; XHR must do the same so
+      // the session cookie exists before the upload is sent.
+      await dashboardReady;
 
       progress.style.display = 'block';
-      fill.style.width = '20%';
-      pFile.innerText = file.name + ' (' + (file.size / (1024*1024)).toFixed(1) + ' MB)';
-      pPercent.innerText = 'Streaming...';
+      cancelBtn.style.display = 'inline-block';
+      fill.style.width = '0%';
+      bar.setAttribute('aria-valuenow', '0');
+      pFile.innerText = file.name + ' (' + formatBytes(file.size) + ')';
+      pPercent.innerText = 'Preparing...';
       status.style.display = 'none';
 
       addLog('DROP', 'Initiating file upload: ' + file.name + ' (' + file.size + ' bytes)');
@@ -1242,30 +1289,67 @@ const dashboardHTML = `<!DOCTYPE html>
         fd.append('peer', selectedPeerTarget);
       }
 
-      try {
-        fill.style.width = '60%';
-        const res = await apiFetch('/api/drop/upload', {
-          method: 'POST',
-          body: fd
-        });
-        fill.style.width = '100%';
-        const data = await res.json();
-        if (res.ok && data.status === 'success') {
+      const xhr = new XMLHttpRequest();
+      uploadXhr = xhr;
+      xhr.open('POST', '/api/drop/upload');
+      xhr.withCredentials = true;
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const pct = Math.floor((e.loaded / e.total) * 100);
+          fill.style.width = pct + '%';
+          bar.setAttribute('aria-valuenow', String(pct));
+          pPercent.innerText = pct + '% · ' + formatBytes(e.loaded) + ' / ' + formatBytes(e.total);
+        } else {
+          pPercent.innerText = formatBytes(e.loaded) + ' sent...';
+        }
+      };
+      const finishUpload = (ok, message) => {
+        uploadXhr = null;
+        cancelBtn.style.display = 'none';
+        if (fileInput) fileInput.value = '';
+        status.style.display = 'block';
+        if (ok) {
+          fill.style.width = '100%';
+          bar.setAttribute('aria-valuenow', '100');
+          pPercent.innerText = '100% · ' + formatBytes(file.size) + ' / ' + formatBytes(file.size);
           status.className = 'status-banner success';
           status.textContent = '✅ File transferred successfully to peer!';
           addLog('DROP', 'Completed transfer of ' + file.name);
+          setTimeout(() => { progress.style.display = 'none'; fill.style.width = '0%'; }, 2500);
         } else {
           status.className = 'status-banner error';
-          status.textContent = '❌ Transfer failed: ' + (data.message || 'Unknown error');
-          addLog('ERROR', 'Drop failed: ' + (data.message || 'Unknown error'));
+          status.textContent = message;
+          // Keep the progress bar visible on failure so the final state is
+          // inspectable; the next upload resets it.
         }
-      } catch (err) {
-        status.className = 'status-banner error';
-        status.textContent = '❌ Connection error: ' + err.message;
-        addLog('ERROR', 'Upload error: ' + err.message);
-      } finally {
-        setTimeout(() => { progress.style.display = 'none'; fill.style.width = '0%'; }, 2500);
-      }
+      };
+      xhr.onload = () => {
+        let message = 'Unknown error';
+        try {
+          const data = JSON.parse(xhr.responseText);
+          if (xhr.status >= 200 && xhr.status < 300 && data.status === 'success') {
+            finishUpload(true);
+            return;
+          }
+          message = data.message || ('HTTP ' + xhr.status);
+        } catch (_) {
+          message = 'HTTP ' + xhr.status;
+        }
+        if (xhr.status === 503) {
+          message += ' (server busy — wait a moment and retry)';
+        }
+        addLog('ERROR', 'Drop failed: ' + message);
+        finishUpload(false, '❌ Transfer failed: ' + message);
+      };
+      xhr.onerror = () => {
+        addLog('ERROR', 'Upload error: connection failed');
+        finishUpload(false, '❌ Connection error during upload.');
+      };
+      xhr.onabort = () => {
+        addLog('DROP', 'Upload cancelled: ' + file.name);
+        finishUpload(false, '⚠️ Upload cancelled.');
+      };
+      xhr.send(fd);
     }
 
     async function sendTextDrop() {
@@ -1490,9 +1574,14 @@ const dashboardHTML = `<!DOCTYPE html>
 
     function formatBytes(bytes) {
       if (!bytes || bytes <= 0) return '0 B';
-      if (bytes < 1024) return bytes + ' B';
-      if (bytes < 1024*1024) return (bytes / 1024).toFixed(1) + ' KB';
-      return (bytes / (1024*1024)).toFixed(1) + ' MB';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+      let value = bytes;
+      let unit = 0;
+      while (value >= 1024 && unit < units.length - 1) {
+        value /= 1024;
+        unit++;
+      }
+      return (unit === 0 ? String(Math.floor(value)) : value.toFixed(1)) + ' ' + units[unit];
     }
 
     function redactForLog(rawURL) {
