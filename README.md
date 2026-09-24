@@ -82,7 +82,7 @@ Both machines run identical symmetric hubs. No server/client distinction. No clo
 - **Resumable QuickDrop** — interrupted multi-GB transfers resume from last valid 1MB chunk; SHA-256 verified; cross-platform path & Windows DOS device sanitization
 - **Smart Default LAN Transport** — binds to `0.0.0.0:9877` by default for instant local discovery, pairing, and transfers without `--transport` or `--peer` flags
 - **Single-Page Web Dashboard** (`http://localhost:9876`) — dark-mode browser UI with 4 workspaces:
-  - **QuickDrop:** Drag-and-drop send (up to 5GB), text snippets, live received items feed with 1-click clipboard copying and folder opening
+  - **QuickDrop:** Drag-and-drop or clipboard-paste send (up to 5GB, real progress + cancel), text snippets, live received items feed with 1-click clipboard copying and folder opening
   - **OAuth Relay:** 1-click draggable bookmarklet, manual URL submission
   - **Peers & Network:** Discovered nearby hubs (1-click pairing), in-band pairing wizard, paired peer cards (alias, default toggle, unpair)
   - **Activity Logs:** Live filtered log explorer with JSON export and Server-Sent Events (SSE)

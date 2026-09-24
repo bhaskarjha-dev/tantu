@@ -214,3 +214,22 @@ evidence (no fix needed — the worried-about behavior does not exist):
   matching the tab button by target id. Click behavior unchanged.
 - Marker test extended (`clipboardData`, `paste` listener); JS re-validated
   with `node --check`; full suite green (see batch H validation on commit).
+
+## Batch H validation (2026-09-24)
+
+- `go build` + `go vet` + `go test -count=1 ./...` (12 pkgs) PASS.
+- Cross-compile `linux/amd64` + `darwin/arm64` PASS (post batches E–G).
+- `go test -count=2 ./internal/hub/ ./internal/bridge/` PASS (lifecycle rerun).
+- Fuzz re-run 20s each, all clean: FuzzDecode (~7.0M execs), FuzzValidBeacon
+  (~8.1M), FuzzValidateDropMetadata (~8.7M), zero crashes.
+- Release smoke (local `go build` binary, v1.0.0 dev default): headless Hub
+  start, dashboard 200 with all batch-F/G markers live
+  (XHR progress, cancel, signature guard, paste, aria-live), upload 401
+  without capability, healthz 200. Smoke artifacts removed.
+- `context.Background()` audit (cmd + hub): all remaining uses are
+  legitimate roots (signal.NotifyContext, shutdown-after-cancel, nil-parent
+  guards) — no detached user-operation contexts. No change.
+- README QuickDrop line synced (paste + progress + cancel).
+- Cockpit stdin note: the hotkey goroutine blocks in `scanner.Scan()` and
+  cannot observe ctx cancellation until stdin EOF — process-lifetime scoped,
+  no Hub lifecycle impact; accepted without change.
