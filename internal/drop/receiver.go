@@ -24,12 +24,23 @@ const DefaultMaxTextSize int64 = 10 * 1024 * 1024
 
 // ReceiveDropConfig configures a drop receive operation.
 type ReceiveDropConfig struct {
-	Timeout        time.Duration                          // Max time for the entire operation (default: 5 min)
-	MaxSize        int64                                  // Maximum total payload size to accept (default: 5GB). <0 = unlimited.
-	MaxTextSize    int64                                  // Maximum text payload size (default: 10 MiB). <0 = unlimited.
+	Timeout     time.Duration // Max time for the entire operation (default: 5 min)
+	MaxSize     int64         // Maximum total payload size to accept (default: 5GB). <0 = unlimited.
+	MaxTextSize int64         // Maximum text payload size (default: 10 MiB). <0 = unlimited.
+	// Quota optionally bounds concurrent transfer reservations across sessions.
+	// Nil preserves the standalone library's historical unlimited behavior;
+	// long-lived receivers should provide DefaultTransferQuota().
+	Quota *TransferQuota
+	// TouchActivity optionally refreshes a receiver's cross-process staging
+	// activity marker while data is arriving. It is called with the validated
+	// drop metadata before each non-empty data chunk is written.
+	TouchActivity  func(DropSend) error
 	ReceivedBytes  int64                                  // Initial existing bytes for resumption (default 0)
 	OnMeta         func(meta DropSend) (io.Writer, error) // Optional: if set and w is nil, called to obtain writer
 	BeforeComplete func(*ReceiveDropResult) error         // Optional finalization hook run before success is acknowledged
+	// AttemptID is local correlation state for callbacks. It is never sent on
+	// the wire; the dispatcher supplies one value per receive attempt.
+	AttemptID string
 }
 
 type dropEnvelopeResult struct {
@@ -195,6 +206,16 @@ func ReceiveDrop(ctx context.Context, conn transport.Conn, w io.Writer, cfg Rece
 		}
 		break
 	}
+	// Normalize the negotiated chunk size before recording/reusing staging
+	// metadata. A zero value is valid on the wire and means the protocol
+	// default; persisting the literal zero would make a later retry look like a
+	// different transfer.
+	if meta.ChunkSize <= 0 {
+		meta.ChunkSize = DefaultChunkSize
+	}
+	if cfg.AttemptID != "" {
+		meta.AttemptID = cfg.AttemptID
+	}
 
 	// 2. Validate declared size against MaxSize
 	if maxSize > 0 && meta.Size > 0 && meta.Size > maxSize {
@@ -224,6 +245,29 @@ func ReceiveDrop(ctx context.Context, conn transport.Conn, w io.Writer, cfg Rece
 		errMsg := "received_bytes exceeds declared drop size"
 		_ = conn.Send(TypeDropAck, DropAck{DropID: meta.DropID, Error: errMsg})
 		return nil, errors.New(errMsg)
+	}
+
+	// Reserve receiver capacity only after the complete metadata has passed
+	// validation. The reservation covers the whole receive attempt and is
+	// released on every return path, including quota rejection and context
+	// cancellation.
+	var lease *TransferLease
+	if cfg.Quota != nil {
+		peerKey := transport.GetPeerFingerprint(conn)
+		if peerKey == "" && conn.RemoteAddr() != nil {
+			peerKey = conn.RemoteAddr().String()
+		}
+		var quotaErr error
+		lease, quotaErr = cfg.Quota.Acquire(peerKey, meta.Size)
+		if quotaErr != nil {
+			_ = conn.Send(TypeDropAck, DropAck{
+				DropID:   meta.DropID,
+				Accepted: false,
+				Error:    quotaErr.Error(),
+			})
+			return nil, quotaErr
+		}
+		defer lease.Release()
 	}
 
 	// 3. Resolve destination writer
@@ -424,6 +468,26 @@ func ReceiveDrop(ctx context.Context, conn transport.Conn, w io.Writer, cfg Rece
 		}
 
 		if len(chunk.Data) > 0 {
+			if cfg.TouchActivity != nil {
+				if err := cfg.TouchActivity(meta); err != nil {
+					_ = conn.Send(TypeDropComplete, DropComplete{
+						DropID:    meta.DropID,
+						Success:   false,
+						BytesRecv: totalBytes,
+						Error:     err.Error(),
+					})
+					return nil, err
+				}
+			}
+			if err := lease.AddBytes(int64(len(chunk.Data))); err != nil {
+				_ = conn.Send(TypeDropComplete, DropComplete{
+					DropID:    meta.DropID,
+					Success:   false,
+					BytesRecv: totalBytes,
+					Error:     err.Error(),
+				})
+				return nil, err
+			}
 			n, err := dest.Write(chunk.Data)
 			if err == nil && n != len(chunk.Data) {
 				err = io.ErrShortWrite
@@ -439,6 +503,22 @@ func ReceiveDrop(ctx context.Context, conn transport.Conn, w io.Writer, cfg Rece
 				return nil, err
 			}
 			hasher.Write(chunk.Data)
+			// Staged files are resumed from their on-disk length after a
+			// restart. Sync each completed chunk before that length can be
+			// observed by a later attempt; non-file writers (text buffers and
+			// test sinks) simply do not expose Sync.
+			if syncer, ok := dest.(interface{ Sync() error }); ok {
+				if err := syncer.Sync(); err != nil {
+					errMsg := fmt.Sprintf("sync payload chunk: %v", err)
+					_ = conn.Send(TypeDropComplete, DropComplete{
+						DropID:    meta.DropID,
+						Success:   false,
+						BytesRecv: totalBytes,
+						Error:     errMsg,
+					})
+					return nil, errors.New(errMsg)
+				}
+			}
 			totalBytes += int64(n)
 		}
 

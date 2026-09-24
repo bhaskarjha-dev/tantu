@@ -550,6 +550,9 @@ func runDrop(args []string) {
 	if removed, _ := drop.SweepStalePartials(outDir, drop.DefaultStagingMaxAge); removed > 0 && *verbose {
 		fmt.Printf("Cleaned %d stale partial file(s)\n", removed)
 	}
+	if removed, freed := drop.EnforcePartialBudget(outDir, drop.DefaultRetainedPartialBudget); removed > 0 && *verbose {
+		fmt.Printf("Trimmed %d retained partial file(s) to the disk budget (%s reclaimed)\n", removed, formatBytes(freed))
+	}
 
 	var lanStore *pairing.PeerStore
 	switch *transportType {
@@ -622,21 +625,13 @@ func runDrop(args []string) {
 			fmt.Fprintln(os.Stderr, "Error: No identity found. Run 'tantu pair' first.")
 			os.Exit(1)
 		}
-		peers := lanStore.ListPeers()
-		var trustedFPs []string
-		for _, p := range peers {
-			trustedFPs = append(trustedFPs, p.Fingerprint)
-		}
 		tlsCert, err := tls.X509KeyPair(id.CertPEM, id.KeyPEM)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: invalid local TLS identity: %v\n", err)
 			os.Exit(1)
 		}
 		tr, err = transport.NewLANTransport(transport.LANTransportConfig{
-			Cert:                tlsCert,
-			TrustedFingerprints: trustedFPs,
-			// Live store lookup in addition to the snapshot: a peer removed
-			// between ListPeers and Dial must not remain dialable.
+			Cert:      tlsCert,
 			IsTrusted: lanStore.IsTrusted,
 		})
 		if err != nil {
@@ -675,10 +670,12 @@ func runDrop(args []string) {
 	var dropMu sync.Mutex
 	dropItems := make(map[string]dropReceivedItem)
 	reservedDrops := make(map[string]struct{})
+	activeParts := make(map[string]string)
 	dropOrder := make([]string, 0, maxStandaloneDropHistory)
 	var dropHistoryBytes int64
 	newDropChan := make(chan string, 32)
 	sessionSlots := make(chan struct{}, maxStandaloneDropSessions)
+	receiveQuota := drop.DefaultTransferQuota()
 	// deliveredDrops tracks which queued items a poller has already served.
 	// The wakeup channel above is a lossy hint (non-blocking sends drop
 	// notifications under burst); the poll handler always scans the queue
@@ -744,12 +741,21 @@ func runDrop(args []string) {
 						var fileObj *os.File
 						var savedPath string
 						var partPath string
+						var releaseActivity func()
 						var savedName string
 						var reservedID string
+						defer func() {
+							if releaseActivity != nil {
+								releaseActivity()
+							} else if partPath != "" {
+								_ = drop.ReleaseStagingActivity(partPath)
+							}
+						}()
 						defer func() {
 							if reservedID != "" {
 								dropMu.Lock()
 								delete(reservedDrops, reservedID)
+								delete(activeParts, reservedID)
 								dropMu.Unlock()
 							}
 						}()
@@ -758,6 +764,16 @@ func runDrop(args []string) {
 							Timeout:     *timeout,
 							MaxSize:     drop.DefaultMaxDropSize,
 							MaxTextSize: standaloneTextDropLimit,
+							Quota:       receiveQuota,
+							TouchActivity: func(meta drop.DropSend) error {
+								dropMu.Lock()
+								partPath := activeParts[meta.DropID]
+								dropMu.Unlock()
+								if partPath == "" {
+									return nil
+								}
+								return drop.TouchStagingActivity(partPath)
+							},
 							OnMeta: func(meta drop.DropSend) (io.Writer, error) {
 								dropMu.Lock()
 								if _, exists := reservedDrops[meta.DropID]; exists {
@@ -770,13 +786,19 @@ func runDrop(args []string) {
 								if meta.Kind == drop.DropKindFile {
 									safeName := sanitizeIncomingFilename(meta.Name)
 									savedName = safeName
-									f, part, final, err := createIncomingPart(outDir, safeName)
+									unlockStaging := drop.LockStagingMaintenance()
+									f, part, final, release, err := createIncomingPartWithActivity(outDir, safeName, meta)
+									unlockStaging()
 									if err != nil {
 										return nil, err
 									}
 									fileObj = f
 									partPath = part
+									releaseActivity = release
 									savedPath = final
+									dropMu.Lock()
+									activeParts[meta.DropID] = part
+									dropMu.Unlock()
 									return f, nil
 								}
 								return &textBuf, nil
@@ -788,7 +810,7 @@ func runDrop(args []string) {
 								if partPath == "" || savedPath == "" {
 									return errors.New("completed file has no staging path")
 								}
-								published, err := finalizeIncomingPart(fileObj, partPath, savedPath)
+								published, err := finalizeIncomingPart(fileObj, partPath, savedPath, releaseActivity)
 								if err != nil {
 									return fmt.Errorf("publish received file: %w", err)
 								}
@@ -802,6 +824,32 @@ func runDrop(args []string) {
 							_ = fileObj.Close()
 						}
 						if err != nil {
+							dropMu.Lock()
+							if reservedID != "" {
+								delete(activeParts, reservedID)
+							}
+							protectedParts := make([]string, 0, len(activeParts)+1)
+							for _, activePart := range activeParts {
+								protectedParts = append(protectedParts, activePart)
+							}
+							if partPath != "" {
+								protectedParts = append(protectedParts, partPath)
+							}
+							dropMu.Unlock()
+							if partPath != "" {
+								if info, statErr := drop.LstatStagingFile(partPath); statErr == nil && info.Mode().IsRegular() && info.Size() == 0 {
+									_ = drop.RemoveStagingFile(partPath)
+									_ = drop.RemoveStagingManifest(partPath)
+								}
+								if removed, freed := drop.EnforcePartialBudget(outDir, drop.DefaultRetainedPartialBudget, protectedParts...); removed > 0 && *verbose {
+									fmt.Fprintf(os.Stderr, "Trimmed %d retained partial file(s) after failed transfer (%s reclaimed)\n", removed, formatBytes(freed))
+								}
+								if releaseActivity != nil {
+									releaseActivity()
+								} else {
+									_ = drop.ReleaseStagingActivity(partPath)
+								}
+							}
 							if *verbose {
 								fmt.Fprintf(os.Stderr, "❌ Error receiving drop: %v\n", err)
 							}

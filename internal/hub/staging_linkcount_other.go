@@ -1,12 +1,15 @@
-//go:build !unix
+//go:build !unix && !windows
 
 package hub
 
-import "os"
+import (
+	"fmt"
+	"os"
+)
 
-// stagingHardlinkedOS is a no-op where FileInfo hides the link count
-// (notably Windows): openResumePart still enforces the regular-file and
-// SameFile identity checks, but cannot detect multi-linked files there.
-func stagingHardlinkedOS(fi os.FileInfo) bool {
-	return false
+// stagingHardlinkedOS fails closed on platforms that expose neither a Unix
+// link count nor a Windows handle link count. Resuming an unverifiable
+// partial is less safe than starting a fresh transfer.
+func stagingHardlinkedOS(*os.File) (bool, error) {
+	return false, fmt.Errorf("hardlink verification is unsupported on this platform")
 }

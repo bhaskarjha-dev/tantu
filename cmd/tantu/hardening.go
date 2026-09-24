@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
@@ -20,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bhaskarjha-dev/tantu/internal/drop"
 	"github.com/bhaskarjha-dev/tantu/internal/hub"
 )
 
@@ -95,13 +97,18 @@ func sanitizeIncomingFilename(name string) string {
 	return hub.SanitizeDropFilename(name)
 }
 
-// createIncomingPart opens a private partial file and returns the desired
-// final path. Existing final paths (including symlinks/reparse points) are
-// treated as collisions, and partial symlinks are rejected rather than
-// followed.
-func createIncomingPart(outDir, rawName string) (*os.File, string, string, error) {
+// createIncomingPart preserves the historical helper signature for tests and
+// callers that do not need to retain the activity-release closure.
+func createIncomingPart(outDir, rawName string, metadata ...drop.DropSend) (*os.File, string, string, error) {
+	f, part, final, _, err := createIncomingPartWithActivity(outDir, rawName, metadata...)
+	return f, part, final, err
+}
+
+// createIncomingPartWithActivity opens a private partial file and returns the
+// desired final path plus its owner-only activity release closure.
+func createIncomingPartWithActivity(outDir, rawName string, metadata ...drop.DropSend) (*os.File, string, string, func(), error) {
 	if err := os.MkdirAll(outDir, 0700); err != nil {
-		return nil, "", "", fmt.Errorf("create output directory: %w", err)
+		return nil, "", "", nil, fmt.Errorf("create output directory: %w", err)
 	}
 	name := sanitizeIncomingFilename(rawName)
 	base := filepath.Join(outDir, name)
@@ -117,86 +124,234 @@ func createIncomingPart(outDir, rawName string) (*os.File, string, string, error
 			break
 		}
 		if err != nil {
-			return nil, "", "", fmt.Errorf("inspect destination: %w", err)
+			return nil, "", "", nil, fmt.Errorf("inspect destination: %w", err)
 		}
 		if i == 9999 {
-			return nil, "", "", errors.New("too many existing destination candidates")
+			return nil, "", "", nil, errors.New("too many existing destination candidates")
 		}
 	}
 
-	stagingDir := filepath.Join(outDir, ".tantu-staging")
+	stagingDir := filepath.Join(outDir, drop.StagingDirName)
 	if err := os.MkdirAll(stagingDir, 0700); err != nil {
-		return nil, "", "", fmt.Errorf("create transfer staging directory: %w", err)
+		return nil, "", "", nil, fmt.Errorf("create transfer staging directory: %w", err)
 	}
-	if info, err := os.Lstat(stagingDir); err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		if err == nil {
-			err = fmt.Errorf("staging path is not a directory: %s", stagingDir)
+	staging, err := drop.OpenStagingDirectory(stagingDir)
+	if err != nil {
+		return nil, "", "", nil, fmt.Errorf("inspect staging directory: %w", err)
+	}
+	_ = staging.Close()
+
+	if len(metadata) > 0 {
+		meta := metadata[0]
+		if _, err := drop.NewStagingManifest(meta); err != nil {
+			return nil, "", "", nil, fmt.Errorf("validate staging metadata: %w", err)
 		}
-		return nil, "", "", fmt.Errorf("inspect staging directory: %w", err)
+		if meta.ChunkSize <= 0 {
+			meta.ChunkSize = drop.DefaultChunkSize
+		}
+		partPath := filepath.Join(stagingDir, meta.DropID+".part")
+		releaseActivity, err := drop.AcquireStagingActivity(partPath)
+		if err != nil {
+			return nil, "", "", nil, err
+		}
+		f, err := openStandaloneStagingPart(partPath, meta)
+		if err != nil {
+			releaseActivity()
+			return nil, "", "", nil, err
+		}
+		// The caller owns the marker until its transfer reaches a terminal
+		// path; this prevents another process's maintenance pass from
+		// unlinking the partial while bytes are still arriving.
+		return f, partPath, finalPath, releaseActivity, nil
 	}
-	var f *os.File
-	var partPath string
+
+	// Callers without transfer metadata are retained for compatibility with
+	// older tests/tools. They get the historical collision-suffixed layout and
+	// are never resumed automatically.
+	partBase := filepath.Join(stagingDir, filepath.Base(finalPath))
 	for i := 0; i < 10000; i++ {
-		candidate := finalPath + ".part"
+		candidate := partBase + ".part"
 		if i > 0 {
-			candidate = fmt.Sprintf("%s.part-%d", finalPath, i)
+			candidate = fmt.Sprintf("%s.part-%d", partBase, i)
 		}
-		if info, err := os.Lstat(candidate); err == nil {
+		if info, err := drop.LstatStagingFile(candidate); err == nil {
 			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-				return nil, "", "", fmt.Errorf("partial path is not a regular file: %s", candidate)
+				return nil, "", "", nil, fmt.Errorf("partial path is not a regular file: %s", candidate)
 			}
 			continue
 		} else if !os.IsNotExist(err) {
-			return nil, "", "", fmt.Errorf("inspect partial file: %w", err)
+			return nil, "", "", nil, fmt.Errorf("inspect partial file: %w", err)
 		}
-		var openErr error
-		f, openErr = os.OpenFile(candidate, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
-		if openErr == nil {
-			partPath = candidate
-			break
-		}
-		if !os.IsExist(openErr) {
-			return nil, "", "", fmt.Errorf("create partial file: %w", openErr)
-		}
-	}
-	if f == nil || partPath == "" {
-		return nil, "", "", errors.New("too many existing partial candidates")
-	}
-	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
+		f, err := drop.OpenStagingFile(candidate, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
 		if err == nil {
-			err = fmt.Errorf("partial path is not a regular file")
+			if info, statErr := f.Stat(); statErr != nil || !info.Mode().IsRegular() {
+				_ = f.Close()
+				_ = drop.RemoveStagingFile(candidate)
+				if statErr == nil {
+					statErr = errors.New("partial path is not a regular file")
+				}
+				return nil, "", "", nil, fmt.Errorf("inspect partial file: %w", statErr)
+			}
+			return f, candidate, finalPath, nil, nil
 		}
-		_ = f.Close()
-		_ = os.Remove(partPath)
-		return nil, "", "", fmt.Errorf("inspect partial file: %w", err)
+		if !os.IsExist(err) {
+			return nil, "", "", nil, fmt.Errorf("create partial file: %w", err)
+		}
 	}
-	return f, partPath, finalPath, nil
+	return nil, "", "", nil, errors.New("too many existing partial candidates")
+}
+
+func openStandaloneStagingPart(partPath string, meta drop.DropSend) (*os.File, error) {
+	manifest, manifestErr := drop.ReadStagingManifest(partPath)
+	hasManifest := manifestErr == nil
+	if manifestErr != nil && !os.IsNotExist(manifestErr) {
+		return nil, fmt.Errorf("read staging manifest: %w", manifestErr)
+	}
+	if hasManifest && !manifest.Matches(meta) {
+		return nil, fmt.Errorf("%w for drop %q", drop.ErrStagingManifestMismatch, meta.DropID)
+	}
+
+	info, statErr := drop.LstatStagingFile(partPath)
+	if os.IsNotExist(statErr) {
+		f, err := drop.OpenStagingFile(partPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+		if err != nil {
+			return nil, fmt.Errorf("create partial file: %w", err)
+		}
+		if err := drop.WriteStagingManifest(partPath, meta); err != nil {
+			_ = f.Close()
+			_ = drop.RemoveStagingFile(partPath)
+			_ = drop.RemoveStagingManifest(partPath)
+			return nil, fmt.Errorf("write staging manifest: %w", err)
+		}
+		return f, nil
+	}
+	if statErr != nil {
+		return nil, fmt.Errorf("inspect partial file: %w", statErr)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("partial path is not a regular file: %s", partPath)
+	}
+	if !hasManifest {
+		return nil, fmt.Errorf("unmarked standalone partial requires manual cleanup: %s", partPath)
+	}
+
+	f, err := drop.OpenStagingFile(partPath, os.O_RDWR, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("open partial file: %w", err)
+	}
+	openedInfo, err := f.Stat()
+	if err != nil || !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
+		_ = f.Close()
+		if err == nil {
+			err = errors.New("partial file changed during open")
+		}
+		return nil, fmt.Errorf("inspect resumed partial file: %w", err)
+	}
+	hardlinked, linkErr := standalonePartHardlinkedOS(f)
+	if linkErr != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("verify partial link count: %w", linkErr)
+	}
+	if hardlinked {
+		_ = f.Close()
+		return nil, fmt.Errorf("partial file has multiple links: %s", partPath)
+	}
+
+	resumeBytes := int64(0)
+	chunkSize := int64(meta.ChunkSize)
+	if chunkSize <= 0 {
+		chunkSize = drop.DefaultChunkSize
+	}
+	validBytes := (info.Size() / chunkSize) * chunkSize
+	if meta.Size > 0 && meta.HeadHash != "" && validBytes > 0 && validBytes < meta.Size && meta.Size >= 64*1024 && validBytes >= 64*1024 {
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("seek partial file: %w", err)
+		}
+		head := make([]byte, 64*1024)
+		if _, err := io.ReadFull(f, head); err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("read partial head: %w", err)
+		}
+		sum := sha256.Sum256(head)
+		if strings.EqualFold(hex.EncodeToString(sum[:]), meta.HeadHash) {
+			resumeBytes = validBytes
+		}
+	}
+	if resumeBytes < info.Size() {
+		if err := f.Truncate(resumeBytes); err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("truncate partial file: %w", err)
+		}
+	}
+	if _, err := f.Seek(resumeBytes, io.SeekStart); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("seek to resume point: %w", err)
+	}
+	return f, nil
 }
 
 // publishIncomingPart publishes a completed partial file without overwriting
-// an existing destination. Hard-link publication is preferred; an exclusive
-// copy is used on filesystems that do not support links.
-// finalizeIncomingPart flushes and closes a completed staging file before it
-// is published. Keeping this operation in the receiver's completion hook
-// ensures a sender is not told "success" while the final file is still absent
-// or only exists under a private .part name.
-func finalizeIncomingPart(f *os.File, partPath, desiredPath string) (string, error) {
-	if strings.TrimSpace(partPath) == "" || strings.TrimSpace(desiredPath) == "" {
-		return "", errors.New("missing staging or destination path")
+// an existing destination. The source is copied from the already-verified open
+// descriptor; the source pathname is never reopened for reading, so a path
+// replacement cannot substitute attacker-controlled bytes during publication.
+// finalizeIncomingPart flushes and closes a completed staging file before the
+// result is reported. Keeping this operation in the receiver's completion hook
+// ensures a sender is not told "success" while the final file is still absent.
+func finalizeIncomingPart(f *os.File, partPath, desiredPath string, releaseActivity ...func()) (string, error) {
+	if f == nil || strings.TrimSpace(partPath) == "" || strings.TrimSpace(desiredPath) == "" {
+		return "", errors.New("missing open staging file or destination path")
 	}
-	if f != nil {
-		if err := f.Sync(); err != nil {
-			_ = f.Close()
-			return "", fmt.Errorf("sync received file: %w", err)
-		}
-		if err := f.Close(); err != nil {
-			return "", fmt.Errorf("close received file: %w", err)
-		}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return "", fmt.Errorf("sync received file: %w", err)
 	}
-	return publishIncomingPart(partPath, desiredPath)
+	openedInfo, err := f.Stat()
+	if err != nil || !openedInfo.Mode().IsRegular() {
+		_ = f.Close()
+		if err == nil {
+			err = errors.New("staging file is not regular")
+		}
+		return "", fmt.Errorf("inspect received file: %w", err)
+	}
+	pathInfo, err := drop.LstatStagingFile(partPath)
+	if err != nil || !pathInfo.Mode().IsRegular() || !os.SameFile(openedInfo, pathInfo) {
+		_ = f.Close()
+		if err == nil {
+			err = errors.New("staging file changed before publication")
+		}
+		return "", fmt.Errorf("validate staging file before publication: %w", err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		_ = f.Close()
+		return "", fmt.Errorf("rewind staging file: %w", err)
+	}
+	published, err := publishIncomingFile(f, desiredPath)
+	closeErr := f.Close()
+	if err != nil {
+		return published, err
+	}
+	if closeErr != nil {
+		return published, fmt.Errorf("close received file: %w", closeErr)
+	}
+	if err := drop.RemoveStagingFileIfSame(partPath, openedInfo); err != nil {
+		return published, fmt.Errorf("published file but could not remove staging partial: %w", err)
+	}
+	if len(releaseActivity) > 0 && releaseActivity[0] != nil {
+		releaseActivity[0]()
+	} else {
+		_ = drop.ReleaseStagingActivity(partPath)
+	}
+	_ = drop.RemoveStagingManifest(partPath)
+	return published, nil
 }
 
-func publishIncomingPart(partPath, desiredPath string) (string, error) {
+func publishIncomingFile(source *os.File, desiredPath string) (string, error) {
+	outputDir, err := drop.OpenStagingDirectory(filepath.Dir(desiredPath))
+	if err != nil {
+		return "", fmt.Errorf("open output directory: %w", err)
+	}
+	defer outputDir.Close()
 	ext := filepath.Ext(desiredPath)
 	stem := strings.TrimSuffix(desiredPath, ext)
 	for i := 0; ; i++ {
@@ -204,48 +359,31 @@ func publishIncomingPart(partPath, desiredPath string) (string, error) {
 		if i > 0 {
 			candidate = fmt.Sprintf("%s-%d%s", stem, i, ext)
 		}
-		if _, err := os.Lstat(candidate); err == nil {
-			continue
-		} else if !os.IsNotExist(err) {
-			return "", err
-		}
-		if err := os.Link(partPath, candidate); err == nil {
-			_ = os.Remove(partPath)
-			return candidate, nil
-		} else if os.IsExist(err) {
-			continue
-		}
-		out, err := os.OpenFile(candidate, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		out, err := outputDir.OpenFile(filepath.Base(candidate), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 		if os.IsExist(err) {
 			continue
 		}
 		if err != nil {
 			return "", err
 		}
-		in, err := os.Open(partPath)
-		if err != nil {
+		if _, err := source.Seek(0, io.SeekStart); err != nil {
 			_ = out.Close()
-			_ = os.Remove(candidate)
+			_ = outputDir.Remove(filepath.Base(candidate))
 			return "", err
 		}
-		_, copyErr := io.Copy(out, in)
-		closeInErr := in.Close()
+		_, copyErr := io.Copy(out, source)
 		syncErr := out.Sync()
 		closeOutErr := out.Close()
-		if copyErr != nil || closeInErr != nil || syncErr != nil || closeOutErr != nil {
-			_ = os.Remove(candidate)
+		if copyErr != nil || syncErr != nil || closeOutErr != nil {
+			_ = outputDir.Remove(filepath.Base(candidate))
 			if copyErr != nil {
 				return "", copyErr
-			}
-			if closeInErr != nil {
-				return "", closeInErr
 			}
 			if syncErr != nil {
 				return "", syncErr
 			}
 			return "", closeOutErr
 		}
-		_ = os.Remove(partPath)
 		return candidate, nil
 	}
 }

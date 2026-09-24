@@ -216,18 +216,20 @@ type PendingPairing struct {
 
 // Hub orchestrates P2P wire multiplexing and local Web/IPC services.
 type Hub struct {
-	cfg                     HubConfig
-	store                   *pairing.PeerStore
-	identity                *pairing.Identity
-	tr                      transport.Transport
-	p2pLn                   transport.Listener
-	httpServer              *http.Server
-	actualP2P               net.Addr
-	actualWeb               string
-	startTime               time.Time
-	logger                  *EventLogger
-	recentDrops             *RecentDropsBuffer
-	relayCoordinator        *relayCoordinator
+	cfg              HubConfig
+	store            *pairing.PeerStore
+	identity         *pairing.Identity
+	tr               transport.Transport
+	p2pLn            transport.Listener
+	httpServer       *http.Server
+	actualP2P        net.Addr
+	actualWeb        string
+	startTime        time.Time
+	logger           *EventLogger
+	recentDrops      *RecentDropsBuffer
+	relayCoordinator *relayCoordinator
+	// relayToken, ipcToken, and dashboardBootstrapToken are guarded by
+	// dashboardMu so listener-generation rotation cannot race HTTP handlers.
 	relayToken              string
 	ipcToken                string
 	dashboardBootstrapToken string
@@ -243,29 +245,30 @@ type Hub struct {
 	uploadSlots chan struct{}
 	// textSlots bounds concurrent JSON text uploads; pairSlots bounds
 	// concurrent outbound pairing attempts. Same rationale, smaller units.
-	textSlots chan struct{}
-	pairSlots chan struct{}
-	onSnippetReceived       func(ReceivedDropItem)
-	openBrowser             func(string) error
-	readyCh                 chan struct{}
-	stopCh                  chan struct{}
-	runCancel               context.CancelFunc
-	runContext              context.Context
-	runDone                 chan struct{}
-	mu                      sync.RWMutex
-	running                 bool
-	started                 bool
+	textSlots         chan struct{}
+	pairSlots         chan struct{}
+	onSnippetReceived func(ReceivedDropItem)
+	openBrowser       func(string) error
+	readyCh           chan struct{}
+	stopCh            chan struct{}
+	runCancel         context.CancelFunc
+	runContext        context.Context
+	runDone           chan struct{}
+	mu                sync.RWMutex
+	running           bool
+	started           bool
 	// startErr records a startup failure. Ready is closed on failure too
 	// (so waiters never hang), therefore callers must check Err after
 	// Ready fires: a closed Ready channel alone does not mean success.
-	startErr                error
-	activePeer              string
-	discoveryEngine         *discovery.Engine
-	discoveryCancel         context.CancelFunc
-	pendingPairingsMu       sync.Mutex
-	pendingPairings         map[string]*PendingPairing
-	roamingProbesMu         sync.Mutex
-	roamingProbes           map[string]time.Time
+	startErr          error
+	activePeer        string
+	activePeerMu      sync.Mutex
+	discoveryEngine   *discovery.Engine
+	discoveryCancel   context.CancelFunc
+	pendingPairingsMu sync.Mutex
+	pendingPairings   map[string]*PendingPairing
+	roamingProbesMu   sync.Mutex
+	roamingProbes     map[string]time.Time
 }
 
 // maxHubConcurrentUploads bounds simultaneous multipart file uploads through
@@ -343,6 +346,17 @@ func SanitizeDropFilename(name string) string {
 		sb.WriteRune(r)
 	}
 	name = sb.String()
+	// Keep the result portable to Windows filesystems as well as Unix. These
+	// characters are rejected by Win32 paths and could otherwise make a
+	// transfer fail only after its payload has been staged.
+	name = strings.NewReplacer(
+		"<", "_",
+		">", "_",
+		`"`, "_",
+		"|", "_",
+		"?", "_",
+		"*", "_",
+	).Replace(name)
 
 	// Trim leading/trailing dots and spaces (Windows disallows trailing dots and spaces)
 	name = strings.Trim(name, " .")
@@ -416,22 +430,18 @@ func EnsurePeerLANPort(addr string) string {
 // symlink planted to redirect partial-file writes outside the output dir.
 // MkdirAll follows symlinks, so the check must come after creation.
 func ensureStagingDir(dir string) error {
-	info, err := os.Lstat(dir)
+	staging, err := drop.OpenStagingDirectory(dir)
 	if err != nil {
 		return fmt.Errorf("inspect staging directory: %w", err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return fmt.Errorf("staging path is not a directory: %s", dir)
-	}
-	return nil
+	return staging.Close()
 }
 
-// stagingHardlinked reports whether fi has more than one hard link. It is
-// implemented per-OS: Unix exposes the link count, other platforms cannot,
-// so the resume-path check degrades to a no-op there (documented at the call
-// site).
-func stagingHardlinked(fi os.FileInfo) bool {
-	return stagingHardlinkedOS(fi)
+// stagingHardlinked reports whether the open partial has more than one hard
+// link. It is implemented per-OS and fails closed if the platform cannot
+// provide a trustworthy link count.
+func stagingHardlinked(f *os.File) (bool, error) {
+	return stagingHardlinkedOS(f)
 }
 
 // retryStagingOpen reports that a staging partial could not be opened for
@@ -460,9 +470,12 @@ func (e *retryStagingOpen) Unwrap() error {
 // symlink swap between inspection and open fails closed instead of truncating
 // an unrelated victim file.
 func openResumePart(partPath string, inspected os.FileInfo) (*os.File, error) {
-	f, err := os.OpenFile(partPath, os.O_RDWR, 0600)
+	f, err := drop.OpenStagingFile(partPath, os.O_RDWR, 0600)
 	if err != nil {
-		return nil, &retryStagingOpen{err: err}
+		if os.IsNotExist(err) {
+			return nil, &retryStagingOpen{err: err}
+		}
+		return nil, fmt.Errorf("open partial file: %w", err)
 	}
 	finfo, statErr := f.Stat()
 	if statErr != nil || !finfo.Mode().IsRegular() || !os.SameFile(inspected, finfo) {
@@ -475,7 +488,12 @@ func openResumePart(partPath string, inspected os.FileInfo) (*os.File, error) {
 	// A hardlink to a victim file passes the identity check above (same
 	// inode); never resume into a multi-linked file. Fresh creation below
 	// already unlinks planted entries instead of following them.
-	if stagingHardlinked(finfo) {
+	hardlinked, linkErr := stagingHardlinked(f)
+	if linkErr != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("verify partial link count: %w", linkErr)
+	}
+	if hardlinked {
 		_ = f.Close()
 		return nil, fmt.Errorf("partial file has multiple links: %s", partPath)
 	}
@@ -489,10 +507,10 @@ func openResumePart(partPath string, inspected os.FileInfo) (*os.File, error) {
 // exactly once more; any further race fails closed instead of truncating a
 // victim file.
 func createStagingPart(partPath string) (*os.File, error) {
-	f, err := os.OpenFile(partPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+	f, err := drop.OpenStagingFile(partPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
 	if os.IsExist(err) {
-		if rmErr := os.Remove(partPath); rmErr == nil {
-			f, err = os.OpenFile(partPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+		if rmErr := drop.RemoveStagingFile(partPath); rmErr == nil {
+			f, err = drop.OpenStagingFile(partPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
 		} else {
 			err = fmt.Errorf("remove conflicting partial path: %w", rmErr)
 		}
@@ -684,21 +702,11 @@ func (h *Hub) EnsureIdentity() (*pairing.Identity, error) {
 	if h.store == nil {
 		return nil, errors.New("peer store not initialized")
 	}
-	id, err := h.store.LoadIdentity()
+	// LoadOrCreateIdentity holds a cross-process identity lock, preventing two
+	// simultaneous first starts from generating incompatible keypairs.
+	id, err := h.store.LoadOrCreateIdentity()
 	if err != nil {
-		// Never replace an existing identity because its file is temporarily
-		// unreadable or corrupt.  Rotating it silently invalidates every paired
-		// peer and can turn a recoverable error into a permanent lockout.
-		return nil, fmt.Errorf("load identity: %w", err)
-	}
-	if id == nil {
-		id, err = pairing.GenerateIdentity()
-		if err != nil {
-			return nil, fmt.Errorf("generate identity: %w", err)
-		}
-		if err := h.store.SaveIdentity(id); err != nil {
-			return nil, fmt.Errorf("save identity: %w", err)
-		}
+		return nil, err
 	}
 	h.mu.Lock()
 	h.identity = id
@@ -767,6 +775,17 @@ func (h *Hub) WebAddr() string {
 // exchanged for an HttpOnly session cookie; the long-lived IPC capability is
 // never rendered into the page or placed in a query string/referrer.
 func (h *Hub) DashboardURL() string {
+	return h.dashboardURL(false)
+}
+
+// NewDashboardURL mints a fresh bootstrap link and invalidates the previous
+// unconsumed link. It is used by explicit recovery commands so two deliberate
+// `tantu dashboard` invocations never share a one-use capability.
+func (h *Hub) NewDashboardURL() string {
+	return h.dashboardURL(true)
+}
+
+func (h *Hub) dashboardURL(forceNew bool) string {
 	webAddr := h.WebAddr()
 	if webAddr == "" {
 		return ""
@@ -774,7 +793,7 @@ func (h *Hub) DashboardURL() string {
 
 	h.dashboardMu.Lock()
 	defer h.dashboardMu.Unlock()
-	if h.dashboardBootstrapToken == "" {
+	if forceNew || h.dashboardBootstrapToken == "" {
 		buf := make([]byte, 32)
 		if _, err := rand.Read(buf); err != nil {
 			return ""
@@ -787,6 +806,40 @@ func (h *Hub) DashboardURL() string {
 		Path:     "/",
 		Fragment: "tantu_bootstrap=" + h.dashboardBootstrapToken,
 	}).String()
+}
+
+// rotateRuntimeCapabilities invalidates capabilities learned during a previous
+// listener generation. A same-process restart still gets a fresh IPC/relay
+// secret, so a stale local descriptor cannot control the new listener.
+func (h *Hub) rotateRuntimeCapabilities() error {
+	ipcBytes := make([]byte, 32)
+	if _, err := rand.Read(ipcBytes); err != nil {
+		return fmt.Errorf("generate IPC token: %w", err)
+	}
+	relayBytes := make([]byte, 32)
+	if _, err := rand.Read(relayBytes); err != nil {
+		return fmt.Errorf("generate relay token: %w", err)
+	}
+	h.dashboardMu.Lock()
+	h.ipcToken = hex.EncodeToString(ipcBytes)
+	h.relayToken = hex.EncodeToString(relayBytes)
+	h.dashboardMu.Unlock()
+	return nil
+}
+
+// currentIPCToken returns a generation-stable copy of the local IPC capability.
+// Capability rotation happens during a listener-generation transition, while
+// HTTP handlers may still be unwinding; synchronize reads with that write.
+func (h *Hub) currentIPCToken() string {
+	h.dashboardMu.Lock()
+	defer h.dashboardMu.Unlock()
+	return h.ipcToken
+}
+
+func (h *Hub) currentRelayToken() string {
+	h.dashboardMu.Lock()
+	defer h.dashboardMu.Unlock()
+	return h.relayToken
 }
 
 // resetDashboardSessions invalidates browser sessions and bootstrap values at
@@ -918,29 +971,74 @@ func (h *Hub) Identity() *pairing.Identity {
 	return h.identity
 }
 
-// GetActivePeer returns the fingerprint of the currently selected active peer, or empty string.
+// GetActivePeer returns the fingerprint of the currently selected active peer,
+// or empty string. The persisted selection is rechecked against the live peer
+// store so an unpair performed by another Tantu process cannot leave a stale
+// in-memory route active until the next Hub restart.
 func (h *Hub) GetActivePeer() string {
+	h.activePeerMu.Lock()
+	defer h.activePeerMu.Unlock()
 	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return h.activePeer
+	active := h.activePeer
+	store := h.store
+	h.mu.RUnlock()
+	if active == "" || store == nil {
+		return active
+	}
+	exists, err := store.HasPeer(active)
+	if err != nil {
+		// Preserve the selection when the store is temporarily unreadable;
+		// treating a parse/read error as revocation could delete a valid route.
+		return active
+	}
+	if exists {
+		return active
+	}
+
+	shouldClear := false
+	h.mu.Lock()
+	if h.activePeer == active {
+		h.activePeer = ""
+		shouldClear = true
+	}
+	h.mu.Unlock()
+	if shouldClear {
+		_ = store.ClearActivePeer()
+	}
+	return ""
 }
 
 // SetActivePeer updates the currently active peer by query (name, alias, SAS, fingerprint, or empty to clear).
+// The selection is persisted so a controlled Hub restart does not silently
+// route operations to a different peer.
 func (h *Hub) SetActivePeer(query string) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if query == "" {
-		h.activePeer = ""
-		return nil
-	}
-	if h.store == nil {
+	h.activePeerMu.Lock()
+	defer h.activePeerMu.Unlock()
+	h.mu.RLock()
+	store := h.store
+	h.mu.RUnlock()
+	if store == nil {
 		return errors.New("peer store not available")
 	}
-	p, err := h.store.ResolvePeer(query)
+	if strings.TrimSpace(query) == "" {
+		if err := store.ClearActivePeer(); err != nil {
+			return fmt.Errorf("clear active peer: %w", err)
+		}
+		h.mu.Lock()
+		h.activePeer = ""
+		h.mu.Unlock()
+		return nil
+	}
+	p, err := store.ResolvePeer(query)
 	if err != nil {
 		return err
 	}
+	if err := store.SaveActivePeer(p.Fingerprint); err != nil {
+		return fmt.Errorf("save active peer: %w", err)
+	}
+	h.mu.Lock()
 	h.activePeer = p.Fingerprint
+	h.mu.Unlock()
 	return nil
 }
 
@@ -1141,12 +1239,23 @@ func (h *Hub) Start(parent context.Context) (err error) {
 				close(readyCh)
 			}
 		}
+		if err := h.rotateRuntimeCapabilities(); err != nil {
+			h.mu.Unlock()
+			cancel()
+			return err
+		}
 		h.running = true
 		h.started = true
 		h.startErr = nil
 		h.readyCh = readyCh
 		h.httpServer = nil
 		h.p2pLn = nil
+		h.tr = nil
+		h.store = nil
+		h.identity = nil
+		h.actualP2P = nil
+		h.actualWeb = ""
+		h.startTime = time.Time{}
 		h.runCancel = cancel
 		h.runContext = ctx
 		h.runDone = make(chan struct{})
@@ -1226,6 +1335,18 @@ func (h *Hub) Start(parent context.Context) (err error) {
 
 	// 3. Normalize peers
 	h.NormalizePeers()
+	h.activePeerMu.Lock()
+	h.mu.Lock()
+	h.activePeer = ""
+	h.mu.Unlock()
+	if active, activeErr := store.LoadActivePeer(); activeErr != nil {
+		h.logger.Warn(DomainPeer, fmt.Sprintf("Could not load active peer selection: %v", activeErr))
+	} else if active != "" {
+		h.mu.Lock()
+		h.activePeer = active
+		h.mu.Unlock()
+	}
+	h.activePeerMu.Unlock()
 
 	// 3b. Validate the output directory before binding any listener. A Hub
 	// that cannot receive files must fail fast with a clear error, not serve
@@ -1275,20 +1396,21 @@ func (h *Hub) Start(parent context.Context) (err error) {
 		if err != nil {
 			return fmt.Errorf("parse local TLS certificate: %w", err)
 		}
-		var trustedFPs []string
 		// Trust is evaluated live against the peer store on every handshake.
 		// A start-time snapshot must NOT be passed here: snapshot OR live
 		// semantics would keep a peer trusted at the transport layer after
 		// `unpair` removed it, until the next Hub restart. The dispatcher
 		// applies the same live check at the application layer.
 		tr, err = transport.NewLANTransport(transport.LANTransportConfig{
-			Cert:                tlsCert,
-			TrustedFingerprints: trustedFPs,
+			Cert: tlsCert,
 			IsTrusted: func(fp string) bool {
-				if h.store == nil {
+				h.mu.RLock()
+				store := h.store
+				h.mu.RUnlock()
+				if store == nil {
 					return false
 				}
-				_, ok := h.store.GetPeer(fp)
+				_, ok := store.GetPeer(fp)
 				return ok
 			},
 			AllowPairing: true,
@@ -1358,9 +1480,12 @@ func (h *Hub) Start(parent context.Context) (err error) {
 	var dropMu sync.Mutex
 	openedFiles := make(map[string]*os.File)
 	reservedDrops := make(map[string]struct{})
+	attemptOwners := make(map[string]string)
 	savedPaths := make(map[string]string)
 	partPaths := make(map[string]string)
+	outputDirs := make(map[string]string)
 	publishedPaths := make(map[string]string)
+	activityReleases := make(map[string]func())
 	textBuffers := make(map[string]*boundedBuffer)
 
 	var asideFallback, dispatcherFallback io.Writer
@@ -1391,28 +1516,44 @@ func (h *Hub) Start(parent context.Context) (err error) {
 			Timeout:     h.cfg.Timeout,
 			MaxSize:     drop.DefaultMaxDropSize,
 			MaxTextSize: drop.DefaultMaxTextSize,
+			Quota:       drop.DefaultTransferQuota(),
+			TouchActivity: func(meta drop.DropSend) error {
+				dropMu.Lock()
+				owner := attemptOwners[meta.DropID]
+				partPath := partPaths[meta.DropID]
+				dropMu.Unlock()
+				if owner == "" || owner != meta.AttemptID {
+					return drop.ErrStagingPartActive
+				}
+				if partPath == "" {
+					if meta.Kind == drop.DropKindFile {
+						return drop.ErrStagingPartActive
+					}
+					return nil
+				}
+				return drop.TouchStagingActivity(partPath)
+			},
 			BeforeComplete: func(res *drop.ReceiveDropResult) error {
 				if res.Meta.Kind != drop.DropKindFile {
 					return nil
 				}
 				dropMu.Lock()
+				owner := attemptOwners[res.Meta.DropID]
 				f := openedFiles[res.Meta.DropID]
 				partPath := partPaths[res.Meta.DropID]
 				desiredPath := savedPaths[res.Meta.DropID]
+				releaseActivity := activityReleases[res.Meta.DropID]
 				dropMu.Unlock()
-				if f != nil {
-					if err := f.Sync(); err != nil {
-						_ = f.Close()
-						return fmt.Errorf("sync completed drop: %w", err)
-					}
-					if err := f.Close(); err != nil {
-						return fmt.Errorf("close completed drop: %w", err)
-					}
+				if owner == "" || owner != res.Meta.AttemptID {
+					return drop.ErrStagingPartActive
+				}
+				if f == nil {
+					return errors.New("completed file has no open staging handle")
 				}
 				if partPath == "" || desiredPath == "" {
 					return errors.New("completed file has no staging path")
 				}
-				published, err := finalizePartFile(partPath, desiredPath)
+				published, err := finalizePartFile(f, partPath, desiredPath, releaseActivity)
 				if err != nil {
 					return fmt.Errorf("publish completed drop: %w", err)
 				}
@@ -1422,12 +1563,16 @@ func (h *Hub) Start(parent context.Context) (err error) {
 				return nil
 			},
 			OnMeta: func(meta drop.DropSend) (writer io.Writer, err error) {
+				if meta.AttemptID == "" {
+					return nil, errors.New("drop attempt ID is missing")
+				}
 				dropMu.Lock()
 				_, duplicateDrop := openedFiles[meta.DropID]
 				_, duplicateText := textBuffers[meta.DropID]
 				_, alreadyReserved := reservedDrops[meta.DropID]
 				if !duplicateDrop && !duplicateText && !alreadyReserved {
 					reservedDrops[meta.DropID] = struct{}{}
+					attemptOwners[meta.DropID] = meta.AttemptID
 				}
 				dropMu.Unlock()
 				if duplicateDrop || duplicateText || alreadyReserved {
@@ -1436,10 +1581,15 @@ func (h *Hub) Start(parent context.Context) (err error) {
 				defer func() {
 					if err != nil {
 						dropMu.Lock()
-						delete(reservedDrops, meta.DropID)
+						if attemptOwners[meta.DropID] == meta.AttemptID {
+							delete(attemptOwners, meta.DropID)
+							delete(reservedDrops, meta.DropID)
+						}
 						dropMu.Unlock()
 					}
 				}()
+				unlockStaging := drop.LockStagingMaintenance()
+				defer unlockStaging()
 				if meta.Kind == drop.DropKindFile {
 					fileName := SanitizeDropFilename(meta.Name)
 					outDir := h.OutputDir()
@@ -1470,7 +1620,7 @@ func (h *Hub) Start(parent context.Context) (err error) {
 						return nil, fmt.Errorf("inspect destination: %w", err)
 					}
 
-					stagingDir := filepath.Join(outDir, ".tantu-staging")
+					stagingDir := filepath.Join(outDir, drop.StagingDirName)
 					if err := os.MkdirAll(stagingDir, 0700); err != nil {
 						return nil, fmt.Errorf("create transfer staging directory: %w", err)
 					}
@@ -1478,10 +1628,34 @@ func (h *Hub) Start(parent context.Context) (err error) {
 						return nil, err
 					}
 					partPath := filepath.Join(stagingDir, meta.DropID+".part")
+					releaseActivity, activityErr := drop.AcquireStagingActivity(partPath)
+					if activityErr != nil {
+						return nil, activityErr
+					}
+					activityHeld := true
+					defer func() {
+						if activityHeld {
+							releaseActivity()
+						}
+					}()
 					var f *os.File
 					var validBytes int64
 
-					if info, err := os.Lstat(partPath); err == nil {
+					// A partial is resumable only when its durable sidecar
+					// describes the same drop. Older/orphaned partials without
+					// a manifest are discarded below and restarted safely;
+					// mismatched manifests fail closed instead of mixing bytes
+					// from unrelated transfers.
+					manifest, manifestErr := drop.ReadStagingManifest(partPath)
+					manifestReady := manifestErr == nil
+					if manifestErr != nil && !os.IsNotExist(manifestErr) {
+						return nil, fmt.Errorf("read staging manifest: %w", manifestErr)
+					}
+					if manifestReady && !manifest.Matches(meta) {
+						return nil, fmt.Errorf("%w for drop %q", drop.ErrStagingManifestMismatch, meta.DropID)
+					}
+
+					if info, err := drop.LstatStagingFile(partPath); err == nil {
 						if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 							return nil, fmt.Errorf("partial path is not a regular file: %s", partPath)
 						}
@@ -1491,7 +1665,7 @@ func (h *Hub) Start(parent context.Context) (err error) {
 							chunkSize = 1 << 20
 						}
 						validBytes = (existingBytes / chunkSize) * chunkSize
-						if meta.Size > 0 && validBytes > 0 && validBytes < meta.Size && meta.HeadHash != "" {
+						if manifestReady && meta.Size > 0 && validBytes > 0 && validBytes < meta.Size && meta.HeadHash != "" {
 							resumed, openErr := openResumePart(partPath, info)
 							var retry *retryStagingOpen
 							switch {
@@ -1538,18 +1712,34 @@ func (h *Hub) Start(parent context.Context) (err error) {
 						return nil, fmt.Errorf("inspect partial file: %w", err)
 					}
 
+					createdNew := false
 					if f == nil {
 						created, err := createStagingPart(partPath)
 						if err != nil {
 							return nil, err
 						}
 						f = created
+						createdNew = true
+					}
+					if err := drop.WriteStagingManifest(partPath, meta); err != nil {
+						_ = f.Close()
+						if createdNew {
+							// OnMeta has not published partPaths yet, so
+							// OnDropDone cannot clean this newly-created
+							// file for us. Remove both halves immediately.
+							_ = drop.RemoveStagingFile(partPath)
+							_ = drop.RemoveStagingManifest(partPath)
+						}
+						return nil, fmt.Errorf("write staging manifest: %w", err)
 					}
 
 					dropMu.Lock()
 					openedFiles[meta.DropID] = f
 					partPaths[meta.DropID] = partPath
+					outputDirs[meta.DropID] = outDir
 					savedPaths[meta.DropID] = destPath
+					activityReleases[meta.DropID] = releaseActivity
+					activityHeld = false
 					dropMu.Unlock()
 					return f, nil
 				}
@@ -1568,19 +1758,29 @@ func (h *Hub) Start(parent context.Context) (err error) {
 		},
 		OnDropReceived: func(res *drop.ReceiveDropResult) {
 			dropMu.Lock()
+			if attemptOwners[res.Meta.DropID] != res.Meta.AttemptID {
+				dropMu.Unlock()
+				return
+			}
 			if f, ok := openedFiles[res.Meta.DropID]; ok && f != nil {
 				_ = f.Close()
 				delete(openedFiles, res.Meta.DropID)
 			}
 			finalSavedPath := publishedPaths[res.Meta.DropID]
 			delete(partPaths, res.Meta.DropID)
+			delete(outputDirs, res.Meta.DropID)
 			delete(savedPaths, res.Meta.DropID)
 			delete(publishedPaths, res.Meta.DropID)
+			releaseActivity := activityReleases[res.Meta.DropID]
+			delete(activityReleases, res.Meta.DropID)
 			var textContent string
 			if buf, ok := textBuffers[res.Meta.DropID]; ok && buf != nil {
 				textContent = buf.String()
 			}
 			dropMu.Unlock()
+			if releaseActivity != nil {
+				releaseActivity()
+			}
 
 			if res.Meta.Kind == drop.DropKindFile && res.SHA256 != "" {
 				shaShort := res.SHA256
@@ -1669,24 +1869,49 @@ func (h *Hub) Start(parent context.Context) (err error) {
 				}
 			}
 		},
-		OnDropDone: func(dropID string, res *drop.ReceiveDropResult, err error) {
+		OnDropDoneAttempt: func(dropID, attemptID string, res *drop.ReceiveDropResult, err error) {
 			dropMu.Lock()
+			if attemptOwners[dropID] != attemptID {
+				dropMu.Unlock()
+				return
+			}
 			if f, ok := openedFiles[dropID]; ok && f != nil {
 				_ = f.Close()
 				delete(openedFiles, dropID)
 			}
 			partPath := partPaths[dropID]
+			outputDir := outputDirs[dropID]
 			delete(partPaths, dropID)
+			delete(outputDirs, dropID)
 			delete(savedPaths, dropID)
 			delete(textBuffers, dropID)
 			delete(publishedPaths, dropID)
 			delete(reservedDrops, dropID)
+			delete(attemptOwners, dropID)
+			releaseActivity := activityReleases[dropID]
+			delete(activityReleases, dropID)
+			protectedParts := make([]string, 0, len(partPaths)+1)
+			for _, activePart := range partPaths {
+				protectedParts = append(protectedParts, activePart)
+			}
+			if err != nil && partPath != "" {
+				protectedParts = append(protectedParts, partPath)
+			}
 			dropMu.Unlock()
 
 			if err != nil && partPath != "" {
-				if info, statErr := os.Lstat(partPath); statErr == nil && info.Mode().IsRegular() && info.Size() == 0 {
-					_ = os.Remove(partPath)
+				if info, statErr := drop.LstatStagingFile(partPath); statErr == nil && info.Mode().IsRegular() && info.Size() == 0 {
+					_ = drop.RemoveStagingFile(partPath)
+					_ = drop.RemoveStagingManifest(partPath)
 				}
+				if outputDir != "" {
+					if removed, freed := drop.EnforcePartialBudget(outputDir, drop.DefaultRetainedPartialBudget, protectedParts...); removed > 0 {
+						h.logger.Warn(DomainDrop, fmt.Sprintf("Trimmed %d retained partial file(s) after failed transfer (%s reclaimed)", removed, formatBytes(freed)))
+					}
+				}
+			}
+			if releaseActivity != nil {
+				releaseActivity()
 			}
 		},
 		OnASideDone: func(err error) {
@@ -1945,7 +2170,7 @@ func (h *Hub) Start(parent context.Context) (err error) {
 		P2PAddr:   p2pAddrStr,
 		P2PPort:   p2pPort,
 		Transport: h.cfg.TransportType,
-		IPCToken:  h.ipcToken,
+		IPCToken:  h.currentIPCToken(),
 	}
 	if err := WriteRuntimeInfo(storeDir, runtimeInfo); err != nil {
 		shutdownHTTPServer(httpServer)
@@ -1959,6 +2184,9 @@ func (h *Hub) Start(parent context.Context) (err error) {
 	// and would otherwise accumulate without bound.
 	if removed, freed := drop.SweepStalePartials(h.OutputDir(), drop.DefaultStagingMaxAge); removed > 0 {
 		h.logger.Action(DomainDrop, fmt.Sprintf("Cleaned %d stale partial file(s) (%s reclaimed)", removed, formatBytes(freed)))
+	}
+	if removed, freed := drop.EnforcePartialBudget(h.OutputDir(), drop.DefaultRetainedPartialBudget); removed > 0 {
+		h.logger.Warn(DomainDrop, fmt.Sprintf("Trimmed %d retained partial file(s) to enforce the %s disk budget (%s reclaimed)", removed, formatBytes(drop.DefaultRetainedPartialBudget), formatBytes(freed)))
 	}
 
 	// Both serving loops are now accepting requests and runtime metadata is
@@ -1999,7 +2227,6 @@ func (h *Hub) DialPeer(target string) (transport.Conn, error) {
 	h.mu.RLock()
 	tr := h.tr
 	store := h.store
-	active := h.activePeer
 	transportName := h.cfg.TransportType
 	configuredListen := h.cfg.ListenAddr
 	h.mu.RUnlock()
@@ -2007,6 +2234,7 @@ func (h *Hub) DialPeer(target string) (transport.Conn, error) {
 	if tr == nil {
 		return nil, errors.New("transport not initialized")
 	}
+	active := h.GetActivePeer()
 
 	dialTarget := target
 	if transportName == "lan" {
@@ -2133,11 +2361,64 @@ func (b *boundedBuffer) String() string {
 	return b.buf.String()
 }
 
-// finalizePartFile publishes a completed .part file without ever deleting an
-// existing destination.  Hard-linking gives us an atomic no-overwrite publish
-// on the same filesystem; the rename fallback is retained for filesystems that
-// do not support links.
-func finalizePartFile(partPath, desiredPath string) (string, error) {
+// finalizePartFile publishes a completed partial from its already-verified
+// open descriptor without reopening the source pathname. This prevents a
+// local path replacement from substituting different bytes between the final
+// checksum and publication.
+func finalizePartFile(source *os.File, partPath, desiredPath string, releaseActivity ...func()) (string, error) {
+	if source == nil || strings.TrimSpace(partPath) == "" || strings.TrimSpace(desiredPath) == "" {
+		return "", errors.New("missing open staging file or destination path")
+	}
+	if err := source.Sync(); err != nil {
+		_ = source.Close()
+		return "", fmt.Errorf("sync completed drop: %w", err)
+	}
+	sourceInfo, err := source.Stat()
+	if err != nil || !sourceInfo.Mode().IsRegular() {
+		_ = source.Close()
+		if err == nil {
+			err = errors.New("staging file is not regular")
+		}
+		return "", fmt.Errorf("inspect completed drop: %w", err)
+	}
+	pathInfo, err := drop.LstatStagingFile(partPath)
+	if err != nil || !pathInfo.Mode().IsRegular() || !os.SameFile(sourceInfo, pathInfo) {
+		_ = source.Close()
+		if err == nil {
+			err = errors.New("staging file changed before publication")
+		}
+		return "", fmt.Errorf("validate staging file before publication: %w", err)
+	}
+	if _, err := source.Seek(0, io.SeekStart); err != nil {
+		_ = source.Close()
+		return "", fmt.Errorf("rewind staging file: %w", err)
+	}
+	published, err := publishPartFile(source, desiredPath)
+	closeErr := source.Close()
+	if err != nil {
+		return published, err
+	}
+	if closeErr != nil {
+		return published, fmt.Errorf("close completed drop: %w", closeErr)
+	}
+	if err := drop.RemoveStagingFileIfSame(partPath, sourceInfo); err != nil {
+		return published, fmt.Errorf("published file but could not remove staging partial: %w", err)
+	}
+	if len(releaseActivity) > 0 && releaseActivity[0] != nil {
+		releaseActivity[0]()
+	} else {
+		_ = drop.ReleaseStagingActivity(partPath)
+	}
+	_ = drop.RemoveStagingManifest(partPath)
+	return published, nil
+}
+
+func publishPartFile(source *os.File, desiredPath string) (string, error) {
+	outputDir, err := drop.OpenStagingDirectory(filepath.Dir(desiredPath))
+	if err != nil {
+		return "", fmt.Errorf("open output directory: %w", err)
+	}
+	defer outputDir.Close()
 	ext := filepath.Ext(desiredPath)
 	base := strings.TrimSuffix(desiredPath, ext)
 	for i := 0; i < 10000; i++ {
@@ -2145,58 +2426,32 @@ func finalizePartFile(partPath, desiredPath string) (string, error) {
 		if i > 0 {
 			candidate = fmt.Sprintf("%s (%d)%s", base, i, ext)
 		}
-		if _, err := os.Lstat(candidate); err == nil {
+		out, err := outputDir.OpenFile(filepath.Base(candidate), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if os.IsExist(err) {
 			continue
-		} else if !os.IsNotExist(err) {
+		}
+		if err != nil {
 			return "", err
 		}
-		if err := os.Link(partPath, candidate); err == nil {
-			if removeErr := os.Remove(partPath); removeErr != nil {
-				// The published candidate is still valid; report its path so
-				// callers do not report a false transfer failure merely because
-				// cleanup of the duplicate inode failed.
-				return candidate, nil
-			}
-			return candidate, nil
-		} else if !errors.Is(err, os.ErrExist) {
-			// Hard links are unavailable on some filesystems. Fall back to an
-			// exclusive copy rather than os.Rename, which can overwrite a
-			// destination created by another process on Unix.
-			out, openErr := os.OpenFile(candidate, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-			if os.IsExist(openErr) {
-				continue
-			}
-			if openErr != nil {
-				return "", openErr
-			}
-			in, openErr := os.Open(partPath)
-			if openErr != nil {
-				_ = out.Close()
-				_ = os.Remove(candidate)
-				return "", openErr
-			}
-			_, copyErr := io.Copy(out, in)
-			closeInErr := in.Close()
-			syncErr := out.Sync()
-			closeOutErr := out.Close()
-			if copyErr != nil || closeInErr != nil || syncErr != nil || closeOutErr != nil {
-				_ = os.Remove(candidate)
-				if copyErr != nil {
-					return "", copyErr
-				}
-				if closeInErr != nil {
-					return "", closeInErr
-				}
-				if syncErr != nil {
-					return "", syncErr
-				}
-				return "", closeOutErr
-			}
-			if removeErr := os.Remove(partPath); removeErr != nil {
-				return candidate, nil
-			}
-			return candidate, nil
+		if _, err := source.Seek(0, io.SeekStart); err != nil {
+			_ = out.Close()
+			_ = outputDir.Remove(filepath.Base(candidate))
+			return "", err
 		}
+		_, copyErr := io.Copy(out, source)
+		syncErr := out.Sync()
+		closeOutErr := out.Close()
+		if copyErr != nil || syncErr != nil || closeOutErr != nil {
+			_ = outputDir.Remove(filepath.Base(candidate))
+			if copyErr != nil {
+				return "", copyErr
+			}
+			if syncErr != nil {
+				return "", syncErr
+			}
+			return "", closeOutErr
+		}
+		return candidate, nil
 	}
 	return "", errors.New("too many existing file candidates")
 }

@@ -87,16 +87,17 @@ func (p *PrefetchedConn) SetWriteDeadline(t time.Time) error {
 
 // DispatcherConfig configures the multiplexed Dispatcher.
 type DispatcherConfig struct {
-	ASideConfig      ASideConfig
-	DropConfig       drop.ReceiveDropConfig
-	DropWriter       io.Writer // Optional fallback writer for QuickDrop if OnMeta is nil
-	OnDropReceived   func(res *drop.ReceiveDropResult)
-	OnDropDone       func(dropID string, res *drop.ReceiveDropResult, err error)
-	OnASideDone      func(err error)
-	OnPairing        func(conn transport.Conn, firstEnv *protocol.Envelope)
-	IsPeerTrusted    func(fingerprint string) bool // Optional authorization callback to verify peer identity
-	Logger           *log.Logger
-	HandshakeTimeout time.Duration
+	ASideConfig       ASideConfig
+	DropConfig        drop.ReceiveDropConfig
+	DropWriter        io.Writer // Optional fallback writer for QuickDrop if OnMeta is nil
+	OnDropReceived    func(res *drop.ReceiveDropResult)
+	OnDropDone        func(dropID string, res *drop.ReceiveDropResult, err error)
+	OnDropDoneAttempt func(dropID, attemptID string, res *drop.ReceiveDropResult, err error)
+	OnASideDone       func(err error)
+	OnPairing         func(conn transport.Conn, firstEnv *protocol.Envelope)
+	IsPeerTrusted     func(fingerprint string) bool // Optional authorization callback to verify peer identity
+	Logger            *log.Logger
+	HandshakeTimeout  time.Duration
 }
 
 // Dispatcher multiplexes incoming connections on a single transport.Listener,
@@ -107,6 +108,7 @@ type Dispatcher struct {
 	cfg            DispatcherConfig
 	log            *log.Logger
 	activeSessions atomic.Int64
+	attemptSeq     atomic.Uint64
 }
 
 // NewDispatcher creates a new Dispatcher for the given listener.
@@ -123,6 +125,10 @@ func NewDispatcher(listener transport.Listener, cfg DispatcherConfig) *Dispatche
 		cfg:      cfg,
 		log:      l,
 	}
+}
+
+func (d *Dispatcher) nextDropAttemptID() string {
+	return fmt.Sprintf("attempt-%d", d.attemptSeq.Add(1))
 }
 
 // ActiveSessions returns the number of currently active multiplexed sessions.
@@ -278,8 +284,12 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn transport.Conn) {
 		d.logf("[DEBUG] 🔀 Multiplexer: routing connection from %s to QuickDrop receiver", conn.RemoteAddr())
 		var meta drop.DropSend
 		_ = firstEnv.DecodePayload(&meta)
+		attemptID := d.nextDropAttemptID()
+		meta.AttemptID = attemptID
+		dropConfig := d.cfg.DropConfig
+		dropConfig.AttemptID = attemptID
 
-		res, err := drop.ReceiveDrop(ctx, prefetched, d.cfg.DropWriter, d.cfg.DropConfig)
+		res, err := drop.ReceiveDrop(ctx, prefetched, d.cfg.DropWriter, dropConfig)
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
 				d.logf("❌ QuickDrop receive error from %s: %v", conn.RemoteAddr(), err)
@@ -287,7 +297,9 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn transport.Conn) {
 		} else if d.cfg.OnDropReceived != nil {
 			d.cfg.OnDropReceived(res)
 		}
-		if d.cfg.OnDropDone != nil {
+		if d.cfg.OnDropDoneAttempt != nil {
+			d.cfg.OnDropDoneAttempt(meta.DropID, attemptID, res, err)
+		} else if d.cfg.OnDropDone != nil {
 			d.cfg.OnDropDone(meta.DropID, res, err)
 		}
 

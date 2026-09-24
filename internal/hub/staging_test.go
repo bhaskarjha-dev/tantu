@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 )
 
@@ -156,10 +155,6 @@ func TestEnsureStagingDir_RejectsSymlink(t *testing.T) {
 }
 
 func TestOpenResumePart_RejectsHardlink(t *testing.T) {
-	// Link-count enforcement is Unix-only (Windows FileInfo hides nlink).
-	if runtime.GOOS == "windows" {
-		t.Skip("hardlink detection requires Unix file modes")
-	}
 	dir := t.TempDir()
 	real := filepath.Join(dir, "victim.dat")
 	if err := os.WriteFile(real, []byte("victim-contents"), 0600); err != nil {

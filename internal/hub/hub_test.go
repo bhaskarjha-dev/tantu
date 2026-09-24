@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -328,6 +329,7 @@ func TestHub_WebPortFallback(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatalf("timed out waiting for Hub ready")
 	}
+	defer h.Stop()
 
 	boundWeb := h.WebAddr()
 	if boundWeb == "127.0.0.1:9876" {
@@ -585,6 +587,7 @@ func TestHub_DropResumption(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatalf("timed out waiting for Hub ready")
 	}
+	defer h.Stop()
 
 	// Dial Hub's P2P address using loopback transport
 	tr := transport.NewLoopbackTransport()
@@ -603,10 +606,19 @@ func TestHub_DropResumption(t *testing.T) {
 		ChunkSize: chunkSize,
 		HeadHash:  hex.EncodeToString(head[:]),
 	}
+	if err := drop.WriteStagingManifest(partPath, meta); err != nil {
+		t.Fatalf("write staging manifest: %v", err)
+	}
 
-	sendErr := drop.SendDrop(ctx, conn, meta, bytes.NewReader(payload), drop.SendDropConfig{})
+	var acceptedOffset int64
+	sendErr := drop.SendDrop(ctx, conn, meta, bytes.NewReader(payload), drop.SendDropConfig{
+		OnAck: func(ack drop.DropAck) { acceptedOffset = ack.ReceivedBytes },
+	})
 	if sendErr != nil {
 		t.Fatalf("SendDrop failed: %v", sendErr)
+	}
+	if acceptedOffset != preSeededBytes {
+		t.Fatalf("resume ACK offset = %d, want %d", acceptedOffset, preSeededBytes)
 	}
 
 	// Give hub a moment to process OnDropReceived
@@ -642,6 +654,80 @@ func TestHub_DropResumption(t *testing.T) {
 	}
 }
 
+func TestHub_DuplicateDropIDDoesNotCancelActiveTransfer(t *testing.T) {
+	h, cancel, cleanup := startTestHub(t)
+	defer cleanup()
+	defer cancel()
+
+	payload := bytes.Repeat([]byte("duplicate-drop-id-ownership-"), 16*1024)
+	chunkSize := 32 * 1024
+	meta := drop.DropSend{
+		DropID:    "duplicate-active-drop",
+		Kind:      drop.DropKindFile,
+		Name:      "duplicate.bin",
+		Size:      int64(len(payload)),
+		ChunkSize: chunkSize,
+	}
+	head := sha256.Sum256(payload[:64*1024])
+	meta.HeadHash = hex.EncodeToString(head[:])
+
+	tr := transport.NewLoopbackTransport()
+	firstConn, err := tr.Dial(h.P2PAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer firstConn.Close()
+	reader, writer := io.Pipe()
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- drop.SendDrop(context.Background(), firstConn, meta, reader, drop.SendDropConfig{Timeout: 10 * time.Second})
+	}()
+
+	partPath := filepath.Join(h.OutputDir(), drop.StagingDirName, meta.DropID+".part")
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, statErr := os.Stat(partPath); statErr == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, statErr := os.Stat(partPath); statErr != nil {
+		t.Fatalf("first transfer did not acquire staging ownership: %v", statErr)
+	}
+
+	secondConn, err := tr.Dial(h.P2PAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondErr := drop.SendDrop(context.Background(), secondConn, meta, bytes.NewReader(payload), drop.SendDropConfig{Timeout: 3 * time.Second})
+	_ = secondConn.Close()
+	if secondErr == nil || !strings.Contains(secondErr.Error(), "duplicate drop_id") {
+		t.Fatalf("duplicate attempt error = %v, want duplicate drop_id rejection", secondErr)
+	}
+
+	if _, err := writer.Write(payload); err != nil {
+		t.Fatalf("write first payload: %v", err)
+	}
+	_ = writer.Close()
+	if err := <-firstDone; err != nil {
+		t.Fatalf("active transfer was affected by duplicate attempt: %v", err)
+	}
+
+	finalPath := filepath.Join(h.OutputDir(), meta.Name)
+	deadline = time.Now().Add(3 * time.Second)
+	var got []byte
+	for time.Now().Before(deadline) {
+		got, _ = os.ReadFile(finalPath)
+		if bytes.Equal(got, payload) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("published payload mismatch: got %d bytes, want %d", len(got), len(payload))
+	}
+}
+
 func TestSanitizeDropFilename(t *testing.T) {
 	tests := []struct {
 		input    string
@@ -653,6 +739,8 @@ func TestSanitizeDropFilename(t *testing.T) {
 		{"/etc/passwd", "passwd"},
 		{"C:\\Windows\\System32\\cmd.exe", "cmd.exe"},
 		{"stream.txt:hidden", "stream.txt"},
+		{"windows<bad>\"name|.txt", "windows_bad__name_.txt"},
+		{"wild?*name.txt", "wild__name.txt"},
 		{":hidden_only", "drop.bin"},
 		{"CON", "drop_CON"},
 		{"con.txt", "drop_con.txt"},
@@ -718,6 +806,7 @@ func TestOnDropReceived_UnauthenticatedNotAttributedToPeer(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatalf("Hub startup timed out")
 	}
+	defer h.Stop()
 
 	// Send an unauthenticated drop over loopback (res.PeerFingerprint will be empty)
 	tr := transport.NewLoopbackTransport()
@@ -988,6 +1077,7 @@ func TestHub_UnpairRevokesDropAccess(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("hub not ready")
 	}
+	defer h.Stop()
 	if h.P2PAddr() == nil {
 		t.Fatal("no P2P addr")
 	}
@@ -1192,6 +1282,10 @@ func TestHub_StartSweepsStalePartials(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = h.Start(ctx) }()
+	// Wait for the listener goroutine to finish before testing.TempDir removes
+	// the store/output tree; cancellation alone can leave shutdown cleanup
+	// racing the test cleanup on Windows.
+	defer h.Stop()
 	select {
 	case <-h.Ready():
 	case <-time.After(10 * time.Second):

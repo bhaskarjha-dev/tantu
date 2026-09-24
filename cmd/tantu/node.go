@@ -113,16 +113,14 @@ func runNode(args []string) {
 		// (see IsTrusted below). A start-time snapshot must NOT be passed:
 		// these listeners are long-lived, and snapshot OR live semantics
 		// would keep serving an unpaired peer until restart.
-		var trustedFPs []string
 		tlsCert, err := tls.X509KeyPair(id.CertPEM, id.KeyPEM)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: invalid local TLS identity: %v\n", err)
 			os.Exit(1)
 		}
 		tr, err = transport.NewLANTransport(transport.LANTransportConfig{
-			Cert:                tlsCert,
-			TrustedFingerprints: trustedFPs,
-			IsTrusted:           store.IsTrusted,
+			Cert:      tlsCert,
+			IsTrusted: store.IsTrusted,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: failed to configure LAN transport: %v\n", err)
@@ -148,6 +146,9 @@ func runNode(args []string) {
 	if removed, _ := drop.SweepStalePartials(*outputDir, drop.DefaultStagingMaxAge); removed > 0 && *verbose {
 		fmt.Printf("Cleaned %d stale partial file(s)\n", removed)
 	}
+	if removed, freed := drop.EnforcePartialBudget(*outputDir, drop.DefaultRetainedPartialBudget); removed > 0 && *verbose {
+		fmt.Printf("Trimmed %d retained partial file(s) to the disk budget (%s reclaimed)\n", removed, formatBytes(freed))
+	}
 	if *verbose {
 		fmt.Printf("Verbose output enabled. Multiplexing OAuth and QuickDrop traffic on port %s\n", listener.Addr().String())
 	}
@@ -169,6 +170,8 @@ func runNode(args []string) {
 	partPaths := make(map[string]string)
 	finalPaths := make(map[string]string)
 	reservedDrops := make(map[string]struct{})
+	attemptOwners := make(map[string]string)
+	activityReleases := make(map[string]func())
 
 	var nodeLogger *log.Logger
 	if *verbose {
@@ -185,19 +188,43 @@ func runNode(args []string) {
 			Timeout:     *timeout,
 			MaxSize:     drop.DefaultMaxDropSize,
 			MaxTextSize: standaloneTextDropLimit,
+			Quota:       drop.DefaultTransferQuota(),
+			TouchActivity: func(meta drop.DropSend) error {
+				fileMu.Lock()
+				owner := attemptOwners[meta.DropID]
+				partPath := partPaths[meta.DropID]
+				fileMu.Unlock()
+				if owner == "" || owner != meta.AttemptID {
+					return drop.ErrStagingPartActive
+				}
+				if partPath == "" {
+					if meta.Kind == drop.DropKindFile {
+						return drop.ErrStagingPartActive
+					}
+					return nil
+				}
+				return drop.TouchStagingActivity(partPath)
+			},
 			OnMeta: func(meta drop.DropSend) (io.Writer, error) {
+				if meta.AttemptID == "" {
+					return nil, errors.New("drop attempt ID is missing")
+				}
 				fileMu.Lock()
 				if _, exists := reservedDrops[meta.DropID]; exists {
 					fileMu.Unlock()
 					return nil, fmt.Errorf("duplicate drop_id %q", meta.DropID)
 				}
 				reservedDrops[meta.DropID] = struct{}{}
+				attemptOwners[meta.DropID] = meta.AttemptID
 				fileMu.Unlock()
 				reservationHeld := true
 				defer func() {
 					if reservationHeld {
 						fileMu.Lock()
-						delete(reservedDrops, meta.DropID)
+						if attemptOwners[meta.DropID] == meta.AttemptID {
+							delete(attemptOwners, meta.DropID)
+							delete(reservedDrops, meta.DropID)
+						}
 						fileMu.Unlock()
 					}
 				}()
@@ -208,7 +235,9 @@ func runNode(args []string) {
 					if outDir == "" {
 						outDir = "."
 					}
-					f, partPath, finalPath, err := createIncomingPart(outDir, fileName)
+					unlockStaging := drop.LockStagingMaintenance()
+					f, partPath, finalPath, releaseActivity, err := createIncomingPartWithActivity(outDir, fileName, meta)
+					unlockStaging()
 					if err != nil {
 						return nil, err
 					}
@@ -216,6 +245,7 @@ func runNode(args []string) {
 					openedFiles[meta.DropID] = f
 					partPaths[meta.DropID] = partPath
 					finalPaths[meta.DropID] = finalPath
+					activityReleases[meta.DropID] = releaseActivity
 					fileMu.Unlock()
 					reservationHeld = false
 					return f, nil
@@ -228,14 +258,19 @@ func runNode(args []string) {
 					return nil
 				}
 				fileMu.Lock()
+				owner := attemptOwners[res.Meta.DropID]
 				f := openedFiles[res.Meta.DropID]
 				partPath := partPaths[res.Meta.DropID]
 				desiredPath := finalPaths[res.Meta.DropID]
+				releaseActivity := activityReleases[res.Meta.DropID]
 				fileMu.Unlock()
+				if owner == "" || owner != res.Meta.AttemptID {
+					return drop.ErrStagingPartActive
+				}
 				if partPath == "" || desiredPath == "" {
 					return errors.New("completed file has no staging path")
 				}
-				published, err := finalizeIncomingPart(f, partPath, desiredPath)
+				published, err := finalizeIncomingPart(f, partPath, desiredPath, releaseActivity)
 				if err != nil {
 					return fmt.Errorf("publish received file: %w", err)
 				}
@@ -246,6 +281,12 @@ func runNode(args []string) {
 			},
 		},
 		OnDropReceived: func(res *drop.ReceiveDropResult) {
+			fileMu.Lock()
+			owned := attemptOwners[res.Meta.DropID] == res.Meta.AttemptID
+			fileMu.Unlock()
+			if !owned {
+				return
+			}
 			if res.Meta.Kind == drop.DropKindFile {
 				fileMu.Lock()
 				file := openedFiles[res.Meta.DropID]
@@ -264,18 +305,47 @@ func runNode(args []string) {
 				fmt.Fprintf(os.Stderr, "\n📥 QuickDrop received text (%d bytes)\n", res.BytesWritten)
 			}
 		},
-		OnDropDone: func(dropID string, res *drop.ReceiveDropResult, err error) {
+		OnDropDoneAttempt: func(dropID, attemptID string, res *drop.ReceiveDropResult, err error) {
 			fileMu.Lock()
+			if attemptOwners[dropID] != attemptID {
+				fileMu.Unlock()
+				return
+			}
 			f, ok := openedFiles[dropID]
 			if ok && f != nil {
 				_ = f.Close()
 				delete(openedFiles, dropID)
 			}
+			partPath := partPaths[dropID]
+			releaseActivity := activityReleases[dropID]
+			delete(activityReleases, dropID)
 			delete(partPaths, dropID)
 			delete(finalPaths, dropID)
 			delete(reservedDrops, dropID)
+			delete(attemptOwners, dropID)
+			protectedParts := make([]string, 0, len(partPaths)+1)
+			for _, activePart := range partPaths {
+				protectedParts = append(protectedParts, activePart)
+			}
+			if err != nil && partPath != "" {
+				protectedParts = append(protectedParts, partPath)
+			}
 			fileMu.Unlock()
 
+			if err != nil && partPath != "" {
+				if info, statErr := os.Lstat(partPath); statErr == nil && info.Mode().IsRegular() && info.Size() == 0 {
+					_ = os.Remove(partPath)
+					_ = drop.RemoveStagingManifest(partPath)
+				}
+				if removed, freed := drop.EnforcePartialBudget(*outputDir, drop.DefaultRetainedPartialBudget, protectedParts...); removed > 0 && *verbose {
+					fmt.Fprintf(os.Stderr, "Trimmed %d retained partial file(s) after failed transfer (%s reclaimed)\n", removed, formatBytes(freed))
+				}
+			}
+			if releaseActivity != nil {
+				releaseActivity()
+			} else if partPath != "" {
+				_ = drop.ReleaseStagingActivity(partPath)
+			}
 			if err != nil && !errors.Is(err, context.Canceled) {
 				fmt.Fprintf(os.Stderr, "❌ QuickDrop transfer error (%s): %v\n", dropID, err)
 			}

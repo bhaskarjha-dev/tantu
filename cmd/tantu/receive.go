@@ -110,16 +110,14 @@ func runReceive(args []string) {
 		// (see IsTrusted below). A start-time snapshot must NOT be passed:
 		// these listeners are long-lived, and snapshot OR live semantics
 		// would keep serving an unpaired peer until restart.
-		var trustedFPs []string
 		tlsCert, err := tls.X509KeyPair(id.CertPEM, id.KeyPEM)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: invalid local TLS identity: %v\n", err)
 			os.Exit(1)
 		}
 		tr, err = transport.NewLANTransport(transport.LANTransportConfig{
-			Cert:                tlsCert,
-			TrustedFingerprints: trustedFPs,
-			IsTrusted:           store.IsTrusted,
+			Cert:      tlsCert,
+			IsTrusted: store.IsTrusted,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: failed to configure LAN transport: %v\n", err)
@@ -138,10 +136,14 @@ func runReceive(args []string) {
 		os.Exit(1)
 	}
 	defer listener.Close()
+	receiveQuota := drop.DefaultTransferQuota()
 
 	fmt.Fprintf(os.Stderr, "Listening for drops on %s (transport: %s)...\n", listener.Addr().String(), *transportType)
 	if removed, _ := drop.SweepStalePartials(*outputDir, drop.DefaultStagingMaxAge); removed > 0 && *verbose {
 		fmt.Fprintf(os.Stderr, "Cleaned %d stale partial file(s)\n", removed)
+	}
+	if removed, freed := drop.EnforcePartialBudget(*outputDir, drop.DefaultRetainedPartialBudget); removed > 0 && *verbose {
+		fmt.Fprintf(os.Stderr, "Trimmed %d retained partial file(s) to the disk budget (%s reclaimed)\n", removed, formatBytes(freed))
 	}
 	if *verbose {
 		fmt.Fprintf(os.Stderr, "Verbose output enabled. Ready to receive drops.\n")
@@ -168,11 +170,26 @@ func runReceive(args []string) {
 			var openedFile *os.File
 			var targetPath string
 			var partPath string
+			var releaseActivity func()
+			defer func() {
+				if releaseActivity != nil {
+					releaseActivity()
+				} else if partPath != "" {
+					_ = drop.ReleaseStagingActivity(partPath)
+				}
+			}()
 
 			recvCfg := drop.ReceiveDropConfig{
 				Timeout:     *timeout,
 				MaxSize:     drop.DefaultMaxDropSize,
 				MaxTextSize: standaloneTextDropLimit,
+				Quota:       receiveQuota,
+				TouchActivity: func(drop.DropSend) error {
+					if partPath == "" {
+						return nil
+					}
+					return drop.TouchStagingActivity(partPath)
+				},
 				OnMeta: func(meta drop.DropSend) (io.Writer, error) {
 					if meta.Kind == drop.DropKindFile {
 						fileName := sanitizeIncomingFilename(meta.Name)
@@ -180,12 +197,13 @@ func runReceive(args []string) {
 						if outDir == "" {
 							outDir = "."
 						}
-						f, part, final, err := createIncomingPart(outDir, fileName)
+						f, part, final, release, err := createIncomingPartWithActivity(outDir, fileName, meta)
 						if err != nil {
 							return nil, err
 						}
 						openedFile = f
 						partPath = part
+						releaseActivity = release
 						targetPath = final
 						return f, nil
 					}
@@ -198,7 +216,7 @@ func runReceive(args []string) {
 					if partPath == "" || targetPath == "" {
 						return errors.New("completed file has no staging path")
 					}
-					published, err := finalizeIncomingPart(openedFile, partPath, targetPath)
+					published, err := finalizeIncomingPart(openedFile, partPath, targetPath, releaseActivity)
 					if err != nil {
 						return fmt.Errorf("publish received file: %w", err)
 					}
@@ -212,6 +230,20 @@ func runReceive(args []string) {
 				_ = openedFile.Close()
 			}
 			if err != nil {
+				if partPath != "" {
+					if info, statErr := drop.LstatStagingFile(partPath); statErr == nil && info.Mode().IsRegular() && info.Size() == 0 {
+						_ = drop.RemoveStagingFile(partPath)
+						_ = drop.RemoveStagingManifest(partPath)
+					}
+					if removed, freed := drop.EnforcePartialBudget(*outputDir, drop.DefaultRetainedPartialBudget, partPath); removed > 0 && *verbose {
+						fmt.Fprintf(os.Stderr, "Trimmed %d retained partial file(s) after failed transfer (%s reclaimed)\n", removed, formatBytes(freed))
+					}
+					if releaseActivity != nil {
+						releaseActivity()
+					} else {
+						_ = drop.ReleaseStagingActivity(partPath)
+					}
+				}
 				return err
 			}
 

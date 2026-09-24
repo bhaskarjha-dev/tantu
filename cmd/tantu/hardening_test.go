@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
@@ -299,6 +301,110 @@ func TestCreateIncomingPart_RejectsSymlinkedStagingDir(t *testing.T) {
 	if f, _, _, err := createIncomingPart(outDir, "drop.bin"); err == nil {
 		_ = f.Close()
 		t.Fatal("symlinked staging dir accepted, want error")
+	}
+}
+
+func TestCreateIncomingPartUsesPrivateStagingAndManifest(t *testing.T) {
+	outDir := t.TempDir()
+	meta := drop.DropSend{DropID: "standalone-manifest", Kind: drop.DropKindFile, Name: "payload.bin", Size: 3}
+	f, part, _, err := createIncomingPart(outDir, "payload.bin", meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	wantDir := filepath.Join(outDir, drop.StagingDirName)
+	if gotDir := filepath.Dir(part); gotDir != wantDir {
+		t.Fatalf("partial directory = %q, want %q", gotDir, wantDir)
+	}
+	if _, err := drop.ReadStagingManifest(part); err != nil {
+		t.Fatalf("staging manifest missing: %v", err)
+	}
+}
+
+func TestCreateIncomingPartResumesMatchingManifest(t *testing.T) {
+	outDir := t.TempDir()
+	payload := bytes.Repeat([]byte("0123456789abcdef"), 8192) // 128 KiB
+	head := sha256.Sum256(payload[:64*1024])
+	meta := drop.DropSend{
+		DropID:    "standalone-resume",
+		Kind:      drop.DropKindFile,
+		Name:      "payload.bin",
+		Size:      int64(len(payload)),
+		ChunkSize: 4096,
+		HeadHash:  hex.EncodeToString(head[:]),
+	}
+
+	f, part, _, err := createIncomingPart(outDir, meta.Name, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialBytes := 64*1024 + 4096
+	if _, err := f.Write(payload[:initialBytes]); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_ = drop.ReleaseStagingActivity(part)
+
+	resumed, resumedPart, _, err := createIncomingPart(outDir, meta.Name, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resumed.Close()
+	if resumedPart != part {
+		t.Fatalf("resume path = %q, want %q", resumedPart, part)
+	}
+	offset, err := resumed.Seek(0, io.SeekCurrent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offset != int64(initialBytes) {
+		t.Fatalf("resume offset = %d, want %d", offset, initialBytes)
+	}
+	_ = resumed.Close()
+	_ = drop.ReleaseStagingActivity(resumedPart)
+
+	meta.Name = "different.bin"
+	if _, _, _, err := createIncomingPart(outDir, meta.Name, meta); !errors.Is(err, drop.ErrStagingManifestMismatch) {
+		t.Fatalf("mismatched standalone manifest error = %v, want manifest mismatch", err)
+	}
+}
+
+func TestCreateIncomingPartRejectsHardlinkedResume(t *testing.T) {
+	outDir := t.TempDir()
+	payload := bytes.Repeat([]byte("hardlink-safe"), 8192)
+	head := sha256.Sum256(payload[:64*1024])
+	meta := drop.DropSend{
+		DropID:    "standalone-hardlink",
+		Kind:      drop.DropKindFile,
+		Name:      "payload.bin",
+		Size:      int64(len(payload)),
+		ChunkSize: 4096,
+		HeadHash:  hex.EncodeToString(head[:]),
+	}
+	f, part, _, err := createIncomingPart(outDir, meta.Name, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	_ = drop.ReleaseStagingActivity(part)
+	if err := os.Remove(part); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(outDir, "victim.bin")
+	if err := os.WriteFile(victim, payload[:64*1024], 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(victim, part); err != nil {
+		t.Skipf("hardlinks not supported: %v", err)
+	}
+	if _, _, _, err := createIncomingPart(outDir, meta.Name, meta); err == nil {
+		t.Fatal("hardlinked standalone partial was accepted for resume")
+	}
+	if got, err := os.ReadFile(victim); err != nil || len(got) != 64*1024 {
+		t.Fatalf("hardlink victim changed: len=%d err=%v", len(got), err)
 	}
 }
 

@@ -20,6 +20,9 @@ const DefaultChunkSize = 1 << 20
 
 // SendDropConfig configures a drop send operation.
 type SendDropConfig struct {
+	// OnAck optionally observes the receiver's accepted resume offset. It is
+	// local test/diagnostic instrumentation and is not sent on the wire.
+	OnAck   func(DropAck)
 	Timeout time.Duration // Max time for the entire operation (default: 5 min)
 }
 
@@ -95,6 +98,9 @@ func SendDrop(ctx context.Context, conn transport.Conn, meta DropSend, payload i
 		}
 		if ack.ReceivedBytes < 0 || (meta.Size > 0 && ack.ReceivedBytes > meta.Size) {
 			return fmt.Errorf("drop_ack returned invalid resume offset %d", ack.ReceivedBytes)
+		}
+		if cfg.OnAck != nil {
+			cfg.OnAck(ack)
 		}
 		break
 	}

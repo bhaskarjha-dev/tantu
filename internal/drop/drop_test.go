@@ -105,6 +105,32 @@ func TestDropText(t *testing.T) {
 	}
 }
 
+func TestReceiveDropTouchesActivityPerDataChunk(t *testing.T) {
+	payload := bytes.Repeat([]byte("activity"), 200000) // multiple 1 MiB chunks
+	meta := drop.DropSend{
+		DropID: "touch-activity",
+		Kind:   drop.DropKindFile,
+		Name:   "activity.bin",
+		Size:   int64(len(payload)),
+	}
+	calls := 0
+	_, sendErr, recvErr := runDropPair(t, meta, bytes.NewReader(payload), drop.SendDropConfig{}, &bytes.Buffer{}, drop.ReceiveDropConfig{
+		TouchActivity: func(got drop.DropSend) error {
+			if got.DropID != meta.DropID {
+				t.Errorf("touch metadata DropID = %q, want %q", got.DropID, meta.DropID)
+			}
+			calls++
+			return nil
+		},
+	})
+	if sendErr != nil || recvErr != nil {
+		t.Fatalf("touch activity transfer errors: send=%v recv=%v", sendErr, recvErr)
+	}
+	if calls < 2 {
+		t.Fatalf("activity touch calls = %d, want at least 2", calls)
+	}
+}
+
 func TestDropFile(t *testing.T) {
 	fileData := bytes.Repeat([]byte("AuthBridgeQuickDropFileContentTest"), 3) // ~102 bytes
 	meta := drop.DropSend{
@@ -459,5 +485,3 @@ func TestDropSHA256Mismatch(t *testing.T) {
 		t.Errorf("expected error containing 'SHA-256 checksum mismatch', got: %v", recvErr)
 	}
 }
-
-
