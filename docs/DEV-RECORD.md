@@ -396,3 +396,21 @@ evidence (no fix needed — the worried-about behavior does not exist):
 - Q-02 resolved: winget Go 1.27 completed system-wide; session still pins
   portable 1.26.3 per `go.mod`. No action.
 - Validation: build + vet + full suite green (above).
+
+## Batch P — fuzz round 2, EOL verification, history note (2026-09-24)
+
+- New `FuzzValidateCallbackRelay` (bridge header caps/dedup); re-ran all four
+  targets 20s+: decode, beacon, metadata, callback-relay — zero crashes.
+- gofmt/EOL verified by byte inspection (`od`): blobs are LF,
+  `core.autocrlf=true` checks out CRLF working files repo-wide (pre-existing
+  convention, CI has no fmt gate). My new files are gofmt-clean; edited files
+  introduce no new finding category. Batch L no-action decision stands.
+- History note: commit `21bcb2e` (batch O, first half — status diagnostics,
+  wrap pinning, payload unification, Hub skew log) landed from parallel
+  prior-agent work; this session's `98464fd` layers the second half
+  (noteHubVersionSkew + call sites, sweep wiring test, record) with zero
+  overlap (verified additive via inter-commit diff). No duplication.
+- Cockpit empty-peer path re-audited (`handlePeerCommand` guides to
+  `tantu pair`) — no change. Pending-pairing names verified escaped end to
+  end — no stored XSS.
+- Validation: full suite green at Batch O/P commit; fuzz clean (above).

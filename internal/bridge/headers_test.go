@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
 
@@ -140,4 +141,22 @@ func TestCanonicalRelayHeader_Deterministic(t *testing.T) {
 	if _, ok := filtered["Host"]; ok {
 		t.Errorf("Host must never be forwarded: %v", filtered)
 	}
+}
+
+func FuzzValidateCallbackRelay(f *testing.F) {
+	seeds := []string{
+		`{"RequestID":"r","Method":"GET","Path":"/cb?code=x","Headers":{"Accept":"text/html"},"Body":""}`,
+		`{"RequestID":"r","Method":"POST","Path":"/cb","Headers":{"Content-Type":"text/plain"},"Body":"aGVsbG8="}`,
+		`not json`,
+	}
+	for _, s := range seeds {
+		f.Add([]byte(s))
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		var relay protocol.CallbackRelay
+		if err := json.Unmarshal(data, &relay); err != nil {
+			return
+		}
+		_ = validateCallbackRelay(callbackExpectation(""), relay)
+	})
 }
