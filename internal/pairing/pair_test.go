@@ -6,6 +6,37 @@ import (
 	"testing"
 )
 
+func TestGetOrGenerateIdentityConcurrent(t *testing.T) {
+	dir := t.TempDir()
+	storeA, err := NewPeerStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeB, err := NewPeerStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]*Identity, 2)
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		ids[0], errs[0] = getOrGenerateIdentity(storeA)
+	}()
+	go func() {
+		defer wg.Done()
+		ids[1], errs[1] = getOrGenerateIdentity(storeB)
+	}()
+	wg.Wait()
+	if errs[0] != nil || errs[1] != nil {
+		t.Fatalf("identity creation errors: %v / %v", errs[0], errs[1])
+	}
+	if ids[0] == nil || ids[1] == nil || ids[0].Fingerprint != ids[1].Fingerprint {
+		t.Fatalf("concurrent pairing callers produced different identities: %+v / %+v", ids[0], ids[1])
+	}
+}
+
 func TestPairing_Success(t *testing.T) {
 	dirA := t.TempDir()
 	storeA, err := NewPeerStore(dirA)

@@ -22,8 +22,8 @@ const defaultHandshakeTimeout = 10 * time.Second
 // LANTransportConfig holds mTLS configuration for LAN transport.
 type LANTransportConfig struct {
 	Cert                tls.Certificate      // Local identity (cert + private key)
-	TrustedFingerprints []string             // SHA-256 fingerprints of trusted peers (lowercase hex)
-	IsTrusted           func(fp string) bool // Dynamic peer trust check
+	TrustedFingerprints []string             // SHA-256 fingerprints used when IsTrusted is nil
+	IsTrusted           func(fp string) bool // Authoritative dynamic peer trust check when non-nil
 	AllowPairing        bool                 // Allow untrusted peers to complete TLS handshake for in-band pairing
 
 	// HandshakeTimeout bounds TLS handshakes. Values <= 0 use 10 seconds.
@@ -70,10 +70,14 @@ func verifyLANPeerCertificate(rawCerts [][]byte, trustedFingerprints map[string]
 	if expectedFingerprint != "" && !strings.EqualFold(peerFP, expectedFingerprint) {
 		return fmt.Errorf("mTLS verification failed: peer fingerprint mismatch")
 	}
-	if isTrusted != nil && isTrusted(peerFP) {
-		return nil
-	}
-	if _, ok := trustedFingerprints[strings.ToLower(peerFP)]; ok {
+	// When a live trust callback is supplied it is authoritative. Do not OR it
+	// with the start-time snapshot: doing so would let an unpaired peer remain
+	// authorized for the lifetime of a long-lived listener.
+	if isTrusted != nil {
+		if isTrusted(peerFP) {
+			return nil
+		}
+	} else if _, ok := trustedFingerprints[strings.ToLower(peerFP)]; ok {
 		return nil
 	}
 	if allowPairing {

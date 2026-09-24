@@ -50,6 +50,10 @@ func runOpen(args []string) {
 		fmt.Fprintln(os.Stderr, "Usage: tantu open [flags] <url>")
 		os.Exit(1)
 	}
+	if len(rest) > 1 {
+		fmt.Fprintln(os.Stderr, "Error: open accepts exactly one URL (quote the URL if it contains shell spaces)")
+		os.Exit(1)
+	}
 	oauthURL := rest[0]
 	if oauthURL == "-" {
 		// OAuth URLs may approach the 64 KiB bridge limit; the default
@@ -173,19 +177,14 @@ func runOpen(args []string) {
 			fmt.Fprintln(os.Stderr, "Error: No identity found. Run 'tantu pair' first.")
 			os.Exit(1)
 		}
-		peers := lanStore.ListPeers()
-		var trustedFPs []string
-		for _, p := range peers {
-			trustedFPs = append(trustedFPs, p.Fingerprint)
-		}
 		tlsCert, err := tls.X509KeyPair(id.CertPEM, id.KeyPEM)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: invalid local TLS identity: %v\n", err)
 			os.Exit(1)
 		}
 		tr, err = transport.NewLANTransport(transport.LANTransportConfig{
-			Cert:                tlsCert,
-			TrustedFingerprints: trustedFPs,
+			Cert:      tlsCert,
+			IsTrusted: lanStore.IsTrusted,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: failed to configure LAN transport: %v\n", err)

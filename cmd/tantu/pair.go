@@ -192,22 +192,13 @@ func runPair(args []string) {
 			return
 		}
 
-		// Standalone initiator mode
-		id, err := store.LoadIdentity()
+		// Standalone initiator mode. The store owns the cross-process
+		// load/create transaction so two first-run pairers cannot generate
+		// different identities for the same store.
+		id, err := store.LoadOrCreateIdentity()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error loading identity: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error loading or creating identity: %v\n", err)
 			os.Exit(1)
-		}
-		if id == nil {
-			id, err = pairing.GenerateIdentity()
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error generating identity: %v\n", err)
-				os.Exit(1)
-			}
-			if err := store.SaveIdentity(id); err != nil {
-				fmt.Fprintf(os.Stderr, "Error saving identity: %v\n", err)
-				os.Exit(1)
-			}
 		}
 
 		localSAS := pairing.SASCode(id.Fingerprint)

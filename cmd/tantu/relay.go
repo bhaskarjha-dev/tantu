@@ -339,21 +339,13 @@ func runRelay(args []string) {
 			fmt.Fprintln(os.Stderr, "Error: No identity found. Run 'tantu pair' first.")
 			os.Exit(1)
 		}
-		peers := lanStore.ListPeers()
-		var trustedFPs []string
-		for _, p := range peers {
-			trustedFPs = append(trustedFPs, p.Fingerprint)
-		}
 		tlsCert, err := tls.X509KeyPair(id.CertPEM, id.KeyPEM)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: invalid local TLS identity: %v\n", err)
 			os.Exit(1)
 		}
 		tr, err = transport.NewLANTransport(transport.LANTransportConfig{
-			Cert:                tlsCert,
-			TrustedFingerprints: trustedFPs,
-			// Live store lookup in addition to the snapshot: a peer removed
-			// between ListPeers and Dial must not remain dialable.
+			Cert:      tlsCert,
 			IsTrusted: lanStore.IsTrusted,
 		})
 		if err != nil {

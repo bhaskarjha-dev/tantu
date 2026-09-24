@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 )
@@ -84,6 +85,37 @@ func TestPeerStoreIdentity(t *testing.T) {
 	loaded2, err := store2.LoadIdentity()
 	if err != nil || loaded2 == nil || loaded2.Fingerprint != genID.Fingerprint {
 		t.Errorf("failed to reload identity from store2: %v", err)
+	}
+}
+
+func TestPeerStoreLoadOrCreateIdentityIsCrossProcessSafe(t *testing.T) {
+	dir := t.TempDir()
+	storeA, err := NewPeerStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeB, err := NewPeerStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]*Identity, 2)
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		ids[0], errs[0] = storeA.LoadOrCreateIdentity()
+	}()
+	go func() {
+		defer wg.Done()
+		ids[1], errs[1] = storeB.LoadOrCreateIdentity()
+	}()
+	wg.Wait()
+	if errs[0] != nil || errs[1] != nil {
+		t.Fatalf("concurrent identity creation errors: %v / %v", errs[0], errs[1])
+	}
+	if ids[0] == nil || ids[1] == nil || ids[0].Fingerprint != ids[1].Fingerprint {
+		t.Fatalf("concurrent first starts produced different identities: %+v / %+v", ids[0], ids[1])
 	}
 }
 
@@ -275,6 +307,111 @@ func TestPeerStore_ResolvePeer(t *testing.T) {
 	_, err = store.ResolvePeer("non-existent-box")
 	if err == nil {
 		t.Errorf("expected error for non-existent peer query")
+	}
+}
+
+func TestPeerStore_ActivePeerPersistence(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewPeerStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := Peer{Fingerprint: "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899", Name: "active-box", Address: "10.0.0.9:9877"}
+	if err := store.AddPeer(peer); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveActivePeer(peer.Fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	store2, err := NewPeerStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store2.LoadActivePeer()
+	if err != nil || got != peer.Fingerprint {
+		t.Fatalf("active peer reload = %q, %v", got, err)
+	}
+	if err := store2.RemovePeer(peer.Fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store2.LoadActivePeer(); err != nil || got != "" {
+		t.Fatalf("stale active peer survived unpair: %q, %v", got, err)
+	}
+	if err := store2.AddPeer(peer); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store2.LoadActivePeer(); err != nil || got != "" {
+		t.Fatalf("re-paired peer unexpectedly became active: %q, %v", got, err)
+	}
+}
+
+func TestPeerStore_RemovePeerPreservesUnrelatedActiveSelection(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewPeerStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := Peer{Fingerprint: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Name: "active", Address: "10.0.0.1:9877"}
+	other := Peer{Fingerprint: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Name: "other", Address: "10.0.0.2:9877"}
+	if err := store.AddPeer(active); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddPeer(other); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveActivePeer(active.Fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RemovePeer(other.Fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.LoadActivePeer(); err != nil || got != active.Fingerprint {
+		t.Fatalf("removing unrelated peer changed active selection: %q, %v", got, err)
+	}
+}
+
+func TestPeerStoreConcurrentMutationsDoNotLosePeers(t *testing.T) {
+	dir := t.TempDir()
+	storeA, err := NewPeerStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeB, err := NewPeerStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idA, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	idB, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	peers := []struct {
+		store *PeerStore
+		peer  Peer
+	}{
+		{storeA, Peer{Fingerprint: idA.Fingerprint, Name: "parallel-a", Address: "10.0.0.21:9877", CertPEM: idA.CertPEM}},
+		{storeB, Peer{Fingerprint: idB.Fingerprint, Name: "parallel-b", Address: "10.0.0.22:9877", CertPEM: idB.CertPEM}},
+	}
+	errs := make([]error, len(peers))
+	var wg sync.WaitGroup
+	wg.Add(len(peers))
+	for i := range peers {
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = peers[i].store.AddPeer(peers[i].peer)
+		}(i)
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			t.Fatalf("parallel AddPeer failed: %v", err)
+		}
+	}
+	if got := len(storeA.ListPeers()); got != 2 {
+		t.Fatalf("parallel mutations lost a peer: got %d, want 2", got)
 	}
 }
 

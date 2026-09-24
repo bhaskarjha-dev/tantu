@@ -110,16 +110,14 @@ func runServe(args []string) {
 		// (see IsTrusted below). A start-time snapshot must NOT be passed:
 		// these listeners are long-lived, and snapshot OR live semantics
 		// would keep serving an unpaired peer until restart.
-		var trustedFPs []string
 		tlsCert, err := tls.X509KeyPair(id.CertPEM, id.KeyPEM)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: invalid local TLS identity: %v\n", err)
 			os.Exit(1)
 		}
 		tr, err = transport.NewLANTransport(transport.LANTransportConfig{
-			Cert:                tlsCert,
-			TrustedFingerprints: trustedFPs,
-			IsTrusted:           store.IsTrusted,
+			Cert:      tlsCert,
+			IsTrusted: store.IsTrusted,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: failed to configure LAN transport: %v\n", err)

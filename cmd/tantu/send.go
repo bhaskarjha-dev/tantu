@@ -103,6 +103,10 @@ func runSend(args []string) {
 			strings.Contains(firstArg, "\\")
 
 		stat, err := os.Stat(cleanPath)
+		if err == nil && stat.IsDir() && (hasPathHint || len(rest) == 1) {
+			fmt.Fprintf(os.Stderr, "Error: %s is a directory; archive it before sending\n", cleanPath)
+			os.Exit(1)
+		}
 		if err == nil && !stat.IsDir() {
 			if hasPathHint || len(rest) == 1 {
 				isFile = true
@@ -142,6 +146,10 @@ func runSend(args []string) {
 			text := strings.Join(rest, "")
 			if len(rest) > 1 {
 				text = strings.Join(rest, " ")
+			}
+			if strings.TrimSpace(text) == "" {
+				fmt.Fprintln(os.Stderr, "Error: text content is empty")
+				os.Exit(1)
 			}
 			if int64(len(text)) > standaloneTextDropLimit {
 				fmt.Fprintln(os.Stderr, "Error: text exceeds 10MB limit")
@@ -275,21 +283,13 @@ func runSend(args []string) {
 			fmt.Fprintln(os.Stderr, "Error: No identity found. Run 'tantu pair' first.")
 			os.Exit(1)
 		}
-		peers := lanStore.ListPeers()
-		var trustedFPs []string
-		for _, p := range peers {
-			trustedFPs = append(trustedFPs, p.Fingerprint)
-		}
 		tlsCert, err := tls.X509KeyPair(id.CertPEM, id.KeyPEM)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: invalid local TLS identity: %v\n", err)
 			os.Exit(1)
 		}
 		tr, err = transport.NewLANTransport(transport.LANTransportConfig{
-			Cert:                tlsCert,
-			TrustedFingerprints: trustedFPs,
-			// Live store lookup in addition to the snapshot: a peer removed
-			// between ListPeers and Dial must not remain dialable.
+			Cert:      tlsCert,
 			IsTrusted: lanStore.IsTrusted,
 		})
 		if err != nil {

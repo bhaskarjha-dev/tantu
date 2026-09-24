@@ -253,18 +253,9 @@ func getOrGenerateIdentity(store *PeerStore) (*Identity, error) {
 	if store == nil {
 		return nil, errors.New("peer store is nil")
 	}
-	id, err := store.LoadIdentity()
+	id, err := store.LoadOrCreateIdentity()
 	if err != nil {
-		return nil, fmt.Errorf("load identity: %w", err)
-	}
-	if id == nil {
-		id, err = GenerateIdentity()
-		if err != nil {
-			return nil, fmt.Errorf("generate identity: %w", err)
-		}
-		if err := store.SaveIdentity(id); err != nil {
-			return nil, fmt.Errorf("save identity: %w", err)
-		}
+		return nil, fmt.Errorf("load or create identity: %w", err)
 	}
 	return id, nil
 }

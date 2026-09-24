@@ -2,6 +2,7 @@ package transport
 
 import (
 	"crypto/tls"
+	"encoding/pem"
 	"errors"
 	"net"
 	"sync"
@@ -27,6 +28,25 @@ func createTestTransport(t *testing.T, id *pairing.Identity, trustedFPs []string
 		t.Fatalf("NewLANTransport: %v", err)
 	}
 	return tr
+}
+
+func TestVerifyLANPeerCertificateLiveTrustOverridesSnapshot(t *testing.T) {
+	id, err := pairing.GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, _ := pem.Decode(id.CertPEM)
+	if block == nil {
+		t.Fatal("identity certificate is not PEM")
+	}
+	rawCerts := [][]byte{block.Bytes}
+	trusted := map[string]struct{}{id.Fingerprint: {}}
+	if err := verifyLANPeerCertificate(rawCerts, trusted, func(string) bool { return false }, false, ""); err == nil {
+		t.Fatal("stale snapshot authorized a peer rejected by the live trust callback")
+	}
+	if err := verifyLANPeerCertificate(rawCerts, nil, func(string) bool { return true }, false, ""); err != nil {
+		t.Fatalf("live trust callback rejected a trusted peer: %v", err)
+	}
 }
 
 type fatalAcceptListener struct {

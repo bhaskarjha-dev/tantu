@@ -93,6 +93,57 @@ func ensurePrivateFile(path string) {
 	}
 }
 
+const (
+	peerMutationLockName = ".peers.lock"
+	peerMutationWait     = 2 * time.Second
+	peerMutationStale    = 30 * time.Second
+)
+
+// withPeerMutationLock serializes the complete load-modify-write transaction
+// across Hub, CLI, and pairing processes sharing a store directory. The
+// in-process mutex still protects local callers; this directory lock closes
+// the lost-update window between independent Tantu processes.
+func (s *PeerStore) withPeerMutationLock(fn func() error) error {
+	return s.withStoreMutationLock(peerMutationLockName, "peer-store", fn)
+}
+
+const identityMutationLockName = ".identity.lock"
+
+func (s *PeerStore) withIdentityMutationLock(fn func() error) error {
+	return s.withStoreMutationLock(identityMutationLockName, "identity-store", fn)
+}
+
+func (s *PeerStore) withStoreMutationLock(name, label string, fn func() error) error {
+	lockPath := filepath.Join(s.dir, name)
+	deadline := time.Now().Add(peerMutationWait)
+	for {
+		err := os.Mkdir(lockPath, 0700)
+		if err == nil {
+			break
+		}
+		if !os.IsExist(err) {
+			return fmt.Errorf("acquire %s lock: %w", label, err)
+		}
+		if info, statErr := os.Lstat(lockPath); statErr == nil {
+			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+				return fmt.Errorf("%s lock path is not a directory", label)
+			}
+			if time.Since(info.ModTime()) > peerMutationStale {
+				_ = os.RemoveAll(lockPath)
+				continue
+			}
+		} else if !os.IsNotExist(statErr) {
+			return fmt.Errorf("inspect %s lock: %w", label, statErr)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%s lock timeout", label)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	defer func() { _ = os.RemoveAll(lockPath) }()
+	return fn()
+}
+
 // DefaultStoreDir returns the platform-appropriate config directory
 // (~/.config/tantu or %APPDATA%\tantu).
 func DefaultStoreDir() (string, error) {
@@ -109,6 +160,10 @@ func (s *PeerStore) identityPath() string {
 
 func (s *PeerStore) peersPath() string {
 	return filepath.Join(s.dir, "peers.json")
+}
+
+func (s *PeerStore) activePeerPath() string {
+	return filepath.Join(s.dir, "active.json")
 }
 
 // writeAtomic writes data to a unique temporary file, flushes it, and
@@ -173,12 +228,16 @@ func (s *PeerStore) SaveIdentity(id *Identity) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.withIdentityMutationLock(func() error {
+		return s.saveIdentityUnlocked(id)
+	})
+}
 
+func (s *PeerStore) saveIdentityUnlocked(id *Identity) error {
 	data, err := json.MarshalIndent(id, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal identity: %w", err)
 	}
-
 	return s.writeAtomic(s.identityPath(), data, 0600)
 }
 
@@ -187,7 +246,10 @@ func (s *PeerStore) SaveIdentity(id *Identity) error {
 func (s *PeerStore) LoadIdentity() (*Identity, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.loadIdentityUnlocked()
+}
 
+func (s *PeerStore) loadIdentityUnlocked() (*Identity, error) {
 	path := s.identityPath()
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -206,6 +268,37 @@ func (s *PeerStore) LoadIdentity() (*Identity, error) {
 	}
 	ensurePrivateFile(path)
 	return &id, nil
+}
+
+// LoadOrCreateIdentity atomically returns the existing identity or creates one
+// when multiple Tantu processes start against the same fresh store. Without
+// this transaction two first-run processes could generate different keys and
+// silently invalidate one another's pairings.
+func (s *PeerStore) LoadOrCreateIdentity() (*Identity, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var result *Identity
+	err := s.withIdentityMutationLock(func() error {
+		id, err := s.loadIdentityUnlocked()
+		if err != nil {
+			return err
+		}
+		if id == nil {
+			id, err = GenerateIdentity()
+			if err != nil {
+				return fmt.Errorf("generate identity: %w", err)
+			}
+			if err := s.saveIdentityUnlocked(id); err != nil {
+				return fmt.Errorf("save identity: %w", err)
+			}
+		}
+		result = id
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // HasIdentity reports whether the local identity exists on disk.
@@ -354,40 +447,42 @@ func (s *PeerStore) AddPeer(p Peer) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	peers, err := s.loadPeersMap()
-	if err != nil {
-		return err
-	}
+	return s.withPeerMutationLock(func() error {
+		peers, err := s.loadPeersMap()
+		if err != nil {
+			return err
+		}
 
-	now := time.Now()
-	if existing, ok := peers[p.Fingerprint]; ok {
+		now := time.Now()
+		if existing, ok := peers[p.Fingerprint]; ok {
+			if p.FirstSeen.IsZero() {
+				p.FirstSeen = existing.FirstSeen
+			}
+			// Re-pairing must not erase user-controlled routing metadata.
+			if p.Alias == "" {
+				p.Alias = existing.Alias
+			}
+			if !p.IsDefault {
+				p.IsDefault = existing.IsDefault
+			}
+			if p.Name == "" {
+				p.Name = existing.Name
+			}
+			if len(p.CertPEM) == 0 {
+				p.CertPEM = existing.CertPEM
+			}
+			if p.Address == "" {
+				p.Address = existing.Address
+			}
+		}
 		if p.FirstSeen.IsZero() {
-			p.FirstSeen = existing.FirstSeen
+			p.FirstSeen = now
 		}
-		// Re-pairing must not erase user-controlled routing metadata.
-		if p.Alias == "" {
-			p.Alias = existing.Alias
-		}
-		if !p.IsDefault {
-			p.IsDefault = existing.IsDefault
-		}
-		if p.Name == "" {
-			p.Name = existing.Name
-		}
-		if len(p.CertPEM) == 0 {
-			p.CertPEM = existing.CertPEM
-		}
-		if p.Address == "" {
-			p.Address = existing.Address
-		}
-	}
-	if p.FirstSeen.IsZero() {
-		p.FirstSeen = now
-	}
-	p.LastSeen = now
+		p.LastSeen = now
 
-	peers[p.Fingerprint] = p
-	return s.savePeersMap(peers)
+		peers[p.Fingerprint] = p
+		return s.savePeersMap(peers)
+	})
 }
 
 // GetPeer returns peer information by fingerprint.
@@ -402,6 +497,22 @@ func (s *PeerStore) GetPeer(fingerprint string) (Peer, bool) {
 	}
 	p, ok := peers[fingerprint]
 	return p, ok
+}
+
+// HasPeer reports whether a fingerprint is present in the peer store and
+// distinguishes a readable store with no match from a transient read/parse
+// failure. Callers that use presence for cleanup should not delete state when
+// the store is temporarily unreadable.
+func (s *PeerStore) HasPeer(fingerprint string) (bool, error) {
+	fingerprint = strings.ToLower(strings.TrimSpace(fingerprint))
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	peers, err := s.loadPeersMap()
+	if err != nil {
+		return false, err
+	}
+	_, ok := peers[fingerprint]
+	return ok, nil
 }
 
 // ListPeers returns all trusted peers.
@@ -427,19 +538,150 @@ func (s *PeerStore) ListPeers() []Peer {
 	return list
 }
 
+// LoadActivePeer returns the persisted active-peer selection, if it still
+// names a trusted peer. A stale selection is treated as cleared rather than
+// allowing a removed peer to remain a hidden routing preference. The read and
+// stale-file cleanup share the peer mutation lock with writers in other
+// processes, so a crash window cannot resurrect a removed selection on re-pair.
+func (s *PeerStore) LoadActivePeer() (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var result string
+	err := s.withPeerMutationLock(func() error {
+		path := s.activePeerPath()
+		info, err := os.Lstat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return fmt.Errorf("inspect active peer: %w", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return errors.New("active peer metadata is not a regular file")
+		}
+		if info.Size() > 4096 {
+			return errors.New("active peer metadata is too large")
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read active peer: %w", err)
+		}
+		if len(data) > 4096 {
+			return errors.New("active peer metadata is too large")
+		}
+		var state struct {
+			Fingerprint string `json:"fingerprint"`
+		}
+		if err := json.Unmarshal(data, &state); err != nil {
+			return fmt.Errorf("decode active peer: %w", err)
+		}
+		fingerprint := strings.ToLower(strings.TrimSpace(state.Fingerprint))
+		if fingerprint == "" {
+			return nil
+		}
+		peers, err := s.loadPeersMap()
+		if err != nil {
+			return err
+		}
+		if _, ok := peers[fingerprint]; !ok {
+			return s.removeActivePeerUnlocked()
+		}
+		ensurePrivateFile(path)
+		result = fingerprint
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return result, nil
+}
+
+// SaveActivePeer persists a validated active-peer selection. It is separate
+// from peers.json so peer metadata remains backward-compatible and unknown
+// fields are harmless on upgrade.
+func (s *PeerStore) SaveActivePeer(fingerprint string) error {
+	fingerprint = strings.ToLower(strings.TrimSpace(fingerprint))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.withPeerMutationLock(func() error {
+		if fingerprint == "" {
+			return s.removeActivePeerUnlocked()
+		}
+		peers, err := s.loadPeersMap()
+		if err != nil {
+			return err
+		}
+		if _, ok := peers[fingerprint]; !ok {
+			return fmt.Errorf("peer %q not found", fingerprint)
+		}
+		data, err := json.MarshalIndent(struct {
+			Fingerprint string `json:"fingerprint"`
+		}{Fingerprint: fingerprint}, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal active peer: %w", err)
+		}
+		return s.writeAtomic(s.activePeerPath(), data, 0600)
+	})
+}
+
+func (s *PeerStore) removeActivePeerUnlocked() error {
+	if err := os.Remove(s.activePeerPath()); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func (s *PeerStore) clearActivePeerIfMatchesUnlocked(fingerprint string) error {
+	data, err := os.ReadFile(s.activePeerPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if len(data) > 4096 {
+		return nil
+	}
+	var state struct {
+		Fingerprint string `json:"fingerprint"`
+	}
+	if json.Unmarshal(data, &state) != nil || !strings.EqualFold(strings.TrimSpace(state.Fingerprint), fingerprint) {
+		// Do not make an unrelated peer removal fail because an old or
+		// manually edited active file is malformed. It will be ignored by
+		// LoadActivePeer and can be repaired on the next selection.
+		return nil
+	}
+	return s.removeActivePeerUnlocked()
+}
+
+// ClearActivePeer removes the persisted active-peer selection.
+func (s *PeerStore) ClearActivePeer() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.withPeerMutationLock(func() error { return s.removeActivePeerUnlocked() })
+}
+
 // RemovePeer removes a trusted peer by fingerprint.
 func (s *PeerStore) RemovePeer(fingerprint string) error {
 	fingerprint = strings.ToLower(strings.TrimSpace(fingerprint))
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	peers, err := s.loadPeersMap()
-	if err != nil {
-		return err
-	}
+	return s.withPeerMutationLock(func() error {
+		peers, err := s.loadPeersMap()
+		if err != nil {
+			return err
+		}
 
-	delete(peers, fingerprint)
-	return s.savePeersMap(peers)
+		delete(peers, fingerprint)
+		if err := s.savePeersMap(peers); err != nil {
+			return err
+		}
+		// Do not let a removed identity become active again merely because a
+		// later re-pair happens to reuse its fingerprint. The active state is
+		// part of the same peer mutation transaction.
+		return s.clearActivePeerIfMatchesUnlocked(fingerprint)
+	})
 }
 
 // IsTrusted reports whether the fingerprint belongs to a trusted peer.
@@ -450,6 +692,7 @@ func (s *PeerStore) IsTrusted(fingerprint string) bool {
 
 // SetAlias assigns a user-friendly alias/nickname to a trusted peer.
 func (s *PeerStore) SetAlias(fingerprint, alias string) error {
+	fingerprint = strings.ToLower(strings.TrimSpace(fingerprint))
 	alias = strings.TrimSpace(alias)
 	if err := validatePeerLabel(alias); err != nil {
 		return err
@@ -457,17 +700,19 @@ func (s *PeerStore) SetAlias(fingerprint, alias string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	peers, err := s.loadPeersMap()
-	if err != nil {
-		return err
-	}
-	p, ok := peers[fingerprint]
-	if !ok {
-		return fmt.Errorf("peer %q not found", fingerprint)
-	}
-	p.Alias = strings.TrimSpace(alias)
-	peers[fingerprint] = p
-	return s.savePeersMap(peers)
+	return s.withPeerMutationLock(func() error {
+		peers, err := s.loadPeersMap()
+		if err != nil {
+			return err
+		}
+		p, ok := peers[fingerprint]
+		if !ok {
+			return fmt.Errorf("peer %q not found", fingerprint)
+		}
+		p.Alias = strings.TrimSpace(alias)
+		peers[fingerprint] = p
+		return s.savePeersMap(peers)
+	})
 }
 
 // SetDefault designates a peer as the default target. Clears default flag on all other peers.
@@ -476,18 +721,20 @@ func (s *PeerStore) SetDefault(fingerprint string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	peers, err := s.loadPeersMap()
-	if err != nil {
-		return err
-	}
-	if _, ok := peers[fingerprint]; !ok {
-		return fmt.Errorf("peer %q not found", fingerprint)
-	}
-	for fp, p := range peers {
-		p.IsDefault = (fp == fingerprint)
-		peers[fp] = p
-	}
-	return s.savePeersMap(peers)
+	return s.withPeerMutationLock(func() error {
+		peers, err := s.loadPeersMap()
+		if err != nil {
+			return err
+		}
+		if _, ok := peers[fingerprint]; !ok {
+			return fmt.Errorf("peer %q not found", fingerprint)
+		}
+		for fp, p := range peers {
+			p.IsDefault = (fp == fingerprint)
+			peers[fp] = p
+		}
+		return s.savePeersMap(peers)
+	})
 }
 
 // UpdatePeerAddress updates a peer's network host:port address and updates LastSeen.
@@ -502,18 +749,20 @@ func (s *PeerStore) UpdatePeerAddress(fingerprint, newAddress string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	peers, err := s.loadPeersMap()
-	if err != nil {
-		return err
-	}
-	p, ok := peers[fingerprint]
-	if !ok {
-		return fmt.Errorf("peer %q not found", fingerprint)
-	}
-	p.Address = newAddress
-	p.LastSeen = time.Now()
-	peers[fingerprint] = p
-	return s.savePeersMap(peers)
+	return s.withPeerMutationLock(func() error {
+		peers, err := s.loadPeersMap()
+		if err != nil {
+			return err
+		}
+		p, ok := peers[fingerprint]
+		if !ok {
+			return fmt.Errorf("peer %q not found", fingerprint)
+		}
+		p.Address = newAddress
+		p.LastSeen = time.Now()
+		peers[fingerprint] = p
+		return s.savePeersMap(peers)
+	})
 }
 
 // ResolvePeer deterministically resolves a query to a Peer using a 5-tier fuzzy match.
