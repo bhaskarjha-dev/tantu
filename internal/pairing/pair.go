@@ -1,23 +1,44 @@
 package pairing
 
 import (
+	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"strings"
 	"time"
 )
 
 // DefaultPairingPort is the default port used during the pairing handshake.
 const DefaultPairingPort = "9877"
 
+func addressWithPort(remote net.Addr, port int) string {
+	if remote == nil {
+		return net.JoinHostPort("127.0.0.1", DefaultPairingPort)
+	}
+	host, _, err := net.SplitHostPort(remote.String())
+	if err != nil || host == "" {
+		host = remote.String()
+	}
+	if port <= 0 || port > 65535 {
+		port = 9877
+	}
+	return net.JoinHostPort(host, fmt.Sprintf("%d", port))
+}
+
 func cleanPeerAddress(addr string) string {
-	if host, _, err := net.SplitHostPort(addr); err == nil {
-		return net.JoinHostPort(host, DefaultPairingPort)
+	if host, port, err := net.SplitHostPort(addr); err == nil && port != "" {
+		// Preserve an explicitly advertised/custom wire port.  Replacing it
+		// with 9877 made pairing appear successful but left the peer
+		// unreachable on non-default listeners.
+		return net.JoinHostPort(host, port)
 	}
 	return net.JoinHostPort(addr, DefaultPairingPort)
 }
@@ -31,10 +52,11 @@ type PairResult struct {
 }
 
 type pairHello struct {
-	CertPEM []byte          `json:"cert_pem"`
-	Name    string          `json:"name,omitempty"`
-	Type    string          `json:"type,omitempty"`
-	Payload json.RawMessage `json:"payload,omitempty"`
+	CertPEM    []byte          `json:"cert_pem"`
+	Name       string          `json:"name,omitempty"`
+	ListenPort int             `json:"listen_port,omitempty"`
+	Type       string          `json:"type,omitempty"`
+	Payload    json.RawMessage `json:"payload,omitempty"`
 }
 
 func newPairHello(certPEM []byte, name string) pairHello {
@@ -52,10 +74,11 @@ func newPairHello(certPEM []byte, name string) pairHello {
 
 func (p *pairHello) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		CertPEM []byte          `json:"cert_pem"`
-		Name    string          `json:"name,omitempty"`
-		Type    string          `json:"type,omitempty"`
-		Payload json.RawMessage `json:"payload,omitempty"`
+		CertPEM    []byte          `json:"cert_pem"`
+		Name       string          `json:"name,omitempty"`
+		ListenPort int             `json:"listen_port,omitempty"`
+		Type       string          `json:"type,omitempty"`
+		Payload    json.RawMessage `json:"payload,omitempty"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -63,6 +86,7 @@ func (p *pairHello) UnmarshalJSON(data []byte) error {
 	if len(raw.CertPEM) > 0 {
 		p.CertPEM = raw.CertPEM
 		p.Name = raw.Name
+		p.ListenPort = raw.ListenPort
 		p.Type = raw.Type
 		p.Payload = raw.Payload
 		return nil
@@ -135,11 +159,48 @@ func sendJSON(conn net.Conn, v any) error {
 	}
 	var lenBuf [4]byte
 	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(data)))
-	if _, err := conn.Write(lenBuf[:]); err != nil {
+	if err := writeAll(conn, lenBuf[:]); err != nil {
 		return fmt.Errorf("write length: %w", err)
 	}
-	if _, err := conn.Write(data); err != nil {
+	if err := writeAll(conn, data); err != nil {
 		return fmt.Errorf("write body: %w", err)
+	}
+	return nil
+}
+
+func writeAll(w io.Writer, data []byte) error {
+	for len(data) > 0 {
+		n, err := w.Write(data)
+		if n < 0 || n > len(data) {
+			return io.ErrShortWrite
+		}
+		data = data[n:]
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+	}
+	return nil
+}
+
+func verifyTLSClaim(conn net.Conn, claimedCertPEM []byte) error {
+	tlsConn, ok := conn.(*tls.Conn)
+	if !ok {
+		return nil
+	}
+	state := tlsConn.ConnectionState()
+	if len(state.PeerCertificates) == 0 {
+		return errors.New("pairing peer did not present a TLS certificate")
+	}
+	claimedFP, err := Fingerprint(claimedCertPEM)
+	if err != nil {
+		return err
+	}
+	actual := sha256.Sum256(state.PeerCertificates[0].Raw)
+	if !strings.EqualFold(claimedFP, hex.EncodeToString(actual[:])) {
+		return errors.New("pairing certificate does not match the authenticated TLS peer")
 	}
 	return nil
 }
@@ -165,7 +226,17 @@ func readJSON(conn net.Conn, dest any) error {
 	return nil
 }
 
+func invokeConfirm(confirmFn func(string, string) bool, peerSAS, localSAS string) bool {
+	if confirmFn == nil {
+		return false
+	}
+	return confirmFn(peerSAS, localSAS)
+}
+
 func getOrGenerateIdentity(store *PeerStore) (*Identity, error) {
+	if store == nil {
+		return nil, errors.New("peer store is nil")
+	}
 	id, err := store.LoadIdentity()
 	if err != nil {
 		return nil, fmt.Errorf("load identity: %w", err)
@@ -203,6 +274,7 @@ func PairInitiator(store *PeerStore, listenAddr string, confirmFn func(peerSAS, 
 
 // PairInitiatorWithListener runs the pairing initiator using an existing net.Listener.
 func PairInitiatorWithListener(store *PeerStore, l net.Listener, confirmFn func(peerSAS, localSAS string) bool) (*PairResult, error) {
+	ctx := context.Background()
 	id, err := getOrGenerateIdentity(store)
 	if err != nil {
 		return nil, err
@@ -214,8 +286,9 @@ func PairInitiatorWithListener(store *PeerStore, l net.Listener, confirmFn func(
 	}
 
 	tlsConfig := &tls.Config{
-		MinVersion:         tls.VersionTLS12,
+		MinVersion:         tls.VersionTLS13,
 		Certificates:       []tls.Certificate{tlsCert},
+		ClientAuth:         tls.RequireAnyClientCert,
 		InsecureSkipVerify: true,
 	}
 	tlsListener := tls.NewListener(l, tlsConfig)
@@ -251,7 +324,9 @@ func PairInitiatorWithListener(store *PeerStore, l net.Listener, confirmFn func(
 	}
 
 	// 1. Send PairHello
-	if err := sendJSON(conn, newPairHello(id.CertPEM, hostname)); err != nil {
+	hello := newPairHello(id.CertPEM, hostname)
+	hello.ListenPort = localListenPort(l.Addr())
+	if err := sendJSON(conn, hello); err != nil {
 		return nil, fmt.Errorf("send pair hello: %w", err)
 	}
 
@@ -260,17 +335,29 @@ func PairInitiatorWithListener(store *PeerStore, l net.Listener, confirmFn func(
 	if err := readJSON(conn, &peerHello); err != nil {
 		return nil, fmt.Errorf("receive responder hello: %w", err)
 	}
+	if err := validatePairHelloFields(peerHello.CertPEM, peerHello.Name, peerHello.ListenPort); err != nil {
+		return nil, err
+	}
 
 	peerFP, err := Fingerprint(peerHello.CertPEM)
 	if err != nil {
 		return nil, fmt.Errorf("compute peer fingerprint: %w", err)
 	}
+	if err := verifyTLSClaim(conn, peerHello.CertPEM); err != nil {
+		return nil, err
+	}
 
 	localSAS := SASCode(id.Fingerprint)
 	peerSAS := SASCode(peerFP)
 
-	// 3. User confirmation
-	localAccepted := confirmFn(peerSAS, localSAS)
+	// 3. User confirmation. Do not keep the network deadline running while a
+	// human compares SAS values; re-arm it for the decision exchange below.
+	_ = conn.SetDeadline(time.Time{})
+	localAccepted := invokeConfirm(confirmFn, peerSAS, localSAS)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
 
 	// Send local decision
 	if err := sendJSON(conn, newPairDecision(localAccepted, "")); err != nil {
@@ -292,7 +379,7 @@ func PairInitiatorWithListener(store *PeerStore, l net.Listener, confirmFn func(
 	}
 
 	if success {
-		peerAddr := cleanPeerAddress(conn.RemoteAddr().String())
+		peerAddr := addressWithPort(conn.RemoteAddr(), peerHello.ListenPort)
 		peerName := peerHello.Name
 		if peerName == "" {
 			peerName = "peer-" + peerSAS
@@ -313,6 +400,24 @@ func PairInitiatorWithListener(store *PeerStore, l net.Listener, confirmFn func(
 // PairResponder connects to an initiator at peerAddr for pairing.
 // confirmFn is called with the peer's SAS code and local SAS code — return true to accept, false to reject.
 func PairResponder(store *PeerStore, peerAddr string, confirmFn func(peerSAS, localSAS string) bool) (*PairResult, error) {
+	return PairResponderWithContext(context.Background(), store, peerAddr, confirmFn)
+}
+
+// PairResponderWithContext is the cancellable legacy pairing form.
+func PairResponderWithContext(parent context.Context, store *PeerStore, peerAddr string, confirmFn func(peerSAS, localSAS string) bool) (*PairResult, error) {
+	return pairResponderWithContext(parent, store, peerAddr, confirmFn, PairingOptions{})
+}
+
+// PairResponderWithContextAndOptions carries the actual listener port for a
+// legacy compatibility exchange.
+func PairResponderWithContextAndOptions(parent context.Context, store *PeerStore, peerAddr string, confirmFn func(peerSAS, localSAS string) bool, options PairingOptions) (*PairResult, error) {
+	return pairResponderWithContext(parent, store, peerAddr, confirmFn, options)
+}
+
+func pairResponderWithContext(parent context.Context, store *PeerStore, peerAddr string, confirmFn func(peerSAS, localSAS string) bool, options PairingOptions) (*PairResult, error) {
+	if parent == nil {
+		parent = context.Background()
+	}
 	id, err := getOrGenerateIdentity(store)
 	if err != nil {
 		return nil, err
@@ -328,18 +433,28 @@ func PairResponder(store *PeerStore, peerAddr string, confirmFn func(peerSAS, lo
 	}
 
 	tlsConfig := &tls.Config{
-		MinVersion:         tls.VersionTLS12,
+		MinVersion:         tls.VersionTLS13,
 		Certificates:       []tls.Certificate{tlsCert},
+		ClientAuth:         tls.RequireAnyClientCert,
 		InsecureSkipVerify: true,
 	}
 
-	conn, err := tls.Dial("tcp", peerAddr, tlsConfig)
+	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
+	defer cancel()
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	rawConn, err := dialer.DialContext(ctx, "tcp", peerAddr)
 	if err != nil {
 		return nil, fmt.Errorf("connect to pairing initiator: %w", err)
 	}
+	conn := tls.Client(rawConn, tlsConfig)
 	defer conn.Close()
-
-	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
+	if err := conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		return nil, fmt.Errorf("set pairing deadline: %w", err)
+	}
+	if err := conn.HandshakeContext(ctx); err != nil {
+		return nil, fmt.Errorf("pairing TLS handshake: %w", err)
+	}
+	_ = conn.SetDeadline(time.Time{})
 
 	hostname, _ := os.Hostname()
 	if hostname == "" {
@@ -347,7 +462,9 @@ func PairResponder(store *PeerStore, peerAddr string, confirmFn func(peerSAS, lo
 	}
 
 	// 1. Send PairHello
-	if err := sendJSON(conn, newPairHello(id.CertPEM, hostname)); err != nil {
+	hello := newPairHello(id.CertPEM, hostname)
+	hello.ListenPort = options.listenPort()
+	if err := sendJSON(conn, hello); err != nil {
 		return nil, fmt.Errorf("send responder hello: %w", err)
 	}
 
@@ -356,17 +473,29 @@ func PairResponder(store *PeerStore, peerAddr string, confirmFn func(peerSAS, lo
 	if err := readJSON(conn, &peerHello); err != nil {
 		return nil, fmt.Errorf("receive initiator hello: %w", err)
 	}
+	if err := validatePairHelloFields(peerHello.CertPEM, peerHello.Name, peerHello.ListenPort); err != nil {
+		return nil, err
+	}
 
 	peerFP, err := Fingerprint(peerHello.CertPEM)
 	if err != nil {
 		return nil, fmt.Errorf("compute peer fingerprint: %w", err)
 	}
+	if err := verifyTLSClaim(conn, peerHello.CertPEM); err != nil {
+		return nil, err
+	}
 
 	localSAS := SASCode(id.Fingerprint)
 	peerSAS := SASCode(peerFP)
 
-	// 3. User confirmation
-	localAccepted := confirmFn(peerSAS, localSAS)
+	// 3. User confirmation. Do not keep the network deadline running while a
+	// human compares SAS values; re-arm it for the decision exchange below.
+	_ = conn.SetDeadline(time.Time{})
+	localAccepted := invokeConfirm(confirmFn, peerSAS, localSAS)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
 
 	// Send local decision
 	if err := sendJSON(conn, newPairDecision(localAccepted, "")); err != nil {

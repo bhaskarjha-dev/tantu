@@ -1,10 +1,12 @@
 package pairing
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
@@ -12,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
 )
 
@@ -41,7 +44,7 @@ func GenerateIdentity() (*Identity, error) {
 		Subject: pkix.Name{
 			CommonName: "tantu",
 		},
-		NotBefore:             now.Add(-5 * time.Minute), // small leeway for clock skew
+		NotBefore:             now.Add(-5 * time.Minute),          // small leeway for clock skew
 		NotAfter:              now.Add(10 * 365 * 24 * time.Hour), // 10 years
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
@@ -80,18 +83,55 @@ func GenerateIdentity() (*Identity, error) {
 }
 
 // Fingerprint computes the SHA-256 fingerprint of a PEM-encoded certificate.
-// Returns a lowercase hex string without colons.
+// It rejects malformed, empty, multiple, or trailing certificate blocks
+// instead of assigning a plausible identity to arbitrary PEM bytes.
 func Fingerprint(certPEM []byte) (string, error) {
-	block, _ := pem.Decode(certPEM)
-	if block == nil {
+	rest := certPEM
+	var certDER []byte
+	for {
+		block, remaining := pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			return "", fmt.Errorf("expected CERTIFICATE block type, got %s", block.Type)
+		}
+		if certDER != nil {
+			return "", errors.New("multiple certificate blocks are not allowed")
+		}
+		if _, err := x509.ParseCertificate(block.Bytes); err != nil {
+			return "", fmt.Errorf("parse certificate: %w", err)
+		}
+		certDER = block.Bytes
+		rest = remaining
+	}
+	if certDER == nil {
 		return "", errors.New("failed to parse certificate PEM block")
 	}
-	if block.Type != "CERTIFICATE" {
-		return "", fmt.Errorf("expected CERTIFICATE block type, got %s", block.Type)
+	if len(bytes.TrimSpace(rest)) != 0 {
+		return "", errors.New("trailing data after certificate PEM block")
 	}
-
-	hash := sha256.Sum256(block.Bytes)
+	hash := sha256.Sum256(certDER)
 	return hex.EncodeToString(hash[:]), nil
+}
+
+// ValidateIdentity verifies that the certificate, private key, and cached
+// fingerprint describe one usable local TLS identity.
+func ValidateIdentity(id *Identity) error {
+	if id == nil {
+		return errors.New("identity is nil")
+	}
+	fp, err := Fingerprint(id.CertPEM)
+	if err != nil {
+		return fmt.Errorf("fingerprint certificate: %w", err)
+	}
+	if id.Fingerprint == "" || !strings.EqualFold(id.Fingerprint, fp) {
+		return fmt.Errorf("identity fingerprint mismatch: got %s, computed %s", id.Fingerprint, fp)
+	}
+	if _, err := tls.X509KeyPair(id.CertPEM, id.KeyPEM); err != nil {
+		return fmt.Errorf("identity certificate/key mismatch: %w", err)
+	}
+	return nil
 }
 
 // SASCode returns the first 6 hex characters of a certificate fingerprint

@@ -7,9 +7,11 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 // Peer represents a trusted remote tantu instance.
@@ -73,27 +75,65 @@ func (s *PeerStore) peersPath() string {
 	return filepath.Join(s.dir, "peers.json")
 }
 
-// writeAtomic writes data to a temp file and renames it to dst with target perm.
+// writeAtomic writes data to a unique temporary file, flushes it, and
+// atomically replaces the destination.  A fixed ".tmp" name allowed two
+// processes sharing a store directory to corrupt each other's writes.
 func (s *PeerStore) writeAtomic(dst string, data []byte, perm os.FileMode) error {
-	tmp := dst + ".tmp"
-	if err := os.WriteFile(tmp, data, perm); err != nil {
-		return fmt.Errorf("write tmp file: %w", err)
+	tmp, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temporary file: %w", err)
 	}
-	if err := os.Rename(tmp, dst); err != nil {
-		// Fallback for Windows file locking / replace issues
-		_ = os.Remove(dst)
-		if err2 := os.Rename(tmp, dst); err2 != nil {
-			_ = os.Remove(tmp)
-			return fmt.Errorf("rename %s to %s: %w", tmp, dst, err2)
+	tmpPath := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		cleanup()
+		return fmt.Errorf("set temporary file permissions: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		cleanup()
+		return fmt.Errorf("write temporary file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		cleanup()
+		return fmt.Errorf("sync temporary file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("close temporary file: %w", err)
+	}
+	if err := os.Rename(tmpPath, dst); err != nil {
+		// Windows cannot replace an existing destination. Preserve a backup
+		// before retrying so a crash or a failed retry never destroys the only
+		// known-good copy.
+		backupFile, backupErr := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".bak-*")
+		if backupErr != nil {
+			_ = os.Remove(tmpPath)
+			return fmt.Errorf("create replacement backup: %w", backupErr)
 		}
+		backupPath := backupFile.Name()
+		_ = backupFile.Close()
+		_ = os.Remove(backupPath)
+		if backupErr = os.Rename(dst, backupPath); backupErr != nil {
+			_ = os.Remove(tmpPath)
+			return fmt.Errorf("preserve destination before replacement: %w", backupErr)
+		}
+		if retryErr := os.Rename(tmpPath, dst); retryErr != nil {
+			_ = os.Rename(backupPath, dst)
+			_ = os.Remove(tmpPath)
+			return fmt.Errorf("rename %s to %s: %w", tmpPath, dst, retryErr)
+		}
+		_ = os.Remove(backupPath)
 	}
 	return nil
 }
 
 // SaveIdentity persists the local node's own identity (cert + private key) to disk.
 func (s *PeerStore) SaveIdentity(id *Identity) error {
-	if id == nil {
-		return errors.New("cannot save nil identity")
+	if err := ValidateIdentity(id); err != nil {
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -124,6 +164,9 @@ func (s *PeerStore) LoadIdentity() (*Identity, error) {
 	var id Identity
 	if err := json.Unmarshal(data, &id); err != nil {
 		return nil, fmt.Errorf("unmarshal identity: %w", err)
+	}
+	if err := ValidateIdentity(&id); err != nil {
+		return nil, fmt.Errorf("validate identity: %w", err)
 	}
 	return &id, nil
 }
@@ -165,13 +208,35 @@ func (s *PeerStore) savePeersMap(peers map[string]Peer) error {
 	if err != nil {
 		return fmt.Errorf("marshal peers: %w", err)
 	}
-	return s.writeAtomic(s.peersPath(), data, 0644)
+	return s.writeAtomic(s.peersPath(), data, 0600)
+}
+
+func validatePeerLabel(label string) error {
+	if len(label) > 256 {
+		return errors.New("peer label is too long")
+	}
+	for _, r := range label {
+		if unicode.IsControl(r) {
+			return errors.New("peer label contains a control character")
+		}
+	}
+	return nil
 }
 
 // AddPeer persists a trusted peer. If the peer already exists, it is updated.
 func (s *PeerStore) AddPeer(p Peer) error {
+	p.Fingerprint = strings.ToLower(strings.TrimSpace(p.Fingerprint))
 	if p.Fingerprint == "" {
 		return errors.New("peer fingerprint cannot be empty")
+	}
+	if len(p.Fingerprint) > 256 || strings.ContainsAny(p.Fingerprint, "\r\n\x00") {
+		return errors.New("peer fingerprint contains invalid characters")
+	}
+	if err := validatePeerLabel(p.Name); err != nil {
+		return err
+	}
+	if err := validatePeerLabel(p.Alias); err != nil {
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -186,6 +251,22 @@ func (s *PeerStore) AddPeer(p Peer) error {
 		if p.FirstSeen.IsZero() {
 			p.FirstSeen = existing.FirstSeen
 		}
+		// Re-pairing must not erase user-controlled routing metadata.
+		if p.Alias == "" {
+			p.Alias = existing.Alias
+		}
+		if !p.IsDefault {
+			p.IsDefault = existing.IsDefault
+		}
+		if p.Name == "" {
+			p.Name = existing.Name
+		}
+		if len(p.CertPEM) == 0 {
+			p.CertPEM = existing.CertPEM
+		}
+		if p.Address == "" {
+			p.Address = existing.Address
+		}
 	}
 	if p.FirstSeen.IsZero() {
 		p.FirstSeen = now
@@ -198,6 +279,7 @@ func (s *PeerStore) AddPeer(p Peer) error {
 
 // GetPeer returns peer information by fingerprint.
 func (s *PeerStore) GetPeer(fingerprint string) (Peer, bool) {
+	fingerprint = strings.ToLower(strings.TrimSpace(fingerprint))
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -223,11 +305,18 @@ func (s *PeerStore) ListPeers() []Peer {
 	for _, p := range peers {
 		list = append(list, p)
 	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].Fingerprint == list[j].Fingerprint {
+			return list[i].DisplayName() < list[j].DisplayName()
+		}
+		return list[i].Fingerprint < list[j].Fingerprint
+	})
 	return list
 }
 
 // RemovePeer removes a trusted peer by fingerprint.
 func (s *PeerStore) RemovePeer(fingerprint string) error {
+	fingerprint = strings.ToLower(strings.TrimSpace(fingerprint))
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -248,6 +337,10 @@ func (s *PeerStore) IsTrusted(fingerprint string) bool {
 
 // SetAlias assigns a user-friendly alias/nickname to a trusted peer.
 func (s *PeerStore) SetAlias(fingerprint, alias string) error {
+	alias = strings.TrimSpace(alias)
+	if err := validatePeerLabel(alias); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -266,6 +359,7 @@ func (s *PeerStore) SetAlias(fingerprint, alias string) error {
 
 // SetDefault designates a peer as the default target. Clears default flag on all other peers.
 func (s *PeerStore) SetDefault(fingerprint string) error {
+	fingerprint = strings.ToLower(strings.TrimSpace(fingerprint))
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -285,6 +379,7 @@ func (s *PeerStore) SetDefault(fingerprint string) error {
 
 // UpdatePeerAddress updates a peer's network host:port address and updates LastSeen.
 func (s *PeerStore) UpdatePeerAddress(fingerprint, newAddress string) error {
+	fingerprint = strings.ToLower(strings.TrimSpace(fingerprint))
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -335,11 +430,18 @@ func (s *PeerStore) ResolvePeer(query string) (*Peer, error) {
 		}
 	}
 	if len(trimmed) >= 6 {
+		var matches []Peer
 		for _, p := range peers {
 			if strings.HasPrefix(strings.ToLower(p.Fingerprint), strings.ToLower(trimmed)) {
-				res := p
-				return &res, nil
+				matches = append(matches, p)
 			}
+		}
+		if len(matches) == 1 {
+			res := matches[0]
+			return &res, nil
+		}
+		if len(matches) > 1 {
+			return nil, fmt.Errorf("fingerprint prefix %q is ambiguous", trimmed)
 		}
 	}
 
