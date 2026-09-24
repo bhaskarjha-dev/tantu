@@ -48,9 +48,21 @@ const (
 	localHTTPMinReadTimeout    = 15 * time.Minute
 )
 
-// boundedTextBuffer is used for standalone text drops that need to be
-// retained for the local Web UI. File drops continue to stream directly to
-// their destination.
+// unseekableWriter hides seeking (notably *os.File.Seek) from drop
+// receivers. The receiver treats a seekable destination's current offset as
+// already-received resume bytes; for stdout that offset is unrelated to the
+// drop (e.g. a redirected log file's accumulated size) and would wrongly
+// reject every text smaller than it.
+type unseekableWriter struct{ io.Writer }
+
+// stdoutTextWriter returns stdout as a text-drop destination that can never
+// be mistaken for a resumable partial file.
+func stdoutTextWriter() io.Writer {
+	return unseekableWriter{os.Stdout}
+}
+
+// boundedTextBuffer caps retained standalone text drops for the local Web UI.
+// File drops stream directly to their destination.
 func standaloneDropItemBytes(item dropReceivedItem) int64 {
 	return int64(len(item.ID) + len(item.Name) + len(item.Data) + len(item.URL) + len(item.LocalPath))
 }

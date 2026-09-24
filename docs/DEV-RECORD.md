@@ -486,3 +486,21 @@ Independent review of batches M–S returned 11 findings; all addressed:
   rerun post-batches T).
 - Fuzz re-run 20s: FuzzValidateCallbackRelay, FuzzDecode — zero crashes,
   no new corpus files (nothing to commit from fuzzing).
+
+## Batch V — stdout resume-corruption fix + standalone live-only trust (2026-09-24)
+
+- REAL BUG (found by live two-store repro, not review): standalone
+  `receive`/`node` returned `os.Stdout` as the text-drop writer. The
+  receiver treats a seekable destination's offset as resume bytes, so any
+  text smaller than a redirected stdout's accumulated offset failed with
+  "invalid existing byte count for resumption" (e.g. `tantu receive >
+  recv.log` broke all small texts). Fix: `unseekableWriter`/`stdoutTextWriter`
+  in hardening.go + unit test. Live-verified: redirected-log receiver now
+  delivers text.
+- Standalone long-lived listeners (`serve`/`node`/`receive` LAN) dropped
+  their start-time trust snapshots for live-only `IsTrusted` (same class
+  as Hub C-01). Live-proven on `receive --loop`: paired send delivered;
+  after `unpair`, send fails with `tls: bad certificate` and nothing is
+  received (3-line log forensics confirmed no leak; earlier grep hit was
+  the pre-unpair delivery).
+- Validation: build + vet + full suite green (above).

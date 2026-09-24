@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -307,5 +309,23 @@ func TestStandaloneTextLimitMatchesDropDefault(t *testing.T) {
 	if standaloneTextDropLimit != drop.DefaultMaxTextSize {
 		t.Fatalf("standaloneTextDropLimit=%d diverges from drop.DefaultMaxTextSize=%d",
 			standaloneTextDropLimit, drop.DefaultMaxTextSize)
+	}
+}
+
+func TestStdoutTextWriterHidesSeeker(t *testing.T) {
+	w := stdoutTextWriter()
+	if _, ok := w.(io.Seeker); ok {
+		t.Fatal("stdout text writer must not expose Seek: receiver would mistake stdout offset for resume bytes")
+	}
+	if _, ok := w.(interface{ ReceivedBytes() int64 }); ok {
+		t.Fatal("stdout text writer must not expose ReceivedBytes")
+	}
+	var buf bytes.Buffer
+	hidden := unseekableWriter{&buf}
+	if _, err := hidden.Write([]byte("hello")); err != nil {
+		t.Fatalf("write through: %v", err)
+	}
+	if buf.String() != "hello" {
+		t.Fatalf("passthrough mismatch: %q", buf.String())
 	}
 }

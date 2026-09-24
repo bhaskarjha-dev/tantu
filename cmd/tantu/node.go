@@ -109,10 +109,11 @@ func runNode(args []string) {
 			fmt.Fprintln(os.Stderr, "Error: No trusted peers. Run 'tantu pair' to pair with a remote machine.")
 			os.Exit(1)
 		}
+		// Trust is evaluated live against the peer store on every handshake
+		// (see IsTrusted below). A start-time snapshot must NOT be passed:
+		// these listeners are long-lived, and snapshot OR live semantics
+		// would keep serving an unpaired peer until restart.
 		var trustedFPs []string
-		for _, p := range peers {
-			trustedFPs = append(trustedFPs, p.Fingerprint)
-		}
 		tlsCert, err := tls.X509KeyPair(id.CertPEM, id.KeyPEM)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: invalid local TLS identity: %v\n", err)
@@ -220,7 +221,7 @@ func runNode(args []string) {
 					return f, nil
 				}
 				reservationHeld = false
-				return os.Stdout, nil
+				return stdoutTextWriter(), nil
 			},
 			BeforeComplete: func(res *drop.ReceiveDropResult) error {
 				if res.Meta.Kind != drop.DropKindFile {
