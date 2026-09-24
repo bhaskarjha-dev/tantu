@@ -90,6 +90,19 @@ func ensurePeerLANPort(addr string) string {
 	return net.JoinHostPort(addr, transport.DefaultLANPort)
 }
 
+// noteHubVersionSkew warns when the running Hub reports a different version
+// than this CLI binary. Mixed versions are best-effort: the Hub logs the
+// same skew server-side, but the user driving the command deserves the hint
+// directly, before a subtle API drift becomes a confusing failure.
+func noteHubVersionSkew(status *hub.HubStatus) {
+	if status == nil || strings.TrimSpace(status.Version) == "" {
+		return
+	}
+	if status.Version != hub.HubVersion {
+		fmt.Fprintf(os.Stderr, "⚠️ Hub version %q differs from CLI version %q; mixed versions are best-effort — restart the Hub after upgrading.\n", status.Version, hub.HubVersion)
+	}
+}
+
 // resolvePeer resolves the peer address for LAN transport.
 // If peerFlag is non-empty, returns it as-is (with default port appended if needed).
 // If peerFlag is empty, auto-selects from the peer store.

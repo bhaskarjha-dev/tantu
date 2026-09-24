@@ -377,3 +377,22 @@ evidence (no fix needed — the worried-about behavior does not exist):
   command here pins the 1.26.3 toolchain matching `go.mod`; `go vet`
   also passes under it implicitly via cross-checks. No action.
 - Validation: build + vet + full suite green (above).
+
+## Batch O/P — diagnostics, unification, skew, recovery wiring (2026-09-24)
+
+- `status` is now a diagnostic command (version, store path, Hub liveness +
+  dashboard URL, identity, peers); live-verified fresh and against a hub.
+- Payload types unified: `internal/protocol/pairing.go` deleted;
+  Hub display decode uses validated `pairing.PairHelloPayload`. Pending
+  pairing names verified escaped end to end (dashboard `escapeHTML` +
+  pairing-layer control-char rejection) — no stored XSS.
+- Version skew observed both directions: Hub middleware warn-logs
+  X-CLI-Version mismatches (tested); CLI `noteHubVersionSkew` warns on
+  send/open/status delegation (probe `Version` was already populated).
+- `wrap` forwards the new SSH pinning flags to the child BROWSER command;
+  node/receive/serve SSH constructions verified listen-side (no change).
+- `TestHub_StartSweepsStalePartials`: startup sweep wiring proven (aged
+  `.part` removed, fresh kept) — recovery path is real, not just a helper.
+- Q-02 resolved: winget Go 1.27 completed system-wide; session still pins
+  portable 1.26.3 per `go.mod`. No action.
+- Validation: build + vet + full suite green (above).

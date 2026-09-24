@@ -1157,3 +1157,51 @@ func TestHub_StartRejectsInvalidOutputDir(t *testing.T) {
 		})
 	}
 }
+
+func TestHub_StartSweepsStalePartials(t *testing.T) {
+	tempDir := t.TempDir()
+	outDir := filepath.Join(tempDir, "drops")
+	staging := filepath.Join(outDir, drop.StagingDirName)
+	if err := os.MkdirAll(staging, 0700); err != nil {
+		t.Fatal(err)
+	}
+	oldPart := filepath.Join(staging, "old.part")
+	if err := os.WriteFile(oldPart, []byte("stale"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	aged := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(oldPart, aged, aged); err != nil {
+		t.Fatal(err)
+	}
+	freshPart := filepath.Join(staging, "fresh.part")
+	if err := os.WriteFile(freshPart, []byte("live"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	h, err := NewHub(HubConfig{
+		TransportType: "loopback",
+		ListenAddr:    "127.0.0.1:0",
+		WebAddr:       "127.0.0.1:0",
+		StoreDir:      tempDir,
+		OutputDir:     outDir,
+		Headless:      true,
+	})
+	if err != nil {
+		t.Fatalf("NewHub: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = h.Start(ctx) }()
+	select {
+	case <-h.Ready():
+	case <-time.After(10 * time.Second):
+		t.Fatal("hub not ready")
+	}
+	// The startup sweep runs before readiness is signaled.
+	if _, err := os.Stat(oldPart); !os.IsNotExist(err) {
+		t.Fatal("stale partial survived Hub startup sweep")
+	}
+	if _, err := os.Stat(freshPart); err != nil {
+		t.Fatal("fresh partial wrongly swept at startup")
+	}
+}

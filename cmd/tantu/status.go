@@ -64,6 +64,7 @@ func runStatus(args []string) {
 	// lives with the running Hub, and a stale hub.json must read as
 	// "not running" rather than surfacing a dead endpoint.
 	if live, ok := hub.ProbeHubWithStoreDir("", *storeDir); ok {
+		noteHubVersionSkew(live)
 		dash := live.WebAddr
 		if dash != "" && !strings.Contains(dash, "://") {
 			dash = "http://" + dash

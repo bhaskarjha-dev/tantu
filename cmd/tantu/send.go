@@ -163,6 +163,7 @@ func runSend(args []string) {
 	// 1. If transport is not explicitly overridden to SSH, probe local Hub with strict 200ms timeout
 	if (!transportExplicit || *transportType == "loopback") && *sshHost == "" {
 		if status, ok := hub.ProbeHubWithStoreDir(*bridgeAddr, *storeDir); ok {
+			noteHubVersionSkew(status)
 			if *verbose {
 				fmt.Printf("Connected to local Hub (v%s, %s transport)\n", status.Version, status.Transport)
 			}
