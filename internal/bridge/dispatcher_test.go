@@ -95,7 +95,7 @@ func TestDispatcher_BridgeRequest(t *testing.T) {
 	}
 
 	// 5. Send BridgeComplete
-	if err := bConn.Send(protocol.TypeBridgeComplete, protocol.BridgeComplete{RequestID: req.RequestID}); err != nil {
+	if err := bConn.Send(protocol.TypeBridgeComplete, protocol.BridgeComplete{RequestID: req.RequestID, Success: true}); err != nil {
 		t.Fatalf("Send bridge_complete failed: %v", err)
 	}
 
@@ -300,7 +300,7 @@ func TestDispatcher_ConcurrentMultiplex(t *testing.T) {
 			return
 		}
 
-		_ = conn.Send(protocol.TypeBridgeComplete, protocol.BridgeComplete{RequestID: req.RequestID})
+		_ = conn.Send(protocol.TypeBridgeComplete, protocol.BridgeComplete{RequestID: req.RequestID, Success: true})
 	}()
 
 	wg.Wait()
@@ -551,4 +551,3 @@ func TestDispatcher_UntrustedPeer_RejectsDropSend(t *testing.T) {
 		t.Errorf("expected unauthorized error, got %q", ack.Error)
 	}
 }
-

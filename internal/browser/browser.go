@@ -21,7 +21,15 @@ var (
 // commandStarter abstracts command execution for testability.
 var startCommand = func(name string, args ...string) error {
 	cmd := exec.Command(name, args...)
-	return cmd.Start()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	// Start returns before the browser exits. Reap the child in the
+	// background so repeated OAuth launches do not accumulate zombies or
+	// process handles. The browser itself remains detached from the bridge
+	// session and can outlive this process.
+	go func() { _ = cmd.Wait() }()
+	return nil
 }
 
 // ValidateURL checks that the URL is safe to open in a browser.
@@ -35,7 +43,10 @@ func ValidateURL(rawURL string) error {
 
 	parsed, err := url.Parse(trimmed)
 	if err != nil {
-		return fmt.Errorf("invalid url: %w", err)
+		// url.Parse errors may echo the complete input, which can contain an
+		// authorization code, state, or PKCE verifier. Keep validation errors
+		// deliberately generic so callers cannot accidentally log credentials.
+		return errors.New("invalid url")
 	}
 
 	scheme := strings.ToLower(parsed.Scheme)
@@ -43,7 +54,7 @@ func ValidateURL(rawURL string) error {
 		return fmt.Errorf("%w: got %q", ErrInvalidScheme, parsed.Scheme)
 	}
 
-	if strings.TrimSpace(parsed.Host) == "" {
+	if strings.TrimSpace(parsed.Hostname()) == "" {
 		return ErrMissingHost
 	}
 
@@ -86,7 +97,7 @@ func SanitizeURL(rawURL string) string {
 		return rawURL
 	}
 
-	if parsed.Host == "accounts.google.com" &&
+	if strings.EqualFold(parsed.Hostname(), "accounts.google.com") &&
 		(strings.Contains(parsed.Path, "signin") || strings.Contains(parsed.Path, "accountchooser")) {
 
 		q := parsed.Query()
@@ -130,19 +141,57 @@ func SanitizeURL(rawURL string) string {
 	return rawURL
 }
 
+// RedactURL returns a log-safe representation of a URL.  OAuth query strings
+// routinely contain authorization state, PKCE challenges, and callback codes;
+// none of those values belong in application logs or the dashboard event ring.
+func RedactURL(rawURL string) string {
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" {
+		return "<empty-url>"
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "<invalid-url>"
+	}
+	parsed.User = nil
+	parsed.Fragment = ""
+	parsed.RawFragment = ""
+	if parsed.RawQuery != "" {
+		parsed.RawQuery = "redacted"
+		parsed.ForceQuery = true
+	}
+	return parsed.String()
+}
+
+// RedactRequestURI is the request-path equivalent of RedactURL.  It is used
+// for callback logs, where the query string can contain a one-time code.
+func RedactRequestURI(requestURI string) string {
+	parsed, err := url.ParseRequestURI(requestURI)
+	if err != nil {
+		return "<invalid-request-uri>"
+	}
+	parsed.RawQuery = ""
+	parsed.ForceQuery = strings.Contains(requestURI, "?")
+	parsed.Fragment = ""
+	parsed.RawFragment = ""
+	if parsed.ForceQuery {
+		return parsed.String() + "?redacted"
+	}
+	return parsed.String()
+}
+
 // OpenURL validates and opens the given URL in the system's default browser.
 // It returns an error if the URL is invalid or the browser command fails to start.
 func OpenURL(rawURL string) error {
-	rawURL = SanitizeURL(rawURL)
+	rawURL = strings.TrimSpace(SanitizeURL(rawURL))
 	if err := ValidateURL(rawURL); err != nil {
 		return err
 	}
 
 	name, args := browserCommand(runtime.GOOS, rawURL)
 	if err := startCommand(name, args...); err != nil {
-		return fmt.Errorf("failed to launch browser (%s %s): %w", name, strings.Join(args, " "), err)
+		return fmt.Errorf("failed to launch browser (%s %s): %w", name, strings.Join([]string{RedactURL(rawURL)}, " "), err)
 	}
 
 	return nil
 }
-

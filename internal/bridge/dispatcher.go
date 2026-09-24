@@ -52,12 +52,21 @@ func (p *PrefetchedConn) PeerFingerprint() string {
 	return transport.GetPeerFingerprint(p.Conn)
 }
 
+// DeadlineSupported reports whether the wrapped connection can actually apply
+// network deadlines. Some legacy/test connections expose no deadline methods;
+// advertising a no-op Deadliner would make context-aware receive helpers block
+// synchronously forever.
+func (p *PrefetchedConn) DeadlineSupported() bool {
+	_, ok := p.Conn.(transport.Deadliner)
+	return ok
+}
+
 // SetDeadline delegates to the underlying Conn if supported.
 func (p *PrefetchedConn) SetDeadline(t time.Time) error {
 	if dl, ok := p.Conn.(transport.Deadliner); ok {
 		return dl.SetDeadline(t)
 	}
-	return nil
+	return errors.New("underlying connection does not support deadlines")
 }
 
 // SetReadDeadline delegates to the underlying Conn if supported.
@@ -65,7 +74,7 @@ func (p *PrefetchedConn) SetReadDeadline(t time.Time) error {
 	if dl, ok := p.Conn.(transport.Deadliner); ok {
 		return dl.SetReadDeadline(t)
 	}
-	return nil
+	return errors.New("underlying connection does not support deadlines")
 }
 
 // SetWriteDeadline delegates to the underlying Conn if supported.
@@ -73,7 +82,7 @@ func (p *PrefetchedConn) SetWriteDeadline(t time.Time) error {
 	if dl, ok := p.Conn.(transport.Deadliner); ok {
 		return dl.SetWriteDeadline(t)
 	}
-	return nil
+	return errors.New("underlying connection does not support deadlines")
 }
 
 // DispatcherConfig configures the multiplexed Dispatcher.
@@ -105,6 +114,9 @@ func NewDispatcher(listener transport.Listener, cfg DispatcherConfig) *Dispatche
 	l := cfg.Logger
 	if l == nil {
 		l = log.Default()
+	}
+	if cfg.ASideConfig.Sessions == nil {
+		cfg.ASideConfig.Sessions = NewOAuthSessionManager()
 	}
 	return &Dispatcher{
 		listener: listener,
@@ -197,13 +209,13 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn transport.Conn) {
 	}
 
 	if dl, ok := conn.(transport.Deadliner); ok {
-		_ = dl.SetReadDeadline(time.Now().Add(handshakeTimeout))
+		_ = dl.SetDeadline(time.Now().Add(handshakeTimeout))
 	}
 
 	// Read initial envelope to inspect protocol type
 	var firstEnv *protocol.Envelope
 	for {
-		env, err := conn.Receive()
+		env, err := receiveEnvelope(ctx, conn)
 		if err != nil {
 			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
 				d.logf("⚠️ Error receiving initial envelope from %s: %v", conn.RemoteAddr(), err)
@@ -224,7 +236,7 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn transport.Conn) {
 
 	// Clear read deadline for active session
 	if dl, ok := conn.(transport.Deadliner); ok {
-		_ = dl.SetReadDeadline(time.Time{})
+		_ = dl.SetDeadline(time.Time{})
 	}
 
 	prefetched := NewPrefetchedConn(conn, firstEnv)

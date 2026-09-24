@@ -126,6 +126,17 @@ func TestValidateURL(t *testing.T) {
 	}
 }
 
+func TestValidateURL_DoesNotEchoMalformedSecretInput(t *testing.T) {
+	secret := "state=super-secret&code=one-time"
+	err := ValidateURL("https://example.test/%" + secret)
+	if err == nil {
+		t.Fatal("expected malformed URL to fail")
+	}
+	if strings.Contains(err.Error(), "super-secret") || strings.Contains(err.Error(), "one-time") {
+		t.Fatalf("validation error echoed sensitive input: %v", err)
+	}
+}
+
 func TestBrowserCommand(t *testing.T) {
 	testURL := "http://localhost:8080/callback?code=abc"
 

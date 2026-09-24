@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -87,6 +88,161 @@ func TestExtractCallbackPort(t *testing.T) {
 				t.Fatalf("expected port %d, got %d", tt.wantPort, port)
 			}
 		})
+	}
+}
+
+func TestValidateCallbackRelay_CorrelatesPathAndState(t *testing.T) {
+	oauthURL := "https://auth.example.test/authorize?client_id=app&state=expected-state&redirect_uri=http%3A%2F%2F127.0.0.1%3A8080%2Fcallback%3Ftenant%3Dacme"
+	expected := callbackExpectation(oauthURL)
+	if !expected.constrained || expected.path != "/callback" {
+		t.Fatalf("unexpected callback expectation: %+v", expected)
+	}
+
+	valid := protocol.CallbackRelay{
+		Method: http.MethodGet,
+		Path:   "/callback?tenant=acme&code=one-time&state=expected-state",
+	}
+	if err := validateCallbackRelay(expected, valid); err != nil {
+		t.Fatalf("valid relay rejected: %v", err)
+	}
+	wrongPath := valid
+	wrongPath.Path = "/other?state=expected-state"
+	if err := validateCallbackRelay(expected, wrongPath); err == nil {
+		t.Fatal("relay with wrong callback path was accepted")
+	}
+	wrongState := valid
+	wrongState.Path = "/callback?tenant=acme&code=one-time&state=other"
+	if err := validateCallbackRelay(expected, wrongState); err == nil {
+		t.Fatal("relay with wrong callback state was accepted")
+	}
+
+	formPost := protocol.CallbackRelay{
+		Method:  http.MethodPost,
+		Path:    "/callback",
+		Headers: map[string]string{"Content-Type": "application/x-www-form-urlencoded"},
+		Body:    []byte("code=one-time&state=expected-state"),
+	}
+	if err := validateCallbackRelay(expected, formPost); err != nil {
+		t.Fatalf("valid form_post relay rejected: %v", err)
+	}
+
+	trampoline := "https://provider.example/authorize?client_id=app&redirect_uri=https%3A%2F%2Fprovider.example%2Fredirect&state=http%3A%2F%2F127.0.0.1%3A8080%2Fcallback%3Fnonce%3Dabc"
+	trampolineExpected := callbackExpectation(trampoline)
+	if !trampolineExpected.constrained || trampolineExpected.path != "/callback" {
+		t.Fatalf("external trampoline expectation was not constrained: %+v", trampolineExpected)
+	}
+}
+
+func TestBSide_DoesNotReplayGETCallbackAfterLostResponse(t *testing.T) {
+	appListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer appListener.Close()
+	appPort := appListener.Addr().(*net.TCPAddr).Port
+	var attempts atomic.Int32
+	appServer := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		if hijacker, ok := w.(http.Hijacker); ok {
+			conn, _, hijackErr := hijacker.Hijack()
+			if hijackErr == nil {
+				_ = conn.Close()
+				return
+			}
+		}
+		// A normal response is not expected, but keep the test server from
+		// leaving a request hanging if hijacking is unavailable.
+		w.WriteHeader(http.StatusInternalServerError)
+	})}
+	go func() { _ = appServer.Serve(appListener) }()
+	defer appServer.Close()
+
+	tr := transport.NewLoopbackTransport()
+	bridgeListener, err := tr.Listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bridgeListener.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	mockDone := make(chan error, 1)
+	go func() {
+		conn, acceptErr := bridgeListener.Accept()
+		if acceptErr != nil {
+			mockDone <- acceptErr
+			return
+		}
+		defer conn.Close()
+		env, receiveErr := conn.Receive()
+		if receiveErr != nil {
+			mockDone <- receiveErr
+			return
+		}
+		var req protocol.BridgeRequest
+		if decodeErr := env.DecodePayload(&req); decodeErr != nil {
+			mockDone <- decodeErr
+			return
+		}
+		if sendErr := conn.Send(protocol.TypeBridgeAck, protocol.BridgeAck{RequestID: req.RequestID, ListeningPort: appPort}); sendErr != nil {
+			mockDone <- sendErr
+			return
+		}
+		if sendErr := conn.Send(protocol.TypeCallbackRelay, protocol.CallbackRelay{
+			RequestID: req.RequestID,
+			Method:    http.MethodGet,
+			Path:      "/callback?code=one-time&state=expected",
+		}); sendErr != nil {
+			mockDone <- sendErr
+			return
+		}
+		completeEnv, completeErr := conn.Receive()
+		if completeErr != nil {
+			mockDone <- completeErr
+			return
+		}
+		var complete protocol.BridgeComplete
+		if decodeErr := completeEnv.DecodePayload(&complete); decodeErr != nil {
+			mockDone <- decodeErr
+			return
+		}
+		if complete.Success {
+			mockDone <- fmt.Errorf("expected failed callback completion")
+			return
+		}
+		mockDone <- nil
+	}()
+
+	bConn, err := tr.Dial(bridgeListener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bConn.Close()
+	oauthURL := fmt.Sprintf("https://provider.test/authorize?client_id=app&state=expected&redirect_uri=http%%3A%%2F%%2F127.0.0.1%%3A%d%%2Fcallback", appPort)
+	bsideErr := make(chan error, 1)
+	go func() { bsideErr <- HandleBSide(ctx, bConn, oauthURL, BSideConfig{Timeout: 3 * time.Second}) }()
+
+	select {
+	case err := <-mockDone:
+		if err != nil {
+			t.Fatalf("mock A-side failed: %v", err)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("mock A-side did not observe failed completion")
+	}
+	select {
+	case err := <-bsideErr:
+		if err == nil {
+			t.Fatal("expected B-side delivery error")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("B-side did not return after failed delivery")
+	}
+	// Allow any accidental automatic retry to become observable before the
+	// assertion; the implementation should have made only one request.
+	time.Sleep(250 * time.Millisecond)
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("GET callback was replayed %d times after a lost response", got)
 	}
 }
 
@@ -430,4 +586,3 @@ func TestBSide_PortMismatch_DeliversToOriginalAppPort(t *testing.T) {
 		t.Fatalf("mock A-side failed: %v", err)
 	}
 }
-
