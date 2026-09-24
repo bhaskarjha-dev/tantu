@@ -99,15 +99,8 @@ func RunCockpit(ctx context.Context, h *hub.Hub, cancel context.CancelFunc, init
 						}
 						fmt.Printf("🎯 Send to [%s, or Enter for %s]: ", strings.Join(promptParts, ", "), activeName)
 						if scanner.Scan() {
-							choice := strings.TrimSpace(scanner.Text())
-							if choice != "" {
-								// Strict parse: Sscanf would accept trailing
-								// junk such as "1abc" as a valid selection.
-								if selIdx, err := strconv.Atoi(choice); err == nil && selIdx >= 1 && selIdx <= len(peers) {
-									targetPeer = peers[selIdx-1].Fingerprint
-								} else {
-									targetPeer = choice
-								}
+							if sel := parsePeerSelection(peers, scanner.Text()); sel != "" {
+								targetPeer = sel
 							}
 						}
 					}
@@ -186,15 +179,8 @@ func RunCockpit(ctx context.Context, h *hub.Hub, cancel context.CancelFunc, init
 						}
 						fmt.Printf("🎯 Send to [%s, or Enter for %s]: ", strings.Join(promptParts, ", "), activeName)
 						if scanner.Scan() {
-							choice := strings.TrimSpace(scanner.Text())
-							if choice != "" {
-								// Strict parse: Sscanf would accept trailing
-								// junk such as "1abc" as a valid selection.
-								if selIdx, err := strconv.Atoi(choice); err == nil && selIdx >= 1 && selIdx <= len(peers) {
-									targetPeer = peers[selIdx-1].Fingerprint
-								} else {
-									targetPeer = choice
-								}
+							if sel := parsePeerSelection(peers, scanner.Text()); sel != "" {
+								targetPeer = sel
 							}
 						}
 					}
@@ -232,6 +218,21 @@ func RunCockpit(ctx context.Context, h *hub.Hub, cancel context.CancelFunc, init
 	}()
 }
 
+// parsePeerSelection maps a cockpit peer-prompt answer to a peer fingerprint.
+// A strict 1-based index selects from peers (trailing junk like "1abc" must
+// not select); anything else is returned verbatim as a raw query for the
+// store resolver (name, alias, address) to interpret. Empty input yields "".
+func parsePeerSelection(peers []pairing.Peer, choice string) string {
+	choice = strings.TrimSpace(choice)
+	if choice == "" || len(peers) == 0 {
+		return ""
+	}
+	if selIdx, err := strconv.Atoi(choice); err == nil && selIdx >= 1 && selIdx <= len(peers) {
+		return peers[selIdx-1].Fingerprint
+	}
+	return choice
+}
+
 func handlePeerCommand(scanner *bufio.Scanner, h *hub.Hub) {
 	if h.Store() == nil || len(h.Store().ListPeers()) == 0 {
 		fmt.Println("ℹ️ No paired LAN peers found. Run 'tantu pair' to connect a machine.")
@@ -264,14 +265,7 @@ func handlePeerCommand(scanner *bufio.Scanner, h *hub.Hub) {
 		if choice == "" {
 			return
 		}
-		var targetFP string
-		// Strict parse: Sscanf would accept trailing junk such as "1abc"
-		// as a valid selection.
-		if selIdx, err := strconv.Atoi(choice); err == nil && selIdx >= 1 && selIdx <= len(peers) {
-			targetFP = peers[selIdx-1].Fingerprint
-		} else {
-			targetFP = choice
-		}
+		targetFP := parsePeerSelection(peers, choice)
 
 		if err := h.SetActivePeer(targetFP); err != nil {
 			fmt.Printf("❌ Failed to switch active peer: %v\n", err)

@@ -432,3 +432,15 @@ evidence (no fix needed — the worried-about behavior does not exist):
   confirms no remaining behavioral `Sscanf` on user input (one ignored-error
   parse of locally-generated listener ports in `handshake.go`, left as is).
 - Validation: build + vet + full suite green (above).
+
+## Batch S — cockpit selection helper, release mechanics proof (2026-09-24)
+
+- `parsePeerSelection` extracted (single strict implementation for all three
+  cockpit selectors) + `cockpit_test.go` table test (`1abc` must not select,
+  out-of-range falls through to resolver, empty/nil safe).
+- Release mechanics proven without goreleaser: `-ldflags "-X main.version=
+  -X .../hub.HubVersion"` stamps `tantu version` (`v9.9.9-test` verified),
+  `sha256sum` checksums verified, stamped linux/amd64 cross-build verified.
+  Matches `.goreleaser.yaml` ldflags (see RELEASE.md).
+- Validation: Batch R full suite green; this batch targeted cmd tests green
+  (full suite at commit).
