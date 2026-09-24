@@ -261,6 +261,11 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 	// new transport connection and request ID, so connection-local state alone
 	// cannot prevent the browser/page storm seen in production.
 	lease := a.cfg.Sessions.acquire(oauthSessionKey(a.conn, req))
+	if lease.err != nil {
+		ackErr := "too many active OAuth sessions"
+		_ = a.conn.Send(protocol.TypeBridgeAck, protocol.BridgeAck{RequestID: req.RequestID, Error: ackErr})
+		return errors.New(ackErr)
+	}
 	if !lease.owner {
 		a.logf("♻️ Duplicate OAuth request suppressed for callback port %d", req.CallbackPort)
 		waitCtx, waitCancel := context.WithTimeout(ctx, a.cfg.Timeout)

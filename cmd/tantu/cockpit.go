@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
-	"time"
 
 	"github.com/bhaskarjha-dev/tantu/internal/browser"
 	"github.com/bhaskarjha-dev/tantu/internal/drop"
@@ -153,10 +152,10 @@ func RunCockpit(ctx context.Context, h *hub.Hub, cancel context.CancelFunc, init
 							MIMEType: mime.TypeByExtension(filepath.Ext(path)),
 						}
 
-						sendCtx, sendCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+						sendCtx, sendCancel := context.WithTimeout(ctx, h.Timeout())
 						defer sendCancel()
 
-						if err := drop.SendDrop(sendCtx, conn, meta, f, drop.SendDropConfig{Timeout: 5 * time.Minute}); err != nil {
+						if err := drop.SendDrop(sendCtx, conn, meta, f, drop.SendDropConfig{Timeout: h.Timeout()}); err != nil {
 							fmt.Printf("❌ Transfer failed: %v\n", err)
 							return
 						}
@@ -197,7 +196,7 @@ func RunCockpit(ctx context.Context, h *hub.Hub, cancel context.CancelFunc, init
 						}
 					}
 				}
-				promptSendText(scanner, h, targetPeer)
+				promptSendText(ctx, scanner, h, targetPeer)
 
 			case "c", "clear", "cls":
 				ClearScreen()
@@ -285,7 +284,7 @@ func handlePeerCommand(scanner *bufio.Scanner, h *hub.Hub) {
 	}
 }
 
-func promptSendText(scanner *bufio.Scanner, h *hub.Hub, targetPeer string) {
+func promptSendText(ctx context.Context, scanner *bufio.Scanner, h *hub.Hub, targetPeer string) {
 	fmt.Print("📝 Enter text snippet (end with blank line): ")
 	var lines []string
 	var total int64
@@ -329,10 +328,10 @@ func promptSendText(scanner *bufio.Scanner, h *hub.Hub, targetPeer string) {
 			MIMEType: "text/plain; charset=utf-8",
 		}
 
-		sendCtx, sendCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		sendCtx, sendCancel := context.WithTimeout(ctx, h.Timeout())
 		defer sendCancel()
 
-		if err := drop.SendDrop(sendCtx, conn, meta, strings.NewReader(snippet), drop.SendDropConfig{Timeout: 5 * time.Minute}); err != nil {
+		if err := drop.SendDrop(sendCtx, conn, meta, strings.NewReader(snippet), drop.SendDropConfig{Timeout: h.Timeout()}); err != nil {
 			fmt.Printf("❌ Text transfer failed: %v\n", err)
 			return
 		}

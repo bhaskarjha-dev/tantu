@@ -232,6 +232,10 @@ type Hub struct {
 	mu                      sync.RWMutex
 	running                 bool
 	started                 bool
+	// startErr records a startup failure. Ready is closed on failure too
+	// (so waiters never hang), therefore callers must check Err after
+	// Ready fires: a closed Ready channel alone does not mean success.
+	startErr                error
 	activePeer              string
 	discoveryEngine         *discovery.Engine
 	discoveryCancel         context.CancelFunc
@@ -682,6 +686,15 @@ func (h *Hub) Ready() <-chan struct{} {
 	return ch
 }
 
+// Err reports a startup failure for the current generation. Because Ready is
+// closed on failure as well as success (so waiters never hang), callers must
+// check Err after Ready fires before using the Hub.
+func (h *Hub) Err() error {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.startErr
+}
+
 // P2PAddr returns the bound P2P listener address.
 func (h *Hub) P2PAddr() net.Addr {
 	h.mu.RLock()
@@ -892,6 +905,16 @@ func (h *Hub) OutputDir() string {
 	return h.cfg.OutputDir
 }
 
+// Timeout returns the configured operation timeout for wire flows.
+func (h *Hub) Timeout() time.Duration {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.cfg.Timeout <= 0 {
+		return 5 * time.Minute
+	}
+	return h.cfg.Timeout
+}
+
 // SetOutputDir updates the destination directory for received files.
 func (h *Hub) SetOutputDir(dir string) {
 	h.mu.Lock()
@@ -962,7 +985,23 @@ func (h *Hub) Stop() error {
 		case <-runDone:
 			return nil
 		case <-time.After(5 * time.Second):
-			return errors.New("hub stop timed out waiting for run completion")
+			// The run defer is the only path that clears running; returning
+			// here without it would wedge the Hub ("already running"
+			// forever). Force-close the listeners (idempotent) to unblock
+			// the serve loops, then wait briefly once more before
+			// reporting the timeout.
+			if p2pLn != nil {
+				_ = p2pLn.Close()
+			}
+			if httpServer != nil {
+				_ = httpServer.Close()
+			}
+			select {
+			case <-runDone:
+				return errors.New("hub stop timed out waiting for run completion")
+			case <-time.After(2 * time.Second):
+				return errors.New("hub stop timed out waiting for run completion")
+			}
 		}
 	}
 	return nil
@@ -983,7 +1022,7 @@ func (h *Hub) SetDiscoveryEngine(e *discovery.Engine) {
 }
 
 // Start launches the Hub P2P listener and Web/IPC server.
-func (h *Hub) Start(parent context.Context) error {
+func (h *Hub) Start(parent context.Context) (err error) {
 	if parent == nil {
 		parent = context.Background()
 	}
@@ -1051,6 +1090,7 @@ func (h *Hub) Start(parent context.Context) error {
 		}
 		h.running = true
 		h.started = true
+		h.startErr = nil
 		h.readyCh = readyCh
 		h.httpServer = nil
 		h.p2pLn = nil
@@ -1082,6 +1122,13 @@ func (h *Hub) Start(parent context.Context) error {
 			h.discoveryEngine = nil
 			h.httpServer = nil
 			h.p2pLn = nil
+			// A startup failure (return before markReady) is recorded so
+			// waiters woken by the readyCh close below can distinguish it
+			// from success via Err. A graceful shutdown returns nil and
+			// leaves any prior value cleared at Start entry.
+			if !readyClosed && err != nil {
+				h.startErr = err
+			}
 		} else {
 			// A defensive branch for future lifecycle changes: never cancel or
 			// clear resources owned by a newer generation.

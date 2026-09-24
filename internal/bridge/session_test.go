@@ -211,3 +211,38 @@ func TestOAuthSessionManager_CoalescesDuplicateBrowserRequests(t *testing.T) {
 		t.Fatalf("browser opened again after completed retry: %d", got)
 	}
 }
+
+func TestOAuthSessionManager_ActiveSessionCap(t *testing.T) {
+	m := NewOAuthSessionManager()
+	var owners []oauthSessionLease
+	for i := 0; i < maxOAuthActiveSessions; i++ {
+		lease := m.acquire(fmt.Sprintf("flow-%d", i))
+		if lease.err != nil {
+			t.Fatalf("acquire %d: unexpected err %v", i, lease.err)
+		}
+		if !lease.owner {
+			t.Fatalf("acquire %d: expected owner lease", i)
+		}
+		owners = append(owners, lease)
+	}
+	// One beyond the cap must be rejected, not grow the map.
+	over := m.acquire("flow-over-cap")
+	if over.err == nil {
+		t.Fatal("expected rejection past active-session cap")
+	}
+	// A rejected lease must be a safe no-op under finish/wait.
+	over.finish(nil)
+	if err := over.wait(context.Background()); err == nil {
+		t.Fatal("expected wait error on rejected lease")
+	}
+	// Releasing one slot admits a new owner.
+	owners[0].finish(fmt.Errorf("done"))
+	next := m.acquire("flow-after-release")
+	if next.err != nil || !next.owner {
+		t.Fatalf("expected owner after release, got err=%v owner=%v", next.err, next.owner)
+	}
+	for _, l := range owners[1:] {
+		l.finish(fmt.Errorf("done"))
+	}
+	next.finish(fmt.Errorf("done"))
+}

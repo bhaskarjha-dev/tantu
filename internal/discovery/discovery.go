@@ -237,6 +237,7 @@ func (e *Engine) Start(parent context.Context) error {
 func (e *Engine) listenLoop(conn *net.UDPConn) {
 	defer e.wg.Done()
 	buf := make([]byte, 2048)
+	var consecutiveErrs int
 
 	for {
 		n, remoteAddr, err := conn.ReadFromUDP(buf)
@@ -244,10 +245,20 @@ func (e *Engine) listenLoop(conn *net.UDPConn) {
 			if errors.Is(err, net.ErrClosed) || strings.Contains(err.Error(), "use of closed network connection") {
 				return
 			}
-			// A persistent socket error should not create a tight CPU spin;
-			// the engine can be restarted explicitly after a failed start.
-			return
+			// Transient UDP errors (notably ICMP ECONNRESET on some
+			// platforms, which any LAN host can trigger) must not kill the
+			// loop permanently with no signal. Back off briefly and keep
+			// listening; only a sustained failure (50 consecutive errors)
+			// gives up so a genuinely broken socket cannot hot-spin.
+			// Stale nodes age out via TTL in the meantime.
+			consecutiveErrs++
+			if consecutiveErrs > 50 {
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+			continue
 		}
+		consecutiveErrs = 0
 
 		if n <= len(BeaconPrefix) {
 			continue

@@ -1028,3 +1028,79 @@ func TestHub_UnpairRevokesDropAccess(t *testing.T) {
 		t.Fatal("unpaired peer drop accepted, want rejection")
 	}
 }
+
+func TestHub_ErrReportsStartupFailure(t *testing.T) {
+	// A regular file where the store directory must be forces peer-store
+	// init to fail. Ready must still close (waiters never hang) and Err
+	// must report the failure instead of looking like success.
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h, err := NewHub(HubConfig{
+		TransportType: "loopback",
+		ListenAddr:    "127.0.0.1:0",
+		WebAddr:       "127.0.0.1:0",
+		StoreDir:      filepath.Join(blocker, "store"),
+		OutputDir:     filepath.Join(blocker, "drops"),
+		Headless:      true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- h.Start(ctx) }()
+	select {
+	case <-h.Ready():
+	case <-time.After(10 * time.Second):
+		t.Fatal("Ready never closed on startup failure")
+	}
+	if err := h.Err(); err == nil {
+		t.Fatal("Err() = nil after failed start; Ready alone is ambiguous")
+	}
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("Start returned nil despite store failure")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Start never returned after failure")
+	}
+	// The failed generation must not wedge the Hub: Stop is a no-op success
+	// and a fresh Hub with a valid dir still starts.
+	if err := h.Stop(); err != nil {
+		t.Fatalf("Stop after failed start: %v", err)
+	}
+}
+
+func TestHub_ErrNilOnSuccess(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+	select {
+	case <-h.Ready():
+	case <-time.After(5 * time.Second):
+		t.Fatal("hub never became ready")
+	}
+	if err := h.Err(); err != nil {
+		t.Fatalf("Err() = %v after successful start", err)
+	}
+}
+
+func TestHub_TimeoutDefaultAndConfigured(t *testing.T) {
+	h, err := NewHub(HubConfig{TransportType: "loopback", Headless: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := h.Timeout(); got != 5*time.Minute {
+		t.Fatalf("default Timeout() = %v, want 5m", got)
+	}
+	h2, err := NewHub(HubConfig{TransportType: "loopback", Headless: true, Timeout: 42 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := h2.Timeout(); got != 42*time.Second {
+		t.Fatalf("configured Timeout() = %v, want 42s", got)
+	}
+}

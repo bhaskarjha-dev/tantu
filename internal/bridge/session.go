@@ -27,6 +27,12 @@ const DefaultOAuthReplayWindow = 2 * time.Minute
 
 const maxOAuthReplayEntries = 256
 
+// maxOAuthActiveSessions bounds concurrent in-flight OAuth sessions. Each
+// distinct request key inserts an entry until its handler finishes; without a
+// cap, distinct URLs (or hostile input) grow the map without bound. Mirrors
+// the relayCoordinator (128) and localSingleFlight (64) caps.
+const maxOAuthActiveSessions = 128
+
 const (
 	maxOAuthURLLength     = 64 * 1024
 	maxOAuthFlowIDLength  = 256
@@ -80,6 +86,9 @@ type oauthSessionLease struct {
 	owner     bool
 	replay    bool
 	replayErr error
+	// err rejects the request when the active-session cap is exhausted.
+	// Callers must check it before consulting owner/replay.
+	err error
 }
 
 // NewOAuthSessionManager creates an isolated OAuth session coordinator.
@@ -141,6 +150,10 @@ func (m *OAuthSessionManager) acquire(key string) oauthSessionLease {
 	}
 	if session, ok := m.active[key]; ok {
 		return oauthSessionLease{manager: m, key: key, session: session}
+	}
+	if len(m.active) >= maxOAuthActiveSessions {
+		return oauthSessionLease{manager: m, key: key,
+			err: errors.New("too many active OAuth sessions")}
 	}
 
 	session := &oauthSession{done: make(chan struct{})}
