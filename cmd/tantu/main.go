@@ -179,10 +179,11 @@ Commands:
   serve         Start the A-side bridge listener (on the machine with the browser)
   open <url>    Send an OAuth authorization URL through the bridge (on the remote/app machine)
   relay         Start a local HTTP server for one-click bookmarklet and Web UI relay
+  dashboard     Open an authenticated dashboard for a running Hub
   wrap          Execute a command with BROWSER set to tantu
   pair          Pair with a remote machine for direct LAN transport (mTLS)
   unpair        Remove a paired peer from the trusted peer store
-  status        Show local identity and paired peers
+  status        Show Hub, identity, and paired-peer diagnostics
   send          Send text, images, or files to a paired machine (QuickDrop)
   receive       Receive text, images, or files from a paired machine (QuickDrop)
   drop          Start a local Web UI for drag-and-drop file sharing (QuickDrop)
@@ -222,6 +223,8 @@ func main() {
 		runOpen(subArgs)
 	case "relay":
 		runRelay(subArgs)
+	case "dashboard", "open-dashboard":
+		runDashboard(subArgs)
 	case "wrap":
 		runWrap(subArgs)
 	case "pair":

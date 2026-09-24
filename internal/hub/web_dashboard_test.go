@@ -98,6 +98,13 @@ func TestWebDashboard_ServeSPA(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected status 200, got %d", resp.StatusCode)
 	}
+	csp := resp.Header.Get("Content-Security-Policy")
+	if !strings.Contains(csp, "script-src 'self' 'nonce-") || !strings.Contains(csp, "'unsafe-hashes'") {
+		t.Errorf("dashboard CSP does not authorize the nonce/hash-scoped script: %q", csp)
+	}
+	if strings.Contains(csp, "script-src 'self' 'unsafe-inline'") {
+		t.Errorf("dashboard CSP regressed to unsafe-inline scripts: %q", csp)
+	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -155,6 +162,84 @@ func TestWebDashboard_ProtectedReadsRequireCapability(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("capability-bearing GET returned %d", resp.StatusCode)
+	}
+}
+
+func TestWebDashboard_HeadlessURLEndpointMintsAuthenticatedLink(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+
+	resp, err := testPost(h.ipcToken, "http://"+h.WebAddr()+"/api/dashboard-url", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("dashboard URL endpoint status = %d, want 200", resp.StatusCode)
+	}
+	var payload struct {
+		Status string `json:"status"`
+		URL    string `json:"url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Status != "ok" {
+		t.Fatalf("dashboard URL status = %q", payload.Status)
+	}
+	parsed, err := url.Parse(payload.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Scheme != "http" || parsed.Host != h.WebAddr() || parsed.Path != "/" {
+		t.Fatalf("dashboard URL points at unexpected endpoint: %q", payload.URL)
+	}
+	if !strings.HasPrefix(parsed.Fragment, "tantu_bootstrap=") || strings.Contains(parsed.Fragment, "&") {
+		t.Fatalf("dashboard URL has invalid bootstrap fragment: %q", parsed.Fragment)
+	}
+	if strings.Contains(resp.Header.Get("Cache-Control"), "max-age") {
+		t.Fatal("dashboard URL response must not be cacheable")
+	}
+
+	unauth, err := http.Post("http://"+h.WebAddr()+"/api/dashboard-url", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauth.Body.Close()
+	if unauth.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated dashboard URL status = %d, want 401", unauth.StatusCode)
+	}
+}
+
+func TestHub_NewDashboardURLRotatesBootstrap(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+	first := h.DashboardURL()
+	second := h.NewDashboardURL()
+	if first == "" || second == "" || first == second {
+		t.Fatalf("dashboard bootstrap links were not independently minted: first=%q second=%q", first, second)
+	}
+}
+
+func TestWebDashboard_UnauthenticatedPageAvoidsAPIProbeBurst(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+
+	resp, err := http.Get("http://" + h.WebAddr() + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(body)
+	if !strings.Contains(content, "const pageSessionReady = false;") {
+		t.Fatal("unauthenticated dashboard did not advertise its session state")
+	}
+	if strings.Contains(content, h.ipcToken) || strings.Contains(content, h.relayToken) {
+		t.Fatal("dashboard HTML exposed a local capability")
 	}
 }
 
@@ -684,6 +769,28 @@ func TestWebDashboard_PeersManagementEndpoints(t *testing.T) {
 	}
 	if h.GetActivePeer() != "" {
 		t.Errorf("expected active peer to be cleared, got %q", h.GetActivePeer())
+	}
+}
+
+func TestHub_ActivePeerLiveValidationAfterExternalUnpair(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+	peer := pairing.Peer{
+		Fingerprint: "ababababababababababababababababababababababababababababababababab",
+		Name:        "external-unpair",
+		Address:     "10.0.0.44:9877",
+	}
+	if err := h.Store().AddPeer(peer); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.SetActivePeer(peer.Fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Store().RemovePeer(peer.Fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.GetActivePeer(); got != "" {
+		t.Fatalf("active peer survived external unpair: %q", got)
 	}
 }
 
@@ -1374,7 +1481,9 @@ func TestWebDashboard_UploadProgressAndPeerRenderMarkers(t *testing.T) {
 		"mode=inline",
 		"mode=download",
 		"sessionBanner",
-		"checkDashboardSession",
+		"pageSessionReady",
+		"scheduleRecentDropsReload",
+		"event delegation",
 		`rel="icon"`,
 		"focus-visible",
 		"sr-only",

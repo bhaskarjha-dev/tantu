@@ -124,8 +124,8 @@ func (h *Hub) relayOAuth(ctx context.Context, peer, rawURL string) error {
 	h.mu.RLock()
 	transportName := h.cfg.TransportType
 	store := h.store
-	activePeer := h.activePeer
 	h.mu.RUnlock()
+	activePeer := h.GetActivePeer()
 	peerKey := strings.TrimSpace(peer)
 	if peerKey == "" {
 		peerKey = strings.TrimSpace(activePeer)

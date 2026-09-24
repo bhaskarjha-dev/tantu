@@ -70,6 +70,7 @@ func runStatus(args []string) {
 			dash = "http://" + dash
 		}
 		fmt.Printf("Hub: running (dashboard %s, transport %s)\n", dash, live.Transport)
+		fmt.Println("Dashboard access: tantu dashboard (mints a fresh authenticated link)")
 	} else {
 		fmt.Println("Hub: not running (start with `tantu` or `tantu hub`)")
 	}
@@ -95,12 +96,13 @@ func runStatus(args []string) {
 
 	fmt.Printf("\nTrusted Peers (%d):\n", len(peers))
 	for _, p := range peers {
-		pName := p.Name
-		if pName == "" {
-			pName = "(unnamed)"
+		pName := p.DisplayName()
+		marker := ""
+		if p.IsDefault {
+			marker += " [default]"
 		}
 		sas := pairing.SASCode(p.Fingerprint)
 		timeStr := formatRelativeTime(p.FirstSeen)
-		fmt.Printf("  %-12s  %-21s  (SAS: %s, paired %s)\n", pName, p.Address, sas, timeStr)
+		fmt.Printf("  %-18s  %-21s  (SAS: %s, paired %s)%s\n", pName, p.Address, sas, timeStr, marker)
 	}
 }

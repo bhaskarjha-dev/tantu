@@ -2,9 +2,14 @@ package hub
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime"
 	"net"
 	"net/http"
@@ -33,6 +38,8 @@ const dashboardHTML = `<!DOCTYPE html>
     --bg: #090b10;
     --card-bg: #131722;
     --card-hover: #181d2b;
+    --surface: #0f1420;
+    --surface-hover: #1a2233;
     --border: #232a3b;
     --border-light: #323c52;
     --text: #e6edf3;
@@ -462,11 +469,11 @@ const dashboardHTML = `<!DOCTYPE html>
     </div>
   </header>
 
-  <nav class="tabs-nav">
-    <button class="tab-btn active" onclick="switchTab('tab-drop')">📦 QuickDrop</button>
-    <button class="tab-btn" onclick="switchTab('tab-relay')">⚡ OAuth Relay</button>
-    <button class="tab-btn" onclick="switchTab('tab-peers')">🔗 Peers & Network</button>
-    <button class="tab-btn" onclick="switchTab('tab-logs')">📋 Live Logs</button>
+  <nav class="tabs-nav" role="tablist" aria-label="Dashboard sections">
+    <button id="tab-btn-drop" class="tab-btn active" role="tab" aria-selected="true" aria-controls="tab-drop" data-tab="tab-drop">📦 QuickDrop</button>
+    <button id="tab-btn-relay" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-relay" data-tab="tab-relay">⚡ OAuth Relay</button>
+    <button id="tab-btn-peers" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-peers" data-tab="tab-peers">🔗 Peers & Network</button>
+    <button id="tab-btn-logs" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-logs" data-tab="tab-logs">📋 Live Logs</button>
   </nav>
 
   <main class="tab-content">
@@ -487,7 +494,7 @@ const dashboardHTML = `<!DOCTYPE html>
     </div>
 
     <!-- TAB 1: QUICKDROP -->
-    <div id="tab-drop" class="tab-pane active">
+    <div id="tab-drop" class="tab-pane active" role="tabpanel" aria-labelledby="tab-btn-drop">
       <!-- Download Location Bar -->
       <div class="card" style="margin-bottom: 1.25rem; padding: 0.75rem 1.25rem;">
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem;">
@@ -496,8 +503,8 @@ const dashboardHTML = `<!DOCTYPE html>
             <code id="downloadDirPath" style="color: #60a5fa; background: rgba(59,130,246,0.1); padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.85rem;">...</code>
           </div>
           <div style="display: flex; gap: 0.5rem;">
-            <button class="btn-sm" onclick="promptChangeDownloadDir()">✏️ Change</button>
-            <button class="btn-sm" onclick="openDownloadFolder()">📂 Open Folder</button>
+            <button class="btn-sm" data-action="change-download-dir">✏️ Change</button>
+            <button class="btn-sm" data-action="open-folder">📂 Open Folder</button>
           </div>
         </div>
       </div>
@@ -512,7 +519,7 @@ const dashboardHTML = `<!DOCTYPE html>
               <span style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">Destination:</span>
               <div id="dropPeerPills" style="display: flex; gap: 0.4rem; flex-wrap: wrap;"></div>
             </div>
-            <div class="drop-zone" id="dropZone" tabindex="0" role="button" aria-label="Choose a file to send to your peer" onclick="document.getElementById('fileInput').click()" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); document.getElementById('fileInput').click(); }">
+            <div class="drop-zone" id="dropZone" data-action="choose-file" tabindex="0" role="button" aria-label="Choose a file to send to your peer">
               <div class="drop-zone-icon">📁</div>
               <div class="drop-zone-text">Drag & drop files here, or click to browse</div>
               <div class="drop-zone-subtext">Direct peer-to-peer streaming via mTLS • zero intermediate servers</div>
@@ -526,7 +533,7 @@ const dashboardHTML = `<!DOCTYPE html>
               <div class="progress-meta">
                 <span id="progressFile">Uploading...</span>
                 <span id="progressPercent" aria-live="polite">0%</span>
-                <button type="button" class="btn-sm" id="btnCancelUpload" onclick="cancelUpload()" style="display: none;">✕ Cancel</button>
+                <button type="button" class="btn-sm" id="btnCancelUpload" data-action="cancel-upload" style="display: none;">✕ Cancel</button>
               </div>
             </div>
             <div class="status-banner" id="dropStatus" role="status" aria-live="polite"></div>
@@ -534,9 +541,10 @@ const dashboardHTML = `<!DOCTYPE html>
 
           <div class="card">
             <div class="card-title">📝 Quick Text & Snippet Sharing</div>
+            <label class="sr-only" for="textPayload">Text snippet to send</label>
             <textarea id="textPayload" placeholder="Paste code snippet, auth tokens, commands, or notes to send immediately to the peer..."></textarea>
             <div style="display: flex; justify-content: flex-end; margin-top: 0.75rem;">
-              <button class="btn-primary" id="btnSendText" onclick="sendTextDrop()">Send to Peer</button>
+              <button class="btn-primary" id="btnSendText" data-action="send-text">Send to Peer</button>
             </div>
           </div>
         </div>
@@ -545,7 +553,7 @@ const dashboardHTML = `<!DOCTYPE html>
         <div class="card" style="display: flex; flex-direction: column;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
             <div class="card-title" style="margin-bottom: 0;">📥 Received Items & History</div>
-            <button class="btn-sm" onclick="loadRecentDrops()">🔄 Refresh</button>
+            <button class="btn-sm" data-action="load-recent">🔄 Refresh</button>
           </div>
           <div id="receivedDropsList" style="flex: 1; overflow-y: auto; max-height: 580px; display: flex; flex-direction: column; gap: 0.75rem;">
             <p style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 2rem 0;">No received items yet.<br>Snippets and files sent by your peer appear here in real-time.</p>
@@ -555,7 +563,7 @@ const dashboardHTML = `<!DOCTYPE html>
     </div>
 
     <!-- TAB 2: OAUTH RELAY -->
-    <div id="tab-relay" class="tab-pane">
+    <div id="tab-relay" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-relay">
       <div class="bookmarklet-box">
         <a class="bookmarklet-btn" href="{{BOOKMARKLET_HREF}}">⚡ Tantu</a>
         <div class="hint-text">Drag this button to your browser Bookmarks Bar. When logging in on any OAuth tab, click it to relay authorization directly back to your dev terminal!</div>
@@ -563,16 +571,16 @@ const dashboardHTML = `<!DOCTYPE html>
 
       <div class="card">
         <div class="card-title">⚡ Manual OAuth URL Forwarder</div>
-        <form onsubmit="relayOAuth(event)" class="form-group">
+        <form data-action="relay-oauth" class="form-group">
           <input type="text" id="oauthUrlInput" aria-label="OAuth authorization URL" placeholder="Paste OAuth URL (https://accounts.google.com/o/oauth2/...)" required>
           <button type="submit" class="btn-primary" id="btnRelay">Relay to Peer</button>
         </form>
-        <div class="status-banner" id="relayStatus"></div>
+        <div class="status-banner" id="relayStatus" role="status" aria-live="polite"></div>
       </div>
     </div>
 
     <!-- TAB 3: PEERS & NETWORK -->
-    <div id="tab-peers" class="tab-pane">
+    <div id="tab-peers" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-peers">
       <!-- Discovered Nearby Hubs (Auto-detected via mDNS/LAN Beacon) -->
       <div id="discoveredHubsCard" class="card" style="display: none; margin-bottom: 1.5rem; border: 1px solid var(--accent); background: rgba(59, 130, 246, 0.05);">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
@@ -609,8 +617,8 @@ const dashboardHTML = `<!DOCTYPE html>
 
         <div class="card">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
-            <div class="card-title" style="margin-bottom: 0;">👥 Connected Peers</div>
-            <button class="btn-sm" onclick="openPairModal()">+ Pair New Device</button>
+            <div class="card-title" style="margin-bottom: 0;">👥 Trusted Peers</div>
+            <button class="btn-sm" data-action="open-pair-modal">+ Pair New Device</button>
           </div>
           <div id="peersList">
             <p style="color: var(--text-muted); font-size: 0.9rem;">Loading peer status...</p>
@@ -619,11 +627,11 @@ const dashboardHTML = `<!DOCTYPE html>
       </div>
 
       <!-- PAIRING MODAL -->
-      <div id="pairModal" class="modal-overlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.75); backdrop-filter:blur(4px); z-index:9999; align-items:center; justify-content:center;">
+      <div id="pairModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="pairModalTitle" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.75); backdrop-filter:blur(4px); z-index:9999; align-items:center; justify-content:center;">
         <div class="modal-box" style="background:#0f172a; border:1px solid #334155; border-radius:12px; width:90%; max-width:500px; padding:1.5rem; box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
-            <h3 style="margin:0; font-size:1.1rem; color:#f8fafc;">🔗 Pair New Device</h3>
-            <button onclick="closePairModal()" style="background:none; border:none; color:#94a3b8; font-size:1.4rem; cursor:pointer; line-height:1;">&times;</button>
+            <h3 id="pairModalTitle" style="margin:0; font-size:1.1rem; color:#f8fafc;">🔗 Pair New Device</h3>
+            <button data-action="close-pair-modal" aria-label="Close pairing dialog" style="background:none; border:none; color:#94a3b8; font-size:1.4rem; cursor:pointer; line-height:1;">&times;</button>
           </div>
           
           <p style="font-size:0.85rem; color:#94a3b8; margin-bottom:1.25rem;">
@@ -636,10 +644,10 @@ const dashboardHTML = `<!DOCTYPE html>
           </div>
 
           <div style="margin-bottom:1.25rem;">
-            <label style="display:block; font-size:0.8rem; font-weight:600; color:#cbd5e1; margin-bottom:0.5rem;">Option 1: Initiate from Remote Device (CLI)</label>
+            <label style="display:block; font-size:0.8rem; font-weight:600; color:#cbd5e1; margin-bottom:0.5rem;">Option 1: Discover and pair from the remote device</label>
             <div style="display:flex; gap:0.5rem; align-items:center;">
               <code id="pairCmdText" style="flex:1; background:rgba(0,0,0,0.4); border:1px solid #334155; border-radius:6px; padding:0.5rem 0.75rem; font-size:0.8rem; color:#38bdf8; overflow-x:auto; white-space:nowrap;">tantu pair --peer=&lt;THIS_IP&gt;:9877</code>
-              <button class="btn-sm" id="btnCopyPairCmd" onclick="copyPairCmd()">📋 Copy</button>
+              <button class="btn-sm" id="btnCopyPairCmd" data-action="copy-pair-command">📋 Copy</button>
             </div>
           </div>
 
@@ -647,26 +655,26 @@ const dashboardHTML = `<!DOCTYPE html>
             <label for="pairRemoteAddrInput" style="display:block; font-size:0.8rem; font-weight:600; color:#cbd5e1; margin-bottom:0.5rem;">Option 2: Connect to Remote Peer Address</label>
             <div style="display:flex; gap:0.5rem; align-items:center;">
               <input type="text" id="pairRemoteAddrInput" placeholder="192.168.1.50:9877" style="flex:1; font-size:0.85rem; padding:0.5rem 0.75rem;">
-              <button class="btn" id="btnPairConnect" onclick="initiateWebPairing()" style="white-space:nowrap; padding:0.5rem 1rem;">Pair Device</button>
+              <button class="btn" id="btnPairConnect" data-action="pair-connect" style="white-space:nowrap; padding:0.5rem 1rem;">Pair Device</button>
             </div>
-            <div id="pairStatusMsg" style="font-size:0.8rem; margin-top:0.5rem; min-height:1.2rem;"></div>
+            <div id="pairStatusMsg" role="status" aria-live="polite" style="font-size:0.8rem; margin-top:0.5rem; min-height:1.2rem;"></div>
           </div>
 
           <div style="display:flex; justify-content:flex-end;">
-            <button class="btn-sm" onclick="closePairModal()">Close</button>
+            <button class="btn-sm" data-action="close-pair-modal">Close</button>
           </div>
         </div>
       </div>
     </div>
 
     <!-- TAB 4: LIVE LOGS -->
-    <div id="tab-logs" class="tab-pane">
+    <div id="tab-logs" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-logs">
       <div class="card">
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1rem;">
           <div class="card-title" style="margin-bottom: 0;">📋 Live Diagnostics & Activity Feed</div>
           <div style="display: flex; gap: 0.5rem;">
-            <button class="btn-sm" onclick="exportLogs()">📥 Export Logs</button>
-            <button class="btn-sm" onclick="clearLogs()">Clear</button>
+            <button class="btn-sm" data-action="export-logs">📥 Export Logs</button>
+            <button class="btn-sm" data-action="clear-logs">Clear</button>
           </div>
         </div>
 
@@ -674,17 +682,17 @@ const dashboardHTML = `<!DOCTYPE html>
         <div style="display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 1rem;">
           <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
             <span style="font-size: 0.8rem; color: var(--text-muted); margin-right: 0.25rem;">Filter:</span>
-            <button class="pill active" data-filter="ALL" onclick="setLogFilter('ALL', this)">All</button>
-            <button class="pill" data-filter="OAUTH" onclick="setLogFilter('OAUTH', this)">🔵 OAuth</button>
-            <button class="pill" data-filter="DROP" onclick="setLogFilter('DROP', this)">🟢 QuickDrop</button>
-            <button class="pill" data-filter="PEER" onclick="setLogFilter('PEER', this)">🟣 Peer</button>
-            <button class="pill" data-filter="NET" onclick="setLogFilter('NET', this)">🟡 Network</button>
-            <button class="pill" data-filter="DEBUG" onclick="setLogFilter('DEBUG', this)">🐛 Debug / Verbose</button>
-            <button class="pill" data-filter="ERROR" onclick="setLogFilter('ERROR', this)">🔴 Errors</button>
+            <button class="pill active" data-filter="ALL">All</button>
+            <button class="pill" data-filter="OAUTH">🔵 OAuth</button>
+            <button class="pill" data-filter="DROP">🟢 QuickDrop</button>
+            <button class="pill" data-filter="PEER">🟣 Peer</button>
+            <button class="pill" data-filter="NET">🟡 Network</button>
+            <button class="pill" data-filter="DEBUG">🐛 Debug / Verbose</button>
+            <button class="pill" data-filter="ERROR">🔴 Errors</button>
           </div>
 
           <div style="position: relative;">
-            <input type="text" id="logSearchInput" aria-label="Search live logs" placeholder="🔍 Search live logs by text, URL, host, or request ID..." style="padding-left: 1rem; font-size: 0.85rem;" oninput="applyLogFilters()">
+            <input type="text" id="logSearchInput" data-action="filter-logs" aria-label="Search live logs" placeholder="🔍 Search live logs by text, URL, host, or request ID..." style="padding-left: 1rem; font-size: 0.85rem;">
           </div>
         </div>
 
@@ -695,11 +703,15 @@ const dashboardHTML = `<!DOCTYPE html>
     </div>
   </main>
 
-  <script>
+  <script nonce="{{NONCE}}">
+    // The server tells the page whether the HttpOnly session cookie is already
+    // present. This lets an unauthenticated/stale bookmark render a clear
+    // recovery state without firing a burst of doomed 401 API requests.
+    const pageSessionReady = {{SESSION_READY}};
     async function bootstrapDashboard() {
       const params = new URLSearchParams(location.hash.slice(1));
       const token = params.get('tantu_bootstrap');
-      if (!token) return false;
+      if (!token) return pageSessionReady;
       try {
         const response = await fetch('/api/session', {
           method: 'POST',
@@ -719,7 +731,10 @@ const dashboardHTML = `<!DOCTYPE html>
     let dashboardReady = bootstrapDashboard();
     function apiFetch(path, options) {
       options = options || {};
-      return dashboardReady.then(() => {
+      return dashboardReady.then((ready) => {
+        if (!ready) {
+          throw new Error('Dashboard session not established. Reopen it from the Hub terminal.');
+        }
         const headers = new Headers(options.headers || {});
         const requestOptions = Object.assign({}, options, {
           headers: headers,
@@ -729,16 +744,137 @@ const dashboardHTML = `<!DOCTYPE html>
       });
     }
 
-    function switchTab(tabId) {
-      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    // CSP-safe event delegation: all user actions are bound from JavaScript
+    // rather than inline HTML attributes. Values supplied by peers are read
+    // from data attributes or the short-lived receivedActionValues map.
+    document.addEventListener('click', function(event) {
+      const target = event.target && event.target.closest ? event.target.closest('[data-action], [data-filter], [data-tab]') : null;
+      if (!target) return;
+      if (target.hasAttribute('data-tab')) {
+        switchTab(target.getAttribute('data-tab'), target);
+        return;
+      }
+      if (target.hasAttribute('data-filter')) {
+        setLogFilter(target.getAttribute('data-filter'), target);
+        return;
+      }
+      const action = target.getAttribute('data-action');
+      switch (action) {
+        case 'choose-file':
+          document.getElementById('fileInput').click();
+          break;
+        case 'open-folder':
+          openDownloadFolder();
+          break;
+        case 'change-download-dir':
+          promptChangeDownloadDir();
+          break;
+        case 'cancel-upload':
+          cancelUpload();
+          break;
+        case 'send-text':
+          sendTextDrop();
+          break;
+        case 'load-recent':
+          loadRecentDrops();
+          break;
+        case 'open-pair-modal':
+          openPairModal();
+          break;
+        case 'close-pair-modal':
+          closePairModal();
+          break;
+        case 'copy-pair-command':
+          copyPairCmd();
+          break;
+        case 'pair-connect':
+          initiateWebPairing();
+          break;
+        case 'export-logs':
+          exportLogs();
+          break;
+        case 'clear-logs':
+          clearLogs();
+          break;
+        case 'select-peer':
+          selectDropPeer(target.getAttribute('data-value') || '');
+          break;
+        case 'decide-pairing':
+          decidePairing(target.getAttribute('data-value') || '', target.getAttribute('data-accept') === 'true');
+          break;
+        case 'prefill-pair':
+          prefillPairModal(target.getAttribute('data-address') || '', target.getAttribute('data-sas') || '');
+          break;
+        case 'set-default-peer':
+          setDefaultPeer(target.getAttribute('data-value') || '');
+          break;
+        case 'edit-alias':
+          promptEditAlias(target.getAttribute('data-value') || '', target.getAttribute('data-alias') || '');
+          break;
+        case 'unpair-peer':
+          confirmUnpair(target.getAttribute('data-value') || '', target.getAttribute('data-name') || '');
+          break;
+        case 'copy-snippet':
+          copySnippet(receivedActionValues[target.getAttribute('data-value')] || '', target);
+          break;
+        case 'open-url':
+          openURL(receivedActionValues[target.getAttribute('data-value')] || '');
+          break;
+      }
+    });
+    document.addEventListener('submit', function(event) {
+      const form = event.target;
+      if (form && form.getAttribute && form.getAttribute('data-action') === 'relay-oauth') {
+        relayOAuth(event);
+      }
+    });
+    document.addEventListener('input', function(event) {
+      const input = event.target;
+      if (input && input.getAttribute && input.getAttribute('data-action') === 'filter-logs') {
+        applyLogFilters();
+      }
+    });
+    document.addEventListener('change', function(event) {
+      const select = event.target;
+      if (select && select.getAttribute && select.getAttribute('data-action') === 'active-peer') {
+        switchActivePeer(select.value);
+      }
+    });
+    document.addEventListener('keydown', function(event) {
+      const modal = document.getElementById('pairModal');
+      if (event.key === 'Escape' && modal && modal.style.display !== 'none') {
+        event.preventDefault();
+        closePairModal();
+        return;
+      }
+      const zone = event.target && event.target.closest ? event.target.closest('#dropZone') : null;
+      if (zone && (event.key === 'Enter' || event.key === ' ')) {
+        event.preventDefault();
+        document.getElementById('fileInput').click();
+      }
+    });
+    document.addEventListener('error', function(event) {
+      const image = event.target;
+      if (image && image.matches && image.matches('img.received-item-preview')) {
+        image.remove();
+      }
+    }, true);
+
+    function switchTab(tabId, sourceButton) {
+      document.querySelectorAll('.tab-btn').forEach(b => {
+        b.classList.remove('active');
+        b.setAttribute('aria-selected', 'false');
+      });
       document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-      // Click path highlights the clicked button via the implicit event;
-      // programmatic callers (paste-to-upload) match the button by target.
-      const btn = (typeof event !== 'undefined' && event && event.currentTarget && event.currentTarget.classList)
-        ? event.currentTarget
-        : Array.prototype.find.call(document.querySelectorAll('.tab-btn'), b => (b.getAttribute('onclick') || '').indexOf(tabId) !== -1);
-      if (btn) btn.classList.add('active');
-      document.getElementById(tabId).classList.add('active');
+      // Click path passes the source button explicitly; programmatic callers
+      // (such as paste-to-upload) may omit it and are matched by data-tab.
+      const btn = sourceButton || Array.prototype.find.call(document.querySelectorAll('.tab-btn'), b => b.getAttribute('data-tab') === tabId);
+      if (btn) {
+        btn.classList.add('active');
+        btn.setAttribute('aria-selected', 'true');
+      }
+      const pane = document.getElementById(tabId);
+      if (pane) pane.classList.add('active');
     }
 
     let currentFilter = 'ALL';
@@ -868,6 +1004,15 @@ const dashboardHTML = `<!DOCTYPE html>
     }
 
     let selectedPeerTarget = '';
+    // Short-lived indirection for user-controlled text/URLs keeps large or
+    // quote-heavy values out of HTML attributes and inline event handlers.
+    let receivedActionValues = Object.create(null);
+    let receivedActionSequence = 0;
+    function rememberReceivedValue(value) {
+      const id = 'received-' + (++receivedActionSequence);
+      receivedActionValues[id] = String(value == null ? '' : value);
+      return id;
+    }
     // Signature of the last rendered peer DOM. updateStatus polls every 3s;
     // rewriting the header <select>, pills, and peer list on every poll
     // steals focus/selection and breaks keyboard interaction, so the peer
@@ -922,7 +1067,7 @@ const dashboardHTML = `<!DOCTYPE html>
           if (dropSelector) dropSelector.style.display = 'none';
         } else if (peers.length === 1) {
           const p = peers[0];
-          peerLabel.innerText = (p.name || 'Peer') + ' [Online 🟢]';
+          peerLabel.innerText = (p.name || 'Peer') + ' [Paired · ready]';
           peerDot.className = 'status-dot';
           if (dropSelector) dropSelector.style.display = 'none';
           renderPeersList(peers);
@@ -937,7 +1082,7 @@ const dashboardHTML = `<!DOCTYPE html>
             const defBadge = p.is_default ? ' (Default)' : '';
             return '<option value="' + escapeHTML(p.fingerprint) + '" ' + sel + ' style="background:var(--card-bg); color:var(--text);">' + escapeHTML(p.name) + defBadge + '</option>';
           }).join('');
-          peerLabel.innerHTML = '<label class="sr-only" for="headerPeerSelect">Active peer</label><select id="headerPeerSelect" aria-label="Active peer" onchange="switchActivePeer(this.value)" style="background:transparent; color:var(--text); border:none; outline:none; font-size:0.85rem; font-weight:600; cursor:pointer;">' + optionsHTML + '</select>';
+          peerLabel.innerHTML = '<label class="sr-only" for="headerPeerSelect">Active peer</label><select id="headerPeerSelect" data-action="active-peer" aria-label="Active peer" style="background:transparent; color:var(--text); border:none; outline:none; font-size:0.85rem; font-weight:600; cursor:pointer;">' + optionsHTML + '</select>';
 
           // Tab 1 destination pills
           if (dropSelector && dropPills) {
@@ -946,7 +1091,7 @@ const dashboardHTML = `<!DOCTYPE html>
               const isSelected = (p.fingerprint === selectedPeerTarget);
               const pillClass = isSelected ? 'pill active' : 'pill';
               const defTag = p.is_default ? ' ⭐️' : '';
-              return '<button type="button" class="' + pillClass + '" onclick=\'selectDropPeer(' + jsArg(p.fingerprint) + ')\'>' + escapeHTML(p.name) + defTag + '</button>';
+              return '<button type="button" class="' + pillClass + '" data-action="select-peer" data-value="' + escapeHTML(p.fingerprint) + '">' + escapeHTML(p.name) + defTag + '</button>';
             }).join('');
           }
 
@@ -998,8 +1143,8 @@ const dashboardHTML = `<!DOCTYPE html>
               '<div style="font-size: 0.85rem; color: #cbd5e1; margin-top: 0.25rem;">Compare SAS Code with remote screen: <strong style="color: #38bdf8; font-family: monospace; font-size: 1.05rem; letter-spacing: 0.05em; background: rgba(56,189,248,0.15); padding: 0.15rem 0.5rem; border-radius: 4px;">' + sas + '</strong></div>' +
             '</div>' +
             '<div style="display: flex; gap: 0.5rem;">' +
-              '<button class="btn-sm" style="background: #10b981; color: white; border: none; font-weight: 600; padding: 0.4rem 1rem; cursor: pointer; border-radius: 6px;" onclick=\'decidePairing(' + jsArg(id) + ', true)\'>✓ Approve</button>' +
-              '<button class="btn-sm" style="background: #ef4444; color: white; border: none; font-weight: 600; padding: 0.4rem 1rem; cursor: pointer; border-radius: 6px;" onclick=\'decidePairing(' + jsArg(id) + ', false)\'>✕ Reject</button>' +
+              '<button class="btn-sm" style="background: #10b981; color: white; border: none; font-weight: 600; padding: 0.4rem 1rem; cursor: pointer; border-radius: 6px;" data-action="decide-pairing" data-value="' + escapeHTML(id) + '" data-accept="true">✓ Approve</button>' +
+              '<button class="btn-sm" style="background: #ef4444; color: white; border: none; font-weight: 600; padding: 0.4rem 1rem; cursor: pointer; border-radius: 6px;" data-action="decide-pairing" data-value="' + escapeHTML(id) + '" data-accept="false">✕ Reject</button>' +
             '</div>' +
           '</div>';
         }).join('');
@@ -1040,9 +1185,9 @@ const dashboardHTML = `<!DOCTYPE html>
         return '<div style="display: flex; justify-content: space-between; align-items: center; background: var(--surface); padding: 0.6rem 0.85rem; border-radius: 6px; border: 1px solid var(--border);">' +
           '<div>' +
             '<div style="font-weight: 600; font-size: 0.9rem; color: var(--text);">💻 ' + escapeHTML(d.name) + '</div>' +
-            '<div style="font-size: 0.75rem; color: var(--text-muted); font-family: monospace;">' + escapeHTML(d.address) + ' · SAS: <span style="color: var(--accent); font-weight: 600;">' + escapeHTML(d.sas) + '</span></div>' +
+            '<div style="font-size: 0.75rem; color: var(--text-muted); font-family: monospace;">' + escapeHTML(d.address) + ' · unverified SAS: <span style="color: var(--accent); font-weight: 600;">' + escapeHTML(d.sas) + '</span></div>' +
           '</div>' +
-          '<button class="btn btn-primary" style="padding: 0.3rem 0.75rem; font-size: 0.8rem;" onclick=\'prefillPairModal(' + jsArg(d.address) + ', ' + jsArg(d.sas) + ')\'>⚡ Pair</button>' +
+          '<button class="btn btn-primary" style="padding: 0.3rem 0.75rem; font-size: 0.8rem;" data-action="prefill-pair" data-address="' + escapeHTML(d.address) + '" data-sas="' + escapeHTML(d.sas) + '">⚡ Pair</button>' +
         '</div>';
       }).join('');
     }
@@ -1091,7 +1236,7 @@ const dashboardHTML = `<!DOCTYPE html>
       peersList.innerHTML = peers.map(function(pr) {
         const defaultBadge = pr.is_default ? '<span class="tag tag-oauth">Default</span>' : '';
         const activeBadge = pr.active ? '<span class="tag tag-drop">Active</span>' : '';
-        const defaultBtn = !pr.is_default ? '<button class="btn-sm" onclick=\'setDefaultPeer(' + jsArg(pr.fingerprint) + ')\'>⭐️ Set Default</button>' : '';
+        const defaultBtn = !pr.is_default ? '<button class="btn-sm" data-action="set-default-peer" data-value="' + escapeHTML(pr.fingerprint) + '">⭐️ Set Default</button>' : '';
         const fpShort = pr.fingerprint ? (pr.fingerprint.slice(0, 16) + '...') : '-';
 
         return '<div style="background: rgba(255,255,255,0.02); border:1px solid var(--border); border-radius:8px; padding:0.85rem 1rem; margin-bottom:0.75rem;">' +
@@ -1101,9 +1246,9 @@ const dashboardHTML = `<!DOCTYPE html>
               defaultBadge + activeBadge +
             '</div>' +
             '<div style="display:flex; gap:0.35rem;">' +
-              '<button class="btn-sm" onclick=\'promptEditAlias(' + jsArg(pr.fingerprint) + ', ' + jsArg(pr.alias || pr.name || '') + ')\'>✏️ Alias</button>' +
+              '<button class="btn-sm" data-action="edit-alias" data-value="' + escapeHTML(pr.fingerprint) + '" data-alias="' + escapeHTML(pr.alias || pr.name || '') + '">✏️ Alias</button>' +
               defaultBtn +
-              '<button class="btn-sm" style="color:#f87171; border-color:rgba(239,68,68,0.3);" onclick=\'confirmUnpair(' + jsArg(pr.fingerprint) + ', ' + jsArg(pr.name || '') + ')\'>🗑️ Unpair</button>' +
+              '<button class="btn-sm" style="color:#f87171; border-color:rgba(239,68,68,0.3);" data-action="unpair-peer" data-value="' + escapeHTML(pr.fingerprint) + '" data-name="' + escapeHTML(pr.name || '') + '">🗑️ Unpair</button>' +
             '</div>' +
           '</div>' +
           '<div style="font-size:0.8rem; color:var(--text-muted); margin-top:0.5rem; display:flex; gap:1rem; flex-wrap:wrap;">' +
@@ -1174,21 +1319,27 @@ const dashboardHTML = `<!DOCTYPE html>
       }
     }
 
+    let pairModalReturnFocus = null;
     function openPairModal() {
+      const modal = document.getElementById('pairModal');
+      pairModalReturnFocus = document.activeElement;
       const sas = document.getElementById('idSAS').innerText || '---';
       document.getElementById('pairModalSAS').innerText = sas;
-      const p2p = document.getElementById('idP2P').innerText || '9877';
-      let port = '9877';
-      if (p2p.includes(':')) {
-        port = p2p.split(':').pop();
-      }
-      document.getElementById('pairCmdText').innerText = 'tantu pair --peer=<THIS_MACHINE_IP>:' + port;
+      document.getElementById('pairCmdText').innerText = 'tantu pair';
       document.getElementById('pairStatusMsg').innerText = '';
-      document.getElementById('pairModal').style.display = 'flex';
+      modal.style.display = 'flex';
+      const input = document.getElementById('pairRemoteAddrInput');
+      if (input) input.focus();
     }
 
     function closePairModal() {
-      document.getElementById('pairModal').style.display = 'none';
+      const modal = document.getElementById('pairModal');
+      if (!modal || modal.style.display === 'none') return;
+      modal.style.display = 'none';
+      if (pairModalReturnFocus && typeof pairModalReturnFocus.focus === 'function') {
+        pairModalReturnFocus.focus();
+      }
+      pairModalReturnFocus = null;
     }
 
     async function copyPairCmd() {
@@ -1332,8 +1483,15 @@ const dashboardHTML = `<!DOCTYPE html>
         return;
       }
       // apiFetch waits for the bootstrap exchange; XHR must do the same so
-      // the session cookie exists before the upload is sent.
-      await dashboardReady;
+      // the session cookie exists before the upload is sent. Avoid opening a
+      // doomed request when this page was opened without a Hub session.
+      const ready = await dashboardReady;
+      if (!ready) {
+        status.style.display = 'block';
+        status.className = 'status-banner error';
+        status.textContent = '⚠️ Dashboard session not established. Reopen it from the Hub terminal.';
+        return;
+      }
 
       progress.style.display = 'block';
       cancelBtn.style.display = 'inline-block';
@@ -1593,6 +1751,25 @@ const dashboardHTML = `<!DOCTYPE html>
       } catch (_) {}
     }
 
+    let recentDropsReloadInFlight = false;
+    let recentDropsReloadQueued = false;
+    async function scheduleRecentDropsReload() {
+      if (recentDropsReloadInFlight) {
+        recentDropsReloadQueued = true;
+        return;
+      }
+      recentDropsReloadInFlight = true;
+      try {
+        await loadRecentDrops();
+      } finally {
+        recentDropsReloadInFlight = false;
+        if (recentDropsReloadQueued) {
+          recentDropsReloadQueued = false;
+          void scheduleRecentDropsReload();
+        }
+      }
+    }
+
     async function loadRecentDrops() {
       try {
         const res = await apiFetch('/api/drop/recent');
@@ -1603,6 +1780,7 @@ const dashboardHTML = `<!DOCTYPE html>
     }
 
     function renderRecentDrops(items) {
+      receivedActionValues = Object.create(null);
       const list = document.getElementById('receivedDropsList');
       if (!items || items.length === 0) {
         list.innerHTML = '<p style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 2rem 0;">No received items yet.<br>Snippets and files sent by your peer appear here in real-time.</p>';
@@ -1610,6 +1788,8 @@ const dashboardHTML = `<!DOCTYPE html>
       }
       const reversed = items.slice().reverse();
       list.innerHTML = reversed.map(function(item) {
+        const copyID = rememberReceivedValue(item.content || '');
+        const urlID = rememberReceivedValue(item.content || '');
         const timeStr = item.timestamp ? new Date(item.timestamp).toLocaleTimeString() : '';
         const isFile = item.kind === 'file';
         const isURL = item.is_url;
@@ -1625,7 +1805,7 @@ const dashboardHTML = `<!DOCTYPE html>
           const imgExts = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.avif', '.ico'];
           const previewable = fileURL && extMatch && imgExts.indexOf(extMatch[0]) !== -1 && item.size > 0 && item.size <= 8 * 1024 * 1024;
           if (previewable) {
-            contentHTML = '<img class="received-item-preview" src="' + fileURL + '&mode=inline" alt="' + escapeHTML('Preview of ' + (item.name || 'received image')) + '" loading="lazy" onerror="this.remove()">' +
+            contentHTML = '<img class="received-item-preview" src="' + fileURL + '&mode=inline" alt="' + escapeHTML('Preview of ' + (item.name || 'received image')) + '" loading="lazy">' +
               '<div class="received-item-content">Path: ' + escapeHTML(item.saved_path || item.name) + ' (' + sizeStr + ')</div>';
           } else {
             contentHTML = '<div class="received-item-content">Path: ' + escapeHTML(item.saved_path || item.name) + ' (' + sizeStr + ')</div>';
@@ -1636,16 +1816,16 @@ const dashboardHTML = `<!DOCTYPE html>
 
         let actionsHTML = '<div class="received-item-actions">';
         if (!isFile && item.content) {
-          actionsHTML += '<button class="btn-sm" onclick=\'copySnippet(' + jsArg(item.content) + ', this)\'>📋 Copy</button>';
+          actionsHTML += '<button class="btn-sm" data-action="copy-snippet" data-value="' + escapeHTML(copyID) + '">📋 Copy</button>';
           if (isURL || item.content.startsWith('http://') || item.content.startsWith('https://')) {
             const cleanURL = item.content.trim();
-            actionsHTML += '<button class="btn-sm" onclick=\'openURL(' + jsArg(cleanURL) + ')\'>🌐 Open in Browser</button>';
+            actionsHTML += '<button class="btn-sm" data-action="open-url" data-value="' + escapeHTML(urlID) + '">🌐 Open in Browser</button>';
           }
         } else if (isFile && item.saved_path) {
           if (item.id) {
             actionsHTML += '<a class="btn-sm" href="/api/drop/file?id=' + encodeURIComponent(item.id) + '&mode=download">⬇️ Download</a>';
           }
-          actionsHTML += '<button class="btn-sm" onclick="openDownloadFolder()">📂 Open in Folder</button>';
+          actionsHTML += '<button class="btn-sm" data-action="open-folder">📂 Open in Folder</button>';
         }
         actionsHTML += '</div>';
 
@@ -1695,38 +1875,11 @@ const dashboardHTML = `<!DOCTYPE html>
       }[tag] || tag));
     }
 
-    // Encode a value for use inside a single-quoted inline event handler.
-    // JSON.stringify alone is not an HTML/JS-context encoder: a value such as
-    // a script-closing tag or an apostrophe could otherwise terminate the
-    // surrounding HTML script element or inline handler.
-    function jsArg(value) {
-      const encoded = JSON.stringify(String(value == null ? '' : value));
-      const replacements = {
-        '<': '\\u003c',
-        '>': '\\u003e',
-        '&': '\\u0026',
-        "'": '\\u0027',
-        '\u2028': '\\u2028',
-        '\u2029': '\\u2029'
-      };
-      return encoded.replace(/[<>&'\u2028\u2029]/g, ch => replacements[ch] ?? ch);
-    }
-
-    // Capability probe: a stale bookmark or second tab without the session
-    // cookie would otherwise fail every action silently (401s in console).
-    // Surface an explicit reconnect banner instead.
-    async function checkDashboardSession() {
-      try {
-        const res = await fetch('/api/probe', { credentials: 'same-origin' });
-        if (!res.ok) {
-          document.getElementById('sessionBanner').style.display = 'block';
-        }
-      } catch (_) {
+    dashboardReady.then((ready) => {
+      if (!ready) {
         document.getElementById('sessionBanner').style.display = 'block';
+        return;
       }
-    }
-    dashboardReady.then(() => {
-      checkDashboardSession();
       // SSE + polling start here; HttpOnly session cookies ride automatically.
       if (window.EventSource) {
         const sse = new EventSource('/api/events', { withCredentials: true });
@@ -1736,7 +1889,7 @@ const dashboardHTML = `<!DOCTYPE html>
             const domain = item.domain || item.tag || 'SYS';
             addLog(domain, item.message || JSON.stringify(item), item.level, item.metadata);
             if (domain === 'DROP') {
-              loadRecentDrops();
+              scheduleRecentDropsReload();
             }
           } catch (_) {
             addLog('SYS', e.data, 'INFO');
@@ -1758,6 +1911,25 @@ const dashboardHTML = `<!DOCTYPE html>
 type relayResponse struct {
 	Status  string `json:"status"`
 	Message string `json:"message"`
+}
+
+func newDashboardNonce() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw[:]), nil
+}
+
+// javascriptCSPHash authorizes the dashboard's user-activated bookmarklet
+// without reopening script-src to unsafe-inline. CSP hashes the javascript:
+// navigation's script body; the URL itself is generated per response because
+// it carries a one-use relay ticket.
+func javascriptCSPHashes(raw string) string {
+	source := strings.TrimPrefix(raw, "javascript:")
+	sumSource := sha256.Sum256([]byte(source))
+	sumFull := sha256.Sum256([]byte(raw))
+	return fmt.Sprintf("'sha256-%s' 'sha256-%s'", base64.StdEncoding.EncodeToString(sumSource[:]), base64.StdEncoding.EncodeToString(sumFull[:]))
 }
 
 func escapeHTMLText(s string) string {
@@ -1882,9 +2054,10 @@ func (h *Hub) requestHasDashboardCapability(r *http.Request) bool {
 	if r == nil {
 		return false
 	}
-	if h.ipcToken != "" {
+	ipcToken := h.currentIPCToken()
+	if ipcToken != "" {
 		provided := r.Header.Get(IPCTokenHeader)
-		if subtle.ConstantTimeCompare([]byte(provided), []byte(h.ipcToken)) == 1 {
+		if subtle.ConstantTimeCompare([]byte(provided), []byte(ipcToken)) == 1 {
 			return true
 		}
 	}
@@ -2110,8 +2283,12 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			http.NotFound(w, r)
 			return
 		}
+		nonce, nonceErr := newDashboardNonce()
+		if nonceErr != nil {
+			http.Error(w, "dashboard security nonce unavailable", http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
 
 		webAddr := h.WebAddr()
 		if webAddr == "" {
@@ -2125,9 +2302,19 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 				bookmarkletJS = fmt.Sprintf("javascript:void(window.open('http://%s/relay?url='+encodeURIComponent(location.href)+'&ticket=%s','_blank','width=550,height=380'))", webAddr, url.QueryEscape(relayTicket))
 			}
 		}
+		// `unsafe-hashes` is limited to the exact generated bookmarklet
+		// navigation; ordinary inline scripts still require the per-response
+		// nonce, and all DOM actions are delegated from that script.
+		w.Header().Set("Content-Security-Policy", fmt.Sprintf("default-src 'self'; script-src 'self' 'nonce-%s' 'unsafe-hashes' %s; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'", nonce, javascriptCSPHashes(bookmarkletJS)))
 
 		page := strings.ReplaceAll(dashboardHTML, "{{VERSION}}", escapeHTMLText(HubVersion))
 		page = strings.ReplaceAll(page, "{{BOOKMARKLET_HREF}}", escapeHTMLText(bookmarkletJS))
+		// Do not make an unauthenticated page probe every sensitive endpoint
+		// just to discover that it needs the one-time bootstrap link. The
+		// HttpOnly cookie is intentionally invisible to JavaScript, so the
+		// server-side capability check is the authoritative session hint.
+		page = strings.ReplaceAll(page, "{{SESSION_READY}}", strconv.FormatBool(h.requestHasDashboardCapability(r)))
+		page = strings.ReplaceAll(page, "{{NONCE}}", nonce)
 		_, _ = w.Write([]byte(page))
 	})
 
@@ -2177,7 +2364,6 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			return
 		}
 		h.mu.RLock()
-		activeFP := h.activePeer
 		store := h.store
 		transportName := h.cfg.TransportType
 		webAddrSnapshot := h.actualWeb
@@ -2186,6 +2372,7 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 		startedAtSnapshot := h.startTime
 		engine := h.discoveryEngine
 		h.mu.RUnlock()
+		activeFP := h.GetActivePeer()
 
 		var peers []peerStatus
 		if store != nil {
@@ -2284,13 +2471,15 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 		// turn that cookie into a relay capability. Authenticated dashboard
 		// mutations use POST /api/relay/open; the bookmarklet uses a one-use
 		// ticket.
-		relayAuthorized := h.ipcToken != "" && subtle.ConstantTimeCompare([]byte(r.Header.Get(IPCTokenHeader)), []byte(h.ipcToken)) == 1
+		ipcToken := h.currentIPCToken()
+		relayAuthorized := ipcToken != "" && subtle.ConstantTimeCompare([]byte(r.Header.Get(IPCTokenHeader)), []byte(ipcToken)) == 1
 		if !relayAuthorized {
 			relayAuthorized = h.consumeRelayTicket(r.URL.Query().Get("ticket"))
 		}
 		if !relayAuthorized {
 			providedRelayToken := r.URL.Query().Get("token")
-			relayAuthorized = h.relayToken != "" && subtle.ConstantTimeCompare([]byte(providedRelayToken), []byte(h.relayToken)) == 1
+			relayToken := h.currentRelayToken()
+			relayAuthorized = relayToken != "" && subtle.ConstantTimeCompare([]byte(providedRelayToken), []byte(relayToken)) == 1
 		}
 		if !relayAuthorized {
 			http.Error(w, "relay token or dashboard session required", http.StatusForbidden)
@@ -2475,6 +2664,15 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			Size:     header.Size,
 			MIMEType: mimeType,
 		}
+		if seeker, ok := file.(io.ReadSeeker); ok && header.Size >= 64*1024 {
+			_, _ = seeker.Seek(0, io.SeekStart)
+			head := make([]byte, 64*1024)
+			if n, readErr := io.ReadFull(seeker, head); n > 0 && (readErr == nil || readErr == io.EOF || readErr == io.ErrUnexpectedEOF) {
+				sum := sha256.Sum256(head[:n])
+				meta.HeadHash = hex.EncodeToString(sum[:])
+			}
+			_, _ = seeker.Seek(0, io.SeekStart)
+		}
 
 		sendCtx, cancel := context.WithTimeout(r.Context(), h.cfg.Timeout)
 		defer cancel()
@@ -2557,6 +2755,26 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			return
 		}
 		serveReceivedFile(w, r, h.OutputDir(), item)
+	})
+
+	// 9c. POST /api/dashboard-url — mint a fresh authenticated dashboard link
+	// for local CLI/headless workflows. The response is capability-protected by
+	// securityMiddleware and is never cached or logged; the fragment token is
+	// one-use and therefore cannot be replayed from shell history.
+	mux.HandleFunc("/api/dashboard-url", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"status": "error", "message": "method not allowed, use POST"})
+			return
+		}
+		dashboardURL := h.NewDashboardURL()
+		if dashboardURL == "" {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "error", "message": "dashboard link unavailable"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{
+			"status": "ok",
+			"url":    dashboardURL,
+		})
 	})
 
 	// 10. GET /api/config & POST /api/config — Retrieve or update Hub config

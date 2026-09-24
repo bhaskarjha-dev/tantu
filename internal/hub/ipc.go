@@ -2,7 +2,9 @@ package hub
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -36,6 +38,7 @@ var (
 	overrideMu              sync.RWMutex
 	defaultStoreDirOverride string
 	defaultWebAddrOverride  string
+	runtimeLockMu           sync.Mutex
 )
 
 // SetDefaultStoreDirOverride sets a package-level store directory override for testing.
@@ -79,10 +82,18 @@ const (
 )
 
 // withRuntimeLock serializes the complete read/write/remove transaction across
-// Hub processes sharing a store directory. The lock is a directory rather than
-// an advisory in-process mutex, so it also protects against a second process
-// replacing hub.json between an ownership check and removal.
+// Hub processes sharing a store directory. The directory lock protects against
+// a second process replacing hub.json between an ownership check and removal;
+// runtimeLockMu separately serializes callers within this process.
 func withRuntimeLock(storeDir string, fn func() error) error {
+	// The on-disk lock coordinates independent processes. This mutex also
+	// serializes goroutines in this process, which is important on Windows:
+	// several concurrent Mkdir/RemoveAll calls for the same lock directory can
+	// otherwise surface a transient Access is denied error while one caller is
+	// releasing it.
+	runtimeLockMu.Lock()
+	defer runtimeLockMu.Unlock()
+
 	dir := filepath.Dir(GetRuntimeFilePath(storeDir))
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("create store dir: %w", err)
@@ -94,7 +105,16 @@ func withRuntimeLock(storeDir string, fn func() error) error {
 		if err == nil {
 			break
 		}
-		if !os.IsExist(err) {
+		// Windows can report ERROR_ACCESS_DENIED rather than
+		// ERROR_ALREADY_EXISTS while another process owns the lock directory.
+		// Only treat that error as contention when the lock path is actually
+		// present; a real permission failure must still be surfaced.
+		lockExists := os.IsExist(err)
+		if !lockExists && os.IsPermission(err) {
+			_, statErr := os.Lstat(lockPath)
+			lockExists = statErr == nil
+		}
+		if !lockExists {
 			return fmt.Errorf("acquire runtime lock: %w", err)
 		}
 		if stat, statErr := os.Stat(lockPath); statErr == nil && time.Since(stat.ModTime()) > runtimeLockStale {
@@ -491,6 +511,73 @@ func probeHub(webAddr, storeDir string) (*HubStatus, bool) {
 	// runtime store. Do not silently fall back to a different unauthenticated
 	// endpoint when the runtime capability is unavailable.
 	return nil, false
+}
+
+// DashboardURLFromRuntime asks a running local Hub to mint a fresh one-time
+// dashboard bootstrap URL. It is the headless/CLI equivalent of pressing [o]
+// in the interactive cockpit, without embedding a long-lived capability in a
+// command-line URL or HTML page.
+func DashboardURLFromRuntime(webAddr, storeDir string) (string, error) {
+	info, err := ReadRuntimeInfo(storeDir)
+	if err != nil {
+		return "", fmt.Errorf("read hub runtime metadata: %w", err)
+	}
+	if info == nil || info.WebAddr == "" || info.IPCToken == "" {
+		return "", errors.New("running Hub runtime metadata is unavailable")
+	}
+	if strings.TrimSpace(webAddr) == "" {
+		webAddr = info.WebAddr
+	}
+	webAddr = cleanWebAddr(webAddr)
+	if !validLoopbackWebAddr(webAddr) || !sameLoopbackEndpoint(webAddr, info.WebAddr) {
+		return "", fmt.Errorf("Hub web address is not the authenticated runtime endpoint: %q", webAddr)
+	}
+
+	client := &http.Client{
+		Timeout:   2 * time.Second,
+		Transport: &http.Transport{Proxy: nil},
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	defer client.CloseIdleConnections()
+	req, err := http.NewRequest(http.MethodPost, "http://"+webAddr+"/api/dashboard-url", nil)
+	if err != nil {
+		return "", fmt.Errorf("create dashboard URL request: %w", err)
+	}
+	req.Header.Set(IPCTokenHeader, info.IPCToken)
+	req.Header.Set("X-CLI-Version", HubVersion)
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("request dashboard URL: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("Hub returned dashboard URL status %d", resp.StatusCode)
+	}
+	var payload struct {
+		Status string `json:"status"`
+		URL    string `json:"url"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 16*1024)).Decode(&payload); err != nil {
+		return "", fmt.Errorf("decode dashboard URL response: %w", err)
+	}
+	if payload.Status != "ok" || strings.TrimSpace(payload.URL) == "" {
+		return "", errors.New("Hub returned an empty dashboard URL")
+	}
+	parsed, err := url.Parse(payload.URL)
+	if err != nil || parsed.Scheme != "http" || parsed.User != nil || parsed.Opaque != "" || !sameLoopbackEndpoint(parsed.Host, webAddr) || parsed.Path != "/" || parsed.RawQuery != "" || parsed.ForceQuery {
+		return "", errors.New("Hub returned an invalid dashboard URL")
+	}
+	const prefix = "tantu_bootstrap="
+	tokenPart := strings.TrimPrefix(parsed.Fragment, prefix)
+	if tokenPart == parsed.Fragment || len(tokenPart) != 64 {
+		return "", errors.New("Hub returned a dashboard URL without a one-time bootstrap fragment")
+	}
+	if decoded, decodeErr := hex.DecodeString(tokenPart); decodeErr != nil || len(decoded) != 32 {
+		return "", errors.New("Hub returned a dashboard URL with an invalid bootstrap fragment")
+	}
+	return payload.URL, nil
 }
 
 // DelegateSend transmits a file or text snippet via the local Hub's POST /api/drop/upload endpoint.

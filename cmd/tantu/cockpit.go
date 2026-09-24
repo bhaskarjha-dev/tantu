@@ -75,7 +75,7 @@ func RunCockpit(ctx context.Context, h *hub.Hub, cancel context.CancelFunc, init
 				if webURL == "" {
 					webURL = "http://" + h.WebAddr()
 				}
-				fmt.Printf("🌐 Opening browser dashboard: %s\n", h.WebAddr())
+				fmt.Printf("🌐 Opening browser dashboard: %s\n", webURL)
 				_ = browser.OpenURL(webURL)
 
 			case "s", "send", "file":

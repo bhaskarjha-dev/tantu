@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -184,8 +185,12 @@ type EventLogger struct {
 	ring        *RingBuffer
 	broadcaster *EventBroadcaster
 	nextID      uint64
-	onEventMu   sync.RWMutex
-	onEvent     func(LogEvent)
+	// sequenceMu makes ID assignment, ring insertion, and subscriber fan-out
+	// one ordered transaction. Without it, concurrent Log calls can append a
+	// higher ID before a lower one, making Last-Event-ID replay skip events.
+	sequenceMu sync.Mutex
+	onEventMu  sync.RWMutex
+	onEvent    func(LogEvent)
 }
 
 // NewEventLogger creates an EventLogger with a circular buffer.
@@ -229,6 +234,7 @@ func (l *EventLogger) Log(level EventLevel, domain EventDomain, msg string, meta
 		}
 		meta = copyMeta
 	}
+	l.sequenceMu.Lock()
 	id := atomic.AddUint64(&l.nextID, 1)
 	ev := LogEvent{
 		ID:        id,
@@ -240,6 +246,7 @@ func (l *EventLogger) Log(level EventLevel, domain EventDomain, msg string, meta
 	}
 	l.ring.Append(ev)
 	l.broadcaster.Broadcast(ev)
+	l.sequenceMu.Unlock()
 	l.onEventMu.RLock()
 	onEvent := l.onEvent
 	l.onEventMu.RUnlock()
@@ -287,6 +294,10 @@ func (l *EventLogger) HandleLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleEvents streams events over Server-Sent Events (GET /api/events).
+// When a browser reconnects with Last-Event-ID, events still in the bounded
+// ring are replayed before live delivery. Slow clients can still miss events
+// while connected (the broadcaster is intentionally non-blocking), but a
+// reconnect no longer starts blindly at "now".
 func (l *EventLogger) HandleEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-store")
@@ -305,9 +316,42 @@ func (l *EventLogger) HandleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	defer l.broadcaster.Unsubscribe(ch)
 
-	// Send initial connection comment
+	// Subscribe before taking the ring snapshot. Events arriving during the
+	// replay remain queued and are de-duplicated by lastSentID below.
+	lastSentID := uint64(0)
+	if raw := strings.TrimSpace(r.Header.Get("Last-Event-ID")); raw != "" {
+		if parsed, parseErr := strconv.ParseUint(raw, 10, 64); parseErr == nil {
+			lastSentID = parsed
+		}
+	}
+
+	// Send initial connection comment.
 	_, _ = fmt.Fprintf(w, ": connected\n\n")
 	flusher.Flush()
+
+	writeEvent := func(ev LogEvent) bool {
+		data, marshalErr := json.Marshal(ev)
+		if marshalErr != nil {
+			return true
+		}
+		if _, writeErr := fmt.Fprintf(w, "id: %d\ndata: %s\n\n", ev.ID, data); writeErr != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+
+	if lastSentID > 0 {
+		for _, ev := range l.GetRecent() {
+			if ev.ID <= lastSentID {
+				continue
+			}
+			if !writeEvent(ev) {
+				return
+			}
+			lastSentID = ev.ID
+		}
+	}
 
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
@@ -320,11 +364,13 @@ func (l *EventLogger) HandleEvents(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			data, err := json.Marshal(ev)
-			if err == nil {
-				_, _ = fmt.Fprintf(w, "data: %s\n\n", string(data))
-				flusher.Flush()
+			if ev.ID <= lastSentID {
+				continue
 			}
+			if !writeEvent(ev) {
+				return
+			}
+			lastSentID = ev.ID
 		case <-ticker.C:
 			_, _ = fmt.Fprintf(w, ": keepalive\n\n")
 			flusher.Flush()

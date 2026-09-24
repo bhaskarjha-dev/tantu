@@ -12,6 +12,29 @@ import (
 	"time"
 )
 
+func TestEventLogger_ConcurrentIDsRemainReplayOrdered(t *testing.T) {
+	logger := NewEventLogger(128)
+	const count = 100
+	var wg sync.WaitGroup
+	wg.Add(count)
+	for i := 0; i < count; i++ {
+		go func() {
+			defer wg.Done()
+			logger.Info(DomainNet, "concurrent")
+		}()
+	}
+	wg.Wait()
+	events := logger.GetRecent()
+	if len(events) != count {
+		t.Fatalf("event count = %d, want %d", len(events), count)
+	}
+	for i := 1; i < len(events); i++ {
+		if events[i].ID != events[i-1].ID+1 {
+			t.Fatalf("event IDs out of order at %d: %d then %d", i, events[i-1].ID, events[i].ID)
+		}
+	}
+}
+
 func TestRingBuffer_CircularBounds(t *testing.T) {
 	capacity := 200
 	rb := NewRingBuffer(capacity)
@@ -211,6 +234,44 @@ func TestEventLogger_HTTPHandlers(t *testing.T) {
 				t.Errorf("unexpected SSE event: %+v", ev)
 			}
 			break
+		}
+	}
+}
+
+func TestEventLogger_SSEReplaysLastEventID(t *testing.T) {
+	logger := NewEventLogger(10)
+	logger.Info(DomainSys, "before reconnect")
+	logger.Action(DomainOAuth, "after reconnect")
+
+	server := httptest.NewServer(http.HandlerFunc(logger.HandleEvents))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Last-Event-ID", "1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	reader := bufio.NewReader(resp.Body)
+	for {
+		line, readErr := reader.ReadString('\n')
+		if readErr != nil {
+			t.Fatalf("reading replay: %v", readErr)
+		}
+		if strings.HasPrefix(line, "data:") {
+			var ev LogEvent
+			if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &ev); err != nil {
+				t.Fatal(err)
+			}
+			if ev.ID != 2 || ev.Message != "after reconnect" {
+				t.Fatalf("replayed event = %+v, want ID 2 after reconnect", ev)
+			}
+			return
 		}
 	}
 }

@@ -78,8 +78,17 @@ func runHub(args []string) {
 			if !cfg.Headless && !cfg.Server {
 				RunCockpit(ctx, h, stop, *verbose)
 			} else {
+				// Headless mode has no cockpit from which to request a fresh
+				// authenticated link. Print the one-time bootstrap URL itself;
+				// a bare /api-protected dashboard address is not usable without
+				// it and was a particularly confusing first-run experience.
+				dashboardURL := h.DashboardURL()
+				if dashboardURL == "" {
+					dashboardURL = "http://" + h.WebAddr()
+				}
 				fmt.Printf("🚀 tantu hub active (headless server mode)\n")
-				fmt.Printf("   ├─ Web Dashboard: http://%s\n", h.WebAddr())
+				fmt.Printf("   ├─ Web Dashboard: %s\n", dashboardURL)
+				fmt.Printf("   │  (one-time link; use `tantu dashboard` to mint another)\n")
 				if h.P2PAddr() != nil {
 					fmt.Printf("   └─ P2P Listener:  %s (transport: %s)\n", h.P2PAddr().String(), h.TransportType())
 				}
