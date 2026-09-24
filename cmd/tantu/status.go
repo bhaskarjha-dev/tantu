@@ -4,8 +4,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/bhaskarjha-dev/tantu/internal/hub"
 	"github.com/bhaskarjha-dev/tantu/internal/pairing"
 )
 
@@ -44,6 +46,31 @@ func runStatus(args []string) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
+	}
+
+	fmt.Printf("tantu v%s\n", strings.TrimPrefix(version, "v"))
+
+	dir := *storeDir
+	if dir == "" {
+		if def, derr := pairing.DefaultStoreDir(); derr == nil {
+			dir = def
+		}
+	}
+	if dir != "" {
+		fmt.Printf("Store: %s\n", dir)
+	}
+
+	// Hub liveness first: most user-facing state (dashboard URL, transport)
+	// lives with the running Hub, and a stale hub.json must read as
+	// "not running" rather than surfacing a dead endpoint.
+	if live, ok := hub.ProbeHubWithStoreDir("", *storeDir); ok {
+		dash := live.WebAddr
+		if dash != "" && !strings.Contains(dash, "://") {
+			dash = "http://" + dash
+		}
+		fmt.Printf("Hub: running (dashboard %s, transport %s)\n", dash, live.Transport)
+	} else {
+		fmt.Println("Hub: not running (start with `tantu` or `tantu hub`)")
 	}
 
 	id, err := store.LoadIdentity()

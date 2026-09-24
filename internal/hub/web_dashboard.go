@@ -1968,6 +1968,14 @@ func (h *Hub) securityMiddleware(next http.Handler) http.Handler {
 				})
 				return
 			}
+			// CLI/Hub version skew is otherwise invisible: delegation sends
+			// X-CLI-Version on every IPC call but nothing reads it. Log the
+			// mismatch (delegation calls are infrequent) so mixed-version
+			// API drift shows up in diagnostics instead of surfacing as
+			// confusing downstream errors. Mixed versions remain best-effort.
+			if cliVer := strings.TrimSpace(r.Header.Get("X-CLI-Version")); cliVer != "" && cliVer != HubVersion && h.logger != nil {
+				h.logger.Warn(DomainSys, fmt.Sprintf("CLI/Hub version skew: caller %q vs hub %q on %s %s", cliVer, HubVersion, r.Method, r.URL.Path))
+			}
 			if origin != "" {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")

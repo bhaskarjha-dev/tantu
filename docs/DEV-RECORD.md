@@ -353,3 +353,27 @@ evidence (no fix needed — the worried-about behavior does not exist):
 - RELEASE.md version paragraph synced with M1 VCS fallback.
 - Validation: build + vet + full suite green (below); JS `node --check`
   clean; linux/darwin cross-compile green.
+
+## Batch O — diagnostics, unification, wrap audit (2026-09-24)
+
+- `status` upgraded to a diagnostic command: version (VCS-aware), store path,
+  Hub liveness with dashboard URL + transport, then identity/peers.
+  Live-verified fresh and against a running Hub. Q-01-adjacent: stale
+  hub.json probes read as "not running".
+- Pairing payload types unified: `internal/protocol/pairing.go` removed
+  (its `PairDecisionPayload` had zero users); Hub display decode uses
+  `pairing.PairHelloPayload` (validated single source). Pending-pairing
+  names verified escaped in dashboard render + control-char-free at the
+  pairing layer — no stored XSS.
+- X-CLI-Version now observed: Hub middleware warn-logs CLI/Hub skew on
+  delegated calls (`TestWebDashboard_CLIVersionSkewLogged`); mixed versions
+  stay best-effort per RELEASE.md.
+- `wrap` forwards `--ssh-known-hosts`/`--ssh-fingerprint` into the child
+  BROWSER command (previously silently dropped the pin). node/receive/serve
+  SSH constructions are listen-side (no remote host-key verification
+  applies) — verified and left unchanged.
+- Q-02 resolved: background winget install completed (Go 1.27.0 in
+  `C:\Program Files\Go`, on system PATH). Session unaffected — every
+  command here pins the 1.26.3 toolchain matching `go.mod`; `go vet`
+  also passes under it implicitly via cross-checks. No action.
+- Validation: build + vet + full suite green (above).

@@ -1706,7 +1706,7 @@ func (h *Hub) Start(parent context.Context) (err error) {
 				}
 
 				peerFP := transport.GetPeerFingerprint(conn)
-				var hello protocol.PairHelloPayload
+				var hello pairing.PairHelloPayload
 				_ = firstEnv.DecodePayload(&hello)
 				peerName := hello.Name
 				if peerName == "" {

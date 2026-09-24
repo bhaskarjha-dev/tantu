@@ -40,6 +40,8 @@ func runWrap(args []string) {
 	sshPort := fs.Int("ssh-port", 22, "SSH server port (default: 22)")
 	sshUser := fs.String("ssh-user", defaultUsername(), "SSH username (default: current OS user)")
 	sshKey := fs.String("ssh-key", "", "Path to PEM private key for SSH auth (required when --transport=ssh)")
+	sshKnownHosts := fs.String("ssh-known-hosts", "", "Path to OpenSSH known_hosts for server verification (default: ~/.ssh/known_hosts)")
+	sshFingerprint := fs.String("ssh-fingerprint", "", "Pin the server host key (format: SHA256:...); overrides known_hosts when set")
 	timeout := fs.Duration("timeout", 5*time.Minute, "Timeout waiting for authentication flow to complete")
 	verbose := fs.Bool("v", false, "Enable verbose output")
 	_ = fs.Parse(wrapFlags)
@@ -123,6 +125,15 @@ func runWrap(args []string) {
 			fmt.Sprintf("-ssh-user=%s", *sshUser),
 			fmt.Sprintf("-ssh-key=%s", *sshKey),
 		)
+		// Forward host-key verification config: without it the wrapped
+		// child would silently fall back to default known_hosts handling
+		// and drop an explicit pin.
+		if *sshKnownHosts != "" {
+			browserArgs = append(browserArgs, fmt.Sprintf("-ssh-known-hosts=%s", *sshKnownHosts))
+		}
+		if *sshFingerprint != "" {
+			browserArgs = append(browserArgs, fmt.Sprintf("-ssh-fingerprint=%s", *sshFingerprint))
+		}
 	} else if *transportType == "lan" {
 		browserArgs = append(browserArgs,
 			"-transport=lan",

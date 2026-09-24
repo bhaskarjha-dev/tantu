@@ -1490,3 +1490,30 @@ func TestWebDashboard_DropFileServeSymlinkRejected(t *testing.T) {
 		t.Fatalf("victim modified: %q", got)
 	}
 }
+
+func TestWebDashboard_CLIVersionSkewLogged(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+
+	req, _ := http.NewRequest(http.MethodGet, "http://"+h.WebAddr()+"/api/probe", nil)
+	req.Header.Set(IPCTokenHeader, h.ipcToken)
+	req.Header.Set("X-CLI-Version", "0.0.0-skew-test")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("probe = %d, want 200", resp.StatusCode)
+	}
+
+	logsResp, err := testGet(h.ipcToken, "http://"+h.WebAddr()+"/api/logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logsResp.Body.Close()
+	body, _ := io.ReadAll(logsResp.Body)
+	if !strings.Contains(string(body), "version skew") || !strings.Contains(string(body), "0.0.0-skew-test") {
+		t.Fatalf("skew warning missing from logs: %s", body)
+	}
+}
