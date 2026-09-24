@@ -1,7 +1,7 @@
 # Tantu System Architecture
 
 > **Status:** Active Reference Architecture  
-> **Last Updated:** 2026-09-11
+> **Last Updated:** 2026-09-24
 
 ---
 
@@ -77,7 +77,7 @@ The system derives its name from Sanskrit **तन्तु** (*tantu*, from ver
 * **Dual-Socket Network Isolation:**
   - **Loopback Socket (`127.0.0.1:9876*`):** Exclusively binds to localhost with automatic fallback (`9876 → 9875 → 9874 → 9873`). Hosts the Single-Page Web Dashboard, Bookmarklet HTTP Relay, Server-Sent Events (SSE) bus, and Local REST IPC server. Never exposed to external network interfaces.
   - **Wire Socket (`0.0.0.0:9877`):** Listens on the network interface for mTLS / SSH / Loopback traffic. Handled by a multiplexed protocol dispatcher that routes incoming connections dynamically.
-* **Dynamic State Discovery (`hub.json`):** Written atomically (`.tmp` → rename) to `pairing.DefaultStoreDir()` with `0600` permissions. Records PID, active Web port, Wire port, and peer roster so CLI subcommands (`send`, `open`) locate the active daemon without port guessing.
+* **Dynamic State Discovery (`hub.json`):** Written atomically through a cross-process lock after the HTTP listener is ready. The descriptor records the PID, start time, actual Web/Wire endpoints, transport, and a per-process IPC capability; CLI subcommands use an authenticated PID/start-time probe rather than trusting the file or a status-shaped local response.
 * **Smart Default Routing:** Outbound drops automatically resolve to the designated `Default` or `Active` peer when unspecified, eliminating flag fatigue.
 
 ---
@@ -229,16 +229,16 @@ The embedded HTTP server on `127.0.0.1:9876*` provides a dark-mode Web UI with z
 4. **Peers & Network Tab:** Complete multi-peer management cards with inline alias editing (`POST /api/peers/alias`), default peer toggle (`POST /api/peers/default`), unpair removal (`POST /api/peers/remove`), active peer selection (`POST /api/peers/active`), nearby LAN hubs feed (`GET /api/discovery/peers`), and 1-click visual In-Band Pairing Wizard (`POST /api/pair/initiate`).
 5. **Activity Logs Tab:** Live diagnostic explorer with domain filtering pills (`ALL`, `OAUTH`, `DROP`, `PEER`, `NET`, `DEBUG`, `ERROR`), real-time query search bar, structured metadata inspection (`<details>`), and one-click JSON export (`/api/logs`).
 6. **Event Bus & RingBuffer:** Circular 200-event in-memory buffer streaming structured JSON events via Server-Sent Events (`/api/events`).
-7. **Anti-CSRF & Origin Isolation Middleware (`securityMiddleware`):** Protects all `/api/*` endpoints by validating `Origin` and `Referer` headers against `127.0.0.1`, `localhost`, and `::1`. Eliminates wildcard CORS and rejects malicious third-party cross-origin requests with `403 Forbidden`.
+7. **Authenticated Local Control Plane (`securityMiddleware`):** Validates the exact loopback authority (including port), Origin, and Referer, requires an IPC capability or one-time browser session for every sensitive `/api/*` read and mutation, disables caching, and uses a one-use relay ticket for the legacy bookmarklet. The long-lived IPC token is never embedded in dashboard HTML.
 
 ---
 
 ### 3.6 Smart Local IPC Delegation & In-Band Pairing (`internal/hub/ipc.go`)
 
 To avoid port conflicts and eliminate duplicate daemon instances, CLI commands check for an active Hub:
-1. Reads `hub.json` from `pairing.DefaultStoreDir()` to identify active daemon PID and Web port.
-2. Performs a fast 200ms REST probe to `http://127.0.0.1:<web_port>/api/status`.
-3. If running, commands delegate work to the Hub via `POST /api/drop/upload` (for drops) or `POST /api/relay/open` (for URLs), carrying the `--peer` flag if specified.
+1. Reads `hub.json` from `pairing.DefaultStoreDir()` to identify the active daemon PID, start time, Web endpoint, and IPC capability.
+2. Performs a fast 200ms authenticated probe to `http://127.0.0.1:<web_port>/api/probe`, rejecting stale/replaced descriptors and endpoint mismatches.
+3. If running, commands delegate work to the Hub via `POST /api/drop/upload` (for drops) or `POST /api/relay/open` (for URLs), carrying the `--peer` flag and capability when the destination matches the runtime descriptor.
 4. If not running, commands transparently fall back to standalone execution.
 5. **Seamless In-Band Pairing on Port 9877:** Because the Hub's LAN transport is configured with `AllowPairing: true` and the Dispatcher multiplexes `pair_hello`, incoming pairing requests from remote machines or the Web Dashboard connect directly to port 9877 without requiring an alternate port.
 6. **Dedicated Initiator Fallback (`cmd/tantu/pair.go`):** When `tantu pair` is run in initiator mode without arguments and user requests manual pairing code display while the Hub is active on port 9877, it automatically starts a dedicated pairing listener on port 9878 (`pairingPort == 9877 -> 9878`) as an isolated standalone fallback.
@@ -263,12 +263,12 @@ To avoid port conflicts and eliminate duplicate daemon instances, CLI commands c
 
 ## 4. Security Architecture & Threat Mitigations
 
-1. **Loopback-Only Web & IPC Surface with Anti-CSRF:** The Web Dashboard, REST IPC, and SSE stream bind strictly to `127.0.0.1` (with dynamic fallback). External network interfaces cannot reach the HTTP API. Furthermore, `securityMiddleware` validates `Origin` and `Referer` headers on all `/api/*` endpoints, blocking cross-origin browser requests and CSRF from malicious websites.
+1. **Loopback-Only Web & IPC Surface with Anti-CSRF:** The Web Dashboard, REST IPC, and SSE stream bind strictly to `127.0.0.1` (with dynamic fallback). External network interfaces cannot reach the HTTP API. `securityMiddleware` validates the exact authority, Origin, and Referer, and requires a session/capability for sensitive reads and mutations; wildcard CORS and unauthenticated status/data reads are not used.
 2. **Dual-Socket Network Isolation:** Public/LAN traffic is strictly restricted to port 9877, requiring length-prefixed TLS/SSH frames with pinned cryptographic certificates.
 3. **Mutual TLS with Fingerprint Pinning:** LAN connections reject any TLS client or server certificate whose SHA-256 fingerprint is not explicitly stored in `peers.json`.
 4. **Cryptographic Leaf Certificate Identity Attribution:** Provenance on inbound drops and OAuth requests is derived directly from verified TLS 1.3 client certificates (`sha256(leaf.Raw)`). Handlers are completely immune to application-layer envelope spoofing.
 5. **No Credential Caching:** `tantu` never stores, inspects, or logs OAuth refresh tokens, access tokens, or client secrets. It operates strictly as an ephemeral transport pipe.
-6. **Frame Size Limits & Handshake Deadlines:** Control envelopes are capped at 64 KB to mitigate remote memory exhaustion attacks. Inbound connections enforce a 30-second read deadline during protocol negotiation via `Deadliner`. File data is chunked (1MB) and streamed directly to disk.
+6. **Frame Size Limits & Handshake Deadlines:** General frames are capped at 4 MiB and typed control frames at 64 KiB; pairing connections use the smaller cap before allocation. Inbound connections enforce a 30-second read deadline during protocol negotiation via `Deadliner`. File data is chunked (1MB) and streamed directly to disk; aggregate transfer quotas remain future work.
 7. **Exact Port Matching:** Eliminates dynamic port fallbacks on the OAuth callback listener, preserving strict redirect URI compliance with Google, GitHub, and Azure identity providers.
-8. **Filesystem Isolation:** Identity keys (`identity.json`), peer credentials (`peers.json`), and daemon state descriptors (`hub.json`) are stored with user-only `0600` file permissions in the platform-standard config directory.
+8. **Filesystem Isolation:** Identity keys (`identity.json`), peer credentials (`peers.json`), and daemon state descriptors (`hub.json`) use private file modes and atomic/locked publication in the platform-standard config directory. Windows ACL enforcement and cross-process peer-store locking remain deployment requirements.
 9. **Cross-Platform Filename Sanitization (`SanitizeDropFilename`):** All received filenames are aggressively sanitized: path traversal characters (`..`, `\`, `/`) are stripped, NTFS Alternate Data Streams (`:`) are removed, Windows reserved DOS devices (`CON`, `PRN`, `AUX`, `NUL`, `COM1-9`, `LPT1-9`) are prefixed with `drop_`, control characters are eliminated, and files are stored strictly inside the sandboxed download folder with timestamp deduplication.

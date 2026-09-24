@@ -1,7 +1,7 @@
 # Tantu: Threat Model
 
 > **Status:** Active Reference Threat Model  
-> **Last Updated:** 2026-09-11
+> **Last Updated:** 2026-09-24
 
 ---
 
@@ -84,7 +84,7 @@
 |-------|--------|
 | **Threat** | Flooding bridge with spurious requests, hanging connections, or massive payloads |
 | **Impact** | Low to Medium — process resource exhaustion |
-| **Mitigation** | 64KB envelope size cap for control messages; 5GB file transfer cap; 1MB streaming chunks directly to disk; 30-second handshake deadline on wire connections via `Deadliner`; active connection tracking with immediate teardown on shutdown |
+| **Mitigation** | 4 MiB general frame cap and 64 KiB typed control-frame cap; 5GB file transfer cap; 1MB streaming chunks directly to disk; 30-second handshake deadline on wire connections via `Deadliner`; active connection tracking with immediate teardown on shutdown |
 | **Residual Risk** | Low |
 
 ### T7: Man-in-the-Middle on LAN During Initial Pairing
@@ -116,7 +116,7 @@
 |-------|--------|
 | **Threat** | Unprivileged local process modifies `hub.json` to redirect CLI delegation to a malicious port |
 | **Impact** | Medium — CLI commands (`send`, `open`) routed to attacker's process |
-| **Mitigation** | `hub.json` stored in user-specific config directory (`pairing.DefaultStoreDir()`) with `0600` permissions; atomic write (`.tmp` → rename); fast process liveness and PID verification before delegating |
+| **Mitigation** | `hub.json` is private/atomic and protected by a cross-process lock; delegation probes `/api/probe` with a per-process capability and matches PID/start time and the recorded loopback endpoint before sending work. The capability is bound to the runtime endpoint to prevent forwarding it to an unrelated local listener. |
 | **Residual Risk** | Low — requires local user account compromise |
 
 ### T11: Path Traversal & Arbitrary File Overwrite in QuickDrop
@@ -140,7 +140,7 @@
 |-------|--------|
 | **Threat** | Malicious website visited by developer in their browser executes cross-origin `fetch()`/`XHR` calls to `http://127.0.0.1:9876/api/*` (e.g., `/api/open-folder`, `/api/config`, `/api/status`) or exploits wildcard CORS |
 | **Impact** | High — drive-by configuration tampering, local directory opening, or sensitive mesh state leakage |
-| **Mitigation** | Elimination of wildcard CORS (`Access-Control-Allow-Origin: *`); all `/api/*` routes are protected by `securityMiddleware`, which strictly validates `Origin` and `Referer` headers to permit only `127.0.0.1`, `localhost`, and `::1`. Any external origin/referer is rejected with `403 Forbidden` |
+| **Mitigation** | Elimination of wildcard CORS; exact loopback authority/Origin/Referer validation; sensitive `/api/*` reads and mutations require an IPC capability or one-time HttpOnly dashboard session; the legacy GET relay requires an explicit capability or one-use ticket. |
 | **Residual Risk** | Negligible |
 
 ---
@@ -160,11 +160,11 @@
 | **SR9** | Pairing requires out-of-band visual verification of the 6-character SAS code | T7 |
 | **SR10**| PKCE `code_verifier` must never leave the initiating node | T1, T2 |
 | **SR11**| Inbound sender identity must be cryptographically extracted from TLS client leaf cert | T9 |
-| **SR12**| Runtime state descriptor (`hub.json`) and key material must have `0600` permissions | T10 |
+| **SR12**| Runtime state descriptor (`hub.json`) and key material must use private permissions and ownership-safe publication; OS ACL enforcement is a deployment requirement | T10 |
 | **SR13**| Received files must be sanitized via `SanitizeDropFilename` (traversal, NTFS ADS, DOS devices, control chars) and saved in sandboxed dir | T11 |
 | **SR14**| Existing files must not be silently overwritten by incoming drops | T11 |
 | **SR15**| Dynamic port fallbacks apply only to local loopback web/IPC, never to OAuth callbacks | T4 |
-| **SR16**| Web Dashboard REST API (`/api/*`) must enforce anti-CSRF / strict Origin-Referer validation via `securityMiddleware`; wildcard CORS is prohibited | T13 |
+| **SR16**| Web Dashboard REST API (`/api/*`) must enforce exact-authority anti-CSRF validation and capability/session authorization; wildcard CORS and reusable HTML-embedded tokens are prohibited | T13 |
 | **SR17**| Inbound wire connections must enforce read deadlines during initial handshake via `Deadliner` | T6 |
 
 ---
@@ -177,7 +177,7 @@
 | **Paired Peer** | Initiating OAuth requests, sending drops within quotas | Impersonating other peers, modifying PKCE |
 | **Transport Layer** | Mutual encryption, certificate pinning, provenance extraction | Opaque payload contents |
 | **Identity Provider** | Issuing OAuth tokens and validating PKCE | Inspecting local network topology |
-| **Local Filesystem** | Storing `identity.json`, `peers.json`, and `hub.json` with `0600` ACLs | Public shared directories |
+| **Local Filesystem** | Storing `identity.json`, `peers.json`, and `hub.json` with private modes and ownership-safe writes | Public shared directories; Windows ACL enforcement remains platform-specific |
 
 ---
 
@@ -186,6 +186,6 @@
 `tantu` delivers a security posture that is **strictly superior to ad-hoc SSH port forwarding (`ssh -R`) and cloud relays**:
 - **Zero-Trust Sender Provenance:** Every byte received is cryptographically bound to a verified TLS leaf certificate.
 - **Defense in Depth via PKCE:** Intercepted authorization codes are mathematically useless without the local `code_verifier`.
-- **Absolute Loopback & Browser Isolation:** External network interfaces cannot access the Web Dashboard, REST IPC, or local callback listeners; browser-based cross-origin attacks and CSRF are blocked via `securityMiddleware`.
+- **Loopback & Browser-Access Control:** External network interfaces cannot access the Web Dashboard, REST IPC, or local callback listeners; exact-authority checks, capability/session authorization, and one-use relay tickets block ordinary cross-origin and tokenless local-browser access. Inline dashboard scripts and OS ACLs remain tracked hardening work.
 - **Hardened Filesystem Defense:** Incoming files are strictly sanitized against path traversal, NTFS ADS, and DOS reserved device conflicts.
 - **No Cloud Dependencies:** Traffic travels directly peer-to-peer across LAN or native SSH tunnels with zero third-party metadata leakage.

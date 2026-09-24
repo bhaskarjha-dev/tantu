@@ -93,7 +93,7 @@ Both machines run identical symmetric hubs. No server/client distinction. No clo
 - **In-Band Pairing** — cryptographic handshake directly over port 9877 with SAS visual verification (works seamlessly while Hub is running)
 - **Zero App Modification** — works transparently with any OAuth 2.0 PKCE application
 - **Direct Disk Streaming** — constant RAM footprint for multi-GB transfers (1MB chunked streams)
-- **Dual-Socket Isolation & Anti-CSRF** — Web UI binds to `127.0.0.1:9876` with strict Origin validation; wire traffic on encrypted `9877`
+- **Dual-Socket Isolation & Anti-CSRF** — Web UI binds to `127.0.0.1:9876` with exact-authority validation, capability/session authorization, and one-use relay tickets; wire traffic on encrypted `9877`
 - **Cross-Platform** — Linux, macOS, Windows (with Git Bash / PowerShell path normalization)
 
 ---
@@ -107,14 +107,14 @@ Both machines run identical symmetric hubs. No server/client distinction. No clo
 ./tantu
 ```
 
-The hub boots instantly — generates cryptographic identity on first run, opens the terminal cockpit, and starts the web dashboard at `http://localhost:9876`.
+The hub boots instantly — generates cryptographic identity on first run, opens the terminal cockpit, and starts the web dashboard at `http://localhost:9876`. Use the cockpit's `[o]` command (or the launch URL it supplies) so the browser can exchange its one-time dashboard bootstrap capability.
 
 ### 2. Pair Your Machines (One Time)
 
 Pairing establishes mutual cryptographic trust. Choose whichever method is easiest:
 
 - **Option A: 1-Click via Web Dashboard (Recommended)**  
-  Press `[o]` in the terminal to open `http://localhost:9876`. Navigate to the **Peers & Network** tab, locate the discovered machine under **⚡ Discovered Nearby Hubs**, and click **Pair**.
+  Press `[o]` in the terminal to open the authenticated dashboard session at `http://localhost:9876`. Navigate to the **Peers & Network** tab, locate the discovered machine under **⚡ Discovered Nearby Hubs**, and click **Pair**.
 
 - **Option B: Interactive CLI Discovery**  
   Run on either machine:
