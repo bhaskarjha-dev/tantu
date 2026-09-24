@@ -10,6 +10,12 @@ rollback procedures.
 ### Added
 - Received-file serving on the Hub dashboard: inline image previews (8 MB
   raster-only, sandboxed) and per-file downloads for QuickDrop inbox items.
+- `status` now reports version, store path, Hub liveness with dashboard URL,
+  identity, and peers — a real diagnostic command.
+- CLI warns on Hub/CLI version skew during delegation; Hub logs it deduped.
+- SSH host-key verification UX: `--ssh-known-hosts` and `--ssh-fingerprint`
+  (`SHA256:` pin) on `send`, `open`, `drop`, and `relay` (forwarded through
+  `wrap`).
 - Dashboard stale-session banner: an explicit reconnect notice instead of
   silent 401 failures when opened without a session (stale bookmark/second
   tab).
@@ -38,7 +44,12 @@ rollback procedures.
 ### Fixed
 - B-side now forwards only allowlisted OAuth callback headers (Accept,
   Accept-Language, Content-Type, X-Requested-With) with deterministic
-  duplicate resolution; relay header volume capped.
+  duplicate resolution; relay header volume capped; B-side loopback checks
+  symmetric with A-side (full 127/8).
+- Peer selection prompts (pairing, cockpit) require plain-digit indices —
+  trailing junk can no longer misselect.
+- Hub validates its output directory at startup and on config change
+  instead of failing every transfer later.
 - Hub staging hardened against symlink/hardlink planting (exclusive creation,
   identity + link-count verification, staging-dir checks); stale partials
   older than 24 h are swept at startup.

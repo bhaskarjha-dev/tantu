@@ -476,3 +476,13 @@ Independent review of batches M–S returned 11 findings; all addressed:
 - Validation: build + vet + full suite + JS `node --check` green;
   linux/darwin cross-compile green; real-Chrome harness re-run
   ALL_BROWSER_CHECKS_PASSED after the banner move.
+
+## Batch U — changelog sync, stress + fuzz re-run (2026-09-24)
+
+- CHANGELOG Unreleased synced with batches O–T (status diagnostics,
+  skew warnings, SSH pinning UX, selection strictness, output-dir
+  fail-fast, header canonicalization).
+- `go test -count=2 ./internal/hub/ ./internal/bridge/` green (lifecycle
+  rerun post-batches T).
+- Fuzz re-run 20s: FuzzValidateCallbackRelay, FuzzDecode — zero crashes,
+  no new corpus files (nothing to commit from fuzzing).
