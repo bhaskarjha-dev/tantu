@@ -177,6 +177,18 @@ func (b *RecentDropsBuffer) Count() int {
 	return len(b.items)
 }
 
+// Find returns the newest item with the given drop ID.
+func (b *RecentDropsBuffer) Find(id string) (ReceivedDropItem, bool) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	for i := len(b.items) - 1; i >= 0; i-- {
+		if b.items[i].ID == id {
+			return b.items[i], true
+		}
+	}
+	return ReceivedDropItem{}, false
+}
+
 // PendingPairing represents an inbound pairing request awaiting user confirmation.
 type PendingPairing struct {
 	ID              string    `json:"id"`
@@ -341,6 +353,28 @@ func SanitizeDropFilename(name string) string {
 	}
 
 	return name
+}
+
+// ensureOutputDir creates the QuickDrop output directory when missing and
+// rejects paths that cannot hold received files (existing non-directories,
+// permission failures). It runs at Hub startup so a misconfigured directory
+// fails fast instead of failing every transfer later.
+func (h *Hub) ensureOutputDir() error {
+	dir := h.OutputDir()
+	if strings.TrimSpace(dir) == "" {
+		return errors.New("output directory is not configured")
+	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("create output directory %q: %w", dir, err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("inspect output directory %q: %w", dir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("output path %q is not a directory", dir)
+	}
+	return nil
 }
 
 // DefaultTransport determines the smart default transport.
@@ -1174,6 +1208,13 @@ func (h *Hub) Start(parent context.Context) (err error) {
 	// 3. Normalize peers
 	h.NormalizePeers()
 
+	// 3b. Validate the output directory before binding any listener. A Hub
+	// that cannot receive files must fail fast with a clear error, not serve
+	// a dashboard whose transfers all fail later at staging time.
+	if err := h.ensureOutputDir(); err != nil {
+		return err
+	}
+
 	// 4. Smart Default Transport
 	h.mu.RLock()
 	transportType := h.cfg.TransportType
@@ -1330,7 +1371,7 @@ func (h *Hub) Start(parent context.Context) (err error) {
 		DropConfig: drop.ReceiveDropConfig{
 			Timeout:     h.cfg.Timeout,
 			MaxSize:     drop.DefaultMaxDropSize,
-			MaxTextSize: 10 * 1024 * 1024,
+			MaxTextSize: drop.DefaultMaxTextSize,
 			BeforeComplete: func(res *drop.ReceiveDropResult) error {
 				if res.Meta.Kind != drop.DropKindFile {
 					return nil
@@ -1494,8 +1535,8 @@ func (h *Hub) Start(parent context.Context) (err error) {
 					return f, nil
 				}
 
-				// Text Drop: enforce 10MB limit
-				const maxTextDropSize = 10 * 1024 * 1024 // 10MB
+				// Text Drop: enforce the shared text limit (drop.DefaultMaxTextSize)
+				const maxTextDropSize = drop.DefaultMaxTextSize
 				if meta.Size > maxTextDropSize {
 					return nil, fmt.Errorf("text drop exceeds 10MB limit (%d bytes)", meta.Size)
 				}

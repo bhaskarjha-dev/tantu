@@ -25,7 +25,9 @@ import (
 
 const (
 	// Keep standalone text drops bounded even when the wire-level quota is
-	// configured for files. This matches the Hub's text safety limit.
+	// configured for files. This matches drop.DefaultMaxTextSize (the Hub's
+	// text safety limit); it is duplicated here (not aliased) because the
+	// main package also uses it for stdin/argv ingest caps.
 	standaloneTextDropLimit int64 = 10 * 1024 * 1024
 
 	maxStandaloneDropHistory      = 128

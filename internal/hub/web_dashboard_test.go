@@ -1351,6 +1351,16 @@ func TestWebDashboard_UploadProgressAndPeerRenderMarkers(t *testing.T) {
 		"TextEncoder",
 		"maxTextBytes",
 		"zone.focus",
+		"received-item-preview",
+		"mode=inline",
+		"mode=download",
+		"sessionBanner",
+		"checkDashboardSession",
+		`rel="icon"`,
+		`role="button"`,
+		`aria-label="OAuth authorization URL"`,
+		`aria-label="Search live logs"`,
+		`for="pairRemoteAddrInput"`,
 	} {
 		if !strings.Contains(content, s) {
 			t.Errorf("dashboard HTML missing %q (upload-progress / focus-preservation UX)", s)
@@ -1369,5 +1379,114 @@ func TestWebDashboard_UploadProgressAndPeerRenderMarkers(t *testing.T) {
 	// Multi-GB units must render beyond MB.
 	if !strings.Contains(content, "'GB'") || !strings.Contains(content, "'TB'") {
 		t.Error("formatBytes lacks GB/TB units")
+	}
+}
+
+func TestWebDashboard_DropFileServe(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+
+	outDir := h.OutputDir()
+	if err := os.MkdirAll(outDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// 1x1 PNG (valid header + minimal bytes; content is not decoded server-side).
+	pngBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+	pngPath := filepath.Join(outDir, "photo.png")
+	if err := os.WriteFile(pngPath, pngBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	h.recentDrops.Add(ReceivedDropItem{ID: "file-png-1", Kind: "file", Name: "photo.png", Size: int64(len(pngBytes)), SavedPath: pngPath, FromPeer: "peer"})
+
+	svgPath := filepath.Join(outDir, "evil.svg")
+	if err := os.WriteFile(svgPath, []byte(`<svg onload="alert(1)">`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	h.recentDrops.Add(ReceivedDropItem{ID: "file-svg-1", Kind: "file", Name: "evil.svg", Size: 22, SavedPath: svgPath, FromPeer: "peer"})
+
+	h.recentDrops.Add(ReceivedDropItem{ID: "file-outside-1", Kind: "file", Name: "secret.txt", Size: 6, SavedPath: filepath.Join(t.TempDir(), "secret.txt"), FromPeer: "peer"})
+	h.recentDrops.Add(ReceivedDropItem{ID: "text-1", Kind: "text", Name: "note", Size: 4, Content: "hey", FromPeer: "peer"})
+
+	get := func(query string, token string) *http.Response {
+		req, err := http.NewRequest(http.MethodGet, "http://"+h.WebAddr()+"/api/drop/file"+query, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if token != "" {
+			req.Header.Set(IPCTokenHeader, token)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return resp
+	}
+
+	// Inline raster preview.
+	resp := get("?id=file-png-1&mode=inline", h.ipcToken)
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "image/png" {
+		t.Errorf("inline png = %d %q, want 200 image/png", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+	if disp := resp.Header.Get("Content-Disposition"); disp != "inline" {
+		t.Errorf("inline disposition = %q, want inline", disp)
+	}
+	// Default is a forced download.
+	resp = get("?id=file-png-1", h.ipcToken)
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "application/octet-stream" {
+		t.Errorf("download png = %d %q, want 200 octet-stream", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+	if disp := resp.Header.Get("Content-Disposition"); len(disp) < 10 || disp[:10] != "attachment" {
+		t.Errorf("download disposition = %q, want attachment", disp)
+	}
+	// SVG is never inline, even when requested.
+	resp = get("?id=file-svg-1&mode=inline", h.ipcToken)
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "application/octet-stream" {
+		t.Errorf("svg inline attempt = %d %q, want 200 octet-stream", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+	// Outside-dir, text-kind, unknown, and missing IDs are 404.
+	for _, q := range []string{"?id=file-outside-1", "?id=text-1", "?id=nope", ""} {
+		if resp := get(q, h.ipcToken); resp.StatusCode != http.StatusNotFound {
+			t.Errorf("GET %q = %d, want 404", q, resp.StatusCode)
+		}
+	}
+	// Unauthenticated is rejected by middleware.
+	if resp := get("?id=file-png-1", ""); resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden {
+		t.Errorf("unauthenticated file serve = %d, want 401/403", resp.StatusCode)
+	}
+}
+
+func TestWebDashboard_DropFileServeSymlinkRejected(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+
+	outDir := h.OutputDir()
+	if err := os.MkdirAll(outDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(t.TempDir(), "victim.dat")
+	if err := os.WriteFile(victim, []byte("victim"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(outDir, "linked.png")
+	if err := os.Symlink(victim, link); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	h.recentDrops.Add(ReceivedDropItem{ID: "file-link-1", Kind: "file", Name: "linked.png", Size: 6, SavedPath: link, FromPeer: "peer"})
+
+	req, _ := http.NewRequest(http.MethodGet, "http://"+h.WebAddr()+"/api/drop/file?id=file-link-1&mode=inline", nil)
+	req.Header.Set(IPCTokenHeader, h.ipcToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("symlinked file serve = %d, want 404", resp.StatusCode)
+	}
+	if got, _ := os.ReadFile(victim); string(got) != "victim" {
+		t.Fatalf("victim modified: %q", got)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/user"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -17,6 +18,32 @@ import (
 )
 
 var version = "1.0.0"
+
+func init() {
+	// Release builds stamp main.version via ldflags (goreleaser). Plain
+	// `go build` binaries would otherwise all report the bare default with
+	// no provenance; fall back to the VCS revision embedded by the Go
+	// toolchain so bug reports can identify the exact commit.
+	if version == "1.0.0" {
+		if info, ok := debug.ReadBuildInfo(); ok {
+			var rev, modified string
+			for _, s := range info.Settings {
+				switch s.Key {
+				case "vcs.revision":
+					rev = s.Value
+				case "vcs.modified":
+					modified = s.Value
+				}
+			}
+			if len(rev) >= 7 {
+				version = "1.0.0-dev+" + rev[:7]
+				if modified == "true" {
+					version += ".dirty"
+				}
+			}
+		}
+	}
+}
 
 func generateSessionID() string {
 	b := make([]byte, 4)

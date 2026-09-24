@@ -26,6 +26,7 @@ const dashboardHTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%94%90%3C/text%3E%3C/svg%3E">
 <title>🔐 tantu hub</title>
 <style>
   :root {
@@ -310,6 +311,13 @@ const dashboardHTML = `<!DOCTYPE html>
     max-height: 160px;
     overflow-y: auto;
   }
+  .received-item-preview {
+    max-width: 100%;
+    max-height: 320px;
+    border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.08);
+    object-fit: contain;
+  }
   .received-item-actions {
     display: flex;
     justify-content: flex-end;
@@ -455,6 +463,10 @@ const dashboardHTML = `<!DOCTYPE html>
     </div>
 
     <!-- TAB 1: QUICKDROP -->
+    <div id="sessionBanner" role="alert" style="display: none; background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.4); color: #fbbf24; border-radius: 12px; padding: 0.85rem 1.25rem; margin-bottom: 1.25rem; font-size: 0.9rem;">
+      ⚠️ <strong>Dashboard session not established.</strong>
+      <span>Actions on this page will fail until you reconnect. Reopen the dashboard from the Hub terminal (press <kbd>o</kbd>) or reload the page the Hub opened for you.</span>
+    </div>
     <div id="tab-drop" class="tab-pane active">
       <!-- Download Location Bar -->
       <div class="card" style="margin-bottom: 1.25rem; padding: 0.75rem 1.25rem;">
@@ -480,12 +492,12 @@ const dashboardHTML = `<!DOCTYPE html>
               <span style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">Destination:</span>
               <div id="dropPeerPills" style="display: flex; gap: 0.4rem; flex-wrap: wrap;"></div>
             </div>
-            <div class="drop-zone" id="dropZone" tabindex="-1" onclick="document.getElementById('fileInput').click()">
+            <div class="drop-zone" id="dropZone" tabindex="0" role="button" aria-label="Choose a file to send to your peer" onclick="document.getElementById('fileInput').click()" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); document.getElementById('fileInput').click(); }">
               <div class="drop-zone-icon">📁</div>
               <div class="drop-zone-text">Drag & drop files here, or click to browse</div>
               <div class="drop-zone-subtext">Direct peer-to-peer streaming via mTLS • zero intermediate servers</div>
             </div>
-            <input type="file" id="fileInput" style="display: none;">
+            <input type="file" id="fileInput" aria-label="File to send to your peer" style="display: none;">
             
             <div class="progress-container" id="uploadProgress">
               <div class="progress-bar" role="progressbar" aria-label="File upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progressBar">
@@ -532,7 +544,7 @@ const dashboardHTML = `<!DOCTYPE html>
       <div class="card">
         <div class="card-title">⚡ Manual OAuth URL Forwarder</div>
         <form onsubmit="relayOAuth(event)" class="form-group">
-          <input type="text" id="oauthUrlInput" placeholder="Paste OAuth URL (https://accounts.google.com/o/oauth2/...)" required>
+          <input type="text" id="oauthUrlInput" aria-label="OAuth authorization URL" placeholder="Paste OAuth URL (https://accounts.google.com/o/oauth2/...)" required>
           <button type="submit" class="btn-primary" id="btnRelay">Relay to Peer</button>
         </form>
         <div class="status-banner" id="relayStatus"></div>
@@ -612,7 +624,7 @@ const dashboardHTML = `<!DOCTYPE html>
           </div>
 
           <div style="margin-bottom:1.25rem;">
-            <label style="display:block; font-size:0.8rem; font-weight:600; color:#cbd5e1; margin-bottom:0.5rem;">Option 2: Connect to Remote Peer Address</label>
+            <label for="pairRemoteAddrInput" style="display:block; font-size:0.8rem; font-weight:600; color:#cbd5e1; margin-bottom:0.5rem;">Option 2: Connect to Remote Peer Address</label>
             <div style="display:flex; gap:0.5rem; align-items:center;">
               <input type="text" id="pairRemoteAddrInput" placeholder="192.168.1.50:9877" style="flex:1; font-size:0.85rem; padding:0.5rem 0.75rem;">
               <button class="btn" id="btnPairConnect" onclick="initiateWebPairing()" style="white-space:nowrap; padding:0.5rem 1rem;">Pair Device</button>
@@ -652,7 +664,7 @@ const dashboardHTML = `<!DOCTYPE html>
           </div>
 
           <div style="position: relative;">
-            <input type="text" id="logSearchInput" placeholder="🔍 Search live logs by text, URL, host, or request ID..." style="padding-left: 1rem; font-size: 0.85rem;" oninput="applyLogFilters()">
+            <input type="text" id="logSearchInput" aria-label="Search live logs" placeholder="🔍 Search live logs by text, URL, host, or request ID..." style="padding-left: 1rem; font-size: 0.85rem;" oninput="applyLogFilters()">
           </div>
         </div>
 
@@ -1392,6 +1404,9 @@ const dashboardHTML = `<!DOCTYPE html>
       // TextEncoder measures UTF-8 bytes (what the server counts), not
       // UTF-16 code units. Only lengths are logged, never content.
       const textBytes = new TextEncoder().encode(text).length;
+      // Client-side mirror of the server text limit (drop.DefaultMaxTextSize =
+      // 10 MiB, enforced again server-side): fail fast instead of uploading
+      // megabytes the server will reject.
       const maxTextBytes = 10 * 1024 * 1024;
       if (textBytes > maxTextBytes) {
         addLog('ERROR', 'Text snippet too large (' + formatBytes(textBytes) + ' exceeds the 10.0 MB limit). Send it as a file instead.');
@@ -1585,7 +1600,16 @@ const dashboardHTML = `<!DOCTYPE html>
 
         let contentHTML = '';
         if (isFile) {
-          contentHTML = '<div class="received-item-content">Path: ' + escapeHTML(item.saved_path || item.name) + ' (' + sizeStr + ')</div>';
+          const fileURL = item.id ? '/api/drop/file?id=' + encodeURIComponent(item.id) : '';
+          const extMatch = (item.name || '').toLowerCase().match(/\.[a-z0-9]+$/);
+          const imgExts = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.avif', '.ico'];
+          const previewable = fileURL && extMatch && imgExts.indexOf(extMatch[0]) !== -1 && item.size > 0 && item.size <= 8 * 1024 * 1024;
+          if (previewable) {
+            contentHTML = '<img class="received-item-preview" src="' + fileURL + '&mode=inline" alt="' + escapeHTML('Preview of ' + (item.name || 'received image')) + '" loading="lazy" onerror="this.remove()">' +
+              '<div class="received-item-content">Path: ' + escapeHTML(item.saved_path || item.name) + ' (' + sizeStr + ')</div>';
+          } else {
+            contentHTML = '<div class="received-item-content">Path: ' + escapeHTML(item.saved_path || item.name) + ' (' + sizeStr + ')</div>';
+          }
         } else {
           contentHTML = '<div class="received-item-content">' + escapeHTML(item.content || '') + '</div>';
         }
@@ -1598,6 +1622,9 @@ const dashboardHTML = `<!DOCTYPE html>
             actionsHTML += '<button class="btn-sm" onclick=\'openURL(' + jsArg(cleanURL) + ')\'>🌐 Open in Browser</button>';
           }
         } else if (isFile && item.saved_path) {
+          if (item.id) {
+            actionsHTML += '<a class="btn-sm" href="/api/drop/file?id=' + encodeURIComponent(item.id) + '&mode=download">⬇️ Download</a>';
+          }
           actionsHTML += '<button class="btn-sm" onclick="openDownloadFolder()">📂 Open in Folder</button>';
         }
         actionsHTML += '</div>';
@@ -1665,9 +1692,22 @@ const dashboardHTML = `<!DOCTYPE html>
       return encoded.replace(/[<>&'\u2028\u2029]/g, ch => replacements[ch] ?? ch);
     }
 
-    // Connect SSE and start polling only after a one-time bootstrap exchange
-    // has succeeded. HttpOnly session cookies are sent automatically.
+    // Capability probe: a stale bookmark or second tab without the session
+    // cookie would otherwise fail every action silently (401s in console).
+    // Surface an explicit reconnect banner instead.
+    async function checkDashboardSession() {
+      try {
+        const res = await fetch('/api/probe', { credentials: 'same-origin' });
+        if (!res.ok) {
+          document.getElementById('sessionBanner').style.display = 'block';
+        }
+      } catch (_) {
+        document.getElementById('sessionBanner').style.display = 'block';
+      }
+    }
     dashboardReady.then(() => {
+      checkDashboardSession();
+      // SSE + polling start here; HttpOnly session cookies ride automatically.
       if (window.EventSource) {
         const sse = new EventSource('/api/events', { withCredentials: true });
         sse.onmessage = (e) => {
@@ -2324,7 +2364,7 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"status": "error", "message": "empty text payload"})
 				return
 			}
-			if len(textReq.Text) > 10*1024*1024 {
+			if int64(len(textReq.Text)) > drop.DefaultMaxTextSize {
 				writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"status": "error", "message": "text payload exceeds 10 MiB limit"})
 				return
 			}
@@ -2365,7 +2405,7 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			return
 		}
 		defer h.releaseUploadSlot()
-		r.Body = http.MaxBytesReader(w, r.Body, 5*1024*1024*1024)
+		r.Body = http.MaxBytesReader(w, r.Body, drop.DefaultMaxDropSize)
 		if err := r.ParseMultipartForm(32 * 1024 * 1024); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"status": "error", "message": fmt.Sprintf("multipart parse error (max 5GB): %v", err)})
 			return
@@ -2445,6 +2485,42 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 		} else {
 			writeJSON(w, http.StatusOK, []ReceivedDropItem{})
 		}
+	})
+
+	// 9b. GET /api/drop/file — Serve one received file for inline preview
+	// or download. The file is addressed by drop ID (never by path): the
+	// recorded SavedPath must resolve inside the current output directory,
+	// be a regular file (never a symlink), and inline rendering is limited
+	// to small raster images with a fixed content-type map. SVG, HTML, and
+	// everything else are forced to attachment so a malicious peer can never
+	// plant active content in the dashboard origin. Capability/session auth
+	// is enforced by securityMiddleware like every other /api/* route.
+	mux.HandleFunc("/api/drop/file", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Tantu-IPC-Token")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"status": "error", "message": "method not allowed"})
+			return
+		}
+		id := strings.TrimSpace(r.URL.Query().Get("id"))
+		if id == "" || len(id) > drop.MaxDropIDLength {
+			http.NotFound(w, r)
+			return
+		}
+		if h.recentDrops == nil {
+			http.NotFound(w, r)
+			return
+		}
+		item, ok := h.recentDrops.Find(id)
+		if !ok || item.Kind != string(drop.DropKindFile) || item.SavedPath == "" {
+			http.NotFound(w, r)
+			return
+		}
+		serveReceivedFile(w, r, h.OutputDir(), item)
 	})
 
 	// 10. GET /api/config & POST /api/config — Retrieve or update Hub config
@@ -2898,6 +2974,84 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 		}
 		writeJSON(w, http.StatusOK, discovered)
 	})
+}
+
+// maxInlinePreviewBytes caps inline dashboard previews. Larger images are
+// served as downloads only, so opening the inbox can never pull gigabytes
+// into the browser process.
+const maxInlinePreviewBytes = 8 * 1024 * 1024
+
+// inlinePreviewTypes maps file extensions eligible for inline preview to
+// their fixed content types. SVG/HTML and everything unlisted are deliberately
+// absent: only inert raster formats may render in the dashboard origin.
+var inlinePreviewTypes = map[string]string{
+	".png":  "image/png",
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif":  "image/gif",
+	".webp": "image/webp",
+	".bmp":  "image/bmp",
+	".avif": "image/avif",
+	".ico":  "image/x-icon",
+}
+
+// serveReceivedFile serves one received file addressed by drop ID. The
+// recorded SavedPath must resolve inside outputDir and be a regular file;
+// symlinks, directories, and escapes fail closed with 404 (no existence
+// oracle beyond what the recent-items feed already discloses).
+func serveReceivedFile(w http.ResponseWriter, r *http.Request, outputDir string, item ReceivedDropItem) {
+	abs, err := filepath.Abs(item.SavedPath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	outAbs, err := filepath.Abs(outputDir)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	rel, err := filepath.Rel(outAbs, abs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		http.NotFound(w, r)
+		return
+	}
+	if info, err := os.Lstat(abs); err != nil || !info.Mode().IsRegular() {
+		http.NotFound(w, r)
+		return
+	}
+	f, err := os.Open(abs)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer f.Close()
+	// Re-verify the opened descriptor: a swap between Lstat and Open must
+	// not redirect the served bytes.
+	finfo, err := f.Stat()
+	if err != nil || !finfo.Mode().IsRegular() {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-store")
+	if r.URL.Query().Get("mode") == "inline" {
+		if contentType, ok := inlinePreviewTypes[strings.ToLower(filepath.Ext(item.Name))]; ok && finfo.Size() > 0 && finfo.Size() <= maxInlinePreviewBytes {
+			w.Header().Set("Content-Type", contentType)
+			w.Header().Set("Content-Disposition", "inline")
+			// Belt and suspenders: even a mislabeled file gets no script.
+			w.Header().Set("Content-Security-Policy", "sandbox")
+			http.ServeContent(w, r, item.Name, finfo.ModTime(), f)
+			return
+		}
+	}
+	safeName := SanitizeDropFilename(item.Name)
+	if safeName == "" {
+		safeName = "download"
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+strings.ReplaceAll(safeName, `"`, "_")+`"`)
+	http.ServeContent(w, r, item.Name, finfo.ModTime(), f)
 }
 
 func openDirectoryInOS(dir string) error {

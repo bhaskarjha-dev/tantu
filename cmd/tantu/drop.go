@@ -522,6 +522,8 @@ func runDrop(args []string) {
 	sshPort := fs.Int("ssh-port", 22, "SSH server port (default: 22)")
 	sshUser := fs.String("ssh-user", defaultUsername(), "SSH username (default: current OS user)")
 	sshKey := fs.String("ssh-key", "", "Path to PEM private key for SSH auth (required when --transport=ssh)")
+	sshKnownHosts := fs.String("ssh-known-hosts", "", "Path to OpenSSH known_hosts for server verification (default: ~/.ssh/known_hosts)")
+	sshFingerprint := fs.String("ssh-fingerprint", "", "Pin the server host key (format: SHA256:...); overrides known_hosts when set")
 	sshHostKey := fs.String("ssh-host-key", "", "Path to PEM-encoded host private key for SSH receive listener")
 	timeout := fs.Duration("timeout", 5*time.Minute, "Timeout per drop transfer (default: 5 min)")
 	verbose := fs.Bool("v", false, "Enable verbose output")
@@ -600,12 +602,14 @@ func runDrop(args []string) {
 		}
 		var sshErr error
 		tr, sshErr = transport.NewSSHTransport(transport.SSHTransportConfig{
-			User:           *sshUser,
-			Host:           *sshHost,
-			Port:           *sshPort,
-			PrivateKey:     keyBytes,
-			HostKey:        hostKeyBytes,
-			AuthorizedKeys: [][]byte{keyBytes},
+			User:               *sshUser,
+			Host:               *sshHost,
+			Port:               *sshPort,
+			PrivateKey:         keyBytes,
+			KnownHostsFile:     *sshKnownHosts,
+			HostKeyFingerprint: *sshFingerprint,
+			HostKey:            hostKeyBytes,
+			AuthorizedKeys:     [][]byte{keyBytes},
 		})
 		if sshErr != nil {
 			fmt.Fprintf(os.Stderr, "Error: failed to configure SSH transport: %v\n", sshErr)

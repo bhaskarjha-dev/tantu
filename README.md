@@ -184,6 +184,7 @@ tantu wrap -- az login
 ## Security Model
 
 - **Mutual TLS (mTLS)** with ECDSA P-256 certificate pinning — no CA dependency
+- **SSH transport** with `known_hosts` verification and optional `SHA256:` host-key pinning (`--ssh-fingerprint`)
 - **SAS (Short Authentication String)** verification during pairing — MITM-proof
 - **PKCE (RFC 7636)** — authorization codes are useless without the code verifier
 - **Dual-socket isolation & Anti-CSRF** — loopback-only web UI with strict Origin/Referer validation, encrypted-only wire traffic

@@ -13,6 +13,7 @@ import (
 
 	"github.com/bhaskarjha-dev/tantu/internal/protocol"
 	"github.com/bhaskarjha-dev/tantu/internal/testutil"
+	"golang.org/x/crypto/ssh"
 )
 
 func TestSSHTransport_HandshakeTimeoutIncludesBannerExchange(t *testing.T) {
@@ -830,5 +831,61 @@ func TestSSHTransport_DefaultHostVerificationFailsClosed(t *testing.T) {
 	if conn, err := tr.Dial(server.Addr); err == nil {
 		_ = conn.Close()
 		t.Fatal("dial unexpectedly succeeded without a trusted host key")
+	}
+}
+
+func TestSSHTransport_HostKeyFingerprintPin(t *testing.T) {
+	server, err := testutil.NewMockSSHServer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	host, portStr, err := net.SplitHostPort(server.Addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var port int
+	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
+		t.Fatal(err)
+	}
+	signer, err := ssh.ParsePrivateKey(server.HostKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned := ssh.FingerprintSHA256(signer.PublicKey())
+
+	newClient := func(fp string) *SSHTransport {
+		tr, err := NewSSHTransport(SSHTransportConfig{
+			User:               "tantu",
+			Host:               host,
+			Port:               port,
+			PrivateKey:         server.ClientKey,
+			HostKeyFingerprint: fp,
+			HandshakeTimeout:   5 * time.Second,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tr
+	}
+
+	conn, err := newClient(pinned).Dial(server.Addr)
+	if err != nil {
+		t.Fatalf("dial with correct pin failed: %v", err)
+	}
+	_ = conn.Close()
+
+	if _, err := newClient("SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").Dial(server.Addr); err == nil {
+		t.Fatal("dial with wrong pin succeeded, want failure")
+	}
+	if _, err := NewSSHTransport(SSHTransportConfig{
+		PrivateKey:         server.ClientKey,
+		HostKeyFingerprint: "md5:00:11:22",
+	}); err == nil {
+		t.Fatal("non-SHA256 fingerprint accepted, want error")
 	}
 }

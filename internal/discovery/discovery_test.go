@@ -308,3 +308,33 @@ func FuzzValidBeacon(f *testing.F) {
 		}
 	})
 }
+
+func TestEngine_SelfFilterSASCollision(t *testing.T) {
+	// A legitimate peer whose 24-bit SAS collides with ours must not be
+	// hidden when our fingerprint is configured: FP comparison is exact.
+	e, err := NewEngine(DiscoveryConfig{
+		NodeName:      "self-node",
+		WirePort:      9877,
+		SAS:           "a1b2c3",
+		Fingerprint:   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		BroadcastPort: 19884,
+		Interval:      time.Hour,
+		TTL:           time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("NewEngine failed: %v", err)
+	}
+	// Simulate an inbound beacon from a different node with a colliding SAS.
+	e.recordNode(DiscoveredNode{
+		InstanceName: "other-node",
+		Address:      "192.168.1.99:9877",
+		Port:         9877,
+		SAS:          "a1b2c3",
+		Fingerprint:  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		LastSeen:     time.Now(),
+	})
+	nodes := e.ListNodes()
+	if len(nodes) != 1 || nodes[0].InstanceName != "other-node" {
+		t.Fatalf("SAS-colliding peer hidden: %+v", nodes)
+	}
+}

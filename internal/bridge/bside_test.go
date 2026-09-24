@@ -41,16 +41,16 @@ func TestExtractCallbackPort(t *testing.T) {
 			expectError: true,
 		},
 		{
-			name:        "Default http port",
+			name:        "Portless redirect rejected",
 			oauthURL:    "http://auth.example.com/oauth/authorize?redirect_uri=http%3A%2F%2F127.0.0.1%2Fcallback",
-			wantPort:    80,
-			expectError: false,
+			wantPort:    0,
+			expectError: true,
 		},
 		{
-			name:        "Default https port",
+			name:        "Portless https redirect rejected",
 			oauthURL:    "http://auth.example.com/oauth/authorize?redirect_uri=https%3A%2F%2F127.0.0.1%2Fcallback",
-			wantPort:    443,
-			expectError: false,
+			wantPort:    0,
+			expectError: true,
 		},
 		{
 			name:        "Invalid port string",

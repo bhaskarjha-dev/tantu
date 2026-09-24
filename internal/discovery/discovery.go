@@ -277,10 +277,16 @@ func (e *Engine) listenLoop(conn *net.UDPConn) {
 		if !validBeacon(beacon) {
 			continue
 		}
-		// Self-filtering: ignore beacons from our own node. A beacon with no
-		// identity at all is not useful for pairing and is easy to spoof.
-		if (e.cfg.Fingerprint != "" && beacon.FP == e.cfg.Fingerprint) ||
-			(e.cfg.SAS != "" && beacon.SAS == e.cfg.SAS) {
+		// Self-filtering: ignore beacons from our own node. Fingerprint
+		// comparison is exact, so it can never hide a legitimate peer.
+		// The 24-bit SAS clause applies only to ephemeral engines with no
+		// fingerprint of their own (e.g. pair-scan initiators); otherwise a
+		// SAS collision would hide a real peer's beacons.
+		if e.cfg.Fingerprint != "" {
+			if beacon.FP == e.cfg.Fingerprint {
+				continue
+			}
+		} else if e.cfg.SAS != "" && beacon.SAS == e.cfg.SAS {
 			continue
 		}
 		if !e.allowBeaconSource(remoteAddr.IP.String()) {

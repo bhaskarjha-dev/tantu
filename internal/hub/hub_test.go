@@ -1104,3 +1104,56 @@ func TestHub_TimeoutDefaultAndConfigured(t *testing.T) {
 		t.Fatalf("configured Timeout() = %v, want 42s", got)
 	}
 }
+
+func TestRecentDropsBuffer_Find(t *testing.T) {
+	buf := NewRecentDropsBuffer(4)
+	buf.Add(ReceivedDropItem{ID: "a", Kind: "text", Content: "first"})
+	buf.Add(ReceivedDropItem{ID: "b", Kind: "text", Content: "second"})
+	buf.Add(ReceivedDropItem{ID: "a", Kind: "text", Content: "newest-a"})
+	got, ok := buf.Find("a")
+	if !ok || got.Content != "newest-a" {
+		t.Fatalf("Find(a) = %+v, %v; want newest-a, true", got, ok)
+	}
+	if _, ok := buf.Find("missing"); ok {
+		t.Fatal("Find(missing) succeeded, want false")
+	}
+}
+
+func TestHub_StartRejectsInvalidOutputDir(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "afile")
+	if err := os.WriteFile(blocker, []byte("not a dir"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		dir  string
+		want string
+	}{
+		{"file-as-dir", blocker, "create output directory"},
+		{"uncreatable-nested", filepath.Join(blocker, "sub"), "create output directory"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			h, err := NewHub(HubConfig{
+				TransportType: "loopback",
+				ListenAddr:    "127.0.0.1:0",
+				WebAddr:       "127.0.0.1:0",
+				StoreDir:      tempDir,
+				OutputDir:     tc.dir,
+				Headless:      true,
+			})
+			if err != nil {
+				t.Fatalf("NewHub: %v", err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			err = h.Start(ctx)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Start = %v, want error containing %q", err, tc.want)
+			}
+			if h.Err() == nil {
+				t.Fatal("Hub.Err() is nil after startup failure")
+			}
+		})
+	}
+}

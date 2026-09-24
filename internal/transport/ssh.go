@@ -117,6 +117,11 @@ func NewSSHTransport(config SSHTransportConfig) (*SSHTransport, error) {
 	if len(config.PrivateKey) == 0 && len(config.HostKey) == 0 {
 		return nil, errors.New("missing private key: either PrivateKey or HostKey must be provided")
 	}
+	// Fail fast on a malformed pin: dialHostKeyCallback would otherwise
+	// surface it only at first Dial.
+	if fp := strings.TrimSpace(config.HostKeyFingerprint); fp != "" && !strings.HasPrefix(fp, "SHA256:") {
+		return nil, errors.New("SSH host key fingerprint must use SHA256:... format")
+	}
 
 	t := &SSHTransport{config: config}
 

@@ -111,10 +111,13 @@ func ExtractCallbackPort(oauthURL string) (int, error) {
 	}
 	portStr := redirectURI.Port()
 	if portStr == "" {
-		if redirectURI.Scheme == "https" {
-			return 443, nil
-		}
-		return 80, nil
+		// No silent default-port fallback: OAuth callbacks bind an exact
+		// listener port and deliver to exactly that port. Assuming 80/443
+		// would either fail obscurely at bind time (privileged ports) or
+		// deliver the authorization code to an unrelated local service.
+		// Real loopback OAuth apps always carry an explicit (usually
+		// ephemeral) port.
+		return 0, errors.New("redirect_uri must include an explicit loopback port")
 	}
 	port, err := strconv.Atoi(portStr)
 	if err != nil || port <= 0 || port > 65535 {

@@ -17,6 +17,11 @@ import (
 // DefaultMaxDropSize is the maximum default size (5GB) of a payload accepted by a receiver.
 const DefaultMaxDropSize int64 = 5 * 1024 * 1024 * 1024
 
+// DefaultMaxTextSize is the maximum default text payload size (10 MiB). It is
+// the single source of truth shared by the Hub, the standalone receivers, the
+// CLI stdin/argv guards, and the dashboard client-side check.
+const DefaultMaxTextSize int64 = 10 * 1024 * 1024
+
 // ReceiveDropConfig configures a drop receive operation.
 type ReceiveDropConfig struct {
 	Timeout        time.Duration                          // Max time for the entire operation (default: 5 min)
@@ -157,7 +162,7 @@ func ReceiveDrop(ctx context.Context, conn transport.Conn, w io.Writer, cfg Rece
 	}
 	maxTextSize := cfg.MaxTextSize
 	if maxTextSize == 0 {
-		maxTextSize = 10 * 1024 * 1024
+		maxTextSize = DefaultMaxTextSize
 	} else if maxTextSize < 0 {
 		maxTextSize = 0 // no limit
 	}

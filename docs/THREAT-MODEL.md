@@ -54,6 +54,7 @@
 | **Impact** | High — unauthorized access to callbacks or arbitrary file transfers |
 | **Mitigation** | Strict mutual TLS certificate fingerprint pinning (`peers.json`); out-of-band SAS verification during pairing |
 | **Residual Risk** | Low — attacker cannot establish mTLS without possessing the pinned private key |
+| **Compat note** | OAuth flows whose authorization URL carries no `redirect_uri` (legacy/synthetic callers) skip callback path/state binding and accept any localhost path. This preserves backward compatibility; real provider flows always carry `redirect_uri` and are fully constrained. Localhost delivery + single-attempt handoff still apply. |
 
 ### T3: Unauthorized Inbound Connection on Wire Socket (:9877)
 | Field | Detail |

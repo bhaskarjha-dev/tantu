@@ -67,12 +67,12 @@ share its session/token model (reusable per-process tokens in HTML/bookmarklet).
 | I-16 | standalone | P2 | FIXED | `relay.go` reusable per-process token in `GET /relay?token=` URL + bookmarklet; now renders per-request one-time tickets (single-use, 10-min TTL, 128 cap) for bookmarklet + form (header-preferred), per-process token kept as legacy fallback for old renders |
 | I-17 | standalone | P2 | SCOPED | `drop.go` reusable `TANTU_LOCAL_TOKEN` embedded in HTML/JS; retained with documented rationale (header-only, never in URLs; no-store page; Origin/Referer/Host enforced; same-user boundary) + SR16 scoped exception |
 | I-18 | hub | P3 | FIXED | No concurrent-upload cap on `POST /api/drop/upload` — now capped at 4 with 503 + Retry-After before any body buffering |
-| I-19 | bridge | P3 | OPEN | Unconstrained legacy flows accept any path/state (aside.go:108, bside.go:200) — compat behavior, document |
-| I-20 | bridge | P3 | OPEN | `ExtractCallbackPort` silent 80/443 default (bside.go:112) contradicts "exact port, no fallback" docs |
+| I-19 | bridge | P3 | DOCUMENTED | Unconstrained legacy flows accept any path/state — documented as compat in THREAT-MODEL T2 (real provider flows constrained; localhost + single-attempt still apply) |
+| I-20 | bridge | P3 | FIXED | `ExtractCallbackPort` silent 80/443 default removed — missing port is now an explicit error (the 443 branch was unreachable; :80 binds fail obscurely). Tests updated to expect rejection |
 | I-21 | protocol | P3 | OPEN | No `Type` allowlist / max type length on decode (codec.go) — mitigated by dispatcher filtering + size budget |
 | I-22 | pairing | P3 | OPEN | SAS is 24-bit interactive-compare only, no commitment (cert.go:139) — accepted design, `--auto-pair` explicitly opt-in |
-| I-23 | discovery | P3 | OPEN | Self-filter drops beacons matching own SAS with different FP (discovery.go:271) — 24-bit collision hides legit peer |
-| I-24 | cli/send | P3 | OPEN | `send --transport=ssh` exposes no host-key pinning flags (send.go:250) — fails closed to ~/.ssh/known_hosts, no pinning UX |
+| I-23 | discovery | P3 | FIXED | Self-filter SAS clause hid legit peers on 24-bit collision — SAS clause now applies only to ephemeral FP-less engines; FP comparison is exact |
+| I-24 | cli/send | P3 | FIXED | `send/open/drop/relay --transport=ssh` expose `--ssh-known-hosts` + `--ssh-fingerprint` (SHA256 pin); malformed pins fail fast at construction; live pin test against mock SSH server |
 | I-25 | docs | P3 | FIXED | README/THREAT-MODEL overgeneralized Hub guarantees to standalone commands — SR16 scoped exception, T3 LAN-scoped trust, T6 upload cap, ARCHITECTURE scope note, README Hub qualifier |
 | I-26 | hub | P3 | FIXED | `openDirectoryInOS` dash-prefixed dir flag parsing — resolved to absolute path before exec |
 | I-27 | ssh | P3 | OPEN | Private-PEM accepted as server authorized key (ssh.go:147) — conflates auth domains for CLI convenience |
@@ -282,6 +282,42 @@ evidence (no fix needed — the worried-about behavior does not exist):
 - `confirmUnpair` verified: native `confirm()` gate with revocation warning
   before POST — destructive-action protection present, no change.
 - Marker test extended; JS `node --check` clean; full suite 12/12 green.
+
+## Batch M — product completion round (2026-09-24)
+
+- M1 version provenance: plain `go build` binaries report `1.0.0-dev+<sha>[.dirty]`
+  via `debug.ReadBuildInfo` VCS fallback (ldflags-stamped releases untouched).
+  Live-verified in smoke binary.
+- M2 discovery self-filter (I-23 FIXED): SAS clause FP-less-engines-only +
+  `TestEngine_SelfFilterSASCollision`.
+- M3 received-file serving: `GET /api/drop/file?id=&mode=` (ID-addressed,
+  OutputDir containment, regular-file-only, 8 MB raster-only inline with fixed
+  content-type map + sandbox CSP, everything else forced attachment). Dashboard
+  renders image previews (`onerror` fallback) + per-file Download links.
+  Tests: inline/download/svg/outside-dir/text-kind/unknown/symlink/unauth +
+  `RecentDropsBuffer.Find` + markers.
+- M4 real-browser validation (headless Chrome + dependency-free CDP harness in
+  `temp`, documented here): zero console errors, native-button tabs,
+  keyboard focus, 4/4 labelled inputs, paste-to-upload without exceptions,
+  preview/download markup live, screenshot-reviewed. Findings fixed in the
+  same round: stale-session banner (`sessionBanner` + probe), input labels +
+  keyboard-operable drop zone (`role=button`, Enter/Space), inline SVG
+  favicon (killed `/favicon.ico` 404).
+- M5 SSH pinning UX (I-24 FIXED): `--ssh-known-hosts` + `--ssh-fingerprint`
+  on send/open/drop/relay; malformed pins fail fast in `NewSSHTransport`;
+  `TestSSHTransport_HostKeyFingerprintPin` (correct pin dials, wrong pin
+  fails) + README Security Model bullet.
+- M6 limit unification: new `drop.DefaultMaxTextSize` single source (Hub
+  dispatcher, OnMeta, dashboard handler, receiver default); MaxBytesReader
+  upload cap uses `drop.DefaultMaxDropSize`; JS mirror commented.
+- M7 startup fail-fast: `Hub.ensureOutputDir` (phase 3b, before listeners) —
+  proven by live repro (Hub previously started fine with a file as
+  `--output-dir`); `TestHub_StartRejectsInvalidOutputDir`.
+- M8 explicit callback ports (I-20 FIXED) + T2 legacy-flow compat note
+  (I-19 DOCUMENTED).
+- Validation: build + vet + full suite green; dashboard JS `node --check`
+  clean (first-script-block extraction); linux/amd64 + darwin/arm64
+  cross-compile green at commit time.
 
 ## Batch L — module hygiene (2026-09-24)
 
