@@ -480,7 +480,7 @@ const dashboardHTML = `<!DOCTYPE html>
               <span style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">Destination:</span>
               <div id="dropPeerPills" style="display: flex; gap: 0.4rem; flex-wrap: wrap;"></div>
             </div>
-            <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+            <div class="drop-zone" id="dropZone" tabindex="-1" onclick="document.getElementById('fileInput').click()">
               <div class="drop-zone-icon">📁</div>
               <div class="drop-zone-text">Drag & drop files here, or click to browse</div>
               <div class="drop-zone-subtext">Direct peer-to-peer streaming via mTLS • zero intermediate servers</div>
@@ -1261,6 +1261,13 @@ const dashboardHTML = `<!DOCTYPE html>
       if (tab && !tab.classList.contains('active')) {
         switchTab('tab-drop');
       }
+      // Move keyboard/screen-reader context to the upload target after the
+      // automatic tab switch. Focusing never opens the file dialog (click
+      // only); the outcome is also announced via the aria-live status region.
+      const zone = document.getElementById('dropZone');
+      if (zone && typeof zone.focus === 'function') {
+        zone.focus({ preventScroll: true });
+      }
       uploadFile(image);
     });
 
@@ -1380,9 +1387,20 @@ const dashboardHTML = `<!DOCTYPE html>
       const text = textarea.value.trim();
       if (!text) return;
 
+      // Fail fast client-side with the same 10 MiB byte limit the server
+      // enforces, instead of uploading megabytes just to be rejected.
+      // TextEncoder measures UTF-8 bytes (what the server counts), not
+      // UTF-16 code units. Only lengths are logged, never content.
+      const textBytes = new TextEncoder().encode(text).length;
+      const maxTextBytes = 10 * 1024 * 1024;
+      if (textBytes > maxTextBytes) {
+        addLog('ERROR', 'Text snippet too large (' + formatBytes(textBytes) + ' exceeds the 10.0 MB limit). Send it as a file instead.');
+        return;
+      }
+
       const btn = document.getElementById('btnSendText');
       btn.disabled = true;
-      addLog('DROP', 'Sending text snippet (' + text.length + ' chars)...');
+      addLog('DROP', 'Sending text snippet (' + text.length + ' chars, ' + formatBytes(textBytes) + ')...');
 
       const payload = { text: text };
       if (selectedPeerTarget) {

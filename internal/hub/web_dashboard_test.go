@@ -1348,6 +1348,9 @@ func TestWebDashboard_UploadProgressAndPeerRenderMarkers(t *testing.T) {
 		"headerPeerSelect",
 		"clipboardData",
 		"addEventListener('paste'",
+		"TextEncoder",
+		"maxTextBytes",
+		"zone.focus",
 	} {
 		if !strings.Contains(content, s) {
 			t.Errorf("dashboard HTML missing %q (upload-progress / focus-preservation UX)", s)

@@ -266,3 +266,19 @@ evidence (no fix needed — the worried-about behavior does not exist):
 - No limits were changed on this evidence: 14 MB idle / sub-second start
   needs no tuning. Large-file behavior remains streaming-bounded (2 MiB
   chunks, 32 MiB RAM spill per upload × 4 slots).
+
+## Batch K — text guard, paste focus, log-content audit (2026-09-24)
+
+- `sendTextDrop` fails fast client-side at the same 10 MiB UTF-8 byte limit
+  the server enforces (TextEncoder byte count, not UTF-16 length), with a
+  "send as a file instead" message — no wasted multi-MB rejected upload.
+- Paste-to-upload now moves keyboard/screen-reader focus to the drop zone
+  (`tabindex="-1"`, focus never opens the file dialog); outcome still
+  announced via the aria-live status region.
+- Server-side log-content audit: Hub logs metadata only (file names, byte
+  counts, peer names, SHA-256 short) — snippet/file/clipboard contents never
+  enter logs (hub.go drop actions). Combined with the client (lengths only),
+  the "no sensitive content in logs" claim is now evidence-backed end to end.
+- `confirmUnpair` verified: native `confirm()` gate with revocation warning
+  before POST — destructive-action protection present, no change.
+- Marker test extended; JS `node --check` clean; full suite 12/12 green.
