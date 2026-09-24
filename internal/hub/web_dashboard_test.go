@@ -122,6 +122,14 @@ func TestWebDashboard_ServeSPA(t *testing.T) {
 			t.Errorf("dashboard HTML missing expected substring %q", s)
 		}
 	}
+
+	// The dashboard is embedded in a Go raw string. A literal script-closing
+	// tag anywhere in the JavaScript (including a comment) closes the HTML
+	// script element early, leaving the rest of the source as visible text
+	// and preventing the polling/bootstrap code from running.
+	if got := strings.Count(content, "</script>"); got != 1 {
+		t.Fatalf("dashboard HTML contains %d script-closing tags, want exactly one", got)
+	}
 }
 
 func TestWebDashboard_ProtectedReadsRequireCapability(t *testing.T) {

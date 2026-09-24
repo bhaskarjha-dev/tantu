@@ -1520,7 +1520,8 @@ const dashboardHTML = `<!DOCTYPE html>
 
     // Encode a value for use inside a single-quoted inline event handler.
     // JSON.stringify alone is not an HTML/JS-context encoder: a value such as
-    // </script> or an apostrophe could otherwise terminate the handler.
+    // a script-closing tag or an apostrophe could otherwise terminate the
+    // surrounding HTML script element or inline handler.
     function jsArg(value) {
       const encoded = JSON.stringify(String(value == null ? '' : value));
       const replacements = {
