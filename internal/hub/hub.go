@@ -43,6 +43,14 @@ const (
 // HubVersion is the version string reported in runtime metadata and dashboard.
 var HubVersion = "1.0.0"
 
+// CanonicalVersion normalizes a version string for skew comparison: a
+// ".dirty" working-tree suffix never indicates an API difference, so
+// "1.0.0-dev+abc.dirty" and "1.0.0-dev+abc" compare equal. Anything else
+// (different commits, dev vs stamped release) still warns.
+func CanonicalVersion(v string) string {
+	return strings.TrimSuffix(strings.TrimSpace(v), ".dirty")
+}
+
 // SetHubVersion dynamically configures the Hub's reported version string.
 func SetHubVersion(v string) {
 	if v != "" {
@@ -226,6 +234,9 @@ type Hub struct {
 	dashboardMu             sync.Mutex
 	dashboardSessions       map[string]time.Time
 	relayTickets            map[string]time.Time
+	// skewWarnedFor dedupes version-skew warnings per caller version
+	// (guarded by dashboardMu) so a skewed script cannot flood the log.
+	skewWarnedFor string
 	// uploadSlots bounds concurrent multipart file uploads (up to 5 GiB
 	// each, 32 MiB parsed in RAM plus temp-disk spill). Without it any
 	// capability holder could exhaust disk/RAM with parallel uploads.
@@ -360,7 +371,15 @@ func SanitizeDropFilename(name string) string {
 // permission failures). It runs at Hub startup so a misconfigured directory
 // fails fast instead of failing every transfer later.
 func (h *Hub) ensureOutputDir() error {
-	dir := h.OutputDir()
+	return validateOutputDir(h.OutputDir())
+}
+
+// validateOutputDir enforces the same writability contract for candidate
+// directories supplied at runtime (POST /api/config). Previously received
+// items keep the SavedPath recorded at receive time, so changing the output
+// directory orphans old inbox IDs by design (their previews 404 fail-closed
+// rather than resolving into the new directory).
+func validateOutputDir(dir string) error {
 	if strings.TrimSpace(dir) == "" {
 		return errors.New("output directory is not configured")
 	}

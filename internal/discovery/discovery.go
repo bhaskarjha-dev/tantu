@@ -277,16 +277,9 @@ func (e *Engine) listenLoop(conn *net.UDPConn) {
 		if !validBeacon(beacon) {
 			continue
 		}
-		// Self-filtering: ignore beacons from our own node. Fingerprint
-		// comparison is exact, so it can never hide a legitimate peer.
-		// The 24-bit SAS clause applies only to ephemeral engines with no
-		// fingerprint of their own (e.g. pair-scan initiators); otherwise a
-		// SAS collision would hide a real peer's beacons.
-		if e.cfg.Fingerprint != "" {
-			if beacon.FP == e.cfg.Fingerprint {
-				continue
-			}
-		} else if e.cfg.SAS != "" && beacon.SAS == e.cfg.SAS {
+		// Self-filtering: ignore beacons from our own node (see
+		// isSelfBeacon for the exact rules).
+		if isSelfBeacon(e.cfg.Fingerprint, e.cfg.SAS, beacon) {
 			continue
 		}
 		if !e.allowBeaconSource(remoteAddr.IP.String()) {
@@ -305,6 +298,18 @@ func (e *Engine) listenLoop(conn *net.UDPConn) {
 
 		e.recordNode(node)
 	}
+}
+
+// isSelfBeacon reports whether a beacon originates from our own node.
+// Fingerprint comparison is case-insensitive (hex) and therefore can never
+// hide a legitimate peer. The 24-bit SAS clause applies only to ephemeral
+// engines with no fingerprint of their own (e.g. pair-scan initiators);
+// otherwise a SAS collision would hide a real peer's beacons.
+func isSelfBeacon(ownFP, ownSAS string, beacon beaconPayload) bool {
+	if ownFP != "" {
+		return strings.EqualFold(beacon.FP, ownFP)
+	}
+	return ownSAS != "" && strings.EqualFold(beacon.SAS, ownSAS)
 }
 
 func validBeacon(beacon beaconPayload) bool {

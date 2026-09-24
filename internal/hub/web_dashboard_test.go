@@ -512,6 +512,25 @@ func TestWebDashboard_ConfigEndpoints(t *testing.T) {
 	if h.OutputDir() != newDir {
 		t.Errorf("expected h.OutputDir() to be %q, got %q", newDir, h.OutputDir())
 	}
+
+	// 3. POST /api/config with a file-as-directory fails fast instead of
+	// accepting a directory that later breaks every transfer.
+	blocker := filepath.Join(t.TempDir(), "afile")
+	if err := os.WriteFile(blocker, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	badBody, _ := json.Marshal(map[string]string{"output_dir": blocker})
+	badResp, err := testPost(h.ipcToken, "http://"+h.WebAddr()+"/api/config", "application/json", strings.NewReader(string(badBody)))
+	if err != nil {
+		t.Fatalf("POST /api/config bad dir failed: %v", err)
+	}
+	defer badResp.Body.Close()
+	if badResp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 for file-as-directory, got %d", badResp.StatusCode)
+	}
+	if h.OutputDir() != newDir {
+		t.Errorf("bad config must not change OutputDir: got %q", h.OutputDir())
+	}
 }
 
 func TestWebDashboard_OpenFolderEndpoint(t *testing.T) {
@@ -1357,6 +1376,9 @@ func TestWebDashboard_UploadProgressAndPeerRenderMarkers(t *testing.T) {
 		"sessionBanner",
 		"checkDashboardSession",
 		`rel="icon"`,
+		"focus-visible",
+		"sr-only",
+		`aria-label="Active peer"`,
 		`role="button"`,
 		`aria-label="OAuth authorization URL"`,
 		`aria-label="Search live logs"`,
@@ -1516,6 +1538,37 @@ func TestWebDashboard_CLIVersionSkewLogged(t *testing.T) {
 	if !strings.Contains(string(body), "version skew") || !strings.Contains(string(body), "0.0.0-skew-test") {
 		t.Fatalf("skew warning missing from logs: %s", body)
 	}
+
+	// Repeat with the same caller version: deduped, no second entry.
+	req2, _ := http.NewRequest(http.MethodGet, "http://"+h.WebAddr()+"/api/probe", nil)
+	req2.Header.Set(IPCTokenHeader, h.ipcToken)
+	req2.Header.Set("X-CLI-Version", "0.0.0-skew-test")
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	logsResp2, err := testGet(h.ipcToken, "http://"+h.WebAddr()+"/api/logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logsResp2.Body.Close()
+	body2, _ := io.ReadAll(logsResp2.Body)
+	if n := strings.Count(string(body2), "0.0.0-skew-test"); n != 1 {
+		t.Fatalf("skew warning logged %d times, want deduped 1", n)
+	}
+}
+
+func TestCanonicalVersion(t *testing.T) {
+	if CanonicalVersion("1.0.0-dev+abc.dirty") != CanonicalVersion("1.0.0-dev+abc") {
+		t.Fatal("dirty suffix should not count as skew")
+	}
+	if CanonicalVersion("1.0.0-dev+abc") == CanonicalVersion("1.0.0") {
+		t.Fatal("dev vs release must count as skew")
+	}
+	if CanonicalVersion("  1.0.0  ") != "1.0.0" {
+		t.Fatal("whitespace not trimmed")
+	}
 }
 
 func TestWebDashboard_RestartDuringUploadsReleasesSlots(t *testing.T) {
@@ -1615,5 +1668,39 @@ func TestWebDashboard_RestartDuringUploadsReleasesSlots(t *testing.T) {
 	// leaked slot would still be 503) and the full pipeline works post-restart.
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("post-restart upload = %d, want 200 (slot acquired, self-delivery)", resp.StatusCode)
+	}
+}
+
+func TestWebDashboard_DropFileServeSymlinkedDirRejected(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+
+	outDir := h.OutputDir()
+	if err := os.MkdirAll(outDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "x.png")
+	if err := os.WriteFile(victim, []byte{0x89, 0x50, 0x4e, 0x47}, 0600); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(outDir, "linkdir")
+	if err := os.Symlink(outside, linkDir); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	// Lexically inside the output dir, but resolves outside via linkdir.
+	h.recentDrops.Add(ReceivedDropItem{ID: "file-linkdir-1", Kind: "file", Name: "x.png", Size: 4,
+		SavedPath: filepath.Join(linkDir, "x.png"), FromPeer: "peer"})
+
+	req, _ := http.NewRequest(http.MethodGet, "http://"+h.WebAddr()+"/api/drop/file?id=file-linkdir-1&mode=inline", nil)
+	req.Header.Set(IPCTokenHeader, h.ipcToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("symlinked-dir file serve = %d, want 404", resp.StatusCode)
 	}
 }

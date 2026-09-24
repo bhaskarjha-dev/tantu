@@ -94,11 +94,13 @@ func ensurePeerLANPort(addr string) string {
 // than this CLI binary. Mixed versions are best-effort: the Hub logs the
 // same skew server-side, but the user driving the command deserves the hint
 // directly, before a subtle API drift becomes a confusing failure.
+// Call sites cover the delegation paths (send/open) and status; drop/relay
+// dial peers directly and wrap's child notes skew itself.
 func noteHubVersionSkew(status *hub.HubStatus) {
 	if status == nil || strings.TrimSpace(status.Version) == "" {
 		return
 	}
-	if status.Version != hub.HubVersion {
+	if hub.CanonicalVersion(status.Version) != hub.CanonicalVersion(hub.HubVersion) {
 		fmt.Fprintf(os.Stderr, "⚠️ Hub version %q differs from CLI version %q; mixed versions are best-effort — restart the Hub after upgrading.\n", status.Version, hub.HubVersion)
 	}
 }

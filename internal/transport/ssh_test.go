@@ -888,4 +888,12 @@ func TestSSHTransport_HostKeyFingerprintPin(t *testing.T) {
 	}); err == nil {
 		t.Fatal("non-SHA256 fingerprint accepted, want error")
 	}
+	for _, bad := range []string{"SHA256:!!!not-base64!!!", "SHA256:AAAA", "SHA256:"} {
+		if _, err := NewSSHTransport(SSHTransportConfig{
+			PrivateKey:         server.ClientKey,
+			HostKeyFingerprint: bad,
+		}); err == nil {
+			t.Fatalf("malformed fingerprint %q accepted, want error", bad)
+		}
+	}
 }

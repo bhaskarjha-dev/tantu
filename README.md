@@ -94,7 +94,7 @@ Both machines run identical symmetric hubs. No server/client distinction. No clo
 - **Zero App Modification** — works transparently with any OAuth 2.0 PKCE application
 - **Direct Disk Streaming** — constant RAM footprint for multi-GB transfers (1MB chunked streams)
 - **Dual-Socket Isolation & Anti-CSRF** — Hub Web UI binds to `127.0.0.1:9876` with exact-authority validation, capability/session authorization, and one-use relay tickets; wire traffic on encrypted `9877`
-- **Cross-Platform** — Linux, macOS, Windows (with Git Bash / PowerShell path normalization)
+- **Cross-Platform** — Linux, macOS, Windows (with Git Bash / PowerShell path normalization). Windows is runtime-verified; Linux/macOS binaries are compile-verified (see `docs/RELEASE.md` for the support matrix)
 
 ---
 

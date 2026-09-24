@@ -129,9 +129,13 @@ func runPair(args []string) {
 			}
 			if selection != "" {
 				// Strict numeric parse: Sscanf would accept trailing junk
-				// such as "1abc" as a valid selection.
-				if choice, err := strconv.Atoi(selection); err == nil && choice >= 1 && choice <= len(discovered) {
-					*peerAddr = discovered[choice-1].Address
+				// such as "1abc" as a valid selection (and Atoi a "+1").
+				if isPlainIndex(selection) {
+					if choice, err := strconv.Atoi(selection); err == nil && choice >= 1 && choice <= len(discovered) {
+						*peerAddr = discovered[choice-1].Address
+					} else {
+						*peerAddr = selection
+					}
 				} else {
 					*peerAddr = selection
 				}

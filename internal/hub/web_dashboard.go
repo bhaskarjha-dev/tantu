@@ -139,6 +139,26 @@ const dashboardHTML = `<!DOCTYPE html>
     color: var(--accent);
     border-bottom-color: var(--accent);
   }
+  .tab-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  .drop-zone:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+  }
   main.tab-content {
     flex: 1;
     padding: 2rem;
@@ -450,6 +470,10 @@ const dashboardHTML = `<!DOCTYPE html>
   </nav>
 
   <main class="tab-content">
+    <div id="sessionBanner" role="alert" style="display: none; background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.4); color: #fbbf24; border-radius: 12px; padding: 0.85rem 1.25rem; margin-bottom: 1.25rem; font-size: 0.9rem;">
+      ⚠️ <strong>Dashboard session not established.</strong>
+      <span>Actions on this page will fail until you reconnect. Reopen the dashboard from the Hub terminal (press <kbd>o</kbd>) or reload the page the Hub opened for you.</span>
+    </div>
     <!-- INBOUND PAIRING APPROVAL BANNER -->
     <div id="pendingPairingsBanner" style="display: none; margin-bottom: 1.5rem; background: rgba(245, 158, 11, 0.12); border: 1px solid #f59e0b; border-radius: 12px; padding: 1.25rem;">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
@@ -463,10 +487,6 @@ const dashboardHTML = `<!DOCTYPE html>
     </div>
 
     <!-- TAB 1: QUICKDROP -->
-    <div id="sessionBanner" role="alert" style="display: none; background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.4); color: #fbbf24; border-radius: 12px; padding: 0.85rem 1.25rem; margin-bottom: 1.25rem; font-size: 0.9rem;">
-      ⚠️ <strong>Dashboard session not established.</strong>
-      <span>Actions on this page will fail until you reconnect. Reopen the dashboard from the Hub terminal (press <kbd>o</kbd>) or reload the page the Hub opened for you.</span>
-    </div>
     <div id="tab-drop" class="tab-pane active">
       <!-- Download Location Bar -->
       <div class="card" style="margin-bottom: 1.25rem; padding: 0.75rem 1.25rem;">
@@ -917,7 +937,7 @@ const dashboardHTML = `<!DOCTYPE html>
             const defBadge = p.is_default ? ' (Default)' : '';
             return '<option value="' + escapeHTML(p.fingerprint) + '" ' + sel + ' style="background:var(--card-bg); color:var(--text);">' + escapeHTML(p.name) + defBadge + '</option>';
           }).join('');
-          peerLabel.innerHTML = '<select id="headerPeerSelect" onchange="switchActivePeer(this.value)" style="background:transparent; color:var(--text); border:none; outline:none; font-size:0.85rem; font-weight:600; cursor:pointer;">' + optionsHTML + '</select>';
+          peerLabel.innerHTML = '<label class="sr-only" for="headerPeerSelect">Active peer</label><select id="headerPeerSelect" aria-label="Active peer" onchange="switchActivePeer(this.value)" style="background:transparent; color:var(--text); border:none; outline:none; font-size:0.85rem; font-weight:600; cursor:pointer;">' + optionsHTML + '</select>';
 
           // Tab 1 destination pills
           if (dropSelector && dropPills) {
@@ -1970,11 +1990,19 @@ func (h *Hub) securityMiddleware(next http.Handler) http.Handler {
 			}
 			// CLI/Hub version skew is otherwise invisible: delegation sends
 			// X-CLI-Version on every IPC call but nothing reads it. Log the
-			// mismatch (delegation calls are infrequent) so mixed-version
+			// mismatch (deduped per version per Hub run) so mixed-version
 			// API drift shows up in diagnostics instead of surfacing as
 			// confusing downstream errors. Mixed versions remain best-effort.
-			if cliVer := strings.TrimSpace(r.Header.Get("X-CLI-Version")); cliVer != "" && cliVer != HubVersion && h.logger != nil {
-				h.logger.Warn(DomainSys, fmt.Sprintf("CLI/Hub version skew: caller %q vs hub %q on %s %s", cliVer, HubVersion, r.Method, r.URL.Path))
+			if cliVer := strings.TrimSpace(r.Header.Get("X-CLI-Version")); cliVer != "" && CanonicalVersion(cliVer) != CanonicalVersion(HubVersion) && h.logger != nil {
+				h.dashboardMu.Lock()
+				alreadyWarned := h.skewWarnedFor == cliVer
+				if !alreadyWarned {
+					h.skewWarnedFor = cliVer
+				}
+				h.dashboardMu.Unlock()
+				if !alreadyWarned {
+					h.logger.Warn(DomainSys, fmt.Sprintf("CLI/Hub version skew: caller %q vs hub %q on %s %s", cliVer, HubVersion, r.Method, r.URL.Path))
+				}
 			}
 			if origin != "" {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
@@ -2558,12 +2586,8 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 				return
 			}
 			req.OutputDir = strings.TrimSpace(req.OutputDir)
-			if req.OutputDir == "" {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"status": "error", "message": "output_dir cannot be empty"})
-				return
-			}
-			if err := os.MkdirAll(req.OutputDir, 0700); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"status": "error", "message": fmt.Sprintf("cannot create directory: %v", err)})
+			if err := validateOutputDir(req.OutputDir); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"status": "error", "message": fmt.Sprintf("invalid output directory: %v", err)})
 				return
 			}
 			h.SetOutputDir(req.OutputDir)
@@ -3018,25 +3042,41 @@ func serveReceivedFile(w http.ResponseWriter, r *http.Request, outputDir string,
 		http.NotFound(w, r)
 		return
 	}
-	rel, err := filepath.Rel(outAbs, abs)
+	// Resolve symlinks on both sides before the containment check: a
+	// purely lexical Rel check would pass a symlinked directory component
+	// (or a symlinked OutputDir itself) that escapes at open time.
+	absEval, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	outEval, err := filepath.EvalSymlinks(outAbs)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	rel, err := filepath.Rel(outEval, absEval)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 		http.NotFound(w, r)
 		return
 	}
-	if info, err := os.Lstat(abs); err != nil || !info.Mode().IsRegular() {
+	inspected, err := os.Lstat(absEval)
+	if err != nil || !inspected.Mode().IsRegular() {
 		http.NotFound(w, r)
 		return
 	}
-	f, err := os.Open(abs)
+	f, err := os.Open(absEval)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
 	defer f.Close()
-	// Re-verify the opened descriptor: a swap between Lstat and Open must
-	// not redirect the served bytes.
+	// The descriptor is bound at open; verify it is still the inspected
+	// regular file so a leaf swap between Lstat and Open fails closed
+	// instead of serving a victim file. (Directory-component swaps inside
+	// the residual Lstat→Open window remain a same-user local race.)
 	finfo, err := f.Stat()
-	if err != nil || !finfo.Mode().IsRegular() {
+	if err != nil || !finfo.Mode().IsRegular() || !os.SameFile(inspected, finfo) {
 		http.NotFound(w, r)
 		return
 	}
@@ -3047,7 +3087,11 @@ func serveReceivedFile(w http.ResponseWriter, r *http.Request, outputDir string,
 		if contentType, ok := inlinePreviewTypes[strings.ToLower(filepath.Ext(item.Name))]; ok && finfo.Size() > 0 && finfo.Size() <= maxInlinePreviewBytes {
 			w.Header().Set("Content-Type", contentType)
 			w.Header().Set("Content-Disposition", "inline")
-			// Belt and suspenders: even a mislabeled file gets no script.
+			// Defense in depth for direct navigation: a mislabeled file
+			// opened as a top-level document gets no script execution.
+			// (For <img> embeds the protection comes from the image
+			// decoder plus nosniff; sandbox does not constrain
+			// subresources.)
 			w.Header().Set("Content-Security-Policy", "sandbox")
 			http.ServeContent(w, r, item.Name, finfo.ModTime(), f)
 			return

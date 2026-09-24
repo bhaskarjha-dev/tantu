@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bhaskarjha-dev/tantu/internal/drop"
 )
 
 func TestLocalRequestTokenMiddlewareProtectsMutations(t *testing.T) {
@@ -295,5 +297,15 @@ func TestCreateIncomingPart_RejectsSymlinkedStagingDir(t *testing.T) {
 	if f, _, _, err := createIncomingPart(outDir, "drop.bin"); err == nil {
 		_ = f.Close()
 		t.Fatal("symlinked staging dir accepted, want error")
+	}
+}
+
+func TestStandaloneTextLimitMatchesDropDefault(t *testing.T) {
+	// The main-package ingest cap must track the shared wire limit. This is
+	// a compile-adjacent assertion (not an alias) because the main package
+	// uses it for stdin/argv guards beyond the wire config.
+	if standaloneTextDropLimit != drop.DefaultMaxTextSize {
+		t.Fatalf("standaloneTextDropLimit=%d diverges from drop.DefaultMaxTextSize=%d",
+			standaloneTextDropLimit, drop.DefaultMaxTextSize)
 	}
 }

@@ -444,3 +444,35 @@ evidence (no fix needed — the worried-about behavior does not exist):
   Matches `.goreleaser.yaml` ldflags (see RELEASE.md).
 - Validation: Batch R full suite green; this batch targeted cmd tests green
   (full suite at commit).
+
+## Batch T — adversarial round-3 fixes (2026-09-24)
+
+Independent review of batches M–S returned 11 findings; all addressed:
+- #1 discovery self-filter test was vacuous (bypassed listenLoop via
+  recordNode). Filter extracted to testable `isSelfBeacon` (now EqualFold
+  for hex FP); unit tests + real-UDP end-to-end test
+  (`TestEngine_SelfFilterEndToEndUDP`) prove the ingest path.
+- #2 `serveReceivedFile` now EvalSymlinks both sides + SameFile
+  descriptor check; honest residual comment; symlinked-dir test added.
+- #3 `POST /api/config` validates via shared `validateOutputDir`
+  (extracted from `ensureOutputDir`); orphan-on-change documented;
+  bad-dir test asserts 400 + no state change.
+- #4 skew comparison canonicalized (`hub.CanonicalVersion` strips
+  `.dirty`); Hub warnings deduped per version per run; CLI call-site set
+  documented (send/open/status).
+- #5 fingerprint pins fully validated at construction (SHA256 scheme +
+  unpadded-base64 32-byte body); pin test extended with malformed bodies.
+  (Caught during implementation: OpenSSH prints unpadded base64 —
+  validator accepts both padded and raw.)
+- #6 CSP comment corrected (sandbox constrains navigation, not `<img>`).
+- #8 compile-adjacent assertion `standaloneTextDropLimit ==
+  drop.DefaultMaxTextSize` in cmd tests.
+- #9 `parsePeerSelection`/`pair.go` reject `+1`-style non-plain indices
+  (digit-only), keeping those names resolvable.
+- #10 session banner moved above tab panes (global); `:focus-visible`
+  styles for tabs/drop-zone; `sr-only` class + labelled dynamic peer
+  select; README platform support scoped (Windows runtime-verified,
+  Linux/macOS compile-verified).
+- Validation: build + vet + full suite + JS `node --check` green;
+  linux/darwin cross-compile green; real-Chrome harness re-run
+  ALL_BROWSER_CHECKS_PASSED after the banner move.

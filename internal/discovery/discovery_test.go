@@ -310,31 +310,89 @@ func FuzzValidBeacon(f *testing.F) {
 }
 
 func TestEngine_SelfFilterSASCollision(t *testing.T) {
-	// A legitimate peer whose 24-bit SAS collides with ours must not be
-	// hidden when our fingerprint is configured: FP comparison is exact.
+	// Unit level: a colliding SAS must not mark a different fingerprint as
+	// self when our fingerprint is configured.
+	ownFP := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	other := beaconPayload{Version: 1, Name: "other", Port: 9877, SAS: "a1b2c3",
+		FP: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+	if isSelfBeacon(ownFP, "a1b2c3", other) {
+		t.Fatal("SAS-colliding peer classified as self")
+	}
+	if !isSelfBeacon(ownFP, "zzzzzz", beaconPayload{SAS: "q", FP: ownFP}) {
+		t.Fatal("own fingerprint not classified as self")
+	}
+	// Uppercase hex self-beacon must still filter (no phantom peer).
+	if !isSelfBeacon(ownFP, "", beaconPayload{SAS: "q",
+		FP: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}) {
+		t.Fatal("uppercase own fingerprint not classified as self")
+	}
+	// Ephemeral FP-less engines keep the best-effort SAS clause.
+	if !isSelfBeacon("", "a1b2c3", other) {
+		t.Fatal("FP-less engine did not self-filter on SAS")
+	}
+	if isSelfBeacon("", "a1b2c3", beaconPayload{SAS: "ffffff",
+		FP: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}) {
+		t.Fatal("FP-less engine filtered a foreign SAS")
+	}
+}
+
+func TestEngine_SelfFilterEndToEndUDP(t *testing.T) {
+	// The ingest path (listenLoop), not recordNode: a SAS-colliding foreign
+	// beacon must be discovered, while our own beacon must not.
+	port := 19885
+	ownFP := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	e, err := NewEngine(DiscoveryConfig{
 		NodeName:      "self-node",
 		WirePort:      9877,
 		SAS:           "a1b2c3",
-		Fingerprint:   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		BroadcastPort: 19884,
+		Fingerprint:   ownFP,
+		BroadcastPort: port,
 		Interval:      time.Hour,
 		TTL:           time.Minute,
 	})
 	if err != nil {
 		t.Fatalf("NewEngine failed: %v", err)
 	}
-	// Simulate an inbound beacon from a different node with a colliding SAS.
-	e.recordNode(DiscoveredNode{
-		InstanceName: "other-node",
-		Address:      "192.168.1.99:9877",
-		Port:         9877,
-		SAS:          "a1b2c3",
-		Fingerprint:  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-		LastSeen:     time.Now(),
-	})
-	nodes := e.ListNodes()
-	if len(nodes) != 1 || nodes[0].InstanceName != "other-node" {
-		t.Fatalf("SAS-colliding peer hidden: %+v", nodes)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer e.Close()
+
+	conn, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port})
+	if err != nil {
+		t.Fatalf("DialUDP failed: %v", err)
+	}
+	defer conn.Close()
+	send := func(fp, sas string) {
+		t.Helper()
+		payload, _ := json.Marshal(beaconPayload{Version: 1, Name: "n", Port: 9877, SAS: sas, FP: fp})
+		if _, err := conn.Write(append([]byte(BeaconPrefix), payload...)); err != nil {
+			t.Fatalf("Write failed: %v", err)
+		}
+	}
+	otherFP := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	send(otherFP, "a1b2c3") // colliding SAS, foreign FP
+	send(ownFP, "a1b2c3")   // our own beacon
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		nodes := e.ListNodes()
+		if len(nodes) == 1 && nodes[0].Fingerprint == otherFP {
+			return
+		}
+		for _, n := range nodes {
+			if n.Fingerprint == ownFP {
+				t.Fatalf("own beacon recorded as peer: %+v", n)
+			}
+		}
+		if len(nodes) > 1 {
+			t.Fatalf("unexpected nodes: %+v", nodes)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("colliding peer not discovered: %+v", nodes)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

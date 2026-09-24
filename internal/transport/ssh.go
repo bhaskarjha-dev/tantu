@@ -2,6 +2,7 @@ package transport
 
 import (
 	"crypto/subtle"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -77,6 +78,24 @@ type SSHTransport struct {
 	onHandshakeError        func(error)
 }
 
+// validateHostKeyFingerprint enforces the full pin format: SHA256 scheme
+// plus base64 of exactly 32 bytes (a SHA-256 digest). A scheme-only check
+// would accept "SHA256:garbage" at construction and fail only at Dial.
+func validateHostKeyFingerprint(fingerprint string) error {
+	body, ok := strings.CutPrefix(strings.TrimSpace(fingerprint), "SHA256:")
+	if !ok || body == "" {
+		return errors.New("SSH host key fingerprint must use SHA256:... format")
+	}
+	raw, err := base64.RawStdEncoding.DecodeString(strings.TrimRight(body, "="))
+	if err != nil {
+		return fmt.Errorf("SSH host key fingerprint is not valid base64: %w", err)
+	}
+	if len(raw) != 32 {
+		return fmt.Errorf("SSH host key fingerprint must decode to 32 bytes, got %d", len(raw))
+	}
+	return nil
+}
+
 func (t *SSHTransport) dialHostKeyCallback() (ssh.HostKeyCallback, error) {
 	if t.config.HostKeyCallback != nil {
 		return t.config.HostKeyCallback, nil
@@ -85,8 +104,8 @@ func (t *SSHTransport) dialHostKeyCallback() (ssh.HostKeyCallback, error) {
 		return ssh.InsecureIgnoreHostKey(), nil
 	}
 	if fingerprint := strings.TrimSpace(t.config.HostKeyFingerprint); fingerprint != "" {
-		if !strings.HasPrefix(fingerprint, "SHA256:") {
-			return nil, errors.New("SSH host key fingerprint must use SHA256:... format")
+		if err := validateHostKeyFingerprint(fingerprint); err != nil {
+			return nil, err
 		}
 		return func(_ string, _ net.Addr, key ssh.PublicKey) error {
 			got := ssh.FingerprintSHA256(key)
@@ -119,8 +138,10 @@ func NewSSHTransport(config SSHTransportConfig) (*SSHTransport, error) {
 	}
 	// Fail fast on a malformed pin: dialHostKeyCallback would otherwise
 	// surface it only at first Dial.
-	if fp := strings.TrimSpace(config.HostKeyFingerprint); fp != "" && !strings.HasPrefix(fp, "SHA256:") {
-		return nil, errors.New("SSH host key fingerprint must use SHA256:... format")
+	if fp := strings.TrimSpace(config.HostKeyFingerprint); fp != "" {
+		if err := validateHostKeyFingerprint(fp); err != nil {
+			return nil, err
+		}
 	}
 
 	t := &SSHTransport{config: config}

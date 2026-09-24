@@ -219,18 +219,36 @@ func RunCockpit(ctx context.Context, h *hub.Hub, cancel context.CancelFunc, init
 }
 
 // parsePeerSelection maps a cockpit peer-prompt answer to a peer fingerprint.
-// A strict 1-based index selects from peers (trailing junk like "1abc" must
-// not select); anything else is returned verbatim as a raw query for the
-// store resolver (name, alias, address) to interpret. Empty input yields "".
+// A strict 1-based index selects from peers: leading/trailing junk (such as
+// "1abc" or "+1") must not select, so only plain digits qualify. Anything
+// else is returned verbatim as a raw query for the store resolver (name,
+// alias, address) to interpret. Empty input yields "".
 func parsePeerSelection(peers []pairing.Peer, choice string) string {
 	choice = strings.TrimSpace(choice)
 	if choice == "" || len(peers) == 0 {
 		return ""
 	}
-	if selIdx, err := strconv.Atoi(choice); err == nil && selIdx >= 1 && selIdx <= len(peers) {
-		return peers[selIdx-1].Fingerprint
+	if isPlainIndex(choice) {
+		if selIdx, err := strconv.Atoi(choice); err == nil && selIdx >= 1 && selIdx <= len(peers) {
+			return peers[selIdx-1].Fingerprint
+		}
 	}
 	return choice
+}
+
+// isPlainIndex reports whether s is ASCII digits only (no sign, no spaces,
+// no trailing junk). strconv.Atoi alone would accept "+1" and silently steal
+// that name from the resolver.
+func isPlainIndex(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func handlePeerCommand(scanner *bufio.Scanner, h *hub.Hub) {
