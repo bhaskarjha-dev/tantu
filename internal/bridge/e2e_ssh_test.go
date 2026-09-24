@@ -108,8 +108,10 @@ func TestE2E_SSHBridge_TransparentOAuthFlow(t *testing.T) {
 
 	// 4. Create SSHTransport on Computer B configured with client private key
 	sshTr, err := transport.NewSSHTransport(transport.SSHTransportConfig{
-		User:       "test-ssh-user",
-		PrivateKey: sshServer.ClientKey,
+		AllowInsecureHostKey:   true,
+		AllowLegacyHostKeyAuth: true,
+		User:                   "test-ssh-user",
+		PrivateKey:             sshServer.ClientKey,
 	})
 	if err != nil {
 		t.Fatalf("NewSSHTransport failed: %v", err)
@@ -246,7 +248,9 @@ func TestE2E_SSHTransport_ListenDial_TransparentOAuthFlow(t *testing.T) {
 	}
 
 	serverTr, err := transport.NewSSHTransport(transport.SSHTransportConfig{
-		HostKey: keyPEM,
+		AllowInsecureHostKey:   true,
+		AllowLegacyHostKeyAuth: true,
+		HostKey:                keyPEM,
 	})
 	if err != nil {
 		t.Fatalf("NewSSHTransport server: %v", err)
@@ -259,7 +263,9 @@ func TestE2E_SSHTransport_ListenDial_TransparentOAuthFlow(t *testing.T) {
 	defer listener.Close()
 
 	clientTr, err := transport.NewSSHTransport(transport.SSHTransportConfig{
-		PrivateKey: keyPEM,
+		AllowInsecureHostKey:   true,
+		AllowLegacyHostKeyAuth: true,
+		PrivateKey:             keyPEM,
 	})
 	if err != nil {
 		t.Fatalf("NewSSHTransport client: %v", err)
@@ -402,8 +408,10 @@ func TestE2E_SSHBridge_FullCLIFlow(t *testing.T) {
 
 	// 4. Create SSHTransport for Computer B configured with client private key
 	sshTr, err := transport.NewSSHTransport(transport.SSHTransportConfig{
-		User:       "test-ssh-user",
-		PrivateKey: sshServer.ClientKey,
+		AllowInsecureHostKey:   true,
+		AllowLegacyHostKeyAuth: true,
+		User:                   "test-ssh-user",
+		PrivateKey:             sshServer.ClientKey,
 	})
 	if err != nil {
 		t.Fatalf("NewSSHTransport failed: %v", err)
@@ -575,8 +583,10 @@ func TestE2E_SSHBridge_OccupiedPortReturnsError(t *testing.T) {
 	defer sshServer.Close()
 
 	sshTr, err := transport.NewSSHTransport(transport.SSHTransportConfig{
-		User:       "test-ssh-user",
-		PrivateKey: sshServer.ClientKey,
+		AllowInsecureHostKey:   true,
+		AllowLegacyHostKeyAuth: true,
+		User:                   "test-ssh-user",
+		PrivateKey:             sshServer.ClientKey,
 	})
 	if err != nil {
 		t.Fatalf("NewSSHTransport failed: %v", err)

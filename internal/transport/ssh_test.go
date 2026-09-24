@@ -1,7 +1,12 @@
 package transport
 
 import (
+	"errors"
 	"fmt"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -9,6 +14,48 @@ import (
 	"github.com/bhaskarjha-dev/tantu/internal/protocol"
 	"github.com/bhaskarjha-dev/tantu/internal/testutil"
 )
+
+func TestSSHTransport_HandshakeTimeoutIncludesBannerExchange(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr == nil {
+			accepted <- conn
+		}
+	}()
+
+	key, err := testutil.GeneratePrivateKeyPEM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr, err := NewSSHTransport(SSHTransportConfig{
+		PrivateKey:           key,
+		AllowInsecureHostKey: true,
+		HandshakeTimeout:     100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, err = tr.Dial(listener.Addr().String())
+	if err == nil {
+		t.Fatal("expected stalled SSH handshake to fail")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("SSH handshake timeout was not enforced: %v", elapsed)
+	}
+	select {
+	case conn := <-accepted:
+		_ = conn.Close()
+	case <-time.After(time.Second):
+		t.Fatal("stall server did not accept connection")
+	}
+}
 
 func TestSSHTransport_BasicRoundTrip(t *testing.T) {
 	server, err := testutil.NewMockSSHServer()
@@ -60,8 +107,10 @@ func TestSSHTransport_BasicRoundTrip(t *testing.T) {
 	}()
 
 	tr, err := NewSSHTransport(SSHTransportConfig{
-		User:       "test-user",
-		PrivateKey: server.ClientKey,
+		AllowInsecureHostKey:   true,
+		AllowLegacyHostKeyAuth: true,
+		User:                   "test-user",
+		PrivateKey:             server.ClientKey,
 	})
 	if err != nil {
 		t.Fatalf("NewSSHTransport failed: %v", err)
@@ -115,7 +164,9 @@ func TestSSHTransport_ListenDialRoundTrip(t *testing.T) {
 	}
 
 	serverTr, err := NewSSHTransport(SSHTransportConfig{
-		HostKey: keyPEM,
+		AllowInsecureHostKey:   true,
+		AllowLegacyHostKeyAuth: true,
+		HostKey:                keyPEM,
 	})
 	if err != nil {
 		t.Fatalf("NewSSHTransport server: %v", err)
@@ -162,7 +213,9 @@ func TestSSHTransport_ListenDialRoundTrip(t *testing.T) {
 	}()
 
 	clientTr, err := NewSSHTransport(SSHTransportConfig{
-		PrivateKey: keyPEM,
+		AllowInsecureHostKey:   true,
+		AllowLegacyHostKeyAuth: true,
+		PrivateKey:             keyPEM,
 	})
 	if err != nil {
 		t.Fatalf("NewSSHTransport client: %v", err)
@@ -213,8 +266,10 @@ func TestSSHTransport_AuthFailure(t *testing.T) {
 	}
 
 	tr, err := NewSSHTransport(SSHTransportConfig{
-		User:       "unauthorized-user",
-		PrivateKey: badKeyPEM,
+		AllowInsecureHostKey:   true,
+		AllowLegacyHostKeyAuth: true,
+		User:                   "unauthorized-user",
+		PrivateKey:             badKeyPEM,
 	})
 	if err != nil {
 		t.Fatalf("NewSSHTransport failed: %v", err)
@@ -246,8 +301,10 @@ func TestSSHTransport_ConnectionClose(t *testing.T) {
 	}()
 
 	tr, err := NewSSHTransport(SSHTransportConfig{
-		User:       "test-user",
-		PrivateKey: server.ClientKey,
+		AllowInsecureHostKey:   true,
+		AllowLegacyHostKeyAuth: true,
+		User:                   "test-user",
+		PrivateKey:             server.ClientKey,
 	})
 	if err != nil {
 		t.Fatalf("NewSSHTransport failed: %v", err)
@@ -314,8 +371,10 @@ func TestSSHTransport_ConcurrentConnections(t *testing.T) {
 	}
 
 	tr, err := NewSSHTransport(SSHTransportConfig{
-		User:       "test-user",
-		PrivateKey: server.ClientKey,
+		AllowInsecureHostKey:   true,
+		AllowLegacyHostKeyAuth: true,
+		User:                   "test-user",
+		PrivateKey:             server.ClientKey,
 	})
 	if err != nil {
 		t.Fatalf("NewSSHTransport: %v", err)
@@ -352,6 +411,376 @@ func TestSSHTransport_ConcurrentConnections(t *testing.T) {
 	wg.Wait()
 }
 
+func TestSSHTransport_ListenRejectsUnauthorizedKey(t *testing.T) {
+	serverKey, err := testutil.GeneratePrivateKeyPEM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauthorizedKey, err := testutil.GeneratePrivateKeyPEM()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	handshakeErrors := make(chan error, 1)
+	serverTr, err := NewSSHTransport(SSHTransportConfig{
+		AllowInsecureHostKey:   true,
+		AllowLegacyHostKeyAuth: true,
+		HostKey:                serverKey,
+		HandshakeTimeout:       2 * time.Second,
+		OnHandshakeError: func(err error) {
+			select {
+			case handshakeErrors <- err:
+			default:
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := serverTr.Listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	clientTr, err := NewSSHTransport(SSHTransportConfig{
+		AllowInsecureHostKey:   true,
+		AllowLegacyHostKeyAuth: true,
+		PrivateKey:             unauthorizedKey,
+		HandshakeTimeout:       2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := clientTr.Dial(listener.Addr().String())
+	if err == nil {
+		_ = conn.Close()
+		t.Fatal("SSH listener accepted an unauthorized private key")
+	}
+
+	select {
+	case err := <-handshakeErrors:
+		if !IsHandshakeError(err) || !errors.Is(err, ErrHandshake) {
+			t.Fatalf("expected classified SSH handshake error, got %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for rejected SSH authentication")
+	}
+}
+
+func TestSSHTransport_HandshakeFailureDoesNotStopListener(t *testing.T) {
+	keyPEM, err := testutil.GeneratePrivateKeyPEM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	handshakeErrors := make(chan error, 1)
+	serverTr, err := NewSSHTransport(SSHTransportConfig{
+		AllowInsecureHostKey:   true,
+		AllowLegacyHostKeyAuth: true,
+		HostKey:                keyPEM,
+		HandshakeTimeout:       2 * time.Second,
+		OnHandshakeError: func(err error) {
+			select {
+			case handshakeErrors <- err:
+			default:
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := serverTr.Listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	bad, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = bad.Write([]byte("SSH-2.0-invalid-client\r\n"))
+	_ = bad.Close()
+
+	select {
+	case err := <-handshakeErrors:
+		if !IsHandshakeError(err) {
+			t.Fatalf("expected classified SSH handshake error, got %v", err)
+		}
+		var handshakeErr *HandshakeError
+		if !errors.As(err, &handshakeErr) || handshakeErr.Transport != "ssh" {
+			t.Fatalf("expected SSH HandshakeError, got %#v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for rejected SSH handshake")
+	}
+
+	clientTr, err := NewSSHTransport(SSHTransportConfig{
+		AllowInsecureHostKey:   true,
+		AllowLegacyHostKeyAuth: true,
+		PrivateKey:             keyPEM,
+		HandshakeTimeout:       2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err == nil {
+			_ = conn.Close()
+		}
+		accepted <- err
+	}()
+	client, err := clientTr.Dial(listener.Addr().String())
+	if err != nil {
+		t.Fatalf("valid connection after bad SSH handshake failed: %v", err)
+	}
+	defer client.Close()
+	select {
+	case err := <-accepted:
+		if err != nil {
+			t.Fatalf("valid SSH connection was rejected after bad handshake: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("SSH listener stopped after a rejected handshake")
+	}
+}
+
+func TestSSHTransport_StrictHandshakeErrorBehavior(t *testing.T) {
+	keyPEM, err := testutil.GeneratePrivateKeyPEM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverTr, err := NewSSHTransport(SSHTransportConfig{
+		AllowInsecureHostKey:   true,
+		AllowLegacyHostKeyAuth: true,
+		HostKey:                keyPEM,
+		HandshakeTimeout:       2 * time.Second,
+		ReturnHandshakeError:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := serverTr.Listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	bad, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = bad.Write([]byte("not-an-ssh-banner\r\n"))
+	_ = bad.Close()
+
+	conn, err := listener.Accept()
+	if err == nil {
+		_ = conn.Close()
+		t.Fatal("strict listener unexpectedly accepted invalid SSH handshake")
+	}
+	if !IsHandshakeError(err) {
+		t.Fatalf("strict listener error = %v, want HandshakeError", err)
+	}
+}
+
+func TestSSHTransport_HandshakeDeadline(t *testing.T) {
+	keyPEM, err := testutil.GeneratePrivateKeyPEM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	handshakeErrors := make(chan error, 1)
+	serverTr, err := NewSSHTransport(SSHTransportConfig{
+		AllowInsecureHostKey:   true,
+		AllowLegacyHostKeyAuth: true,
+		HostKey:                keyPEM,
+		HandshakeTimeout:       100 * time.Millisecond,
+		OnHandshakeError: func(err error) {
+			select {
+			case handshakeErrors <- err:
+			default:
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := serverTr.Listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	raw, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	_, _ = raw.Write([]byte("SSH-2.0-partial"))
+
+	select {
+	case err := <-handshakeErrors:
+		if !IsHandshakeError(err) {
+			t.Fatalf("expected classified handshake error, got %v", err)
+		}
+		var netErr net.Error
+		if !errors.As(err, &netErr) || !netErr.Timeout() {
+			t.Fatalf("handshake error = %v, want timeout", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("partial SSH handshake did not reach its deadline")
+	}
+}
+
+func TestSSHTransport_MaxConcurrentHandshakes(t *testing.T) {
+	keyPEM, err := testutil.GeneratePrivateKeyPEM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	handshakeErrors := make(chan error, 2)
+	serverTr, err := NewSSHTransport(SSHTransportConfig{
+		AllowInsecureHostKey:    true,
+		AllowLegacyHostKeyAuth:  true,
+		HostKey:                 keyPEM,
+		HandshakeTimeout:        2 * time.Second,
+		MaxConcurrentHandshakes: 1,
+		OnHandshakeError: func(err error) {
+			select {
+			case handshakeErrors <- err:
+			default:
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := serverTr.Listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	first, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	_, _ = first.Write([]byte("SSH-2.0-first-partial"))
+	time.Sleep(50 * time.Millisecond)
+
+	second, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = second.Write([]byte("SSH-2.0-second-partial"))
+	defer second.Close()
+
+	select {
+	case err := <-handshakeErrors:
+		if !IsHandshakeError(err) || !strings.Contains(err.Error(), "maximum concurrent SSH handshakes") {
+			t.Fatalf("expected handshake-cap error, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("SSH listener did not enforce concurrent handshake limit")
+	}
+}
+
+func TestSSHTransport_CloseInterruptsPendingHandshake(t *testing.T) {
+	keyPEM, err := testutil.GeneratePrivateKeyPEM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	handshakeErrors := make(chan error, 1)
+	serverTr, err := NewSSHTransport(SSHTransportConfig{
+		AllowInsecureHostKey:   true,
+		AllowLegacyHostKeyAuth: true,
+		HostKey:                keyPEM,
+		HandshakeTimeout:       30 * time.Second,
+		OnHandshakeError: func(err error) {
+			select {
+			case handshakeErrors <- err:
+			default:
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := serverTr.Listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	// A partial banner keeps the SSH handshake pending.
+	_, _ = raw.Write([]byte("SSH-2.0-partial"))
+	time.Sleep(50 * time.Millisecond)
+
+	if err := listener.Close(); err != nil {
+		t.Fatalf("listener close failed: %v", err)
+	}
+	select {
+	case err := <-handshakeErrors:
+		if !IsHandshakeError(err) {
+			t.Fatalf("expected classified handshake error after close, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("closing listener did not interrupt pending SSH authentication")
+	}
+}
+
+func TestSSHTransport_ReadDeadline(t *testing.T) {
+	keyPEM, err := testutil.GeneratePrivateKeyPEM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverTr, err := NewSSHTransport(SSHTransportConfig{
+		AllowInsecureHostKey:   true,
+		AllowLegacyHostKeyAuth: true,
+		HostKey:                keyPEM,
+		HandshakeTimeout:       2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := serverTr.Listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	clientTr, err := NewSSHTransport(SSHTransportConfig{
+		AllowInsecureHostKey:   true,
+		AllowLegacyHostKeyAuth: true,
+		PrivateKey:             keyPEM,
+		HandshakeTimeout:       2 * time.Second,
+		ReadTimeout:            75 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := clientTr.Dial(listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	serverConn, err := listener.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverConn.Close()
+
+	_, err = client.Receive()
+	if !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("Receive error = %v, want deadline exceeded", err)
+	}
+}
+
 func TestSSHTransport_ConfigValidation(t *testing.T) {
 	// Missing keys
 	_, err := NewSSHTransport(SSHTransportConfig{})
@@ -361,7 +790,9 @@ func TestSSHTransport_ConfigValidation(t *testing.T) {
 
 	// Invalid private key PEM
 	_, err = NewSSHTransport(SSHTransportConfig{
-		PrivateKey: []byte("invalid pem content"),
+		AllowInsecureHostKey:   true,
+		AllowLegacyHostKeyAuth: true,
+		PrivateKey:             []byte("invalid pem content"),
 	})
 	if err == nil {
 		t.Errorf("expected error with invalid PrivateKey PEM, got nil")
@@ -369,9 +800,35 @@ func TestSSHTransport_ConfigValidation(t *testing.T) {
 
 	// Invalid host key PEM
 	_, err = NewSSHTransport(SSHTransportConfig{
-		HostKey: []byte("invalid pem content"),
+		AllowInsecureHostKey:   true,
+		AllowLegacyHostKeyAuth: true,
+		HostKey:                []byte("invalid pem content"),
 	})
 	if err == nil {
 		t.Errorf("expected error with invalid HostKey PEM, got nil")
+	}
+}
+
+func TestSSHTransport_DefaultHostVerificationFailsClosed(t *testing.T) {
+	server, err := testutil.NewMockSSHServer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	tr, err := NewSSHTransport(SSHTransportConfig{
+		PrivateKey:       server.ClientKey,
+		KnownHostsFile:   filepath.Join(t.TempDir(), "missing-known-hosts"),
+		HandshakeTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conn, err := tr.Dial(server.Addr); err == nil {
+		_ = conn.Close()
+		t.Fatal("dial unexpectedly succeeded without a trusted host key")
 	}
 }

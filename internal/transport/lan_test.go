@@ -3,6 +3,7 @@ package transport
 import (
 	"crypto/tls"
 	"errors"
+	"net"
 	"sync"
 	"testing"
 	"time"
@@ -18,13 +19,84 @@ func createTestTransport(t *testing.T, id *pairing.Identity, trustedFPs []string
 		t.Fatalf("tls.X509KeyPair: %v", err)
 	}
 	tr, err := NewLANTransport(LANTransportConfig{
-		Cert:                tlsCert,
-		TrustedFingerprints: trustedFPs,
+		Cert:                 tlsCert,
+		TrustedFingerprints:  trustedFPs,
+		ReturnHandshakeError: true,
 	})
 	if err != nil {
 		t.Fatalf("NewLANTransport: %v", err)
 	}
 	return tr
+}
+
+type fatalAcceptListener struct {
+	err       error
+	closeCh   chan struct{}
+	closeOnce sync.Once
+}
+
+func (l *fatalAcceptListener) Accept() (net.Conn, error) { return nil, l.err }
+func (l *fatalAcceptListener) Close() error {
+	l.closeOnce.Do(func() { close(l.closeCh) })
+	return nil
+}
+func (l *fatalAcceptListener) Addr() net.Addr {
+	return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1}
+}
+
+func TestLANListener_FatalAcceptErrorIsReturned(t *testing.T) {
+	underlying := &fatalAcceptListener{err: errors.New("synthetic accept failure"), closeCh: make(chan struct{})}
+	l := &lanListener{
+		listener:         underlying,
+		handshakeTimeout: time.Second,
+		closed:           make(chan struct{}),
+		serveDone:        make(chan struct{}),
+		results:          make(chan lanAcceptResult, 1),
+		slots:            make(chan struct{}, 1),
+		handshaking:      make(map[*tls.Conn]struct{}),
+	}
+	l.wg.Add(1)
+	go func() {
+		defer l.wg.Done()
+		l.serve()
+	}()
+	_, err := l.Accept()
+	if err == nil {
+		t.Fatal("expected fatal listener error")
+	}
+	if !errors.Is(err, underlying.err) {
+		t.Fatalf("expected wrapped accept error, got %v", err)
+	}
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close after fatal accept: %v", err)
+	}
+}
+
+func TestLANListener_CloseDrainsQueuedConnections(t *testing.T) {
+	underlying := &fatalAcceptListener{err: errors.New("unused"), closeCh: make(chan struct{})}
+	l := &lanListener{
+		listener:         underlying,
+		handshakeTimeout: time.Second,
+		closed:           make(chan struct{}),
+		serveDone:        make(chan struct{}),
+		results:          make(chan lanAcceptResult, 1),
+		slots:            make(chan struct{}, 1),
+		handshaking:      make(map[*tls.Conn]struct{}),
+	}
+	local, remote := net.Pipe()
+	queued := newTCPConn(local)
+	l.results <- lanAcceptResult{conn: queued}
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := l.Accept(); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("Accept after Close = %v, want net.ErrClosed", err)
+	}
+	_ = remote.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := remote.Read(make([]byte, 1)); err == nil {
+		t.Fatal("queued connection was not closed during listener shutdown")
+	}
+	_ = remote.Close()
 }
 
 func TestLANTransport_MutualTLS_Success(t *testing.T) {
@@ -122,6 +194,50 @@ func TestLANTransport_MutualTLS_Success(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("server timed out")
+	}
+}
+
+func TestLANTransport_PinnedDialRejectsSubstitutedPeer(t *testing.T) {
+	local, err := pairing.GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	substitute, err := pairing.GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	localCert, err := tls.X509KeyPair(local.CertPEM, local.KeyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	substituteCert, err := tls.X509KeyPair(substitute.CertPEM, substitute.KeyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server, err := NewLANTransport(LANTransportConfig{
+		Cert:         substituteCert,
+		AllowPairing: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := server.Listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	client, err := NewLANTransport(LANTransportConfig{
+		Cert:         localCert,
+		AllowPairing: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conn, err := client.DialPinned(listener.Addr().String(), local.Fingerprint); err == nil {
+		_ = conn.Close()
+		t.Fatal("pinned dial accepted a substituted peer certificate")
 	}
 }
 
@@ -411,6 +527,280 @@ func TestLANTransport_MultipleSequentialConnections(t *testing.T) {
 			t.Fatalf("Receive connection %d: %v", i, err)
 		}
 		client.Close()
+	}
+}
+
+func TestLANTransport_TLS13Minimum(t *testing.T) {
+	id, err := pairing.GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := tls.X509KeyPair(id.CertPEM, id.KeyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr, err := NewLANTransport(LANTransportConfig{Cert: cert, TrustedFingerprints: []string{id.Fingerprint}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr.serverTLSConfig.MinVersion != tls.VersionTLS13 {
+		t.Fatalf("server minimum TLS version = %x, want TLS 1.3 (%x)", tr.serverTLSConfig.MinVersion, tls.VersionTLS13)
+	}
+	if tr.clientTLSConfig.MinVersion != tls.VersionTLS13 {
+		t.Fatalf("client minimum TLS version = %x, want TLS 1.3 (%x)", tr.clientTLSConfig.MinVersion, tls.VersionTLS13)
+	}
+}
+
+func TestLANTransport_TrustSnapshotIgnoresCallerMutation(t *testing.T) {
+	idA, err := pairing.GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	idB, err := pairing.GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	idC, err := pairing.GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	certA, err := tls.X509KeyPair(idA.CertPEM, idA.KeyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	trusted := []string{idB.Fingerprint}
+	trA, err := NewLANTransport(LANTransportConfig{
+		Cert:                 certA,
+		TrustedFingerprints:  trusted,
+		ReturnHandshakeError: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Mutating the caller's slice after construction must not revoke B or trust C.
+	trusted[0] = idC.Fingerprint
+
+	trB := createTestTransport(t, idB, []string{idA.Fingerprint})
+	l, err := trA.Listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+
+	accepted := make(chan error, 1)
+	go func() {
+		conn, err := l.Accept()
+		if err == nil {
+			_ = conn.Close()
+		}
+		accepted <- err
+	}()
+
+	client, err := trB.Dial(l.Addr().String())
+	if err != nil {
+		t.Fatalf("trusted B dial failed after caller slice mutation: %v", err)
+	}
+	defer client.Close()
+
+	select {
+	case err := <-accepted:
+		if err != nil {
+			t.Fatalf("trusted B was rejected after caller slice mutation: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for trusted connection")
+	}
+}
+
+func TestLANTransport_HandshakeFailureDoesNotStopListener(t *testing.T) {
+	idA, err := pairing.GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	idB, err := pairing.GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	certA, err := tls.X509KeyPair(idA.CertPEM, idA.KeyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handshakeErrors := make(chan error, 1)
+	trA, err := NewLANTransport(LANTransportConfig{
+		Cert:                certA,
+		TrustedFingerprints: []string{idB.Fingerprint},
+		OnHandshakeError: func(err error) {
+			select {
+			case handshakeErrors <- err:
+			default:
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := trA.Listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+
+	accepted := make(chan error, 1)
+	go func() {
+		conn, err := l.Accept()
+		if err == nil {
+			_ = conn.Close()
+		}
+		accepted <- err
+	}()
+
+	bad, err := net.Dial("tcp", l.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = bad.Write([]byte("not a TLS ClientHello\r\n"))
+	_ = bad.Close()
+
+	select {
+	case err := <-handshakeErrors:
+		if !IsHandshakeError(err) || !errors.Is(err, ErrHandshake) {
+			t.Fatalf("expected classified handshake error, got %v", err)
+		}
+		var handshakeErr *HandshakeError
+		if !errors.As(err, &handshakeErr) || handshakeErr.Transport != "lan" {
+			t.Fatalf("expected LAN HandshakeError, got %#v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for rejected TLS handshake")
+	}
+
+	trB := createTestTransport(t, idB, []string{idA.Fingerprint})
+	client, err := trB.Dial(l.Addr().String())
+	if err != nil {
+		t.Fatalf("valid connection after bad handshake failed: %v", err)
+	}
+	defer client.Close()
+	select {
+	case err := <-accepted:
+		if err != nil {
+			t.Fatalf("valid connection was rejected after bad handshake: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("listener stopped after a rejected handshake")
+	}
+}
+
+func TestLANTransport_HandshakeDeadline(t *testing.T) {
+	id, err := pairing.GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := tls.X509KeyPair(id.CertPEM, id.KeyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handshakeErrors := make(chan error, 1)
+	tr, err := NewLANTransport(LANTransportConfig{
+		Cert:             cert,
+		HandshakeTimeout: 100 * time.Millisecond,
+		OnHandshakeError: func(err error) {
+			select {
+			case handshakeErrors <- err:
+			default:
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := tr.Listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() { _, _ = l.Accept() }()
+
+	raw, err := net.Dial("tcp", l.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	_, _ = raw.Write([]byte{0x16, 0x03, 0x03, 0x00})
+
+	select {
+	case err := <-handshakeErrors:
+		if !IsHandshakeError(err) {
+			t.Fatalf("expected classified handshake error, got %v", err)
+		}
+		var netErr net.Error
+		if !errors.As(err, &netErr) || !netErr.Timeout() {
+			t.Fatalf("handshake error = %v, want timeout", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("partial TLS handshake did not reach its deadline")
+	}
+}
+
+func TestLANTransport_CloseInterruptsHandshake(t *testing.T) {
+	id, err := pairing.GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := tls.X509KeyPair(id.CertPEM, id.KeyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handshakeErrors := make(chan error, 1)
+	tr, err := NewLANTransport(LANTransportConfig{
+		Cert:             cert,
+		HandshakeTimeout: 30 * time.Second,
+		OnHandshakeError: func(err error) {
+			select {
+			case handshakeErrors <- err:
+			default:
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := tr.Listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	acceptDone := make(chan error, 1)
+	go func() {
+		_, err := l.Accept()
+		acceptDone <- err
+	}()
+
+	raw, err := net.Dial("tcp", l.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	_, _ = raw.Write([]byte{0x16, 0x03, 0x03, 0x00}) // deliberately incomplete ClientHello
+	time.Sleep(50 * time.Millisecond)
+
+	if err := l.Close(); err != nil {
+		t.Fatalf("listener close failed: %v", err)
+	}
+	select {
+	case err := <-handshakeErrors:
+		if !IsHandshakeError(err) {
+			t.Fatalf("expected classified handshake error after close, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("closing listener did not interrupt in-flight TLS handshake")
+	}
+	select {
+	case err := <-acceptDone:
+		if err == nil {
+			t.Fatal("Accept unexpectedly succeeded during listener close")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Accept did not return after listener close")
 	}
 }
 

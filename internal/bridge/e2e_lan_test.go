@@ -83,6 +83,10 @@ func createTestLANTransport(t *testing.T, id *pairing.Identity, trustedFPs []str
 	tr, err := transport.NewLANTransport(transport.LANTransportConfig{
 		Cert:                tlsCert,
 		TrustedFingerprints: trustedFPs,
+		// This direct-listener test asserts the legacy Accept error behavior;
+		// the Hub dispatcher intentionally consumes classified handshake
+		// failures so one bad peer cannot stop the listener.
+		ReturnHandshakeError: true,
 	})
 	if err != nil {
 		t.Fatalf("NewLANTransport failed: %v", err)

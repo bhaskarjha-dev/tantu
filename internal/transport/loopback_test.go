@@ -2,6 +2,8 @@ package transport
 
 import (
 	"errors"
+	"net"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -161,6 +163,54 @@ func TestLoopbackTransport_ListenerClose(t *testing.T) {
 	acceptErr := <-errCh
 	if acceptErr == nil {
 		t.Errorf("expected error after listener closed, got nil")
+	}
+}
+
+func TestTCPConn_ReadDeadline(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+	conn := newTCPConnWithTimeouts(server, 75*time.Millisecond, 0)
+	defer conn.Close()
+
+	_, err := conn.Receive()
+	if !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("Receive error = %v, want deadline exceeded", err)
+	}
+	if err := conn.Send("heartbeat", protocol.Heartbeat{}); err == nil {
+		t.Fatal("connection remained reusable after a partial-read timeout")
+	}
+}
+
+func TestTCPConn_WriteDeadline(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+	conn := newTCPConnWithTimeouts(server, 0, 75*time.Millisecond)
+	defer conn.Close()
+
+	// net.Pipe has no kernel buffer. With no peer reader, this frame write
+	// blocks until the configured write deadline closes the operation.
+	payload := make([]byte, 1024*1024)
+	err := conn.Send("heartbeat", payload)
+	if !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("Send error = %v, want deadline exceeded", err)
+	}
+	if _, err := conn.Receive(); err == nil {
+		t.Fatal("connection remained reusable after a partial-write timeout")
+	}
+}
+
+func TestTCPConn_CloseIsIdempotent(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+	conn := newTCPConn(server)
+	if err := conn.Close(); err != nil {
+		t.Fatalf("first Close failed: %v", err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("second Close failed: %v", err)
+	}
+	if err := conn.Send("heartbeat", protocol.Heartbeat{}); err == nil {
+		t.Fatal("Send after Close unexpectedly succeeded")
 	}
 }
 
