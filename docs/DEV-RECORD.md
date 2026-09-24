@@ -150,3 +150,19 @@ Severity: P0 critical/exploitable remotely · P1 exploitable by paired/local att
 7. [x] Adversarial re-review + fresh discovery → Batches C/D implemented.
 8. [x] Fuzzing (3 targets, clean) + release smoke test.
 9. Commit Batches C/D locally (no push); final report.
+10. [x] Batch E (42799e7): Hub.Err startup-failure signal, Stop force-close
+    (no running wedge), OAuth in-flight cap 128, discovery transient-error
+    backoff, cockpit ctx+timeout plumbing, Hub.Timeout() — full suite green.
+11. [x] Batch F (eb1ea1b): dashboard XHR real upload progress + cancel,
+    GB/TB formatBytes, focus-preserving peer render, ARIA live regions —
+    JS node --check clean, full suite green.
+
+## Batch E/F validation (2026-09-24, commits 42799e7, eb1ea1b)
+
+- `go build ./...` PASS, `go vet ./...` PASS,
+  `go test -count=1 ./...` PASS (all 12 packages).
+- New tests: TestHub_ErrReportsStartupFailure, TestHub_ErrNilOnSuccess,
+  TestHub_TimeoutDefaultAndConfigured, TestOAuthSessionManager_ActiveSessionCap,
+  TestWebDashboard_UploadProgressAndPeerRenderMarkers.
+- `go test -race ./...` still blocked (no C compiler); `-count=1` full suite
+  is the standing mitigation. Race safety never claimed.
