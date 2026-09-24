@@ -115,12 +115,17 @@ func callbackExpectation(rawURL string) callbackExpectationSpec {
 }
 
 func isLoopbackHost(host string) bool {
-	switch strings.ToLower(host) {
-	case "localhost", "127.0.0.1", "::1":
+	// The full 127/8 range is loopback (RFC 1122), matching the standalone
+	// server checks. OAuth delivery still targets 127.0.0.1 exactly; this
+	// predicate only answers "is this a loopback interface".
+	if strings.EqualFold(host, "localhost") {
 		return true
-	default:
-		return false
 	}
+	trimmed := strings.Trim(host, "[]")
+	if ip := net.ParseIP(trimmed); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 func requestHostIsLoopback(hostHeader string) bool {
@@ -165,17 +170,16 @@ func validateCallbackRequestState(r *http.Request, expected callbackExpectationS
 func callbackHeaders(h http.Header) map[string]string {
 	// Do not relay cookies, authorization headers, or arbitrary browser
 	// metadata to the application.  These are the headers commonly needed by
-	// local OAuth callback servers.
-	allowed := []string{
-		"Accept",
-		"Accept-Language",
-		"Content-Type",
-		"X-Requested-With",
-	}
-	headers := make(map[string]string, len(allowed))
-	for _, name := range allowed {
-		if value := h.Get(name); value != "" {
-			headers[name] = value
+	// local OAuth callback servers. The same allowlist is enforced on the
+	// B-side at delivery time (filterCallbackRelayHeaders) so a malicious or
+	// buggy peer cannot inject headers the A-side would never capture.
+	headers := make(map[string]string, 4)
+	for name, values := range h {
+		if len(values) == 0 || values[0] == "" {
+			continue
+		}
+		if allowedCallbackRelayHeader(name) {
+			headers[http.CanonicalHeaderKey(name)] = values[0]
 		}
 	}
 	return headers

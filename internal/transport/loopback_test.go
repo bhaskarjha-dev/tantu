@@ -188,9 +188,12 @@ func TestTCPConn_WriteDeadline(t *testing.T) {
 	defer conn.Close()
 
 	// net.Pipe has no kernel buffer. With no peer reader, this frame write
-	// blocks until the configured write deadline closes the operation.
+	// blocks until the configured write deadline closes the operation. The
+	// frame uses the drop_data type because control frames are capped at
+	// 64 KiB by the encoder (mirroring the decoder budget); a 1 MiB control
+	// frame fails locally before any I/O and cannot exercise the deadline.
 	payload := make([]byte, 1024*1024)
-	err := conn.Send("heartbeat", payload)
+	err := conn.Send("drop_data", payload)
 	if !errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Fatalf("Send error = %v, want deadline exceeded", err)
 	}

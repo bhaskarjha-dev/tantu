@@ -49,12 +49,47 @@ type PeerStore struct {
 }
 
 // NewPeerStore creates a store rooted at the given directory.
-// The directory is created with 0700 permissions if it doesn't exist.
+// The directory is created with 0700 permissions if it doesn't exist, and
+// pre-existing lax permissions are tightened: identity material lives here.
 func NewPeerStore(dir string) (*PeerStore, error) {
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return nil, fmt.Errorf("create peer store directory: %w", err)
+	if err := ensureStoreDir(dir); err != nil {
+		return nil, err
 	}
 	return &PeerStore{dir: dir}, nil
+}
+
+// ensureStoreDir creates dir with 0700 when missing and repairs group/other
+// access bits when a previous umask, restore, or manual chmod left them set.
+// The repair is a single best-effort Chmod; a persistent failure is reported
+// so a world-readable identity directory can never be silently accepted.
+func ensureStoreDir(dir string) error {
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("create peer store directory: %w", err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("stat peer store directory: %w", err)
+	}
+	if info.Mode().Perm()&0077 != 0 {
+		if err := os.Chmod(dir, 0700); err != nil {
+			return fmt.Errorf("tighten peer store directory permissions: %w", err)
+		}
+	}
+	return nil
+}
+
+// ensurePrivateFile tightens a store file to owner-only access when a
+// previous umask, restore, or manual chmod left group/other bits set. It runs
+// after a successful read so a Chmod failure can never turn valid data into a
+// load error; files written by writeAtomic are already 0600.
+func ensurePrivateFile(path string) {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return
+	}
+	if info.Mode().Perm()&0077 != 0 {
+		_ = os.Chmod(path, 0600)
+	}
 }
 
 // DefaultStoreDir returns the platform-appropriate config directory
@@ -168,6 +203,7 @@ func (s *PeerStore) LoadIdentity() (*Identity, error) {
 	if err := ValidateIdentity(&id); err != nil {
 		return nil, fmt.Errorf("validate identity: %w", err)
 	}
+	ensurePrivateFile(path)
 	return &id, nil
 }
 
@@ -200,6 +236,7 @@ func (s *PeerStore) loadPeersMap() (map[string]Peer, error) {
 	if err := json.Unmarshal(data, &peers); err != nil {
 		return nil, fmt.Errorf("unmarshal peers: %w", err)
 	}
+	ensurePrivateFile(path)
 	return peers, nil
 }
 
@@ -223,6 +260,43 @@ func validatePeerLabel(label string) error {
 	return nil
 }
 
+// validatePeerAddress rejects malformed host:port values before they persist.
+// Bare hosts without a port are accepted: NormalizePeers assigns the default
+// LAN port later. Explicit ports must be numeric or resolvable service names.
+func validatePeerAddress(addr string) error {
+	addr = strings.TrimSpace(addr)
+	if addr == "" || len(addr) > 256 {
+		return errors.New("peer address is invalid")
+	}
+	for _, r := range addr {
+		if unicode.IsControl(r) {
+			return errors.New("peer address contains a control character")
+		}
+	}
+	if host, port, err := net.SplitHostPort(addr); err == nil {
+		if strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
+			return errors.New("peer address must be host:port")
+		}
+		if strings.ContainsAny(host, " \t") {
+			return errors.New("peer address host contains whitespace")
+		}
+		if _, err := net.LookupPort("tcp", port); err != nil {
+			return errors.New("peer address has an invalid port")
+		}
+		return nil
+	}
+	if net.ParseIP(addr) != nil {
+		return nil
+	}
+	if strings.Contains(addr, ":") {
+		return errors.New("peer address must be host:port")
+	}
+	if strings.Contains(addr, " ") {
+		return errors.New("peer address contains a space")
+	}
+	return nil
+}
+
 // AddPeer persists a trusted peer. If the peer already exists, it is updated.
 func (s *PeerStore) AddPeer(p Peer) error {
 	p.Fingerprint = strings.ToLower(strings.TrimSpace(p.Fingerprint))
@@ -237,6 +311,27 @@ func (s *PeerStore) AddPeer(p Peer) error {
 	}
 	if err := validatePeerLabel(p.Alias); err != nil {
 		return err
+	}
+	// Bind the stored certificate and address to the fingerprint claim. The
+	// LAN verifier pins the fingerprint string, so a mismatched record would
+	// otherwise persist unauthoritative material that display and audit paths
+	// treat as the peer's identity.
+	if len(p.CertPEM) > 0 {
+		if len(p.CertPEM) > 64*1024 {
+			return errors.New("peer certificate is too large")
+		}
+		certFP, err := Fingerprint(p.CertPEM)
+		if err != nil {
+			return fmt.Errorf("peer certificate is invalid: %w", err)
+		}
+		if !strings.EqualFold(certFP, p.Fingerprint) {
+			return errors.New("peer certificate does not match fingerprint")
+		}
+	}
+	if strings.TrimSpace(p.Address) != "" {
+		if err := validatePeerAddress(p.Address); err != nil {
+			return err
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -380,6 +475,9 @@ func (s *PeerStore) SetDefault(fingerprint string) error {
 // UpdatePeerAddress updates a peer's network host:port address and updates LastSeen.
 func (s *PeerStore) UpdatePeerAddress(fingerprint, newAddress string) error {
 	fingerprint = strings.ToLower(strings.TrimSpace(fingerprint))
+	if err := validatePeerAddress(newAddress); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -445,12 +543,21 @@ func (s *PeerStore) ResolvePeer(query string) (*Peer, error) {
 		}
 	}
 
-	// Tier 2: Exact SAS code match
+	// Tier 2: Exact SAS code match. The SAS is only 24 bits, so collisions are
+	// possible; multiple matches are ambiguous and must not silently resolve
+	// to the first peer in sort order.
+	var sasMatches []Peer
 	for _, p := range peers {
 		if strings.EqualFold(p.SAS(), trimmed) {
-			res := p
-			return &res, nil
+			sasMatches = append(sasMatches, p)
 		}
+	}
+	if len(sasMatches) == 1 {
+		res := sasMatches[0]
+		return &res, nil
+	}
+	if len(sasMatches) > 1 {
+		return nil, fmt.Errorf("SAS code %q is ambiguous; use a fingerprint prefix", trimmed)
 	}
 
 	// Tier 3: Exact Alias match

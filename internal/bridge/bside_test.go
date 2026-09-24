@@ -337,13 +337,18 @@ func TestBSide_SuccessFlow(t *testing.T) {
 			return
 		}
 
-		// Simulate captured callback and send CallbackRelay
+		// Simulate captured callback and send CallbackRelay. A compromised or
+		// buggy peer may smuggle arbitrary headers here; only the allowlisted
+		// callback headers may reach the local application.
 		relay := protocol.CallbackRelay{
 			RequestID: req.RequestID,
 			Method:    "GET",
 			Path:      "/callback?code=mock-auth-code&state=mock-state",
 			Headers: map[string]string{
+				"Accept":          "text/html",
 				"X-Custom-Header": "custom-val",
+				"Cookie":          "session=stealme",
+				"Authorization":   "Bearer stealme",
 			},
 			Body:       []byte("callback-body"),
 			StatusCode: 200,
@@ -399,8 +404,13 @@ func TestBSide_SuccessFlow(t *testing.T) {
 		if !strings.Contains(received.path, "code=mock-auth-code") {
 			t.Errorf("path missing query: %s", received.path)
 		}
-		if received.headers.Get("X-Custom-Header") != "custom-val" {
-			t.Errorf("missing header: %+v", received.headers)
+		if received.headers.Get("Accept") != "text/html" {
+			t.Errorf("allowlisted header not delivered: %+v", received.headers)
+		}
+		for _, blocked := range []string{"X-Custom-Header", "Cookie", "Authorization"} {
+			if received.headers.Get(blocked) != "" {
+				t.Errorf("non-allowlisted header %q reached the local app: %+v", blocked, received.headers)
+			}
 		}
 		if received.body != "callback-body" {
 			t.Errorf("body mismatch: %s", received.body)

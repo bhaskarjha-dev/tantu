@@ -301,3 +301,22 @@ func TestNewCodec(t *testing.T) {
 		t.Fatalf("expected %+v, got %+v", req, decoded)
 	}
 }
+
+func TestEncodeEnforcesControlFrameLimit(t *testing.T) {
+	// An oversized control frame must fail locally at encode time instead of
+	// only after the receiver tears the connection down.
+	var buf bytes.Buffer
+	enc := NewEncoder(&buf)
+	big := map[string]string{"url": string(bytes.Repeat([]byte("x"), MaxControlMessageSize))}
+	if err := enc.Encode(TypeBridgeRequest, big); !errors.Is(err, ErrMessageTooLarge) {
+		t.Fatalf("Encode oversized control frame = %v, want ErrMessageTooLarge", err)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("encoder wrote %d bytes for a rejected frame", buf.Len())
+	}
+	// Data frames retain the larger allowance.
+	large := map[string]string{"data": string(bytes.Repeat([]byte("x"), MaxControlMessageSize))}
+	if err := enc.Encode("drop_data", large); err != nil {
+		t.Fatalf("Encode drop_data frame = %v, want nil", err)
+	}
+}

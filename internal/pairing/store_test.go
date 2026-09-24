@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -105,12 +106,17 @@ func TestPeerStoreCRUD(t *testing.T) {
 		t.Error("expected GetPeer to return false for non-existent peer")
 	}
 
-	// Add peer
+	// Add peer. Peer fixtures use real generated certificates so the
+	// fingerprint/certificate binding enforced by AddPeer is exercised.
+	peerID1, err := GenerateIdentity()
+	if err != nil {
+		t.Fatalf("GenerateIdentity: %v", err)
+	}
 	p1 := Peer{
-		Fingerprint: "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+		Fingerprint: peerID1.Fingerprint,
 		Name:        "laptop-a",
 		Address:     "192.168.1.50:9877",
-		CertPEM:     []byte("test-cert-pem"),
+		CertPEM:     peerID1.CertPEM,
 	}
 	if err := store.AddPeer(p1); err != nil {
 		t.Fatalf("AddPeer failed: %v", err)
@@ -151,11 +157,15 @@ func TestPeerStoreCRUD(t *testing.T) {
 	}
 
 	// Add second peer
+	peerID2, err := GenerateIdentity()
+	if err != nil {
+		t.Fatalf("GenerateIdentity: %v", err)
+	}
 	p2 := Peer{
-		Fingerprint: "1122334455667788990011223344556677889900112233445566778899001122",
+		Fingerprint: peerID2.Fingerprint,
 		Name:        "desktop-b",
 		Address:     "192.168.1.60:9877",
-		CertPEM:     []byte("test-cert-pem-2"),
+		CertPEM:     peerID2.CertPEM,
 	}
 	if err := store.AddPeer(p2); err != nil {
 		t.Fatalf("AddPeer p2: %v", err)
@@ -358,5 +368,124 @@ func TestPeerStore_BackwardCompatibility(t *testing.T) {
 	}
 	if p.DisplayName() != "legacy-box" {
 		t.Errorf("expected DisplayName 'legacy-box', got %s", p.DisplayName())
+	}
+}
+
+func TestPeerStore_SASAmbiguityRejected(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewPeerStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewPeerStore: %v", err)
+	}
+	// Two peers sharing a 6-hex SAS prefix: SAS() is fp[:6].
+	pA := Peer{Fingerprint: "aabbcc0000000000000000000000000000000000000000000000000000000001", Name: "a", Address: "10.0.0.1:9877"}
+	pB := Peer{Fingerprint: "aabbccffffffffffffffffffffffffffffffffffffffffffffffffffff0002", Name: "b", Address: "10.0.0.2:9877"}
+	if err := store.AddPeer(pA); err != nil {
+		t.Fatalf("AddPeer A: %v", err)
+	}
+	if err := store.AddPeer(pB); err != nil {
+		t.Fatalf("AddPeer B: %v", err)
+	}
+	if _, err := store.ResolvePeer("aabbcc"); err == nil {
+		t.Fatal("expected ambiguous SAS error, got nil")
+	}
+}
+
+func TestPeerStore_CertFingerprintBinding(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewPeerStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewPeerStore: %v", err)
+	}
+	id, err := GenerateIdentity()
+	if err != nil {
+		t.Fatalf("GenerateIdentity: %v", err)
+	}
+	// Mismatched certificate must be rejected.
+	bad := Peer{Fingerprint: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", Name: "bad", Address: "10.0.0.3:9877", CertPEM: id.CertPEM}
+	if err := store.AddPeer(bad); err == nil {
+		t.Fatal("expected certificate/fingerprint mismatch error, got nil")
+	}
+	// Matching certificate is accepted.
+	good := Peer{Fingerprint: id.Fingerprint, Name: "good", Address: "10.0.0.3:9877", CertPEM: id.CertPEM}
+	if err := store.AddPeer(good); err != nil {
+		t.Fatalf("AddPeer with matching cert: %v", err)
+	}
+	// Oversized certificate blobs are rejected.
+	huge := make([]byte, 64*1024+1)
+	big := Peer{Fingerprint: id.Fingerprint, Name: "big", Address: "10.0.0.3:9877", CertPEM: huge}
+	if err := store.AddPeer(big); err == nil {
+		t.Fatal("expected oversized certificate error, got nil")
+	}
+}
+
+func TestPeerStore_AddressValidation(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewPeerStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewPeerStore: %v", err)
+	}
+	valid := []string{"192.168.1.50:9877", "10.0.0.5", "example-host", "127.0.0.1", "host:9999"}
+	for i, addr := range valid {
+		p := Peer{Fingerprint: "aabbccddeeff0000000000000000000000000000000000000000000000000000", Name: "v", Address: addr}
+		p.Fingerprint = "aabbccddeeff00000000000000000000000000000000000000000000000000" + string(rune('0'+i)) + string(rune('0'+i))
+		if err := store.AddPeer(p); err != nil {
+			t.Errorf("AddPeer(%q) = %v, want nil", addr, err)
+		}
+	}
+	invalid := []string{"host:notaport", "host:", ":9877", "has space:9877", "bad\x01addr:9877"}
+	for _, addr := range invalid {
+		p := Peer{Fingerprint: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff00", Name: "x", Address: addr}
+		if err := store.AddPeer(p); err == nil {
+			t.Errorf("AddPeer(%q) succeeded, want error", addr)
+		}
+	}
+	if err := store.UpdatePeerAddress(p_FingerprintForUpdate(t, store), "not a port:xyz"); err == nil {
+		t.Error("UpdatePeerAddress with invalid address succeeded, want error")
+	}
+}
+
+func p_FingerprintForUpdate(t *testing.T, store *PeerStore) string {
+	t.Helper()
+	peers := store.ListPeers()
+	if len(peers) == 0 {
+		t.Fatal("no peers available for update test")
+	}
+	return peers[0].Fingerprint
+}
+
+func TestPeerStore_PermissionRepair(t *testing.T) {
+	// os.Chmod cannot express owner-only ACLs on Windows (only the read-only
+	// attribute is mapped), so permission repair is a Unix-enforced control.
+	// The repair calls remain in the code path as harmless no-ops on Windows.
+	if runtime.GOOS == "windows" {
+		t.Skip("permission repair requires Unix file modes")
+	}
+	tmpDir := t.TempDir()
+	if err := os.MkdirAll(tmpDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewPeerStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewPeerStore: %v", err)
+	}
+	if info, err := os.Stat(tmpDir); err != nil || info.Mode().Perm()&0077 != 0 {
+		t.Fatalf("store dir perms not repaired: %v %v", info.Mode(), err)
+	}
+	id, err := GenerateIdentity()
+	if err != nil {
+		t.Fatalf("GenerateIdentity: %v", err)
+	}
+	if err := store.SaveIdentity(id); err != nil {
+		t.Fatalf("SaveIdentity: %v", err)
+	}
+	if err := os.Chmod(filepath.Join(tmpDir, "identity.json"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LoadIdentity(); err != nil {
+		t.Fatalf("LoadIdentity: %v", err)
+	}
+	if info, err := os.Stat(filepath.Join(tmpDir, "identity.json")); err != nil || info.Mode().Perm()&0077 != 0 {
+		t.Fatalf("identity file perms not repaired: %v %v", info.Mode(), err)
 	}
 }

@@ -128,8 +128,9 @@ func runPair(args []string) {
 				selection = strings.TrimSpace(scanner.Text())
 			}
 			if selection != "" {
-				var choice int
-				if n, err := fmt.Sscanf(selection, "%d", &choice); err == nil && n == 1 && choice >= 1 && choice <= len(discovered) {
+				// Strict numeric parse: Sscanf would accept trailing junk
+				// such as "1abc" as a valid selection.
+				if choice, err := strconv.Atoi(selection); err == nil && choice >= 1 && choice <= len(discovered) {
 					*peerAddr = discovered[choice-1].Address
 				} else {
 					*peerAddr = selection

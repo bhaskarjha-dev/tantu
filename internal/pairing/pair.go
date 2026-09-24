@@ -274,7 +274,13 @@ func PairInitiator(store *PeerStore, listenAddr string, confirmFn func(peerSAS, 
 
 // PairInitiatorWithListener runs the pairing initiator using an existing net.Listener.
 func PairInitiatorWithListener(store *PeerStore, l net.Listener, confirmFn func(peerSAS, localSAS string) bool) (*PairResult, error) {
-	ctx := context.Background()
+	// Bound the whole pairing attempt, including the human SAS comparison
+	// during which the network deadline is cleared. Without this an
+	// unattended prompt (or an attacker holding the connection) hangs the
+	// initiator forever; the responder side is already bounded by its own
+	// 2-minute context.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
 	id, err := getOrGenerateIdentity(store)
 	if err != nil {
 		return nil, err
@@ -311,6 +317,8 @@ func PairInitiatorWithListener(store *PeerStore, l net.Listener, confirmFn func(
 			return nil, fmt.Errorf("pairing accept: %w", res.err)
 		}
 		conn = res.conn
+	case <-ctx.Done():
+		return nil, fmt.Errorf("pairing initiator cancelled while waiting for responder: %w", ctx.Err())
 	case <-time.After(2 * time.Minute):
 		return nil, errors.New("pairing initiator timed out waiting for responder")
 	}

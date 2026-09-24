@@ -90,7 +90,9 @@ func runUnpair(args []string) {
 	if *name != "" {
 		var matches []pairing.Peer
 		for _, p := range peers {
-			if p.Name == *name {
+			// Match display name or alias, case-insensitively, consistent
+			// with the peer store's own resolution tiers.
+			if strings.EqualFold(p.Name, *name) || (p.Alias != "" && strings.EqualFold(p.Alias, *name)) {
 				matches = append(matches, p)
 			}
 		}
@@ -116,7 +118,15 @@ func runUnpair(args []string) {
 	}
 
 	if *fingerprint != "" {
-		fpTarget := strings.ToLower(*fingerprint)
+		fpTarget := strings.ToLower(strings.TrimSpace(*fingerprint))
+		// A fingerprint prefix shorter than 6 hex characters is not
+		// distinctive: with a single paired peer even one character would
+		// match, turning a typo into silent trust removal. The 6-character
+		// minimum mirrors the peer store's own prefix-resolution rule.
+		if len(fpTarget) < 6 {
+			fmt.Fprintf(os.Stderr, "Error: fingerprint prefix must be at least 6 characters (got %d)\n", len(fpTarget))
+			os.Exit(1)
+		}
 		var matches []pairing.Peer
 		for _, p := range peers {
 			if strings.HasPrefix(strings.ToLower(p.Fingerprint), fpTarget) {

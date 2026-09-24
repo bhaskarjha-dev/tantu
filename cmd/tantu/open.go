@@ -50,7 +50,11 @@ func runOpen(args []string) {
 	}
 	oauthURL := rest[0]
 	if oauthURL == "-" {
+		// OAuth URLs may approach the 64 KiB bridge limit; the default
+		// 64 KiB scanner token cap would reject near-limit URLs that succeed
+		// via argv, so size the buffer for the longest acceptable input.
 		scanner := bufio.NewScanner(os.Stdin)
+		scanner.Buffer(make([]byte, 64*1024), 128*1024)
 		if scanner.Scan() {
 			oauthURL = strings.TrimSpace(scanner.Text())
 		}

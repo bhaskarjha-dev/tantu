@@ -5,7 +5,9 @@ package transport
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/bhaskarjha-dev/tantu/internal/protocol"
@@ -124,7 +126,9 @@ func DialPinned(tr Transport, address, expectedFingerprint string) (Conn, error)
 }
 
 // DialPinnedContext is DialPinned with cancellation for callers such as Hub
-// roaming probes and HTTP-triggered operations.
+// roaming probes and HTTP-triggered operations. When expectedFingerprint is
+// non-empty but the transport offers no pinning capability, an error is
+// returned instead of silently downgrading to an unauthenticated dial.
 func DialPinnedContext(ctx context.Context, tr Transport, address, expectedFingerprint string) (Conn, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -134,6 +138,9 @@ func DialPinnedContext(ctx context.Context, tr Transport, address, expectedFinge
 	}
 	if pinning, ok := tr.(PeerPinningTransport); ok {
 		return pinning.DialPinned(address, expectedFingerprint)
+	}
+	if strings.TrimSpace(expectedFingerprint) != "" {
+		return nil, fmt.Errorf("transport %T does not support pinned dials (fingerprint %q cannot be verified)", tr, expectedFingerprint)
 	}
 	return tr.Dial(address)
 }

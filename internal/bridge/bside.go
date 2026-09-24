@@ -385,7 +385,7 @@ func (b *BSide) Run(parent context.Context, oauthURL string) error {
 			deliveryErr = fmt.Errorf("create delivery request: %w", err)
 			break
 		}
-		for k, v := range relay.Headers {
+		for k, v := range filterCallbackRelayHeaders(relay.Headers) {
 			httpReq.Header.Set(k, v)
 		}
 		if host := relay.Headers["Host"]; host != "" && requestHostIsLoopback(host) {

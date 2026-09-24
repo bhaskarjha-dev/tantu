@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"sort"
 	"strings"
@@ -198,6 +199,35 @@ func (l oauthSessionLease) finish(err error) {
 type envelopeResult struct {
 	env *protocol.Envelope
 	err error
+}
+
+// allowedCallbackRelayHeader reports whether an OAuth callback header may cross
+// the bridge trust boundary in either direction (A-side capture or B-side
+// delivery). Only headers commonly needed by local OAuth callback servers are
+// permitted; Cookie, Authorization, Host, Content-Length, and all other
+// browser or peer metadata must never be forwarded to the local application.
+func allowedCallbackRelayHeader(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "accept", "accept-language", "content-type", "x-requested-with":
+		return true
+	default:
+		return false
+	}
+}
+
+// filterCallbackRelayHeaders returns the allowlisted subset of a relayed
+// header map with canonicalized keys. It is the B-side enforcement point: a
+// compromised or buggy peer must not be able to smuggle Authorization, Cookie,
+// or other sensitive headers into the localhost application request.
+func filterCallbackRelayHeaders(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for name, value := range in {
+		if value == "" || !allowedCallbackRelayHeader(name) {
+			continue
+		}
+		out[http.CanonicalHeaderKey(name)] = value
+	}
+	return out
 }
 
 // redactBridgeMessage keeps authorization URLs out of errors that may cross a

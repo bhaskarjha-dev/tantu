@@ -11,7 +11,9 @@ import (
 )
 
 func TestEngine_SelfFiltering(t *testing.T) {
-	myFP := "test-fingerprint-aaa"
+	// Realistic identities so the beacon passes wire validation and the
+	// self-filtering path is genuinely exercised (not vacuously empty).
+	myFP := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	mySAS := "123456"
 
 	e, err := NewEngine(DiscoveryConfig{
@@ -221,8 +223,8 @@ func TestEngine_ValidUDPBeacon(t *testing.T) {
 		Version: 1,
 		Name:    "remote-peer-test",
 		Port:    9888,
-		SAS:     "peer99",
-		FP:      "fp-peer-9999",
+		SAS:     "beef01",
+		FP:      "9999aaaa9999aaaa9999aaaa9999aaaa9999aaaa9999aaaa9999aaaa9999aaaa",
 	}
 	payload, _ := json.Marshal(b)
 	packet := append([]byte(BeaconPrefix), payload...)
@@ -237,7 +239,7 @@ func TestEngine_ValidUDPBeacon(t *testing.T) {
 	for time.Now().Before(deadline) {
 		nodes := e.ListNodes()
 		for _, n := range nodes {
-			if n.Fingerprint == "fp-peer-9999" && n.InstanceName == "remote-peer-test" {
+			if n.Fingerprint == "9999aaaa9999aaaa9999aaaa9999aaaa9999aaaa9999aaaa9999aaaa9999aaaa" && n.InstanceName == "remote-peer-test" {
 				found = true
 				if !strings.HasSuffix(n.Address, ":9888") {
 					t.Errorf("expected address to end with :9888, got %s", n.Address)
@@ -253,5 +255,30 @@ func TestEngine_ValidUDPBeacon(t *testing.T) {
 
 	if !found {
 		t.Fatal("expected peer to be discovered from UDP beacon")
+	}
+}
+
+func TestValidBeacon_RejectsMalformedIdentity(t *testing.T) {
+	goodFP := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	cases := []struct {
+		name   string
+		beacon beaconPayload
+		want   bool
+	}{
+		{"valid", beaconPayload{Version: 1, Name: "n", Port: 9877, SAS: "a1b2c3", FP: goodFP}, true},
+		{"empty fp", beaconPayload{Version: 1, Name: "n", Port: 9877, SAS: "a1b2c3", FP: ""}, false},
+		{"short fp", beaconPayload{Version: 1, Name: "n", Port: 9877, SAS: "a1b2c3", FP: "abcd"}, false},
+		{"non-hex fp", beaconPayload{Version: 1, Name: "n", Port: 9877, SAS: "a1b2c3", FP: "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"}, false},
+		{"empty sas", beaconPayload{Version: 1, Name: "n", Port: 9877, SAS: "", FP: goodFP}, false},
+		{"long sas", beaconPayload{Version: 1, Name: "n", Port: 9877, SAS: "toolong7", FP: goodFP}, false},
+		{"non-hex sas", beaconPayload{Version: 1, Name: "n", Port: 9877, SAS: "zzzzzz", FP: goodFP}, false},
+		{"bad version", beaconPayload{Version: 2, Name: "n", Port: 9877, SAS: "a1b2c3", FP: goodFP}, false},
+		{"bad port", beaconPayload{Version: 1, Name: "n", Port: 0, SAS: "a1b2c3", FP: goodFP}, false},
+		{"control in name", beaconPayload{Version: 1, Name: "a\x01b", Port: 9877, SAS: "a1b2c3", FP: goodFP}, false},
+	}
+	for _, tc := range cases {
+		if got := validBeacon(tc.beacon); got != tc.want {
+			t.Errorf("validBeacon(%s) = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

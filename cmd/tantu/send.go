@@ -134,10 +134,16 @@ func runSend(args []string) {
 			}
 			payload = f
 		} else {
-			// Text mode
+			// Text mode. Command-line text shares the 10MB text-drop limit
+			// enforced on stdin and HTTP ingress; without it an unbounded
+			// argv allocation reaches the wire only to be rejected there.
 			text := strings.Join(rest, "")
 			if len(rest) > 1 {
 				text = strings.Join(rest, " ")
+			}
+			if int64(len(text)) > standaloneTextDropLimit {
+				fmt.Fprintln(os.Stderr, "Error: text exceeds 10MB limit")
+				os.Exit(1)
 			}
 			meta = drop.DropSend{
 				Kind: drop.DropKindText,
@@ -277,6 +283,9 @@ func runSend(args []string) {
 		tr, err = transport.NewLANTransport(transport.LANTransportConfig{
 			Cert:                tlsCert,
 			TrustedFingerprints: trustedFPs,
+			// Live store lookup in addition to the snapshot: a peer removed
+			// between ListPeers and Dial must not remain dialable.
+			IsTrusted: lanStore.IsTrusted,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: failed to configure LAN transport: %v\n", err)

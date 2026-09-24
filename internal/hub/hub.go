@@ -297,6 +297,75 @@ func EnsurePeerLANPort(addr string) string {
 	return net.JoinHostPort(addr, transport.DefaultLANPort)
 }
 
+// retryStagingOpen reports that a staging partial could not be opened for
+// resume (usually raced away). The caller must fall back to exclusive
+// creation, which surfaces persistent errors. It is distinct from a hard
+// failure such as a symlink swap, which must abort the transfer.
+type retryStagingOpen struct{ err error }
+
+func (e *retryStagingOpen) Error() string {
+	if e == nil || e.err == nil {
+		return "staging partial unavailable for resume"
+	}
+	return "staging partial unavailable for resume: " + e.err.Error()
+}
+
+func (e *retryStagingOpen) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+// openResumePart opens a previously Lstat-inspected staging partial for
+// resume. The inspected descriptor must come from os.Lstat immediately
+// beforehand; the opened file is verified to be the same regular file, so a
+// symlink swap between inspection and open fails closed instead of truncating
+// an unrelated victim file.
+func openResumePart(partPath string, inspected os.FileInfo) (*os.File, error) {
+	f, err := os.OpenFile(partPath, os.O_RDWR, 0600)
+	if err != nil {
+		return nil, &retryStagingOpen{err: err}
+	}
+	finfo, statErr := f.Stat()
+	if statErr != nil || !finfo.Mode().IsRegular() || !os.SameFile(inspected, finfo) {
+		_ = f.Close()
+		if statErr != nil {
+			return nil, fmt.Errorf("inspect partial file: %w", statErr)
+		}
+		return nil, fmt.Errorf("partial file changed during open: %s", partPath)
+	}
+	return f, nil
+}
+
+// createStagingPart exclusively creates a staging partial, never truncating
+// through a possibly-swapped path. On EEXIST the conflicting entry is removed
+// without following it (os.Remove never follows the final path element, so a
+// planted symlink is unlinked rather than traversed) and the file is created
+// exactly once more; any further race fails closed instead of truncating a
+// victim file.
+func createStagingPart(partPath string) (*os.File, error) {
+	f, err := os.OpenFile(partPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+	if os.IsExist(err) {
+		if rmErr := os.Remove(partPath); rmErr == nil {
+			f, err = os.OpenFile(partPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+		} else {
+			err = fmt.Errorf("remove conflicting partial path: %w", rmErr)
+		}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("create part file: %w", err)
+	}
+	if info, statErr := f.Stat(); statErr != nil || !info.Mode().IsRegular() {
+		_ = f.Close()
+		if statErr == nil {
+			statErr = errors.New("partial path is not a regular file")
+		}
+		return nil, fmt.Errorf("inspect created partial file: %w", statErr)
+	}
+	return f, nil
+}
+
 func sameConfiguredEndpoint(a, b string) bool {
 	ah, ap, aerr := net.SplitHostPort(strings.TrimSpace(a))
 	bh, bp, berr := net.SplitHostPort(strings.TrimSpace(b))
@@ -1221,9 +1290,11 @@ func (h *Hub) Start(parent context.Context) error {
 						}
 						validBytes = (existingBytes / chunkSize) * chunkSize
 						if meta.Size > 0 && validBytes > 0 && validBytes < meta.Size && meta.HeadHash != "" {
-							var openErr error
-							f, openErr = os.OpenFile(partPath, os.O_RDWR, 0600)
-							if openErr == nil {
+							resumed, openErr := openResumePart(partPath, info)
+							var retry *retryStagingOpen
+							switch {
+							case openErr == nil:
+								f = resumed
 								if meta.HeadHash != "" && validBytes >= 64*1024 {
 									headBuf := make([]byte, 64*1024)
 									if n, rErr := io.ReadFull(f, headBuf); rErr != nil {
@@ -1253,8 +1324,10 @@ func (h *Hub) Start(parent context.Context) error {
 									_ = f.Close()
 									f = nil
 								}
-							} else {
+							case errors.As(openErr, &retry):
 								validBytes = 0
+							default:
+								return nil, openErr
 							}
 						} else {
 							validBytes = 0
@@ -1264,18 +1337,11 @@ func (h *Hub) Start(parent context.Context) error {
 					}
 
 					if f == nil {
-						var err error
-						f, err = os.OpenFile(partPath, os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0600)
+						created, err := createStagingPart(partPath)
 						if err != nil {
-							return nil, fmt.Errorf("create part file: %w", err)
+							return nil, err
 						}
-						if info, statErr := f.Stat(); statErr != nil || !info.Mode().IsRegular() {
-							if statErr == nil {
-								statErr = fmt.Errorf("partial path is not a regular file")
-							}
-							_ = f.Close()
-							return nil, fmt.Errorf("inspect created partial file: %w", statErr)
-						}
+						f = created
 					}
 
 					dropMu.Lock()

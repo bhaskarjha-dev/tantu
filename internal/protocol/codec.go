@@ -80,6 +80,12 @@ func (e *Encoder) EncodeEnvelope(env *Envelope) error {
 	if len(envBytes) > DefaultMaxMessageSize {
 		return ErrMessageTooLarge
 	}
+	// Mirror the decoder's control-frame budget so a sender learns about an
+	// oversized control frame locally instead of only after the receiver
+	// closes the connection.
+	if IsControlMessageType(env.Type) && len(envBytes) > MaxControlMessageSize {
+		return ErrMessageTooLarge
+	}
 
 	buf := make([]byte, 4+len(envBytes))
 	binary.BigEndian.PutUint32(buf[0:4], uint32(len(envBytes)))
