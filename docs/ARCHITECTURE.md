@@ -117,6 +117,16 @@ All communications over a `transport.Conn` utilize length-prefixed JSON envelope
 
 > **Wire Framing & Compatibility:** All protocol communication uses standard 4-byte big-endian length-prefixed frames. The pairing subsystem transparently unmarshals both flat JSON (`{"cert_pem": ...}`) and envelope-nested JSON (`{"type": "pair_hello", "payload": ...}`), ensuring cross-version client compatibility.
 
+> **No decode-time type allowlist (deliberate):** the frame decoder accepts any
+> non-empty `type` and enforces only size budgets (4 MiB frames, 64 KiB control
+> frames). Type authorization happens at dispatch: the multiplexer routes only
+> known types and drops unknown ones (logged, connection closed), and session
+> handlers reject unexpected types explicitly. A decoder allowlist would turn
+> every future message type into a wire break against older peers without
+> adding any security — unknown types already receive no handler and no
+> trust — so forward compatibility is preserved at the layer that can
+> actually judge a type.
+
 ---
 
 ### 3.2 Pluggable Transport Layer (`internal/transport/`)

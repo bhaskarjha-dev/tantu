@@ -5,7 +5,8 @@
 - Versions are `vMAJOR.MINOR.PATCH` git tags; goreleaser builds on tag push.
 - The version is embedded at link time (`-X main.version` and
   `-X .../internal/hub.HubVersion`); `tantu version` and the dashboard
-  report it. A local `go build` without ldflags reports the `1.0.0` default —
+  report it. A local `go build` without ldflags reports
+  `1.0.0-dev+<short-sha>[.dirty]` (VCS fallback via `debug.ReadBuildInfo`) —
   that value means "unreleased dev build", not a real release.
 - Wire protocol has no version field: pairing assumes both machines run the
   same release. Unknown message types fail closed (logged, connection
