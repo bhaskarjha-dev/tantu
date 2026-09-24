@@ -166,3 +166,51 @@ Severity: P0 critical/exploitable remotely · P1 exploitable by paired/local att
   TestWebDashboard_UploadProgressAndPeerRenderMarkers.
 - `go test -race ./...` still blocked (no C compiler); `-count=1` full suite
   is the standing mitigation. Race safety never claimed.
+
+## Batch G — adversarial review outcomes (2026-09-24, EVIDENCE-BASED)
+
+Three hypothesized vulnerabilities were investigated and REJECTED with code
+evidence (no fix needed — the worried-about behavior does not exist):
+
+- G-01 SSH silent-trust: `AllowInsecureHostKey: true` appears ONLY in
+  `*_test.go` files. All 8 production SSH client configs
+  (send/open/drop/relay/node/serve/receive + hub) leave the zero value
+  (false) → known_hosts verification, fail-closed. I-24 (no pinning UX)
+  stays OPEN and accurately scoped.
+- G-02 DNS rebinding (`127.0.0.1.nip.io`, resolving names): all Host/Origin
+  checks (`splitAuthority`, `sameLoopbackAuthority`,
+  `requestHostIsLoopbackHeader`, bridge `isLoopbackHost`) are literal string
+  matches against `127.0.0.1`/`localhost`/`::1` (plus 127/8 range on the
+  bridge A-side) — no DNS resolution anywhere, so resolution-based bypass
+  is impossible.
+- G-03 `/api/events` auth bypass: `securityMiddleware` gates ALL `/api/*`
+  uniformly (Host + Origin/Referer + session/IPC capability) before mux
+  routing; `/api/events` has no exemption. Covered by
+  TestWebDashboard_EventsSSE.
+- G-04 wire version negotiation: no `Version` field on envelopes (only
+  beacons carry `v: 1`, mismatches dropped). ACCEPTED design: symmetric-hub
+  same-release pairing is the supported topology; unknown types fail closed
+  (dispatcher `default` logs + drops; strict `expected %q` errors in
+  aside/receiver). Documented in `docs/RELEASE.md` (mixed-version
+  unsupported — upgrade both machines) instead of a wire change with
+  compat cost and no demonstrated interop failure.
+- G-05 release supply chain: `.goreleaser.yaml` verified (6 archives,
+  CGO_ENABLED=0, ldflags version injection, checksums.txt). Added SBOM
+  generation (no secrets required); cosign signing deliberately absent
+  (keys must never live in repo) — recorded as a known limitation with
+  checksums.txt verification guidance. New `docs/RELEASE.md` (install /
+  upgrade / rollback; every claim verified: no `hub stop` subcommand, 24 h
+  part sweep, JSON forward-compat, stale-hub.json takeover).
+
+## Batch G implementation (clipboard uploads, tab-switch fix)
+
+- Dashboard paste-to-upload: a document-level `paste` listener sends a
+  clipboard image through the authenticated XHR upload path (switches to the
+  QuickDrop tab first); text pastes fall through to the focused field. Only
+  file name + size are logged — no clipboard content in logs/URLs.
+- Fixed a latent crash the feature exposed: `switchTab` relied on the
+  implicit click `event` (`event.currentTarget`), which throws when called
+  programmatically (no `classList` on `document`). It now falls back to
+  matching the tab button by target id. Click behavior unchanged.
+- Marker test extended (`clipboardData`, `paste` listener); JS re-validated
+  with `node --check`; full suite green (see batch H validation on commit).

@@ -700,7 +700,12 @@ const dashboardHTML = `<!DOCTYPE html>
     function switchTab(tabId) {
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
       document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-      event.currentTarget.classList.add('active');
+      // Click path highlights the clicked button via the implicit event;
+      // programmatic callers (paste-to-upload) match the button by target.
+      const btn = (typeof event !== 'undefined' && event && event.currentTarget && event.currentTarget.classList)
+        ? event.currentTarget
+        : Array.prototype.find.call(document.querySelectorAll('.tab-btn'), b => (b.getAttribute('onclick') || '').indexOf(tabId) !== -1);
+      if (btn) btn.classList.add('active');
       document.getElementById(tabId).classList.add('active');
     }
 
@@ -1239,6 +1244,24 @@ const dashboardHTML = `<!DOCTYPE html>
       if (fileInput.files && fileInput.files.length > 0) {
         uploadFile(fileInput.files[0]);
       }
+    });
+
+    // Clipboard-first uploads: pasting an image (screenshot, copied file)
+    // anywhere on the dashboard sends it directly through the authenticated
+    // upload path. Text pastes fall through to the focused field (e.g. the
+    // snippet textarea). Only file payloads are logged (name + size); no
+    // clipboard content ever enters logs or URLs.
+    document.addEventListener('paste', (e) => {
+      const files = (e.clipboardData && e.clipboardData.files) || [];
+      if (files.length === 0) return;
+      const image = Array.prototype.find.call(files, f => f.type && f.type.startsWith('image/')) || files[0];
+      if (!image) return;
+      e.preventDefault();
+      const tab = document.getElementById('tab-drop');
+      if (tab && !tab.classList.contains('active')) {
+        switchTab('tab-drop');
+      }
+      uploadFile(image);
     });
 
     // At most one dashboard file upload at a time. A second upload while one

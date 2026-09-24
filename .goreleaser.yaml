@@ -37,6 +37,13 @@ archives:
 checksum:
   name_template: "checksums.txt"
 
+# SBOM generation needs no secrets and ships with every release artifact,
+# so auditors can verify the (tiny) dependency surface. Artifact signing
+# (cosign) is deliberately NOT configured here: it requires key material
+# that must never live in the repo; see docs/RELEASE.md.
+sboms:
+  - artifacts: archive
+
 changelog:
   sort: asc
   filters:

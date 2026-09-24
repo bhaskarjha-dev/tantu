@@ -1346,6 +1346,8 @@ func TestWebDashboard_UploadProgressAndPeerRenderMarkers(t *testing.T) {
 		`aria-live="polite"`,
 		"lastPeerSignature",
 		"headerPeerSelect",
+		"clipboardData",
+		"addEventListener('paste'",
 	} {
 		if !strings.Contains(content, s) {
 			t.Errorf("dashboard HTML missing %q (upload-progress / focus-preservation UX)", s)
