@@ -21,9 +21,15 @@ type Envelope struct {
 
 // NewEnvelope creates an Envelope wrapping the given payload under msgType.
 func NewEnvelope(msgType string, payload any) (*Envelope, error) {
+	if msgType == "" {
+		return nil, ErrMissingMessageType
+	}
 	b, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
+	}
+	if len(b) == 0 || string(b) == "null" {
+		return nil, ErrMissingPayload
 	}
 	return &Envelope{
 		Type:    msgType,
@@ -33,21 +39,29 @@ func NewEnvelope(msgType string, payload any) (*Envelope, error) {
 
 // DecodePayload unmarshals the raw JSON payload into dest.
 func (e *Envelope) DecodePayload(dest any) error {
+	if e == nil || len(e.Payload) == 0 || string(e.Payload) == "null" {
+		return ErrMissingPayload
+	}
 	return json.Unmarshal(e.Payload, dest)
 }
 
 // BridgeRequest: B→A. "Open this URL, forward callback on this port."
 type BridgeRequest struct {
-	URL          string `json:"url"`           // OAuth authorization URL to open
-	CallbackPort int    `json:"callback_port"` // Port where app's callback listener runs on B
-	RequestID    string `json:"request_id"`    // Unique ID for this bridge session
+	URL          string `json:"url"`               // OAuth authorization URL to open
+	CallbackPort int    `json:"callback_port"`     // Port where app's callback listener runs on B
+	RequestID    string `json:"request_id"`        // Unique ID for this transport attempt
+	FlowID       string `json:"flow_id,omitempty"` // Stable application flow/idempotency identity
 }
 
 // BridgeAck: A→B. "URL opened, I'm listening for the callback."
 type BridgeAck struct {
 	RequestID     string `json:"request_id"`
-	ListeningPort int    `json:"listening_port"` // Port A-side bound for callback capture
+	ListeningPort int    `json:"listening_port"`  // Port A-side bound for callback capture
 	Error         string `json:"error,omitempty"` // Non-empty if A-side can't fulfill
+	// Replay indicates that this logical OAuth request already completed
+	// successfully. The B-side can return success without opening a new
+	// browser session or waiting for another callback.
+	Replay bool `json:"replay,omitempty"`
 }
 
 // CallbackRelay: A→B. The captured HTTP callback request.
@@ -64,6 +78,7 @@ type CallbackRelay struct {
 type BridgeComplete struct {
 	RequestID string `json:"request_id"`
 	Success   bool   `json:"success"`
+	Error     string `json:"error,omitempty"`
 }
 
 // Heartbeat: Both directions. Keep-alive.

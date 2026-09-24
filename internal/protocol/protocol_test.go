@@ -3,6 +3,7 @@ package protocol
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"io"
 	"reflect"
@@ -224,6 +225,23 @@ func TestMaxMessageSizeExceeded(t *testing.T) {
 	_, err := dec.Decode()
 	if !errors.Is(err, ErrMessageTooLarge) {
 		t.Fatalf("expected ErrMessageTooLarge, got %v", err)
+	}
+}
+
+func TestControlFrameLimit(t *testing.T) {
+	env := Envelope{Type: TypeBridgeRequest, Payload: json.RawMessage(`{"url":"` + string(bytes.Repeat([]byte("x"), MaxControlMessageSize)) + `"}`)}
+	encoded, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var framed bytes.Buffer
+	var length [4]byte
+	binary.BigEndian.PutUint32(length[:], uint32(len(encoded)))
+	framed.Write(length[:])
+	framed.Write(encoded)
+	_, err = NewDecoder(&framed).Decode()
+	if !errors.Is(err, ErrMessageTooLarge) {
+		t.Fatalf("oversized control frame error = %v, want ErrMessageTooLarge", err)
 	}
 }
 
