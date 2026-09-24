@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/bhaskarjha-dev/tantu/internal/protocol"
@@ -40,12 +41,20 @@ func SendDrop(ctx context.Context, conn transport.Conn, meta DropSend, payload i
 	}
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
+	stopContextClose := closeDropConnOnContext(ctx, conn)
+	defer stopContextClose()
 
 	if meta.DropID == "" {
 		meta.DropID = generateDropID()
 	}
 	if meta.ChunkSize <= 0 {
 		meta.ChunkSize = DefaultChunkSize
+	}
+	if err := validateDropMetadata(meta); err != nil {
+		return err
+	}
+	if payload == nil {
+		return errors.New("drop payload is nil")
 	}
 
 	// 1. Send DropSend metadata
@@ -59,7 +68,7 @@ func SendDrop(ctx context.Context, conn transport.Conn, meta DropSend, payload i
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		env, err := conn.Receive()
+		env, err := receiveDropEnvelope(ctx, conn)
 		if err != nil {
 			return fmt.Errorf("receive drop_ack: %w", err)
 		}
@@ -75,11 +84,17 @@ func SendDrop(ctx context.Context, conn transport.Conn, meta DropSend, payload i
 		if err := env.DecodePayload(&ack); err != nil {
 			return fmt.Errorf("decode drop_ack: %w", err)
 		}
+		if ack.DropID != meta.DropID {
+			return fmt.Errorf("drop_ack id mismatch: got %q, want %q", ack.DropID, meta.DropID)
+		}
 		if !ack.Accepted {
 			if ack.Error != "" {
 				return fmt.Errorf("drop rejected: %s", ack.Error)
 			}
 			return errors.New("drop rejected by receiver")
+		}
+		if ack.ReceivedBytes < 0 || (meta.Size > 0 && ack.ReceivedBytes > meta.Size) {
+			return fmt.Errorf("drop_ack returned invalid resume offset %d", ack.ReceivedBytes)
 		}
 		break
 	}
@@ -88,21 +103,26 @@ func SendDrop(ctx context.Context, conn transport.Conn, meta DropSend, payload i
 	hasher := sha256.New()
 	startChunkIndex := 0
 
-	// Handle offset resumption if receiver already has partial bytes
+	// Handle offset resumption if receiver already has partial bytes.
 	if ack.ReceivedBytes > 0 {
-		if seeker, ok := payload.(io.ReadSeeker); ok {
-			// Hash the existing bytes from 0..ack.ReceivedBytes so running SHA-256 covers the full file
-			if _, err := seeker.Seek(0, io.SeekStart); err != nil {
-				return fmt.Errorf("seek to start for hash: %w", err)
-			}
-			if _, err := io.CopyN(hasher, seeker, ack.ReceivedBytes); err != nil {
-				return fmt.Errorf("hash existing bytes: %w", err)
-			}
-			if _, err := seeker.Seek(ack.ReceivedBytes, io.SeekStart); err != nil {
-				return fmt.Errorf("seek to resume offset %d: %w", ack.ReceivedBytes, err)
-			}
-			startChunkIndex = int(ack.ReceivedBytes / int64(meta.ChunkSize))
+		if ack.ReceivedBytes < 0 || ack.ReceivedBytes%int64(meta.ChunkSize) != 0 {
+			return fmt.Errorf("receiver returned invalid resume offset %d", ack.ReceivedBytes)
 		}
+		seeker, ok := payload.(io.ReadSeeker)
+		if !ok {
+			return errors.New("receiver requested resume but payload is not seekable")
+		}
+		// Hash the existing bytes from 0..ack.ReceivedBytes so running SHA-256 covers the full file.
+		if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("seek to start for hash: %w", err)
+		}
+		if _, err := io.CopyN(hasher, seeker, ack.ReceivedBytes); err != nil {
+			return fmt.Errorf("hash existing bytes: %w", err)
+		}
+		if _, err := seeker.Seek(ack.ReceivedBytes, io.SeekStart); err != nil {
+			return fmt.Errorf("seek to resume offset %d: %w", ack.ReceivedBytes, err)
+		}
+		startChunkIndex = int(ack.ReceivedBytes / int64(meta.ChunkSize))
 	}
 
 	buf := make([]byte, meta.ChunkSize)
@@ -226,11 +246,12 @@ func SendDrop(ctx context.Context, conn transport.Conn, meta DropSend, payload i
 	}
 
 	// 4. Wait for DropComplete
+	sentSHA := hex.EncodeToString(hasher.Sum(nil))
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		env, err := conn.Receive()
+		env, err := receiveDropEnvelope(ctx, conn)
 		if err != nil {
 			return fmt.Errorf("receive drop_complete: %w", err)
 		}
@@ -247,11 +268,20 @@ func SendDrop(ctx context.Context, conn transport.Conn, meta DropSend, payload i
 		if err := env.DecodePayload(&comp); err != nil {
 			return fmt.Errorf("decode drop_complete: %w", err)
 		}
+		if comp.DropID != meta.DropID {
+			return fmt.Errorf("drop_complete id mismatch: got %q, want %q", comp.DropID, meta.DropID)
+		}
 		if !comp.Success {
 			if comp.Error != "" {
 				return fmt.Errorf("drop failed: %s", comp.Error)
 			}
 			return errors.New("drop failed on receiver")
+		}
+		if comp.BytesRecv < 0 || (meta.Size > 0 && comp.BytesRecv != meta.Size) {
+			return fmt.Errorf("drop_complete byte count mismatch: got %d, want %d", comp.BytesRecv, meta.Size)
+		}
+		if comp.SHA256 == "" || !strings.EqualFold(comp.SHA256, sentSHA) {
+			return fmt.Errorf("drop_complete checksum mismatch: got %q, want %s", comp.SHA256, sentSHA)
 		}
 		break
 	}

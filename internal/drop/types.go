@@ -8,6 +8,17 @@ const (
 	TypeDropAck      = "drop_ack"      // Receiver → Sender: acceptance/rejection
 	TypeDropData     = "drop_data"     // Sender → Receiver: payload chunk
 	TypeDropComplete = "drop_complete" // Receiver → Sender: receipt confirmation
+
+	// MaxChunkSize bounds memory use for a single decoded JSON payload.  The
+	// wire envelope must also fit the transport's frame limit after base64
+	// expansion; 2 MiB leaves ample room for that expansion.
+	MaxChunkSize = 2 * 1024 * 1024
+
+	// MaxDropIDLength and MaxDropNameLength keep metadata from becoming an
+	// accidental memory/indexing sink on otherwise small protocol frames.
+	MaxDropIDLength   = 128
+	MaxDropNameLength = 4096
+	MaxMIMETypeLength = 255
 )
 
 // DropKind identifies what type of content is being dropped.
@@ -40,9 +51,9 @@ type DropAck struct {
 // DropData: Sender → Receiver. One chunk of payload.
 type DropData struct {
 	DropID     string `json:"drop_id"`
-	ChunkIndex int    `json:"chunk_index"` // 0-based chunk number
-	Data       []byte `json:"data"`        // Raw bytes (base64 in JSON wire format)
-	Final      bool   `json:"final"`       // True if this is the last chunk
+	ChunkIndex int    `json:"chunk_index"`      // 0-based chunk number
+	Data       []byte `json:"data"`             // Raw bytes (base64 in JSON wire format)
+	Final      bool   `json:"final"`            // True if this is the last chunk
 	SHA256     string `json:"sha256,omitempty"` // Hex-encoded SHA-256 digest of entire payload (present on Final=true)
 }
 
@@ -50,7 +61,7 @@ type DropData struct {
 type DropComplete struct {
 	DropID    string `json:"drop_id"`
 	Success   bool   `json:"success"`
-	BytesRecv int64  `json:"bytes_received"` // Total bytes received (for verification)
+	BytesRecv int64  `json:"bytes_received"`   // Total bytes received (for verification)
 	SHA256    string `json:"sha256,omitempty"` // Receiver's verified SHA-256 hex digest
 	Error     string `json:"error,omitempty"`
 }
