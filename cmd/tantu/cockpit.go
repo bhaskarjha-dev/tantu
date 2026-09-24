@@ -7,6 +7,7 @@ import (
 	"mime"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -100,8 +101,9 @@ func RunCockpit(ctx context.Context, h *hub.Hub, cancel context.CancelFunc, init
 						if scanner.Scan() {
 							choice := strings.TrimSpace(scanner.Text())
 							if choice != "" {
-								var selIdx int
-								if n, err := fmt.Sscanf(choice, "%d", &selIdx); err == nil && n == 1 && selIdx >= 1 && selIdx <= len(peers) {
+								// Strict parse: Sscanf would accept trailing
+								// junk such as "1abc" as a valid selection.
+								if selIdx, err := strconv.Atoi(choice); err == nil && selIdx >= 1 && selIdx <= len(peers) {
 									targetPeer = peers[selIdx-1].Fingerprint
 								} else {
 									targetPeer = choice
@@ -186,8 +188,9 @@ func RunCockpit(ctx context.Context, h *hub.Hub, cancel context.CancelFunc, init
 						if scanner.Scan() {
 							choice := strings.TrimSpace(scanner.Text())
 							if choice != "" {
-								var selIdx int
-								if n, err := fmt.Sscanf(choice, "%d", &selIdx); err == nil && n == 1 && selIdx >= 1 && selIdx <= len(peers) {
+								// Strict parse: Sscanf would accept trailing
+								// junk such as "1abc" as a valid selection.
+								if selIdx, err := strconv.Atoi(choice); err == nil && selIdx >= 1 && selIdx <= len(peers) {
 									targetPeer = peers[selIdx-1].Fingerprint
 								} else {
 									targetPeer = choice
@@ -261,9 +264,10 @@ func handlePeerCommand(scanner *bufio.Scanner, h *hub.Hub) {
 		if choice == "" {
 			return
 		}
-		var selIdx int
 		var targetFP string
-		if n, err := fmt.Sscanf(choice, "%d", &selIdx); err == nil && n == 1 && selIdx >= 1 && selIdx <= len(peers) {
+		// Strict parse: Sscanf would accept trailing junk such as "1abc"
+		// as a valid selection.
+		if selIdx, err := strconv.Atoi(choice); err == nil && selIdx >= 1 && selIdx <= len(peers) {
 			targetFP = peers[selIdx-1].Fingerprint
 		} else {
 			targetFP = choice

@@ -423,3 +423,12 @@ evidence (no fix needed — the worried-about behavior does not exist):
   flakes); restart succeeds and the full self-delivery pipeline returns 200
   (proves cross-generation slot release — a leak would 503 forever).
 - Validation: full suite green (above).
+
+## Batch R — cockpit selection strictness (2026-09-24)
+
+- Batch A fixed lax `Sscanf("%d")` peer selection in `pair.go` but missed
+  three identical copies in the cockpit (file-send, text-send, and active
+  peer selectors): all now use strict `strconv.Atoi`. Repo-wide grep
+  confirms no remaining behavioral `Sscanf` on user input (one ignored-error
+  parse of locally-generated listener ports in `handshake.go`, left as is).
+- Validation: build + vet + full suite green (above).
