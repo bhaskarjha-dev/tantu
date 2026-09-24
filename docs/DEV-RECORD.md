@@ -513,3 +513,10 @@ Independent review of batches M–S returned 11 findings; all addressed:
   SAS codes (02b655/71d020), both confirmed, mutual `status` shows 1
   peer each with correct SAS. Operational address correctly recorded as
   `:9877` (not the pairing port). Temp artifacts removed.
+
+## Batch X — changelog sync, final validation (2026-09-24)
+
+- CHANGELOG Unreleased covers batches V/W (stdout fix, listener revocation).
+- Final gates: build + vet + full suite (12/12) + linux/darwin
+  cross-compile green. Fuzz (4 targets) and stress (-count=2) green
+  earlier this session; no parser changes since.

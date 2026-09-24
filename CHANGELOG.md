@@ -48,6 +48,11 @@ rollback procedures.
   symmetric with A-side (full 127/8).
 - Peer selection prompts (pairing, cockpit) require plain-digit indices —
   trailing junk can no longer misselect.
+- Text drops no longer fail when the receiver's stdout is redirected:
+  the stdout offset was mistaken for resume bytes.
+- Unpairing revokes immediately on all long-lived listeners (Hub, `serve`,
+  `node`, `receive`) — removed peers previously stayed trusted until
+  restart on standalone listeners.
 - Hub validates its output directory at startup and on config change
   instead of failing every transfer later.
 - Hub staging hardened against symlink/hardlink planting (exclusive creation,
