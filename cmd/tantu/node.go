@@ -10,7 +10,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -28,6 +27,8 @@ func runNode(args []string) {
 	transportType := fs.String("transport", "lan", "Transport type: lan, loopback, or ssh (default: lan)")
 	listenAddr := fs.String("listen", "", "Address to listen for incoming connections (default: 0.0.0.0:9877 for lan, 127.0.0.1:9876 for loopback)")
 	sshHostKey := fs.String("ssh-host-key", "", "Path to PEM-encoded host private key (required when --transport=ssh)")
+	sshAuthorizedKey := fs.String("ssh-authorized-key", "", "Path to an authorized SSH client public/private key")
+	sshAllowLegacy := fs.Bool("ssh-allow-legacy-host-key", false, "Explicitly authorize the SSH host key for clients (legacy compatibility)")
 	storeDir := fs.String("store-dir", "", "Override config directory (for --transport=lan)")
 	timeout := fs.Duration("timeout", 5*time.Minute, "Timeout for each session or transfer")
 	outputDir := fs.String("output-dir", ".", "Directory to save received files (default: current working directory)")
@@ -64,9 +65,20 @@ func runNode(args []string) {
 			fmt.Fprintf(os.Stderr, "Error: cannot read SSH key: %s: %v\n", *sshHostKey, err)
 			os.Exit(1)
 		}
+		var authorizedKeys [][]byte
+		if strings.TrimSpace(*sshAuthorizedKey) != "" {
+			authorized, readErr := os.ReadFile(*sshAuthorizedKey)
+			if readErr != nil {
+				fmt.Fprintf(os.Stderr, "Error: cannot read SSH authorized key: %v\n", readErr)
+				os.Exit(1)
+			}
+			authorizedKeys = append(authorizedKeys, authorized)
+		}
 		var sshErr error
 		tr, sshErr = transport.NewSSHTransport(transport.SSHTransportConfig{
-			HostKey: keyBytes,
+			HostKey:                keyBytes,
+			AuthorizedKeys:         authorizedKeys,
+			AllowLegacyHostKeyAuth: *sshAllowLegacy,
 		})
 		if sshErr != nil {
 			fmt.Fprintf(os.Stderr, "Error: failed to configure SSH transport: %v\n", sshErr)
@@ -109,6 +121,7 @@ func runNode(args []string) {
 		tr, err = transport.NewLANTransport(transport.LANTransportConfig{
 			Cert:                tlsCert,
 			TrustedFingerprints: trustedFPs,
+			IsTrusted:           store.IsTrusted,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: failed to configure LAN transport: %v\n", err)
@@ -137,11 +150,11 @@ func runNode(args []string) {
 
 	openBrowser := func(targetURL string) error {
 		if *verbose {
-			fmt.Printf("🌐 Opening browser for URL: %s\n", targetURL)
+			fmt.Printf("🌐 Opening browser for URL: %s\n", browser.RedactURL(targetURL))
 		}
 		if err := browser.OpenURL(targetURL); err != nil {
 			fmt.Fprintf(os.Stderr, "❌ Warning: failed to open browser: %v\n", err)
-			fmt.Fprintf(os.Stderr, "Please open the URL manually in your browser:\n  %s\n", targetURL)
+			fmt.Fprintln(os.Stderr, "Please reopen the original authorization URL manually; Tantu will not print its sensitive query values.")
 			return err
 		}
 		return nil
@@ -149,6 +162,9 @@ func runNode(args []string) {
 
 	var fileMu sync.Mutex
 	openedFiles := make(map[string]*os.File)
+	partPaths := make(map[string]string)
+	finalPaths := make(map[string]string)
+	reservedDrops := make(map[string]struct{})
 
 	var nodeLogger *log.Logger
 	if *verbose {
@@ -162,52 +178,84 @@ func runNode(args []string) {
 			Logger:      nodeLogger,
 		},
 		DropConfig: drop.ReceiveDropConfig{
-			Timeout: *timeout,
-			MaxSize: -1, // Unlimited for node transfers
+			Timeout:     *timeout,
+			MaxSize:     drop.DefaultMaxDropSize,
+			MaxTextSize: standaloneTextDropLimit,
 			OnMeta: func(meta drop.DropSend) (io.Writer, error) {
-				if meta.Kind == drop.DropKindFile {
-					fileName := filepath.Base(meta.Name)
-					if fileName == "" || fileName == "." {
-						fileName = "drop.bin"
+				fileMu.Lock()
+				if _, exists := reservedDrops[meta.DropID]; exists {
+					fileMu.Unlock()
+					return nil, fmt.Errorf("duplicate drop_id %q", meta.DropID)
+				}
+				reservedDrops[meta.DropID] = struct{}{}
+				fileMu.Unlock()
+				reservationHeld := true
+				defer func() {
+					if reservationHeld {
+						fileMu.Lock()
+						delete(reservedDrops, meta.DropID)
+						fileMu.Unlock()
 					}
+				}()
+
+				if meta.Kind == drop.DropKindFile {
+					fileName := sanitizeIncomingFilename(meta.Name)
 					outDir := *outputDir
 					if outDir == "" {
 						outDir = "."
 					}
-					if err := os.MkdirAll(outDir, 0755); err != nil {
-						return nil, fmt.Errorf("create output directory: %w", err)
-					}
-
-					destPath := filepath.Join(outDir, fileName)
-					if _, err := os.Stat(destPath); err == nil {
-						ext := filepath.Ext(fileName)
-						base := strings.TrimSuffix(fileName, ext)
-						idx := 1
-						for {
-							cand := filepath.Join(outDir, fmt.Sprintf("%s (%d)%s", base, idx, ext))
-							if _, err := os.Stat(cand); os.IsNotExist(err) {
-								destPath = cand
-								break
-							}
-							idx++
-						}
-					}
-
-					f, err := os.Create(destPath)
+					f, partPath, finalPath, err := createIncomingPart(outDir, fileName)
 					if err != nil {
-						return nil, fmt.Errorf("create destination file: %w", err)
+						return nil, err
 					}
 					fileMu.Lock()
 					openedFiles[meta.DropID] = f
+					partPaths[meta.DropID] = partPath
+					finalPaths[meta.DropID] = finalPath
 					fileMu.Unlock()
+					reservationHeld = false
 					return f, nil
 				}
+				reservationHeld = false
 				return os.Stdout, nil
+			},
+			BeforeComplete: func(res *drop.ReceiveDropResult) error {
+				if res.Meta.Kind != drop.DropKindFile {
+					return nil
+				}
+				fileMu.Lock()
+				f := openedFiles[res.Meta.DropID]
+				partPath := partPaths[res.Meta.DropID]
+				desiredPath := finalPaths[res.Meta.DropID]
+				fileMu.Unlock()
+				if partPath == "" || desiredPath == "" {
+					return errors.New("completed file has no staging path")
+				}
+				published, err := finalizeIncomingPart(f, partPath, desiredPath)
+				if err != nil {
+					return fmt.Errorf("publish received file: %w", err)
+				}
+				fileMu.Lock()
+				finalPaths[res.Meta.DropID] = published
+				fileMu.Unlock()
+				return nil
 			},
 		},
 		OnDropReceived: func(res *drop.ReceiveDropResult) {
 			if res.Meta.Kind == drop.DropKindFile {
-				fmt.Fprintf(os.Stderr, "📥 QuickDrop received file %q (%s)\n", res.Meta.Name, formatSize(res.BytesWritten))
+				fileMu.Lock()
+				file := openedFiles[res.Meta.DropID]
+				finalPath := finalPaths[res.Meta.DropID]
+				if file != nil {
+					_ = file.Close()
+					delete(openedFiles, res.Meta.DropID)
+				}
+				fileMu.Unlock()
+				if finalPath != "" {
+					fmt.Fprintf(os.Stderr, "📥 QuickDrop received file %q (%s) → %s\n", res.Meta.Name, formatSize(res.BytesWritten), finalPath)
+				} else {
+					fmt.Fprintf(os.Stderr, "📥 QuickDrop received file %q (%s)\n", res.Meta.Name, formatSize(res.BytesWritten))
+				}
 			} else {
 				fmt.Fprintf(os.Stderr, "\n📥 QuickDrop received text (%d bytes)\n", res.BytesWritten)
 			}
@@ -219,6 +267,9 @@ func runNode(args []string) {
 				_ = f.Close()
 				delete(openedFiles, dropID)
 			}
+			delete(partPaths, dropID)
+			delete(finalPaths, dropID)
+			delete(reservedDrops, dropID)
 			fileMu.Unlock()
 
 			if err != nil && !errors.Is(err, context.Canceled) {
@@ -228,7 +279,7 @@ func runNode(args []string) {
 		OnASideDone: func(err error) {
 			if err != nil {
 				if !errors.Is(err, context.Canceled) {
-					fmt.Fprintf(os.Stderr, "❌ OAuth session error: %v\n", err)
+					fmt.Fprintf(os.Stderr, "❌ OAuth session error: %s\n", bridge.RedactError(err))
 				}
 			} else {
 				fmt.Fprintf(os.Stderr, "✅ OAuth session completed successfully\n")

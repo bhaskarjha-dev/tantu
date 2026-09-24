@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -226,7 +228,7 @@ const relayPageHTML = `<!DOCTYPE html>
       status.innerHTML = '⏳ Relaying OAuth URL through bridge...';
 
       try {
-        const resp = await fetch('/relay?url=' + encodeURIComponent(url));
+        const resp = await fetch('/relay?token={{RELAY_TOKEN}}&url=' + encodeURIComponent(url));
         const data = await resp.json();
         if (resp.ok && data.status === 'success') {
           status.className = 'success';
@@ -261,6 +263,15 @@ func runRelay(args []string) {
 	timeout := fs.Duration("timeout", 5*time.Minute, "Timeout per relay session")
 	verbose := fs.Bool("v", false, "Enable verbose output")
 	_ = fs.Parse(args)
+	transportExplicit := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "transport" {
+			transportExplicit = true
+		}
+	})
+	if !transportExplicit && strings.TrimSpace(*sshHost) != "" {
+		*transportType = "ssh"
+	}
 
 	var lanStore *pairing.PeerStore
 	switch *transportType {
@@ -293,6 +304,7 @@ func runRelay(args []string) {
 	}
 
 	var dialTarget string
+	var expectedFingerprint string
 	var tr transport.Transport
 	switch *transportType {
 	case "ssh":
@@ -338,6 +350,12 @@ func runRelay(args []string) {
 			os.Exit(1)
 		}
 		dialTarget = *peerAddr
+		if resolvedPeer, resolveErr := resolvePeerForDial(lanStore, *peerAddr); resolveErr != nil {
+			fmt.Fprintf(os.Stderr, "Error: LAN target is not a trusted paired peer: %v\n", resolveErr)
+			os.Exit(1)
+		} else {
+			expectedFingerprint = resolvedPeer.Fingerprint
+		}
 	default:
 		tr = transport.NewLoopbackTransport()
 		dialTarget = *bridgeAddr
@@ -347,11 +365,18 @@ func runRelay(args []string) {
 	defer stop()
 
 	mux := http.NewServeMux()
+	relayGroup := newLocalSingleFlight()
 
-	bookmarkletJS := fmt.Sprintf("javascript:void(window.open('http://localhost:%d/relay?url='+encodeURIComponent(location.href),'_blank','width=550,height=380'))", *port)
+	relayToken, err := newLocalRequestToken()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	bookmarkletJS := fmt.Sprintf("javascript:void(window.open('http://127.0.0.1:%d/relay?token=%s&url='+encodeURIComponent(location.href),'_blank','width=550,height=380'))", *port, relayToken)
 	peerInfo := fmt.Sprintf("%s (%s)", dialTarget, *transportType)
 	pageContent := strings.ReplaceAll(relayPageHTML, "{{PORT}}", strconv.Itoa(*port))
-	pageContent = strings.ReplaceAll(pageContent, "{{PEER}}", peerInfo)
+	pageContent = strings.ReplaceAll(pageContent, "{{PEER}}", escapeHTML(peerInfo))
+	pageContent = strings.ReplaceAll(pageContent, "{{RELAY_TOKEN}}", relayToken)
 	pageContent = strings.ReplaceAll(pageContent, "{{BOOKMARKLET_HREF}}", bookmarkletJS)
 
 	type relayResponse struct {
@@ -361,7 +386,6 @@ func runRelay(args []string) {
 
 	writeJSON := func(w http.ResponseWriter, status int, resp relayResponse) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(resp)
 	}
@@ -376,9 +400,6 @@ func runRelay(args []string) {
 	})
 
 	mux.HandleFunc("/relay", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -396,13 +417,21 @@ func runRelay(args []string) {
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
 				w.WriteHeader(status)
 				if resp.Status == "success" {
-					fmt.Fprintf(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>✅ Auth Relayed</title><style>body{background:#090b10;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}.box{background:#131722;border:1px solid #232a3b;border-radius:12px;padding:2rem;max-width:450px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,0.5);}.icon{font-size:2.5rem;margin-bottom:0.75rem;}h2{color:#34d399;margin:0 0 0.5rem 0;}p{color:#8b949e;font-size:0.9rem;margin:0 0 1rem 0;}.hint{color:#64748b;font-size:0.8rem;}</style></head><body><div class="box"><div class="icon">✅</div><h2>Authentication Relayed!</h2><p>%s</p><div class="hint">This window will close automatically in 3 seconds...</div></div><script>setTimeout(function(){window.close();},3000);</script></body></html>`, resp.Message)
+					fmt.Fprintf(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>✅ Auth Relayed</title><style>body{background:#090b10;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}.box{background:#131722;border:1px solid #232a3b;border-radius:12px;padding:2rem;max-width:450px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,0.5);}.icon{font-size:2.5rem;margin-bottom:0.75rem;}h2{color:#34d399;margin:0 0 0.5rem 0;}p{color:#8b949e;font-size:0.9rem;margin:0 0 1rem 0;}.hint{color:#64748b;font-size:0.8rem;}</style></head><body><div class="box"><div class="icon">✅</div><h2>Authentication Relayed!</h2><p>%s</p><div class="hint">This window will close automatically in 3 seconds...</div></div><script>setTimeout(function(){window.close();},3000);</script></body></html>`, escapeHTML(resp.Message))
 				} else {
-					fmt.Fprintf(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>❌ Relay Error</title><style>body{background:#090b10;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}.box{background:#131722;border:1px solid #232a3b;border-radius:12px;padding:2rem;max-width:450px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,0.5);}.icon{font-size:2.5rem;margin-bottom:0.75rem;}h2{color:#f87171;margin:0 0 0.5rem 0;}p{color:#8b949e;font-size:0.9rem;margin:0 0 1rem 0;}.hint{color:#64748b;font-size:0.8rem;}</style></head><body><div class="box"><div class="icon">❌</div><h2>Relay Error</h2><p>%s</p><div class="hint">Check terminal logs or verify your peer is connected.</div></div></body></html>`, resp.Message)
+					fmt.Fprintf(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>❌ Relay Error</title><style>body{background:#090b10;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}.box{background:#131722;border:1px solid #232a3b;border-radius:12px;padding:2rem;max-width:450px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,0.5);}.icon{font-size:2.5rem;margin-bottom:0.75rem;}h2{color:#f87171;margin:0 0 0.5rem 0;}p{color:#8b949e;font-size:0.9rem;margin:0 0 1rem 0;}.hint{color:#64748b;font-size:0.8rem;}</style></head><body><div class="box"><div class="icon">❌</div><h2>Relay Error</h2><p>%s</p><div class="hint">Check terminal logs or verify your peer is connected.</div></div></body></html>`, escapeHTML(resp.Message))
 				}
 				return
 			}
 			writeJSON(w, status, resp)
+		}
+
+		if !localRequestTokenMatches(r.URL.Query().Get("token"), relayToken) {
+			respond(http.StatusForbidden, relayResponse{
+				Status:  "error",
+				Message: "invalid or missing local relay token",
+			})
+			return
 		}
 
 		rawURL := strings.TrimSpace(r.URL.Query().Get("url"))
@@ -416,33 +445,48 @@ func runRelay(args []string) {
 
 		oauthURL := browser.SanitizeURL(rawURL)
 		if *verbose {
-			fmt.Printf("🔗 [relay] Received request for URL: %s\n", oauthURL)
+			fmt.Printf("🔗 [relay] Received request for URL: %s\n", browser.RedactURL(oauthURL))
 		}
 
-		conn, err := tr.Dial(dialTarget)
-		if err != nil {
-			if *verbose {
-				fmt.Printf("❌ [relay] Dial failed to %s: %v\n", dialTarget, err)
-			}
-			respond(http.StatusBadGateway, relayResponse{
-				Status:  "error",
-				Message: fmt.Sprintf("failed to connect to bridge at %s: %v", dialTarget, err),
-			})
-			return
+		flowKey := bridge.DeriveOAuthFlowID(oauthURL)
+		if flowKey == "" {
+			// Never retain a raw authorization URL (which may contain state,
+			// PKCE, or code material) as a coordination key.
+			digest := sha256.Sum256([]byte(oauthURL))
+			flowKey = hex.EncodeToString(digest[:])
 		}
-		defer conn.Close()
-
-		relayCtx, cancel := context.WithTimeout(r.Context(), *timeout)
-		defer cancel()
-
-		cfg := bridge.BSideConfig{Timeout: *timeout}
-		if err := bridge.HandleBSide(relayCtx, conn, oauthURL, cfg); err != nil {
-			if *verbose {
-				fmt.Printf("❌ [relay] Bridge flow failed: %v\n", err)
+		relayKey := dialTarget + "\x00" + flowKey
+		relayErr := relayGroup.Do(r.Context(), relayKey, func() error {
+			conn, err := transport.DialPinned(tr, dialTarget, expectedFingerprint)
+			if err != nil {
+				if *verbose {
+					fmt.Printf("❌ [relay] Dial failed to %s: %v\n", dialTarget, err)
+				}
+				return fmt.Errorf("failed to connect to bridge at %s: %w", dialTarget, err)
 			}
-			respond(http.StatusInternalServerError, relayResponse{
+			defer conn.Close()
+
+			// The leader owns the wire/browser flow, not the first HTTP
+			// request. A user closing or refreshing that tab must not cancel a
+			// flow that another duplicate request is still waiting on.
+			relayCtx, cancel := context.WithTimeout(ctx, *timeout)
+			defer cancel()
+			if err := bridge.HandleBSide(relayCtx, conn, oauthURL, bridge.BSideConfig{Timeout: *timeout}); err != nil {
+				if *verbose {
+					fmt.Printf("❌ [relay] Bridge flow failed: %s\n", bridge.RedactError(err))
+				}
+				return fmt.Errorf("bridge flow failed: %w", err)
+			}
+			return nil
+		})
+		if relayErr != nil {
+			status := http.StatusBadGateway
+			if errors.Is(relayErr, context.Canceled) || errors.Is(relayErr, context.DeadlineExceeded) {
+				status = http.StatusGatewayTimeout
+			}
+			respond(status, relayResponse{
 				Status:  "error",
-				Message: fmt.Sprintf("bridge flow failed: %v", err),
+				Message: "relay flow failed",
 			})
 			return
 		}
@@ -457,10 +501,7 @@ func runRelay(args []string) {
 	})
 
 	httpAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(*port))
-	server := &http.Server{
-		Addr:    httpAddr,
-		Handler: mux,
-	}
+	server := newLocalHTTPServer(httpAddr, mux, *timeout)
 
 	go func() {
 		<-ctx.Done()

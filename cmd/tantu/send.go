@@ -64,10 +64,15 @@ func runSend(args []string) {
 	var textContent string
 
 	if firstArg == "-" {
-		// Read from stdin
-		data, err := io.ReadAll(os.Stdin)
+		// Read at most the standalone text-drop limit plus one byte so an
+		// unbounded stdin producer cannot force an unbounded allocation.
+		data, err := io.ReadAll(io.LimitReader(os.Stdin, standaloneTextDropLimit+1))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: reading from stdin: %v\n", err)
+			os.Exit(1)
+		}
+		if int64(len(data)) > standaloneTextDropLimit {
+			fmt.Fprintln(os.Stderr, "Error: stdin text exceeds 10MB limit")
 			os.Exit(1)
 		}
 		label := *nameFlag
@@ -149,22 +154,25 @@ func runSend(args []string) {
 
 	// 1. If transport is not explicitly overridden to SSH, probe local Hub with strict 200ms timeout
 	if (!transportExplicit || *transportType == "loopback") && *sshHost == "" {
-		if status, ok := hub.ProbeHub(*bridgeAddr); ok {
+		if status, ok := hub.ProbeHubWithStoreDir(*bridgeAddr, *storeDir); ok {
 			if *verbose {
 				fmt.Printf("Connected to local Hub (v%s, %s transport)\n", status.Version, status.Transport)
 			}
+			delegateAddr := *bridgeAddr
+			if status.WebAddr != "" {
+				delegateAddr = status.WebAddr
+			}
 			var err error
+			delegatedFilePath := ""
 			if isFile {
+				delegatedFilePath = cleanPath
 				if *verbose {
 					fmt.Printf("Delegating file transfer of %q to local Hub...\n", meta.Name)
 				}
-				err = hub.DelegateSend(*bridgeAddr, cleanPath, "", *peerAddr)
-			} else {
-				if *verbose {
-					fmt.Printf("Delegating text transfer to local Hub...\n")
-				}
-				err = hub.DelegateSend(*bridgeAddr, "", textContent, *peerAddr)
+			} else if *verbose {
+				fmt.Printf("Delegating text transfer to local Hub...\n")
 			}
+			err = delegateSendWithNameFromStore(*storeDir, delegateAddr, delegatedFilePath, textContent, meta.Name, *peerAddr, *timeout)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "❌ Hub delegation failed: %v\n", err)
 				os.Exit(1)
@@ -176,6 +184,13 @@ func runSend(args []string) {
 			}
 			return
 		}
+	}
+
+	// Supplying SSH connection options is an explicit request for SSH when the
+	// caller did not spell out --transport. Do this after the Hub probe so a
+	// local Hub is never silently preferred for an SSH invocation.
+	if !transportExplicit && strings.TrimSpace(*sshHost) != "" {
+		*transportType = "ssh"
 	}
 
 	// 2. Fallback to direct standalone transport execution using Smart Default Transport
@@ -222,6 +237,7 @@ func runSend(args []string) {
 	}
 
 	var dialTarget string
+	var expectedFingerprint string
 	var tr transport.Transport
 	switch *transportType {
 	case "ssh":
@@ -267,6 +283,12 @@ func runSend(args []string) {
 			os.Exit(1)
 		}
 		dialTarget = *peerAddr
+		if resolvedPeer, resolveErr := resolvePeerForDial(lanStore, *peerAddr); resolveErr != nil {
+			fmt.Fprintf(os.Stderr, "Error: LAN target is not a trusted paired peer: %v\n", resolveErr)
+			os.Exit(1)
+		} else {
+			expectedFingerprint = resolvedPeer.Fingerprint
+		}
 	default:
 		tr = transport.NewLoopbackTransport()
 		dialTarget = *bridgeAddr
@@ -279,7 +301,7 @@ func runSend(args []string) {
 		fmt.Printf("Connecting to %s (transport: %s)...\n", dialTarget, *transportType)
 	}
 
-	conn, err := tr.Dial(dialTarget)
+	conn, err := transport.DialPinned(tr, dialTarget, expectedFingerprint)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "❌ Failed to connect to peer at %s: %v\n", dialTarget, err)
 		os.Exit(1)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -21,10 +22,12 @@ func runHub(args []string) {
 	webAddr := fs.String("web-addr", "127.0.0.1:9876", "Web dashboard & IPC address")
 	webPort := fs.Int("web-port", 0, "Web dashboard port (overrides port in --web-addr if non-zero)")
 	storeDir := fs.String("store-dir", "", "Configuration directory")
-	outputDir := fs.String("output-dir", ".", "Directory to save received QuickDrop files")
+	outputDir := fs.String("output-dir", "", "Directory to save received QuickDrop files (default: private Downloads/tantu directory)")
 	timeout := fs.Duration("timeout", 5*time.Minute, "Timeout for sessions and transfers")
 	verbose := fs.Bool("v", false, "Enable verbose output")
 	sshHostKey := fs.String("ssh-host-key", "", "Path to PEM-encoded host private key (when --transport=ssh)")
+	sshAuthorizedKey := fs.String("ssh-authorized-key", "", "Path to an authorized SSH client public/private key (repeat by using a comma-separated list is not supported)")
+	sshAllowLegacy := fs.Bool("ssh-allow-legacy-host-key", false, "Explicitly authorize the SSH host key for clients (legacy compatibility)")
 	autoPair := fs.Bool("auto-pair", false, "Automatically accept incoming pairing requests (default: false, requires user confirmation)")
 	normalizedArgs := NormalizeArgs(args)
 	_ = fs.Parse(normalizedArgs)
@@ -34,18 +37,30 @@ func runHub(args []string) {
 		targetWebAddr = fmt.Sprintf("127.0.0.1:%d", *webPort)
 	}
 
+	var sshAuthorizedKeys [][]byte
+	if strings.TrimSpace(*sshAuthorizedKey) != "" {
+		keyBytes, readErr := os.ReadFile(*sshAuthorizedKey)
+		if readErr != nil {
+			fmt.Fprintf(os.Stderr, "Error: cannot read SSH authorized key: %v\n", readErr)
+			os.Exit(1)
+		}
+		sshAuthorizedKeys = append(sshAuthorizedKeys, keyBytes)
+	}
+
 	cfg := hub.HubConfig{
-		TransportType:     *transportType,
-		ListenAddr:        *listenAddr,
-		WebAddr:           targetWebAddr,
-		StoreDir:          *storeDir,
-		OutputDir:         *outputDir,
-		Headless:          *headless || *server,
-		Server:            *server || *headless,
-		Timeout:           *timeout,
-		Verbose:           *verbose,
-		SSHHostKey:        *sshHostKey,
-		AutoAcceptPairing: *autoPair,
+		TransportType:             *transportType,
+		ListenAddr:                *listenAddr,
+		WebAddr:                   targetWebAddr,
+		StoreDir:                  *storeDir,
+		OutputDir:                 *outputDir,
+		Headless:                  *headless || *server,
+		Server:                    *server || *headless,
+		Timeout:                   *timeout,
+		Verbose:                   *verbose,
+		SSHHostKey:                *sshHostKey,
+		SSHAuthorizedKeys:         sshAuthorizedKeys,
+		SSHAllowLegacyHostKeyAuth: *sshAllowLegacy,
+		AutoAcceptPairing:         *autoPair,
 	}
 
 	h, err := hub.NewHub(cfg)

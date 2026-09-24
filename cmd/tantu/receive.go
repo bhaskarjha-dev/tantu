@@ -3,12 +3,12 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -23,12 +23,20 @@ func runReceive(args []string) {
 	transportType := fs.String("transport", "loopback", "Transport type: loopback, ssh, or lan (default: loopback)")
 	listenAddr := fs.String("listen", "127.0.0.1:9876", "Address to listen for bridge connections")
 	sshHostKey := fs.String("ssh-host-key", "", "Path to PEM-encoded host private key (required when --transport=ssh)")
+	sshAuthorizedKey := fs.String("ssh-authorized-key", "", "Path to an authorized SSH client public/private key")
+	sshAllowLegacy := fs.Bool("ssh-allow-legacy-host-key", false, "Explicitly authorize the SSH host key for clients (legacy compatibility)")
 	storeDir := fs.String("store-dir", "", "Override config directory (for --transport=lan)")
 	timeout := fs.Duration("timeout", 5*time.Minute, "Timeout for each drop session")
 	verbose := fs.Bool("v", false, "Enable verbose output")
 	outputDir := fs.String("output-dir", ".", "Directory to save received files (default: current working directory)")
 	loopFlag := fs.Bool("loop", false, "Keep listening for more drops after each one")
 	_ = fs.Parse(args)
+	listenExplicit := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "listen" {
+			listenExplicit = true
+		}
+	})
 
 	switch *transportType {
 	case "loopback":
@@ -38,7 +46,7 @@ func runReceive(args []string) {
 			os.Exit(1)
 		}
 	case "lan":
-		if *listenAddr == "127.0.0.1:9876" {
+		if !listenExplicit && *listenAddr == "127.0.0.1:9876" {
 			*listenAddr = "0.0.0.0:9877"
 		}
 	default:
@@ -54,9 +62,20 @@ func runReceive(args []string) {
 			fmt.Fprintf(os.Stderr, "Error: cannot read SSH key: %s: %v\n", *sshHostKey, err)
 			os.Exit(1)
 		}
+		var authorizedKeys [][]byte
+		if strings.TrimSpace(*sshAuthorizedKey) != "" {
+			authorized, readErr := os.ReadFile(*sshAuthorizedKey)
+			if readErr != nil {
+				fmt.Fprintf(os.Stderr, "Error: cannot read SSH authorized key: %v\n", readErr)
+				os.Exit(1)
+			}
+			authorizedKeys = append(authorizedKeys, authorized)
+		}
 		var sshErr error
 		tr, sshErr = transport.NewSSHTransport(transport.SSHTransportConfig{
-			HostKey: keyBytes,
+			HostKey:                keyBytes,
+			AuthorizedKeys:         authorizedKeys,
+			AllowLegacyHostKeyAuth: *sshAllowLegacy,
 		})
 		if sshErr != nil {
 			fmt.Fprintf(os.Stderr, "Error: failed to configure SSH transport: %v\n", sshErr)
@@ -99,6 +118,7 @@ func runReceive(args []string) {
 		tr, err = transport.NewLANTransport(transport.LANTransportConfig{
 			Cert:                tlsCert,
 			TrustedFingerprints: trustedFPs,
+			IsTrusted:           store.IsTrusted,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: failed to configure LAN transport: %v\n", err)
@@ -143,47 +163,43 @@ func runReceive(args []string) {
 
 			var openedFile *os.File
 			var targetPath string
+			var partPath string
 
 			recvCfg := drop.ReceiveDropConfig{
-				Timeout: *timeout,
+				Timeout:     *timeout,
+				MaxSize:     drop.DefaultMaxDropSize,
+				MaxTextSize: standaloneTextDropLimit,
 				OnMeta: func(meta drop.DropSend) (io.Writer, error) {
 					if meta.Kind == drop.DropKindFile {
-						fileName := filepath.Base(meta.Name)
-						if fileName == "" || fileName == "." {
-							fileName = "drop.bin"
-						}
+						fileName := sanitizeIncomingFilename(meta.Name)
 						outDir := *outputDir
 						if outDir == "" {
 							outDir = "."
 						}
-						if err := os.MkdirAll(outDir, 0755); err != nil {
-							return nil, fmt.Errorf("create output directory: %w", err)
-						}
-
-						destPath := filepath.Join(outDir, fileName)
-						if _, err := os.Stat(destPath); err == nil {
-							ext := filepath.Ext(fileName)
-							base := strings.TrimSuffix(fileName, ext)
-							idx := 1
-							for {
-								cand := filepath.Join(outDir, fmt.Sprintf("%s (%d)%s", base, idx, ext))
-								if _, err := os.Stat(cand); os.IsNotExist(err) {
-									destPath = cand
-									break
-								}
-								idx++
-							}
-						}
-
-						f, err := os.Create(destPath)
+						f, part, final, err := createIncomingPart(outDir, fileName)
 						if err != nil {
-							return nil, fmt.Errorf("create destination file: %w", err)
+							return nil, err
 						}
 						openedFile = f
-						targetPath = destPath
+						partPath = part
+						targetPath = final
 						return f, nil
 					}
 					return os.Stdout, nil
+				},
+				BeforeComplete: func(res *drop.ReceiveDropResult) error {
+					if res.Meta.Kind != drop.DropKindFile {
+						return nil
+					}
+					if partPath == "" || targetPath == "" {
+						return errors.New("completed file has no staging path")
+					}
+					published, err := finalizeIncomingPart(openedFile, partPath, targetPath)
+					if err != nil {
+						return fmt.Errorf("publish received file: %w", err)
+					}
+					targetPath = published
+					return nil
 				},
 			}
 

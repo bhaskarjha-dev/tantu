@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/bhaskarjha-dev/tantu/internal/bridge"
+	"github.com/bhaskarjha-dev/tantu/internal/browser"
 	"github.com/bhaskarjha-dev/tantu/internal/hub"
 	"github.com/bhaskarjha-dev/tantu/internal/pairing"
 	"github.com/bhaskarjha-dev/tantu/internal/transport"
@@ -65,20 +66,30 @@ func runOpen(args []string) {
 
 	// 1. If transport is not explicitly overridden to SSH, probe local Hub with strict 200ms timeout
 	if (!transportExplicit || *transportType == "loopback") && *sshHost == "" {
-		if status, ok := hub.ProbeHub(*bridgeAddr); ok {
+		if status, ok := hub.ProbeHubWithStoreDir(*bridgeAddr, *storeDir); ok {
 			if *verbose {
 				fmt.Printf("Connected to local Hub (v%s, %s transport)\n", status.Version, status.Transport)
 			}
 			if *verbose {
 				fmt.Println("Delegating OAuth authorization URL to local Hub...")
 			}
-			if err := hub.DelegateOpen(*bridgeAddr, oauthURL, *peerAddr); err != nil {
+			delegateAddr := *bridgeAddr
+			if status.WebAddr != "" {
+				delegateAddr = status.WebAddr
+			}
+			if err := hub.DelegateOpenFromStore(*storeDir, delegateAddr, oauthURL, *peerAddr); err != nil {
 				fmt.Fprintf(os.Stderr, "❌ Hub delegation failed: %v\n", err)
 				os.Exit(1)
 			}
 			fmt.Println("✅ Authentication completed successfully.")
 			return
 		}
+	}
+
+	// Supplying SSH connection options selects SSH when --transport was not
+	// explicitly supplied.
+	if !transportExplicit && strings.TrimSpace(*sshHost) != "" {
+		*transportType = "ssh"
 	}
 
 	// 2. Fallback to direct standalone transport execution using Smart Default Transport
@@ -125,6 +136,7 @@ func runOpen(args []string) {
 	}
 
 	var dialTarget string
+	var expectedFingerprint string
 	var tr transport.Transport
 	switch *transportType {
 	case "ssh":
@@ -170,6 +182,12 @@ func runOpen(args []string) {
 			os.Exit(1)
 		}
 		dialTarget = *peerAddr
+		if resolvedPeer, resolveErr := resolvePeerForDial(lanStore, *peerAddr); resolveErr != nil {
+			fmt.Fprintf(os.Stderr, "Error: LAN target is not a trusted paired peer: %v\n", resolveErr)
+			os.Exit(1)
+		} else {
+			expectedFingerprint = resolvedPeer.Fingerprint
+		}
 	default:
 		tr = transport.NewLoopbackTransport()
 		dialTarget = *bridgeAddr
@@ -180,11 +198,11 @@ func runOpen(args []string) {
 
 	fmt.Printf("🔗 Connecting to bridge at %s (transport: %s)...\n", dialTarget, *transportType)
 	if *verbose {
-		fmt.Printf("Target OAuth URL: %s\n", oauthURL)
+		fmt.Printf("Target OAuth URL: %s\n", browser.RedactURL(oauthURL))
 		fmt.Printf("Session timeout: %v\n", *timeout)
 	}
 
-	conn, err := tr.Dial(dialTarget)
+	conn, err := transport.DialPinned(tr, dialTarget, expectedFingerprint)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "❌ Failed to connect to bridge server at %s: %v\n", dialTarget, err)
 		os.Exit(1)
@@ -199,7 +217,7 @@ func runOpen(args []string) {
 	fmt.Println("📥 Waiting for callback...")
 	cfg := bridge.BSideConfig{Timeout: *timeout}
 	if err := bridge.HandleBSide(ctx, conn, oauthURL, cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Authentication bridge failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "❌ Authentication bridge failed: %s\n", bridge.RedactError(err))
 		os.Exit(1)
 	}
 

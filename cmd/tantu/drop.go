@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -14,6 +13,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -290,6 +290,14 @@ const dropPageHTML = `<!DOCTYPE html>
 </div>
 
 <script>
+  const TANTU_LOCAL_TOKEN = '{{IPC_TOKEN}}';
+  function apiFetch(path, options) {
+    options = options || {};
+    const headers = new Headers(options.headers || {});
+    headers.set('X-Tantu-IPC-Token', TANTU_LOCAL_TOKEN);
+    return fetch(path, Object.assign({}, options, { headers: headers }));
+  }
+
   let selectedFile = null;
 
   function setStatus(id, text, type) {
@@ -309,7 +317,7 @@ const dropPageHTML = `<!DOCTYPE html>
     btn.disabled = true;
     setStatus('textStatus', '⏳ Sending text...', 'sending');
 
-    fetch('/api/send-text', {
+    apiFetch('/api/send-text', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text: text, name: label })
@@ -353,7 +361,7 @@ const dropPageHTML = `<!DOCTYPE html>
     const formData = new FormData();
     formData.append('file', selectedFile);
 
-    fetch('/api/send-file', {
+    apiFetch('/api/send-file', {
       method: 'POST',
       body: formData
     })
@@ -406,7 +414,7 @@ const dropPageHTML = `<!DOCTYPE html>
 
   // Long-poll incoming drops
   function pollIncomingDrops() {
-    fetch('/api/receive')
+    apiFetch('/api/receive')
       .then(r => r.json())
       .then(data => {
         if (data.status === 'success') {
@@ -429,43 +437,60 @@ const dropPageHTML = `<!DOCTYPE html>
     const item = document.createElement('div');
     item.className = 'received-item';
 
-    const timeStr = new Date().toLocaleTimeString();
-    let contentHtml = '';
-    let actionsHtml = '';
+    const header = document.createElement('div');
+    header.className = 'received-item-header';
+    const title = document.createElement('span');
+    title.className = 'received-item-title';
+    title.textContent = drop.kind === 'file'
+      ? '📁 File: ' + (drop.name || 'file')
+      : '📝 Text' + (drop.name ? ' (' + drop.name + ')' : '');
+    const time = document.createElement('span');
+    time.textContent = new Date().toLocaleTimeString();
+    header.appendChild(title);
+    header.appendChild(time);
+    item.appendChild(header);
 
+    const actions = document.createElement('div');
+    actions.className = 'received-item-actions';
     if (drop.kind === 'file') {
-      const fileName = drop.name || 'file';
-      contentHtml = '<div><strong>' + escapeHtml(fileName) + '</strong> (' + formatBytes(drop.size) + ')</div>';
-      if (drop.url) {
-        actionsHtml = '<a href="' + drop.url + '" download class="small-btn">⬇️ Download</a>';
+      const content = document.createElement('div');
+      content.textContent = (drop.name || 'file') + ' (' + formatBytes(drop.size) + ')';
+      item.appendChild(content);
+      if (typeof drop.url === 'string' && drop.url.startsWith('/api/download?')) {
+        const link = document.createElement('a');
+        link.href = drop.url;
+        link.download = '';
+        link.className = 'small-btn';
+        link.textContent = '⬇️ Download';
+        actions.appendChild(link);
       }
     } else {
-      contentHtml = '<div class="received-item-content">' + escapeHtml(drop.data || '') + '</div>';
-      actionsHtml = '<button class="small-btn" onclick="copyText(this, ' + JSON.stringify(drop.data || '') + ')">📋 Copy</button>';
+      const content = document.createElement('div');
+      content.className = 'received-item-content';
+      content.textContent = drop.data || '';
+      item.appendChild(content);
+      const copy = document.createElement('button');
+      copy.className = 'small-btn';
+      copy.textContent = '📋 Copy';
+      copy.addEventListener('click', () => {
+        const text = String(drop.data || '');
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(() => {
+            const original = copy.textContent;
+            copy.textContent = '✅ Copied!';
+            setTimeout(() => { copy.textContent = original; }, 2000);
+          }).catch(() => {});
+        }
+      });
+      actions.appendChild(copy);
     }
-
-    item.innerHTML = 
-      '<div class="received-item-header">' +
-        '<span class="received-item-title">' + (drop.kind === 'file' ? '📁 File: ' + escapeHtml(drop.name) : '📝 Text ' + (drop.name ? '(' + escapeHtml(drop.name) + ')' : '')) + '</span>' +
-        '<span>' + timeStr + '</span>' +
-      '</div>' +
-      contentHtml +
-      '<div class="received-item-actions">' + actionsHtml + '</div>';
-
+    item.appendChild(actions);
     list.insertBefore(item, list.firstChild);
-  }
-
-  function copyText(btn, text) {
-    navigator.clipboard.writeText(text).then(() => {
-      const orig = btn.innerHTML;
-      btn.innerHTML = '✅ Copied!';
-      setTimeout(() => { btn.innerHTML = orig; }, 2000);
-    });
   }
 
   function escapeHtml(str) {
     if (!str) return '';
-    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
   // Start polling
@@ -489,7 +514,7 @@ func runDrop(args []string) {
 	fs := flag.NewFlagSet("drop", flag.ExitOnError)
 	port := fs.Int("port", 9875, "Port for QuickDrop Web UI (default: 9875)")
 	transportType := fs.String("transport", "loopback", "Transport type: loopback, ssh, or lan (default: loopback)")
-	bridgeAddr := fs.String("bridge", "127.0.0.1:9876", "Bridge server address for loopback (default: 127.0.0.1:9876)")
+	bridgeAddr := fs.String("bridge", "127.0.0.1:9877", "Bridge server address for loopback (default: 127.0.0.1:9877)")
 	peerAddr := fs.String("peer", "", "Address of paired peer HOST:PORT (optional when exactly 1 peer paired)")
 	listenAddr := fs.String("listen", "", "Address to listen for incoming drops (optional background listener)")
 	storeDir := fs.String("store-dir", "", "Override config directory (for --transport=lan)")
@@ -502,12 +527,24 @@ func runDrop(args []string) {
 	verbose := fs.Bool("v", false, "Enable verbose output")
 	outputDir := fs.String("output-dir", "", "Directory to save received files (default: system temp dir)")
 	_ = fs.Parse(args)
+	transportExplicit := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "transport" {
+			transportExplicit = true
+		}
+	})
+	if !transportExplicit && strings.TrimSpace(*sshHost) != "" {
+		*transportType = "ssh"
+	}
 
 	outDir := *outputDir
 	if outDir == "" {
 		outDir = filepath.Join(os.TempDir(), "tantu-drops")
 	}
-	_ = os.MkdirAll(outDir, 0755)
+	if err := os.MkdirAll(outDir, 0700); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: create output directory: %v\n", err)
+		os.Exit(1)
+	}
 
 	var lanStore *pairing.PeerStore
 	switch *transportType {
@@ -540,6 +577,7 @@ func runDrop(args []string) {
 	}
 
 	var dialTarget string
+	var expectedFingerprint string
 	var tr transport.Transport
 	switch *transportType {
 	case "ssh":
@@ -550,15 +588,21 @@ func runDrop(args []string) {
 		}
 		var hostKeyBytes []byte
 		if *sshHostKey != "" {
-			hostKeyBytes, _ = os.ReadFile(*sshHostKey)
+			var readErr error
+			hostKeyBytes, readErr = os.ReadFile(*sshHostKey)
+			if readErr != nil {
+				fmt.Fprintf(os.Stderr, "Error: cannot read SSH host key %q: %v\n", *sshHostKey, readErr)
+				os.Exit(1)
+			}
 		}
 		var sshErr error
 		tr, sshErr = transport.NewSSHTransport(transport.SSHTransportConfig{
-			User:       *sshUser,
-			Host:       *sshHost,
-			Port:       *sshPort,
-			PrivateKey: keyBytes,
-			HostKey:    hostKeyBytes,
+			User:           *sshUser,
+			Host:           *sshHost,
+			Port:           *sshPort,
+			PrivateKey:     keyBytes,
+			HostKey:        hostKeyBytes,
+			AuthorizedKeys: [][]byte{keyBytes},
 		})
 		if sshErr != nil {
 			fmt.Fprintf(os.Stderr, "Error: failed to configure SSH transport: %v\n", sshErr)
@@ -590,9 +634,28 @@ func runDrop(args []string) {
 			os.Exit(1)
 		}
 		dialTarget = *peerAddr
+		if resolvedPeer, resolveErr := resolvePeerForDial(lanStore, *peerAddr); resolveErr != nil {
+			fmt.Fprintf(os.Stderr, "Error: LAN target is not a trusted paired peer: %v\n", resolveErr)
+			os.Exit(1)
+		} else {
+			expectedFingerprint = resolvedPeer.Fingerprint
+		}
 	default:
 		tr = transport.NewLoopbackTransport()
 		dialTarget = *bridgeAddr
+	}
+
+	dialConfiguredPeer := func() (transport.Conn, error) {
+		conn, dialErr := transport.DialPinned(tr, dialTarget, expectedFingerprint)
+		if dialErr == nil {
+			return conn, nil
+		}
+		// Preserve compatibility with the legacy `tantu serve` listener on
+		// 9876 while preferring the unified Hub's wire listener on 9877.
+		if *transportType == "loopback" && *bridgeAddr == "127.0.0.1:9877" {
+			return tr.Dial("127.0.0.1:9876")
+		}
+		return nil, dialErr
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -601,7 +664,17 @@ func runDrop(args []string) {
 	// In-memory drop queue for incoming receive drops
 	var dropMu sync.Mutex
 	dropItems := make(map[string]dropReceivedItem)
-	newDropChan := make(chan dropReceivedItem, 32)
+	reservedDrops := make(map[string]struct{})
+	dropOrder := make([]string, 0, maxStandaloneDropHistory)
+	var dropHistoryBytes int64
+	newDropChan := make(chan string, 32)
+	sessionSlots := make(chan struct{}, maxStandaloneDropSessions)
+	lookupDrop := func(id string) (dropReceivedItem, bool) {
+		dropMu.Lock()
+		defer dropMu.Unlock()
+		item, exists := dropItems[id]
+		return item, exists
+	}
 
 	// Start background transport listener if --listen is provided
 	if *listenAddr != "" {
@@ -628,37 +701,73 @@ func runDrop(args []string) {
 						}
 						continue
 					}
+					select {
+					case sessionSlots <- struct{}{}:
+					default:
+						_ = conn.Close()
+						if *verbose {
+							fmt.Fprintf(os.Stderr, "⚠️ QuickDrop receive connection rejected: max active sessions (%d) reached\n", maxStandaloneDropSessions)
+						}
+						continue
+					}
 					go func(c transport.Conn) {
+						defer func() { <-sessionSlots }()
 						defer c.Close()
-						var textBuf bytes.Buffer
+						var textBuf boundedTextBuffer
+						textBuf.limit = standaloneTextDropLimit
 						var fileObj *os.File
 						var savedPath string
+						var partPath string
 						var savedName string
+						var reservedID string
+						defer func() {
+							if reservedID != "" {
+								dropMu.Lock()
+								delete(reservedDrops, reservedID)
+								dropMu.Unlock()
+							}
+						}()
 
 						recvCfg := drop.ReceiveDropConfig{
-							Timeout: *timeout,
+							Timeout:     *timeout,
+							MaxSize:     drop.DefaultMaxDropSize,
+							MaxTextSize: standaloneTextDropLimit,
 							OnMeta: func(meta drop.DropSend) (io.Writer, error) {
+								dropMu.Lock()
+								if _, exists := reservedDrops[meta.DropID]; exists {
+									dropMu.Unlock()
+									return nil, fmt.Errorf("duplicate drop_id %q", meta.DropID)
+								}
+								reservedDrops[meta.DropID] = struct{}{}
+								reservedID = meta.DropID
+								dropMu.Unlock()
 								if meta.Kind == drop.DropKindFile {
-									safeName := filepath.Base(meta.Name)
-									if safeName == "" || safeName == "." {
-										safeName = "drop.bin"
-									}
+									safeName := sanitizeIncomingFilename(meta.Name)
 									savedName = safeName
-									destPath := filepath.Join(outDir, safeName)
-									if _, err := os.Stat(destPath); err == nil {
-										ext := filepath.Ext(safeName)
-										base := strings.TrimSuffix(safeName, ext)
-										destPath = filepath.Join(outDir, fmt.Sprintf("%s-%d%s", base, time.Now().UnixNano(), ext))
-									}
-									f, err := os.Create(destPath)
+									f, part, final, err := createIncomingPart(outDir, safeName)
 									if err != nil {
 										return nil, err
 									}
 									fileObj = f
-									savedPath = destPath
+									partPath = part
+									savedPath = final
 									return f, nil
 								}
 								return &textBuf, nil
+							},
+							BeforeComplete: func(res *drop.ReceiveDropResult) error {
+								if res.Meta.Kind != drop.DropKindFile {
+									return nil
+								}
+								if partPath == "" || savedPath == "" {
+									return errors.New("completed file has no staging path")
+								}
+								published, err := finalizeIncomingPart(fileObj, partPath, savedPath)
+								if err != nil {
+									return fmt.Errorf("publish received file: %w", err)
+								}
+								savedPath = published
+								return nil
 							},
 						}
 
@@ -688,17 +797,33 @@ func runDrop(args []string) {
 						if res.Meta.Kind == drop.DropKindFile {
 							item.Name = savedName
 							item.LocalPath = savedPath
-							item.URL = fmt.Sprintf("/api/download?id=%s", dropID)
+							query := url.Values{}
+							query.Set("id", dropID)
+							item.URL = "/api/download?" + query.Encode()
 						} else {
 							item.Data = textBuf.String()
 						}
 
 						dropMu.Lock()
+						if previous, exists := dropItems[dropID]; exists {
+							dropHistoryBytes -= standaloneDropItemBytes(previous)
+						} else {
+							dropOrder = append(dropOrder, dropID)
+						}
 						dropItems[dropID] = item
+						dropHistoryBytes += standaloneDropItemBytes(item)
+						for len(dropOrder) > maxStandaloneDropHistory || dropHistoryBytes > maxStandaloneDropHistoryBytes {
+							oldestID := dropOrder[0]
+							if oldest, exists := dropItems[oldestID]; exists {
+								dropHistoryBytes -= standaloneDropItemBytes(oldest)
+								delete(dropItems, oldestID)
+							}
+							dropOrder = dropOrder[1:]
+						}
 						dropMu.Unlock()
 
 						select {
-						case newDropChan <- item:
+						case newDropChan <- dropID:
 						default:
 						}
 					}(conn)
@@ -710,16 +835,30 @@ func runDrop(args []string) {
 	mux := http.NewServeMux()
 
 	peerInfo := fmt.Sprintf("%s (%s)", dialTarget, *transportType)
+	localToken, tokenErr := newLocalRequestToken()
+	if tokenErr != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to generate local request token: %v\n", tokenErr)
+		os.Exit(1)
+	}
 	pageContent := strings.ReplaceAll(dropPageHTML, "{{PORT}}", strconv.Itoa(*port))
-	pageContent = strings.ReplaceAll(pageContent, "{{PEER}}", peerInfo)
+	pageContent = strings.ReplaceAll(pageContent, "{{PEER}}", escapeHTML(peerInfo))
+	pageContent = strings.ReplaceAll(pageContent, "{{IPC_TOKEN}}", localToken)
 
 	writeJSON := func(w http.ResponseWriter, status int, data any) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(data)
+	}
+	writeDropResponse := func(w http.ResponseWriter, item dropReceivedItem) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "success",
+			"id":     item.ID,
+			"kind":   item.Kind,
+			"name":   item.Name,
+			"size":   item.Size,
+			"data":   item.Data,
+			"url":    item.URL,
+		})
 	}
 
 	// 1. GET / — serve HTML
@@ -734,9 +873,6 @@ func runDrop(args []string) {
 
 	// 2. POST /api/send-text — send text drop
 	mux.HandleFunc("/api/send-text", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -750,7 +886,8 @@ func runDrop(args []string) {
 			Text string `json:"text"`
 			Name string `json:"name"`
 		}
-		if err := json.NewDecoder(io.LimitReader(r.Body, 50*1024*1024)).Decode(&req); err != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, standaloneTextDropLimit+1)
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"status": "error", "message": "Invalid JSON body"})
 			return
 		}
@@ -758,8 +895,12 @@ func runDrop(args []string) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"status": "error", "message": "Text content is empty"})
 			return
 		}
+		if int64(len(req.Text)) > standaloneTextDropLimit {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"status": "error", "message": "Text content exceeds 10MB limit"})
+			return
+		}
 
-		conn, err := tr.Dial(dialTarget)
+		conn, err := dialConfiguredPeer()
 		if err != nil {
 			if *verbose {
 				fmt.Fprintf(os.Stderr, "❌ Dial to %s failed: %v\n", dialTarget, err)
@@ -798,9 +939,6 @@ func runDrop(args []string) {
 
 	// 3. POST /api/send-file — send file upload
 	mux.HandleFunc("/api/send-file", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -810,8 +948,8 @@ func runDrop(args []string) {
 			return
 		}
 
-		// Cap file upload at 5GB (buffer up to 32MB in RAM, spill remainder to disk)
-		r.Body = http.MaxBytesReader(w, r.Body, 5*1024*1024*1024)
+		// Cap file upload at the protocol default (buffer up to 32MB in RAM, spill remainder to disk)
+		r.Body = http.MaxBytesReader(w, r.Body, drop.DefaultMaxDropSize)
 		if err := r.ParseMultipartForm(32 * 1024 * 1024); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"status": "error", "message": fmt.Sprintf("Parse multipart error (max 5GB): %v", err)})
 			return
@@ -829,7 +967,7 @@ func runDrop(args []string) {
 		}
 		defer file.Close()
 
-		conn, err := tr.Dial(dialTarget)
+		conn, err := dialConfiguredPeer()
 		if err != nil {
 			if *verbose {
 				fmt.Fprintf(os.Stderr, "❌ Dial to %s failed: %v\n", dialTarget, err)
@@ -891,9 +1029,6 @@ func runDrop(args []string) {
 
 	// 4. GET /api/receive — long poll for incoming drops
 	mux.HandleFunc("/api/receive", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -905,16 +1040,16 @@ func runDrop(args []string) {
 
 		// Check if there is an immediately available item
 		select {
-		case item := <-newDropChan:
-			writeJSON(w, http.StatusOK, map[string]any{
-				"status": "success",
-				"id":     item.ID,
-				"kind":   item.Kind,
-				"name":   item.Name,
-				"size":   item.Size,
-				"data":   item.Data,
-				"url":    item.URL,
-			})
+		case id := <-newDropChan:
+			item, exists := lookupDrop(id)
+			if !exists {
+				writeJSON(w, http.StatusOK, map[string]string{
+					"status":  "timeout",
+					"message": "No incoming drops",
+				})
+				return
+			}
+			writeDropResponse(w, item)
 			return
 		default:
 		}
@@ -924,15 +1059,15 @@ func runDrop(args []string) {
 		defer pollTimer.Stop()
 
 		select {
-		case item := <-newDropChan:
-			writeJSON(w, http.StatusOK, map[string]any{
-				"status": "success",
-				"id":     item.ID,
-				"kind":   item.Kind,
-				"name":   item.Name,
-				"size":   item.Size,
-				"data":   item.Data,
-				"url":    item.URL,
+		case id := <-newDropChan:
+			item, exists := lookupDrop(id)
+			if exists {
+				writeDropResponse(w, item)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]string{
+				"status":  "timeout",
+				"message": "No incoming drops",
 			})
 		case <-pollTimer.C:
 			writeJSON(w, http.StatusOK, map[string]string{
@@ -946,7 +1081,6 @@ func runDrop(args []string) {
 
 	// 5. GET /api/download — download a received file
 	mux.HandleFunc("/api/download", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		id := r.URL.Query().Get("id")
 		dropMu.Lock()
 		item, exists := dropItems[id]
@@ -962,10 +1096,7 @@ func runDrop(args []string) {
 	})
 
 	httpAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(*port))
-	server := &http.Server{
-		Addr:    httpAddr,
-		Handler: mux,
-	}
+	server := newLocalHTTPServerWithToken(httpAddr, mux, localToken, *timeout)
 
 	go func() {
 		<-ctx.Done()

@@ -52,8 +52,18 @@ func runWrap(args []string) {
 	})
 
 	var store *pairing.PeerStore
-	if (!transportExplicit || *transportType == "loopback") && *sshHost == "" {
-		if _, ok := hub.ProbeHub(*bridgeAddr); ok {
+	usingLocalHub := false
+	localHubAddr := ""
+	if !transportExplicit && strings.TrimSpace(*sshHost) != "" {
+		// Supplying SSH connection options selects SSH when --transport was
+		// not explicitly supplied.
+		*transportType = "ssh"
+	} else if (!transportExplicit || *transportType == "loopback") && *sshHost == "" {
+		if status, ok := hub.ProbeHubWithStoreDir(*bridgeAddr, *storeDir); ok {
+			usingLocalHub = true
+			if status.WebAddr != "" {
+				localHubAddr = status.WebAddr
+			}
 			*transportType = "loopback"
 		} else {
 			var err error
@@ -104,29 +114,47 @@ func runWrap(args []string) {
 		binPath = os.Args[0]
 	}
 
-	browserCmd := binPath
-	if strings.Contains(binPath, " ") {
-		browserCmd = `"` + binPath + `"`
-	}
-
+	browserArgs := []string{binPath}
 	if *transportType == "ssh" {
-		browserCmd += fmt.Sprintf(" -transport=ssh -ssh-host=%s -ssh-port=%d -ssh-user=%s -ssh-key=%s",
-			*sshHost, *sshPort, *sshUser, *sshKey)
+		browserArgs = append(browserArgs,
+			"-transport=ssh",
+			fmt.Sprintf("-ssh-host=%s", *sshHost),
+			fmt.Sprintf("-ssh-port=%d", *sshPort),
+			fmt.Sprintf("-ssh-user=%s", *sshUser),
+			fmt.Sprintf("-ssh-key=%s", *sshKey),
+		)
 	} else if *transportType == "lan" {
-		browserCmd += fmt.Sprintf(" -transport=lan -peer=%s", *peerAddr)
+		browserArgs = append(browserArgs,
+			"-transport=lan",
+			fmt.Sprintf("-peer=%s", *peerAddr),
+		)
 		if *storeDir != "" {
-			browserCmd += fmt.Sprintf(" -store-dir=%s", *storeDir)
+			browserArgs = append(browserArgs, fmt.Sprintf("-store-dir=%s", *storeDir))
 		}
-	} else if *bridgeAddr != "127.0.0.1:9876" {
-		browserCmd += fmt.Sprintf(" -bridge=%s", *bridgeAddr)
+	} else {
+		// A local Hub still needs an explicit peer argument when the caller
+		// supplied one; otherwise the child CLI can resolve the Hub's active
+		// peer just as it did before.
+		if usingLocalHub && *storeDir != "" {
+			browserArgs = append(browserArgs, fmt.Sprintf("-store-dir=%s", *storeDir))
+		}
+		if usingLocalHub && *peerAddr != "" {
+			browserArgs = append(browserArgs, fmt.Sprintf("-peer=%s", *peerAddr))
+		}
+		if localHubAddr != "" && localHubAddr != "127.0.0.1:9876" {
+			browserArgs = append(browserArgs, fmt.Sprintf("-bridge=%s", localHubAddr))
+		} else if *bridgeAddr != "127.0.0.1:9876" {
+			browserArgs = append(browserArgs, fmt.Sprintf("-bridge=%s", *bridgeAddr))
+		}
 	}
 
 	if *timeout != 5*time.Minute {
-		browserCmd += fmt.Sprintf(" -timeout=%v", *timeout)
+		browserArgs = append(browserArgs, fmt.Sprintf("-timeout=%s", timeout.String()))
 	}
 	if *verbose {
-		browserCmd += " -v"
+		browserArgs = append(browserArgs, "-v")
 	}
+	browserCmd := joinBROWSERArgs(browserArgs)
 
 	env := os.Environ()
 	browserFound := false

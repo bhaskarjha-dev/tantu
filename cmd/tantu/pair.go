@@ -65,16 +65,23 @@ func runPair(args []string) {
 		var discovered []discPeer
 
 		// 1. Probe local hub
-		if status, ok := hub.ProbeHub(""); ok && status.WebAddr != "" {
+		if status, ok := hub.ProbeHubWithStoreDir("", sDir); ok && status.WebAddr != "" {
 			client := &http.Client{Timeout: 500 * time.Millisecond}
-			if resp, err := client.Get("http://" + status.WebAddr + "/api/discovery/peers"); err == nil {
-				defer resp.Body.Close()
-				if resp.StatusCode == http.StatusOK {
-					var all []discPeer
-					if err := json.NewDecoder(resp.Body).Decode(&all); err == nil {
-						for _, d := range all {
-							if !d.IsPaired {
-								discovered = append(discovered, d)
+			req, reqErr := http.NewRequest(http.MethodGet, "http://"+status.WebAddr+"/api/discovery/peers", nil)
+			if reqErr == nil {
+				if token := hub.RuntimeIPCTokenForAddr(sDir, status.WebAddr); token != "" {
+					req.Header.Set(hub.IPCTokenHeader, token)
+				}
+				resp, err := client.Do(req)
+				if err == nil {
+					defer resp.Body.Close()
+					if resp.StatusCode == http.StatusOK {
+						var all []discPeer
+						if err := json.NewDecoder(resp.Body).Decode(&all); err == nil {
+							for _, d := range all {
+								if !d.IsPaired {
+									discovered = append(discovered, d)
+								}
 							}
 						}
 					}
@@ -146,7 +153,7 @@ func runPair(args []string) {
 		}
 	} else {
 		// Check if local Hub is already running to avoid port collision
-		if status, ok := hub.ProbeHub(""); ok {
+		if status, ok := hub.ProbeHubWithStoreDir("", sDir); ok {
 			sas := status.Identity.SAS
 			if sas == "" {
 				if id, _ := store.LoadIdentity(); id != nil {

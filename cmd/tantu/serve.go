@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -24,10 +25,18 @@ func runServe(args []string) {
 	transportType := fs.String("transport", "loopback", "Transport type: loopback, ssh, or lan (default: loopback)")
 	listenAddr := fs.String("listen", "127.0.0.1:9876", "Address to listen for bridge connections")
 	sshHostKey := fs.String("ssh-host-key", "", "Path to PEM-encoded host private key (required when --transport=ssh)")
+	sshAuthorizedKey := fs.String("ssh-authorized-key", "", "Path to an authorized SSH client public/private key")
+	sshAllowLegacy := fs.Bool("ssh-allow-legacy-host-key", false, "Explicitly authorize the SSH host key for clients (legacy compatibility)")
 	storeDir := fs.String("store-dir", "", "Override config directory (for --transport=lan)")
 	timeout := fs.Duration("timeout", 5*time.Minute, "Timeout for each authentication session")
 	verbose := fs.Bool("v", false, "Enable verbose output")
 	_ = fs.Parse(args)
+	listenExplicit := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "listen" {
+			listenExplicit = true
+		}
+	})
 
 	switch *transportType {
 	case "loopback":
@@ -37,7 +46,7 @@ func runServe(args []string) {
 			os.Exit(1)
 		}
 	case "lan":
-		if *listenAddr == "127.0.0.1:9876" {
+		if !listenExplicit && *listenAddr == "127.0.0.1:9876" {
 			*listenAddr = "0.0.0.0:9877"
 		}
 	default:
@@ -53,9 +62,20 @@ func runServe(args []string) {
 			fmt.Fprintf(os.Stderr, "Error: cannot read SSH key: %s: %v\n", *sshHostKey, err)
 			os.Exit(1)
 		}
+		var authorizedKeys [][]byte
+		if strings.TrimSpace(*sshAuthorizedKey) != "" {
+			authorized, readErr := os.ReadFile(*sshAuthorizedKey)
+			if readErr != nil {
+				fmt.Fprintf(os.Stderr, "Error: cannot read SSH authorized key: %v\n", readErr)
+				os.Exit(1)
+			}
+			authorizedKeys = append(authorizedKeys, authorized)
+		}
 		var sshErr error
 		tr, sshErr = transport.NewSSHTransport(transport.SSHTransportConfig{
-			HostKey: keyBytes,
+			HostKey:                keyBytes,
+			AuthorizedKeys:         authorizedKeys,
+			AllowLegacyHostKeyAuth: *sshAllowLegacy,
 		})
 		if sshErr != nil {
 			fmt.Fprintf(os.Stderr, "Error: failed to configure SSH transport: %v\n", sshErr)
@@ -98,6 +118,7 @@ func runServe(args []string) {
 		tr, err = transport.NewLANTransport(transport.LANTransportConfig{
 			Cert:                tlsCert,
 			TrustedFingerprints: trustedFPs,
+			IsTrusted:           store.IsTrusted,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: failed to configure LAN transport: %v\n", err)
@@ -128,6 +149,9 @@ func runServe(args []string) {
 	}()
 
 	var activeSessions atomic.Int64
+	const maxServeSessions = 100
+	sessionSlots := make(chan struct{}, maxServeSessions)
+	sessions := bridge.NewOAuthSessionManager()
 
 	for {
 		conn, err := listener.Accept()
@@ -140,7 +164,18 @@ func runServe(args []string) {
 			continue
 		}
 
+		select {
+		case sessionSlots <- struct{}{}:
+		default:
+			_ = conn.Close()
+			if *verbose {
+				sessionLogger := log.New(os.Stdout, "", 0)
+				sessionLogger.Printf("⚠️ OAuth connection rejected: max active sessions (%d) reached", maxServeSessions)
+			}
+			continue
+		}
 		go func() {
+			defer func() { <-sessionSlots }()
 			defer conn.Close()
 			active := activeSessions.Add(1)
 			defer activeSessions.Add(-1)
@@ -157,11 +192,11 @@ func runServe(args []string) {
 
 			openBrowser := func(targetURL string) error {
 				if *verbose {
-					sessionLogger.Printf("🌐 Opening browser for URL: %s", targetURL)
+					sessionLogger.Printf("🌐 Opening browser for URL: %s", browser.RedactURL(targetURL))
 				}
 				if err := browser.OpenURL(targetURL); err != nil {
 					sessionLogger.Printf("❌ Warning: failed to open browser: %v", err)
-					sessionLogger.Printf("Please open the URL manually in your browser:\n  %s", targetURL)
+					sessionLogger.Printf("Please reopen the original authorization URL manually; Tantu will not print its sensitive query values.")
 					return err
 				}
 				return nil
@@ -171,9 +206,10 @@ func runServe(args []string) {
 				Timeout:     *timeout,
 				OpenBrowser: openBrowser,
 				Logger:      sessionLogger,
+				Sessions:    sessions,
 			}
 			if err := bridge.HandleASide(ctx, conn, cfg); err != nil && !errors.Is(err, context.Canceled) {
-				sessionLogger.Printf("❌ Session error: %v", err)
+				sessionLogger.Printf("❌ Session error: %s", bridge.RedactError(err))
 				return
 			}
 			sessionLogger.Printf("✅ Session complete")

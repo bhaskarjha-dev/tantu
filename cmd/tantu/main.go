@@ -69,12 +69,15 @@ func ensurePeerLANPort(addr string) string {
 func resolvePeer(store *pairing.PeerStore, peerFlag string) (string, error) {
 	peers := store.ListPeers()
 	if peerFlag != "" {
-		for _, p := range peers {
-			if p.Name == peerFlag || p.Fingerprint == peerFlag || strings.HasPrefix(p.Fingerprint, peerFlag) {
-				return ensurePeerLANPort(p.Address), nil
-			}
+		if resolved, err := store.ResolvePeer(peerFlag); err == nil {
+			return ensurePeerLANPort(resolved.Address), nil
+		} else if net.ParseIP(peerFlag) != nil {
+			return ensurePort(peerFlag), nil
+		} else if host, _, splitErr := net.SplitHostPort(peerFlag); splitErr == nil && host != "" {
+			return ensurePort(peerFlag), nil
+		} else {
+			return "", err
 		}
-		return ensurePort(peerFlag), nil
 	}
 
 	if len(peers) == 0 {
@@ -98,6 +101,21 @@ func resolvePeer(store *pairing.PeerStore, peerFlag string) (string, error) {
 		fmt.Fprintf(&b, "  - %s (%s, %s)\n", name, ensurePeerLANPort(p.Address), fp)
 	}
 	return "", errors.New(strings.TrimRight(b.String(), "\n"))
+}
+
+func resolvePeerForDial(store *pairing.PeerStore, query string) (*pairing.Peer, error) {
+	if resolved, err := store.ResolvePeer(query); err == nil {
+		return resolved, nil
+	} else {
+		normalized := ensurePeerLANPort(strings.TrimSpace(query))
+		for _, peer := range store.ListPeers() {
+			if strings.EqualFold(ensurePeerLANPort(peer.Address), normalized) {
+				resolved := peer
+				return &resolved, nil
+			}
+		}
+		return nil, err
+	}
 }
 
 // defaultTransport returns "lan" by default to enable LAN discovery and pairing.
