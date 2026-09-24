@@ -1517,3 +1517,103 @@ func TestWebDashboard_CLIVersionSkewLogged(t *testing.T) {
 		t.Fatalf("skew warning missing from logs: %s", body)
 	}
 }
+
+func TestWebDashboard_RestartDuringUploadsReleasesSlots(t *testing.T) {
+	h, cancel, cleanup := startTestHub(t)
+	defer cleanup()
+
+	// Slow multipart bodies hold all 4 upload slots in flight.
+	prs := make([]*io.PipeReader, 0, maxHubConcurrentUploads)
+	pws := make([]*io.PipeWriter, 0, maxHubConcurrentUploads)
+	for i := 0; i < maxHubConcurrentUploads; i++ {
+		pr, pw := io.Pipe()
+		prs = append(prs, pr)
+		pws = append(pws, pw)
+	}
+	uploadErrs := make(chan error, maxHubConcurrentUploads)
+	for _, pr := range prs {
+		go func(body io.Reader) {
+			req, err := http.NewRequest(http.MethodPost, "http://"+h.WebAddr()+"/api/drop/upload", body)
+			if err != nil {
+				uploadErrs <- err
+				return
+			}
+			req.Header.Set("Content-Type", "multipart/form-data; boundary=slowboundary")
+			req.Header.Set(IPCTokenHeader, h.ipcToken)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				uploadErrs <- err
+				return
+			}
+			defer resp.Body.Close()
+			_, _ = io.Copy(io.Discard, resp.Body)
+			uploadErrs <- nil
+		}(pr)
+	}
+	// Feed headers + a trickle so handlers are inside body reads.
+	for _, pw := range pws {
+		_, _ = pw.Write([]byte("--slowboundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"slow.bin\"\r\n\r\n"))
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	// A 5th upload must fail fast, not queue behind the stalled ones.
+	quick, _ := http.NewRequest(http.MethodPost, "http://"+h.WebAddr()+"/api/drop/upload", strings.NewReader("--slowboundary--\r\n"))
+	quick.Header.Set("Content-Type", "multipart/form-data; boundary=slowboundary")
+	quick.Header.Set(IPCTokenHeader, h.ipcToken)
+	quickResp, err := http.DefaultClient.Do(quick)
+	if err != nil {
+		t.Fatalf("capped upload request failed: %v", err)
+	}
+	quickResp.Body.Close()
+	if quickResp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("5th concurrent upload = %d, want 503", quickResp.StatusCode)
+	}
+
+	// Restart mid-upload: Stop must return, in-flight uploads must error
+	// out (not hang), and the next generation must have free slots.
+	for _, pw := range pws {
+		_ = pw.Close()
+	}
+	if err := h.Stop(); err != nil {
+		t.Fatalf("Stop during uploads: %v", err)
+	}
+	cancel()
+	deadline := time.After(15 * time.Second)
+	for i := 0; i < maxHubConcurrentUploads; i++ {
+		select {
+		case <-uploadErrs:
+		case <-deadline:
+			t.Fatal("in-flight upload did not terminate after Stop")
+		}
+	}
+
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	errCh := make(chan error, 1)
+	go func() { errCh <- h.Start(ctx2) }()
+	select {
+	case <-h.Ready():
+	case err := <-errCh:
+		t.Fatalf("restart failed: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("restarted hub not ready")
+	}
+	var b bytes.Buffer
+	w := multipart.NewWriter(&b)
+	part, _ := w.CreateFormFile("file", "after.txt")
+	_, _ = part.Write([]byte("after restart"))
+	_ = w.Close()
+	req, _ := http.NewRequest(http.MethodPost, "http://"+h.WebAddr()+"/api/drop/upload", &b)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Header.Set(IPCTokenHeader, h.ipcToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post-restart upload failed: %v", err)
+	}
+	defer resp.Body.Close()
+	// Loopback self-delivery succeeds: 200 proves a slot was acquired (a
+	// leaked slot would still be 503) and the full pipeline works post-restart.
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("post-restart upload = %d, want 200 (slot acquired, self-delivery)", resp.StatusCode)
+	}
+}

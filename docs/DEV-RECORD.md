@@ -414,3 +414,12 @@ evidence (no fix needed — the worried-about behavior does not exist):
   `tantu pair`) — no change. Pending-pairing names verified escaped end to
   end — no stored XSS.
 - Validation: full suite green at Batch O/P commit; fuzz clean (above).
+
+## Batch Q — restart-during-upload lifecycle proof (2026-09-24)
+
+- `TestWebDashboard_RestartDuringUploadsReleasesSlots`: all 4 upload slots
+  held by stalled uploads → 5th fails fast 503 (no queueing); `Stop`
+  mid-upload returns cleanly; in-flight uploads terminate (3x repeat, no
+  flakes); restart succeeds and the full self-delivery pipeline returns 200
+  (proves cross-generation slot release — a leak would 503 forever).
+- Validation: full suite green (above).
