@@ -44,7 +44,7 @@ Tantu eliminates this friction. It stretches an invisible, encrypted thread acro
 You're running a CLI on a remote dev server (`gcloud`, `gh`, `az`, or any OAuth app) that opens a browser for authentication. The redirect targets `localhost`, which fails because your browser is on your laptop. Tantu intercepts the OAuth URL, opens it on the right machine, and forwards the callback back — transparently.
 
 **2. Cross-Machine Sharing Friction**
-Moving tokens, error logs, code snippets, and large files between machines means insecure pastebins, chat apps, or cloud storage. Tantu provides encrypted, resumable, direct peer-to-peer transfer up to 5GB.
+Moving tokens, error logs, code snippets, and large files between machines means insecure pastebins, chat apps, or cloud storage. Tantu provides encrypted, resumable-when-reusing-a-DropID, direct peer-to-peer transfer up to 5GB.
 
 ---
 
@@ -78,8 +78,10 @@ Both machines run identical symmetric hubs. No server/client distinction. No clo
 ## Features
 
 - **Zero-Argument Startup** — `./tantu` boots the complete hub, self-heals identity, opens cockpit
+- **Headless Recovery** — `tantu hub --headless` prints a one-time authenticated dashboard link; `tantu dashboard` mints a fresh link from any terminal
 - **Zero-Config LAN Discovery** — mDNS (`224.0.0.251:5353`) + UDP broadcast (`port 9879`) find nearby hubs automatically
-- **Resumable QuickDrop** — interrupted multi-GB transfers resume from last valid 1MB chunk; SHA-256 verified; cross-platform path & Windows DOS device sanitization
+- **Resumable QuickDrop** — interrupted transfers resume only when the sender deliberately reuses the same DropID; built-in one-shot commands generate a new ID per attempt. Private manifests bind transfer metadata and the first 64 KiB, chunks are synced before their offset is reused, and final SHA-256 is verified
+- **Bounded Transfers** — each long-lived receiver process caps aggregate active transfer reservations and separately trims Tantu-owned failed partials to an 8 GiB / 1,024-file retained-partial budget; unmarked legacy `.part` files are preserved for manual review rather than risking user data
 - **Smart Default LAN Transport** — binds to `0.0.0.0:9877` by default for instant local discovery, pairing, and transfers without `--transport` or `--peer` flags
 - **Single-Page Web Dashboard** (`http://localhost:9876`) — dark-mode browser UI with 4 workspaces:
   - **QuickDrop:** Drag-and-drop or clipboard-paste send (up to 5GB, real progress + cancel), text snippets, live received items feed with 1-click clipboard copying and folder opening
@@ -107,7 +109,7 @@ Both machines run identical symmetric hubs. No server/client distinction. No clo
 ./tantu
 ```
 
-The hub boots instantly — generates cryptographic identity on first run, opens the terminal cockpit, and starts the web dashboard at `http://localhost:9876`. Use the cockpit's `[o]` command (or the launch URL it supplies) so the browser can exchange its one-time dashboard bootstrap capability.
+The hub boots instantly — generates cryptographic identity on first run, opens the terminal cockpit, and starts the web dashboard at `http://localhost:9876`. Use the cockpit's `[o]` command (or the launch URL it supplies) so the browser can exchange its one-time dashboard bootstrap capability. In headless mode, the startup banner prints the authenticated one-time URL; from any terminal later, run `tantu dashboard` to mint a fresh link.
 
 ### 2. Pair Your Machines (One Time)
 
@@ -169,7 +171,8 @@ tantu wrap -- az login
 | `tantu hub` | Explicit hub start |
 | `tantu pair` | Pair with a remote machine (mTLS + SAS verification) |
 | `tantu unpair` | Remove a paired peer |
-| `tantu status` | Show local identity and paired peers |
+| `tantu status` | Show local identity, Hub liveness, and paired peers |
+| `tantu dashboard` | Mint and open an authenticated dashboard link for a running Hub |
 | `tantu send <content>` | Send text, files, or images to a paired machine |
 | `tantu receive` | Receive content from a paired machine |
 | `tantu drop` | Start a local Web UI for drag-and-drop sharing |
@@ -189,6 +192,7 @@ tantu wrap -- az login
 - **PKCE (RFC 7636)** — authorization codes are useless without the code verifier
 - **Dual-socket isolation & Anti-CSRF** — loopback-only web UI with strict Origin/Referer validation, encrypted-only wire traffic
 - **Hardened filename sanitization** — defense against path traversal, NTFS ADS, and Windows DOS reserved devices
+- **Bounded receiver work** — per-process aggregate transfer reservations, private partial manifests, root-anchored staging operations, and CSP nonce-based dashboard scripts limit resource exhaustion and stale-session replay
 - **Zero cloud dependency** — all traffic is direct peer-to-peer
 
 See [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) for the full threat analysis.
@@ -201,7 +205,8 @@ See [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) for the full threat analysis.
 - **Transport layer:** Pluggable — LAN (mTLS), SSH, Loopback
 - **Wire protocol:** Length-prefixed JSON envelopes with type discrimination
 - **Discovery:** mDNS + UDP subnet broadcast (dual-engine, zero-dependency)
-- **File transfer:** 1MB chunked streaming with resumable `.part` files and SHA-256 integrity
+- **File transfer:** 1MB chunked streaming with explicitly reusable-DropID `.part` files, private metadata sidecars, root-anchored staging, and SHA-256 integrity; a retry after a lost success acknowledgement is at-least-once and may require operator cleanup of a duplicate
+- **Resource bounds:** each long-lived receiver process reserves at most 4 concurrent transfers / 8 GiB (2 / 6 GiB per peer) and retains at most 8 GiB / 1,024 Tantu-owned failed partials under the default policy; unmarked legacy files require manual review
 - **Identity storage:** `~/.config/tantu/` (Linux/macOS) or `%APPDATA%\tantu\` (Windows)
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full system architecture.

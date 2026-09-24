@@ -8,6 +8,15 @@ rollback procedures.
 ## Unreleased
 
 ### Added
+- `tantu dashboard` and a capability-protected `POST /api/dashboard-url` for
+  fresh authenticated dashboard links in headless/recovery workflows.
+- Durable private staging manifests bind resumable partials to transfer
+  metadata and a head hash; mismatched partials fail closed.
+- Default aggregate QuickDrop transfer quotas bound long-lived Hub and
+  standalone receivers, including unknown-size streams.
+- Cross-process identity/peer mutation locks and persisted active-peer state.
+- SSE reconnects replay buffered events with `Last-Event-ID`.
+- Headless startup now prints the one-time authenticated dashboard URL.
 - Received-file serving on the Hub dashboard: inline image previews (8 MB
   raster-only, sandboxed) and per-file downloads for QuickDrop inbox items.
 - `status` now reports version, store path, Hub liveness with dashboard URL,
@@ -19,8 +28,6 @@ rollback procedures.
 - Dashboard stale-session banner: an explicit reconnect notice instead of
   silent 401 failures when opened without a session (stale bookmark/second
   tab).
-- SSH host-key verification UX: `--ssh-known-hosts` and `--ssh-fingerprint`
-  (`SHA256:` pin) on `send`, `open`, `drop`, and `relay`.
 - Dev-build version provenance: plain `go build` binaries report
   `1.0.0-dev+<sha>[.dirty]` instead of a bare `1.0.0`.
 - Clipboard image paste-to-upload on the dashboard; real XHR upload progress
@@ -28,6 +35,11 @@ rollback procedures.
   labelled inputs; inline SVG favicon.
 
 ### Changed
+- The Hub dashboard now receives a per-response CSP nonce and uses delegated
+  DOM events instead of inline JavaScript handlers; stale unauthenticated tabs
+  show recovery guidance without firing a burst of 401 probes.
+- Peer status language now distinguishes paired/trusted state from live
+  connectivity, and discovery SAS values are explicitly labeled unverified.
 - OAuth `redirect_uri` without an explicit loopback port is now rejected
   (previously silently defaulted to 80/443).
 - Peer resolution no longer silently picks: cross-tier SAS/fingerprint
@@ -42,6 +54,33 @@ rollback procedures.
   token remains as a legacy fallback.
 
 ### Fixed
+- Concurrent QuickDrop attempts with a reused DropID can no longer make one
+  attempt clean up or cancel another attempt's receiver state.
+- Private staging operations now use verified directory handles, a
+  cross-process maintenance lock, and owner-checked activity-marker release;
+  crash-orphaned markers and manifest temporaries are swept and budgeted.
+- File finalization copies from the verified open descriptor, Windows resume
+  checks the open handle's hard-link count, invalid manifest sidecars cannot
+  authorize cleanup, and Hub failure cleanup uses the transfer's captured
+  output directory.
+- Runtime metadata transactions now serialize concurrent in-process writers
+  and tolerate Windows lock-directory contention without transient
+  access-denied failures.
+- Live LAN trust callbacks are now authoritative; start-time fingerprint
+  snapshots can no longer keep an unpaired peer authorized in long-lived
+  listeners.
+- Pairing entry points now use the cross-process atomic identity load/create
+  transaction.
+- Failed partials are bounded by a retained-partial disk budget, private
+  numbered partials are swept/budgeted, and only manifest-marked direct legacy
+  `.part` files are cleaned; unmarked user files are preserved for manual
+  review. Hub manifest-write failures clean up newly created staging files.
+- SSE event IDs are serialized with ring insertion, and reconnect DROP events
+  use an in-flight guard to avoid request/memory amplification.
+- Standalone and Hub partial files now use the private `.tantu-staging` area,
+  so stale-part cleanup and manifest cleanup share one recovery path.
+- `open` LAN OAuth now honors live peer revocation just like QuickDrop and
+  relay commands.
 - B-side now forwards only allowlisted OAuth callback headers (Accept,
   Accept-Language, Content-Type, X-Requested-With) with deterministic
   duplicate resolution; relay header volume capped; B-side loopback checks
@@ -68,6 +107,9 @@ rollback procedures.
   attempts (4) capped with 503 + Retry-After.
 
 ### Security notes
+- Resume identity is metadata plus a 64 KiB head hash, not a full-content or
+  sender-fingerprint proof; built-in one-shot sends use a new DropID per
+  attempt. Completion is at-least-once if the final acknowledgement is lost.
 - No wire-protocol break: all changes are compatible between peers running
   this revision. Mixed-version operation remains unsupported — upgrade both
   machines (`docs/RELEASE.md`).

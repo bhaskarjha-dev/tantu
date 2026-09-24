@@ -85,7 +85,7 @@
 |-------|--------|
 | **Threat** | Flooding bridge with spurious requests, hanging connections, or massive payloads |
 | **Impact** | Low to Medium — process resource exhaustion |
-| **Mitigation** | 4 MiB general frame cap and 64 KiB typed control-frame cap (enforced on encode and decode); 5GB file transfer cap; 1MB streaming chunks directly to disk; Hub dashboard caps concurrent 5 GiB multipart uploads at 4 (excess fails fast with 503 + Retry-After); 30-second handshake deadline on wire connections via `Deadliner`; active connection tracking with immediate teardown on shutdown |
+| **Mitigation** | 4 MiB general frame cap and 64 KiB typed control-frame cap (enforced on encode and decode); 5GB file transfer cap; 1MB streaming chunks directly to disk; Hub dashboard caps concurrent 5 GiB multipart uploads at 4 (excess fails fast with 503 + Retry-After); each long-lived receiver process reserves aggregate transfer capacity (4 sessions / 8 GiB, 2 / 6 GiB per peer by default), including unknown-size streams, and trims Tantu-owned failed partials to an 8 GiB / 1,024-file retained-partial budget; activity markers and a cross-process maintenance lock prevent cooperative Tantu processes from unlinking active partials; unmarked direct legacy `.part` files are preserved for manual review; 30-second handshake deadline on wire connections via `Deadliner`; active connection tracking with immediate teardown on shutdown |
 | **Residual Risk** | Low |
 
 ### T7: Man-in-the-Middle on LAN During Initial Pairing
@@ -117,7 +117,7 @@
 |-------|--------|
 | **Threat** | Unprivileged local process modifies `hub.json` to redirect CLI delegation to a malicious port |
 | **Impact** | Medium — CLI commands (`send`, `open`) routed to attacker's process |
-| **Mitigation** | `hub.json` is private/atomic and protected by a cross-process lock; delegation probes `/api/probe` with a per-process capability and matches PID/start time and the recorded loopback endpoint before sending work. The capability is bound to the runtime endpoint to prevent forwarding it to an unrelated local listener. |
+| **Mitigation** | `hub.json` is private/atomic and protected by a cross-process lock; each Hub listener generation rotates its IPC/relay capability; peer and identity mutations use separate cross-process locks around load-modify-write publication; delegation probes `/api/probe` with the capability and matches PID/start time and the recorded loopback endpoint before sending work. The capability is bound to the runtime endpoint to prevent forwarding it to an unrelated local listener. |
 | **Residual Risk** | Low — requires local user account compromise |
 
 ### T11: Path Traversal & Arbitrary File Overwrite in QuickDrop
@@ -125,7 +125,7 @@
 |-------|--------|
 | **Threat** | Peer sends filename containing path traversal sequences (e.g., `../../etc/passwd`), NTFS alternate data streams (`file:stream`), or Windows reserved DOS device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1-9`, `LPT1-9`) |
 | **Impact** | High — arbitrary file overwrite or filesystem lockup on receiver's machine |
-| **Mitigation** | Receivers cleanse incoming filenames using `SanitizeDropFilename()`: normalizes slashes, extracts basename, strips NTFS ADS colons, strips ASCII control characters (0–31, 127), trims trailing dots/spaces, prepends `drop_` to Windows reserved DOS device names, and falls back to `drop.bin` for empty/invalid paths. Files write strictly into canonical downloads dir; existing files are suffixed with timestamps rather than overwritten |
+| **Mitigation** | Receivers cleanse incoming filenames using `SanitizeDropFilename()`: normalizes slashes, extracts basename, strips NTFS ADS colons and Win32-invalid characters, strips ASCII control characters (0–31, 127), trims trailing dots/spaces, prepends `drop_` to Windows reserved DOS device names, and falls back to `drop.bin` for empty/invalid paths. Resumable partials are bound to a private manifest containing transfer metadata and a 64 KiB head hash; mismatched or malformed manifests are rejected rather than combined. Private staging operations use verified directory handles; files write strictly into the configured downloads directory and existing files receive numeric collision suffixes rather than being overwritten. |
 | **Residual Risk** | Negligible |
 
 ### T12: External Network Access to Web Dashboard & REST IPC
@@ -161,12 +161,15 @@
 | **SR9** | Pairing requires out-of-band visual verification of the 6-character SAS code | T7 |
 | **SR10**| PKCE `code_verifier` must never leave the initiating node | T1, T2 |
 | **SR11**| Inbound sender identity must be cryptographically extracted from TLS client leaf cert | T9 |
-| **SR12**| Runtime state descriptor (`hub.json`) and key material must use private permissions and ownership-safe publication; OS ACL enforcement is a deployment requirement | T10 |
+| **SR12**| Runtime state descriptor (`hub.json`), key material, peer state, and active-peer selection must use private permissions and ownership-safe publication; peer/identity mutations are serialized across processes; OS ACL enforcement is a deployment requirement | T10 |
 | **SR13**| Received files must be sanitized via `SanitizeDropFilename` (traversal, NTFS ADS, DOS devices, control chars) and saved in sandboxed dir | T11 |
 | **SR14**| Existing files must not be silently overwritten by incoming drops | T11 |
 | **SR15**| Dynamic port fallbacks apply only to local loopback web/IPC, never to OAuth callbacks | T4 |
 | **SR16**| Web Dashboard REST API (`/api/*`) must enforce exact-authority anti-CSRF validation and capability/session authorization; wildcard CORS and reusable HTML-embedded tokens are prohibited. Scoped exception: the legacy standalone `tantu drop` UI (not the Hub dashboard) embeds a per-process loopback CSRF token in its page for `/api/*` header auth. Rationale: that token never appears in URLs (no history/bookmark/log exposure), the page is served `no-store`, and every request still requires exact loopback authority plus Origin/Referer validation, so it is unusable cross-origin. Residual: any local process running as the same user can read the page and call the API — inside the same-user trust boundary (see T10/SR12). The standalone `tantu relay` page instead renders per-request one-time tickets (single-use, 10-minute TTL) with the per-process token only as a legacy fallback for previously rendered bookmarklets. | T13 |
 | **SR17**| Inbound wire connections must enforce read deadlines during initial handshake via `Deadliner` | T6 |
+| **SR18**| Long-lived receivers must bound aggregate transfer reservations, including unknown-size streams, and release reservations on every terminal path | T6 |
+| **SR19**| A resumable partial must have a valid private manifest bound to its transfer metadata and 64 KiB head hash; mismatched or malformed manifests must never be resumed. This is prefix identity, not a full-content or sender-identity proof | T11 |
+| **SR20**| Staging maintenance must use verified directory handles, must not remove active partials or unmarked user files, and direct legacy `.part` files without a valid Tantu manifest require manual review | T6, T11 |
 
 ---
 
@@ -188,5 +191,5 @@
 - **Zero-Trust Sender Provenance:** Every byte received is cryptographically bound to a verified TLS leaf certificate.
 - **Defense in Depth via PKCE:** Intercepted authorization codes are mathematically useless without the local `code_verifier`.
 - **Loopback & Browser-Access Control:** External network interfaces cannot access the Web Dashboard, REST IPC, or local callback listeners; exact-authority checks, capability/session authorization, and one-use relay tickets block ordinary cross-origin and tokenless local-browser access. Inline dashboard scripts and OS ACLs remain tracked hardening work.
-- **Hardened Filesystem Defense:** Incoming files are strictly sanitized against path traversal, NTFS ADS, and DOS reserved device conflicts.
+- **Hardened Filesystem Defense:** Incoming files are sanitized against path traversal, NTFS ADS, Win32-invalid characters, and DOS reserved device conflicts; private staging operations are anchored to verified directory handles. Windows ACL enforcement and power-loss guarantees remain deployment/platform boundaries.
 - **No Cloud Dependencies:** Traffic travels directly peer-to-peer across LAN or native SSH tunnels with zero third-party metadata leakage.

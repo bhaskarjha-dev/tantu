@@ -3,6 +3,8 @@
 ## Versioning
 
 - Versions are `vMAJOR.MINOR.PATCH` git tags; goreleaser builds on tag push.
+- CI/release use Go `1.26.3` (matching `go.mod`) and GoReleaser `v2.18.2`; do not
+  float either tool version for a release.
 - The version is embedded at link time (`-X main.version` and
   `-X .../internal/hub.HubVersion`); `tantu version` and the dashboard
   report it. A local `go build` without ldflags reports
@@ -25,9 +27,11 @@ lands, verify downloads against `checksums.txt` from the GitHub release page.
 
 1. Download the archive for your OS/arch and verify its checksum.
 2. Extract the single `tantu` binary to a directory on PATH.
-3. Run `tantu hub --headless` once (or `tantu` for the cockpit); identity and
-   peer state are created under `~/.config/tantu/` (Linux/macOS) or
-   `%APPDATA%\tantu\` (Windows) with 0600/0700 permissions.
+3. Run `tantu hub --headless` once (or `tantu` for the cockpit); identity,
+   peer, and active-peer state are created under `~/.config/tantu/`
+   (Linux/macOS) or `%APPDATA%\tantu\` (Windows) with 0600/0700 permissions.
+   The headless banner prints a one-time dashboard URL; use `tantu dashboard`
+   from another terminal to mint a fresh authenticated link.
 
 ## Upgrade
 
@@ -35,23 +39,29 @@ lands, verify downloads against `checksums.txt` from the GitHub release page.
    in the foreground — there is no `hub stop` subcommand).
 2. Replace the binary, keeping the previous one as `tantu.prev` until the new
    version is verified.
-3. Start the new binary. `peers.json`/`identity.json` are forward-compatible
-   (JSON; unknown fields are ignored), and a stale `hub.json` from the old
-   process is taken over, not trusted blindly (PID/start-time probe).
+3. Start the new binary. `peers.json`/`identity.json`/`active.json` are
+   forward-compatible (JSON; unknown fields are ignored), and a stale
+   `hub.json` from the old process is taken over, not trusted blindly
+   (PID/start-time probe).
 
 ## Rollback
 
 Restore `tantu.prev` over the binary and restart. Peer/identity state written
 by the newer version remains readable (same JSON schema, no migrations), so
-rollback is a binary swap plus restart. In-flight transfers are not resumed
-across a restart (DropIDs are random per attempt); re-send them. Stale
-`.part` files are reclaimed automatically at startup (24 h sweep).
+rollback is a binary swap plus restart. Built-in one-shot transfers use a new
+DropID per attempt and are not resumed across a restart; library callers that
+deliberately reuse a DropID may resume a matching private partial. Stale
+Tantu-owned private or manifest-marked `.part` files are reclaimed
+automatically at startup (24 h sweep); unmarked direct legacy files are
+preserved for manual review.
 
 ## Known release limitations
 
 - No signed artifacts yet (see above).
-- `-race` testing is not part of CI here (no C toolchain in some
-  environments); concurrency is covered by `-count=2` reruns of the
-  lifecycle-heavy packages plus stress-style unit tests.
+- `-race` runs on Linux/macOS in CI; local Windows race execution depends on a
+  complete C toolchain, so local evidence uses `-count=2` lifecycle reruns
+  rather than claiming race safety.
+- Resume manifests bind metadata and a 64 KiB head hash, not the full payload
+  or sender identity; completion after a lost acknowledgement is at-least-once.
 - macOS/Linux binaries are compile-verified; runtime verification matrix is
   tracked in `docs/DEV-RECORD.md`.

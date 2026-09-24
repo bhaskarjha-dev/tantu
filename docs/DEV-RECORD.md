@@ -35,7 +35,7 @@ sticky-terminal decoder). OAuth bridge: B-side sends BridgeRequest, A-side binds
 exact 127.0.0.1 callback port, relays callback, retries coalesced via
 OAuthSessionManager (2 min replay). QuickDrop: 2 MiB chunks, resume via
 chunk-aligned ReceivedBytes + 64 KiB head-hash, SHA-256 full-file integrity,
-5 GiB / 10 MiB text caps, no-overwrite atomic publish, `.part` staging.
+5 GiB / 10 MiB text caps, no-overwrite publication from verified open descriptors, `.part` staging.
 Identity: ECDSA P-256 self-signed 10y cert, FP = hex(SHA-256 DER), 6-hex SAS,
 peers.json + identity.json 0600 with atomic rename. Discovery: plaintext
 `AUTHDISC:` beacons over broadcast + mDNS-port UDP, 3 s interval, 15 s TTL,
@@ -520,3 +520,256 @@ Independent review of batches M–S returned 11 findings; all addressed:
 - Final gates: build + vet + full suite (12/12) + linux/darwin
   cross-compile green. Fuzz (4 targets) and stress (-count=2) green
   earlier this session; no parser changes since.
+
+## Batch Y — first-use recovery, transfer integrity, and release gates (2026-09-24)
+
+### Findings and decisions
+
+- **Y-01 / headless authentication:** `tantu hub --headless` printed a bare
+  dashboard address even though every API operation requires a session or IPC
+  capability. Headless operators had no cockpit from which to obtain the
+  one-time bootstrap fragment. The startup banner and new `tantu dashboard`
+  recovery command now print/mint authenticated links. Each Hub listener
+  generation rotates its IPC/relay capabilities, and explicit dashboard-link
+  requests rotate the bootstrap value.
+- **Y-02 / dashboard trust boundary:** A bare/stale dashboard URL caused a
+  page to issue a burst of predictable 401s. The root response now supplies a
+  server-side session hint; unauthenticated pages stop before protected API
+  calls and show recovery guidance. The Hub script uses a per-response CSP
+  nonce and delegated DOM events. The bookmarklet's dynamic `javascript:`
+  navigation is authorized by an exact CSP hash plus `unsafe-hashes`, avoiding
+  a blanket `unsafe-inline` script policy while preserving the core OAuth
+  journey. Inline CSS and legacy standalone pages remain explicitly scoped.
+- **Y-03 / resumable-file identity:** Receiver staging now uses the private
+  `.tantu-staging` directory consistently and anchors operations to verified
+  directory handles. Every partial gets a private manifest binding DropID,
+  kind, name, size, MIME type, chunk size, and a 64 KiB head hash. Hub and
+  standalone receivers reuse only matching, head-hash-validated partials;
+  missing legacy manifests cause a safe fresh transfer and mismatched or
+  malformed manifests fail closed. Sidecars are removed on successful
+  publication and swept with stale partials; completion retries remain
+  at-least-once if the final acknowledgement is lost.
+- **Y-04 / aggregate resource bounds:** Each long-lived Hub and standalone
+  receive process shares a `TransferQuota`: four active transfers / 8 GiB and
+  two / 6 GiB per peer by default. Unknown-size streams reserve one chunk and
+  grow atomically as data arrives, so they cannot bypass the budget or consume
+  the full budget merely by opening an empty session. Separate processes
+  sharing one output directory are not a single global quota.
+- **Y-05 / cross-process state:** Peer and identity load-modify-write
+  transactions now use private directory locks across processes. First-run
+  identity generation is atomic. Active peer selection is persisted in
+  `active.json`, validated against the live store, and restored on Hub restart.
+- **Y-06 / outbound revocation:** LAN `tantu open` now uses the live peer trust
+  callback, closing the stale-snapshot gap already fixed in other long-lived
+  and outbound paths.
+- **Y-07 / observability recovery:** SSE frames now carry IDs and replay the
+  bounded ring after reconnect via `Last-Event-ID`; slow-client loss during a
+  live connection remains an explicit bounded-buffer tradeoff.
+- **Y-08 / accurate UX:** Dashboard labels distinguish paired/trusted state
+  from live connectivity, discovery SAS values are labeled unverified, pairing
+  offers an actionable `tantu pair` discovery command, tabs/modal are keyboard
+  and screen-reader friendly, and `send` rejects directories/empty text rather
+  than silently changing meaning.
+
+### Validation evidence
+
+- `go build ./...`, `go vet ./...`, and `go test -count=1 ./...` pass after the
+  batch; lifecycle/concurrency packages also pass with `-count=2`.
+- Real Chromium validation: bare dashboard produced no console/API error burst;
+  a fresh `tantu dashboard` link bootstrapped successfully; delegated tab,
+  modal, and bookmarklet interactions worked; the bookmarklet opened its
+  one-use relay popup under the nonce/hash CSP with zero console errors.
+- Live loopback QuickDrop self-delivery succeeded through the authenticated
+  dashboard API; the published file was byte-visible and its manifest was
+  removed only after publication.
+- CI now verifies modules, pins Go `1.26.3`, runs repeated Windows tests, and
+  release pins GoReleaser `v2.18.2`; documentation records the remaining
+  platform/interoperability limits rather than overstating release readiness.
+
+### Residual risks / next actions
+
+- Windows ACL enforcement, mixed-version wire negotiation, strict duplicate
+  JSON-field rejection, complete SSH deployment UX, and legacy standalone
+  inline-script/token migration remain tracked follow-up work.
+- Local Windows race execution is still dependent on a complete C toolchain;
+  CI remains the authoritative race gate. Do not claim race safety from the
+  local `-count=2` runs.
+
+## Final validation and review closeout (2026-09-24)
+
+- `gofmt` was applied to the structurally edited LF Go files. The remaining
+  `gofmt -l` entries are pre-existing formatting/CRLF conventions (including
+  lifecycle tests and untouched files); no new semantic formatting delta was
+  found in the changed LF files. `git diff --check` passes.
+- `go build ./...`, `go vet ./...`, and `go test -count=1 ./...` pass across
+  all 12 packages after the final edits.
+- `go test -count=2 ./internal/hub ./internal/bridge ./internal/pairing
+  ./internal/drop ./cmd/tantu` passes. A repeated-run failure exposed a test
+  cleanup race in `TestHub_StartSweepsStalePartials`; the test now waits for
+  `Hub.Stop`, and the targeted lifecycle cases pass at `-count=5`.
+- `GOOS=linux/amd64` and `GOOS=darwin/arm64` cross-compilation with
+  `CGO_ENABLED=0` pass. `CGO_ENABLED=1 go test -race ./...` is blocked locally
+  because no `gcc`/C toolchain is installed; CI's Linux/macOS race jobs remain
+  the authoritative race gate. No race-safety claim is made.
+- Final review also synchronized capability reads with Hub-generation
+  rotation, made active-peer removal/re-pairing safe across processes, hardened
+  zero-value/overflow quota accounting, and made the dashboard recovery client
+  reject malformed runtime URLs before opening a browser.
+- Temporary live-review processes and artifacts were removed. No commit or
+  push was performed.
+
+## Post-review remediation (2026-09-24)
+
+An independent adversarial review identified gaps in the first Batch Y pass.
+The following were verified and addressed before the final validation rerun:
+
+- **R-01 / live LAN revocation:** `LANTransport` now treats a non-nil
+  `IsTrusted` callback as authoritative; a stale fingerprint snapshot cannot
+  OR its way past an unpair. Built-in long-lived and outbound callers no
+  longer pass redundant snapshots.
+- **R-02 / identity initialization:** all pairing entry points now call the
+  cross-process `LoadOrCreateIdentity` transaction, including the standalone
+  `tantu pair` initiator.
+- **R-03 / retained disk budget:** failed Tantu-owned partials are trimmed to an
+  8 GiB per-output-directory retained budget (and 1,024 partials) after
+  failures and at startup, with active paths protected. Private numbered
+  partials and manifest-marked direct legacy `.part`/`.part-N` files are
+  eligible; unmarked direct files are preserved for manual review.
+- **R-04 / staging cleanup:** a newly-created Hub partial is removed with its
+  sidecar if manifest publication fails.
+- **R-05 / SSE ordering and amplification:** event ID allocation, ring append,
+  and broadcast are serialized; reconnect DROP events use an in-flight/queued
+  reload guard instead of one recent-items request per replayed event.
+- **R-06 / active-peer consistency:** `DialPeer`, relay coordination, and
+  status use the live-validated active-peer accessor; active-peer mutations
+  are serialized and stale selections are cleared safely.
+- **R-07 / documentation hygiene:** the audit no longer describes manifests
+  as future work, and the unrelated end-of-file test formatting change was
+  removed.
+
+Targeted transport, pairing, drop, Hub, and CLI tests pass after these changes.
+The complete post-review matrix also passes: `go build ./...`, `go vet ./...`,
+`go test -count=1 ./...` (all 12 packages), repeated `-count=2` lifecycle and
+concurrency packages, Linux/amd64 and Darwin/arm64 cross-compilation, and
+`git diff --check`; the extracted dashboard JavaScript also passes
+`node --check`. Local `-race` remains blocked by the missing `gcc` C toolchain;
+CI Linux/macOS race jobs remain authoritative. No commit or push was
+performed.
+
+## Post-review staging follow-up (2026-09-24)
+
+A second independent review found that the first cleanup pass could still miss
+private `.part-N` files, treat arbitrary user `.part` files as Tantu data, and
+race maintenance with active receivers. The follow-up remediation:
+
+- **R-08 / numbered private partials:** staging sweep, sidecar cleanup, and
+  retained-budget accounting now recognize both `.part` and `.part-N` forms in
+  the private staging directory, with regression coverage.
+- **R-09 / standalone resume:** metadata-bearing standalone transfers now use a
+  DropID-keyed private partial, validate the durable manifest and head hash,
+  position the writer at the validated chunk boundary, and fail closed on
+  mismatches. An unmarked private partial is not reused; normal stale/budget
+  maintenance reclaims that Tantu-owned orphan, while direct legacy files
+  remain manual-review items.
+- **R-10 / active ownership:** each built-in receiver creates a cross-process
+  `.active` marker before opening a partial; maintenance skips marked files,
+  and success/failure paths release the marker. Creation/registration is also
+  serialized with the in-process maintenance lock.
+- **R-11 / user-file safety:** automatic direct-legacy cleanup now requires a
+  valid Tantu manifest. Unmarked `.part`/`.part-N` files are never deleted by
+  age or budget maintenance, avoiding destructive behavior in a shared working
+  directory. Private staging remains Tantu-owned and is still swept/bounded.
+- **R-12 / symlink containment:** maintenance refuses to traverse a symlink
+  planted at `.tantu-staging`, preventing cleanup from touching files outside
+  the configured output directory.
+
+The remaining staging caveats are explicit: a pre-manifest process from an older
+mixed-version installation has no activity marker, unmarked direct legacy files
+require operator review, and the manifest binds only metadata plus a 64 KiB
+head hash rather than the full payload or sender identity. Current receiver
+paths create owner-checked markers before opening bytes; marker/maintenance
+transitions share a cross-process lock, private operations use verified
+directory handles, and crash-orphaned markers/temp manifests are reclaimed
+after the 24-hour stale window.
+
+## Post-staging validation (2026-09-24)
+
+- `go mod verify`, `go build ./...`, `go vet ./...`, and
+  `go test -count=1 ./...` pass across all 12 packages.
+- `go test -count=2 ./internal/hub ./internal/bridge ./internal/pairing
+  ./internal/drop ./cmd/tantu` passes after the staging, resume, activity-marker,
+  and legacy-safety changes.
+- `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./...` and
+  `CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build ./...` pass.
+- `git diff --check` passes, and the changed LF Go files checked with `gofmt -l`
+  are clean; repository-wide pre-existing CRLF/format entries remain. The
+  working tree remains intentionally uncommitted; no push was performed.
+- Local `go test -race` remains unavailable because this Windows environment
+  has no C compiler; CI Linux/macOS race jobs remain the authoritative gate.
+
+## Runtime-lock concurrency closeout (2026-09-24)
+
+- `withRuntimeLock` now serializes in-process runtime metadata transactions
+  with `runtimeLockMu`, while retaining the directory lock for cross-process
+  coordination. On Windows, an existing lock directory plus an access-denied
+  `Mkdir` result is treated as contention; unrelated permission failures still
+  fail immediately.
+- The concurrent runtime-writer regression passes at `-count=20`; the runtime
+  ownership/concurrency cases also pass at `-count=5`.
+- The post-fix validation used the pinned Go 1.26.3 toolchain: `go mod verify`,
+  build, vet, full test, repeated package test, Linux/amd64 and Darwin/arm64
+  cross-build, and `git diff --check` are green. The newly edited runtime file
+  and new LF Go files are `gofmt`-clean;
+  the two reported `gofmt -l` entries are pre-existing test-file formatting
+  conventions. This does not establish race safety; local `-race` remains
+  blocked by the missing C toolchain and CI remains authoritative.
+
+## Independent staging audit remediation (2026-09-24)
+
+The second read-only audit identified ownership, replacement-race, and Windows
+hardlink gaps. The following were addressed before the final matrix:
+
+- **R-13 / duplicate attempt ownership:** the dispatcher assigns an opaque
+  per-attempt token to local metadata callbacks. Hub and Node now scope
+  reservation, activity, completion, and cleanup state to that token; rejected
+  or pre-reservation attempts cannot tear down an active transfer with the
+  same DropID.
+- **R-14 / root-anchored staging and publication:** private staging and
+  manifest operations use verified `os.Root` handles. Final publication copies
+  from the verified open source descriptor into a root-relative, no-overwrite
+  destination, and source cleanup is identity-checked. A staging pathname
+  replacement can no longer redirect maintenance or payload writes outside the
+  opened directory on supported platforms.
+- **R-15 / cross-process activity ownership:** marker acquisition, touch, and
+  release use the same cross-process maintenance lock; release closures verify
+  marker identity so an old owner cannot remove a replacement marker. Orphan
+  `.active` and manifest-temp artifacts are swept and included in retained-file
+  accounting.
+- **R-16 / Windows hardlinks:** resume checks query the open Windows handle's
+  link count and fail closed if it cannot be queried; the former Windows no-op
+  and test skip were removed.
+- **R-17 / validation and cleanup safety:** malformed/foreign manifests no
+  longer authorize direct-file deletion, Hub failure cleanup uses the output
+  directory captured by the transfer, and Hub resume no longer treats general
+  permission/open failures as safe-to-replace races.
+- **R-18 / durability and filename boundaries:** file receivers sync each
+  non-empty chunk before its offset can be reused, and cross-platform filename
+  sanitization replaces Win32-invalid characters. Full-content/sender identity,
+  power-loss guarantees, completion idempotency, and cross-process quota
+  coordination remain explicit follow-up boundaries rather than implied claims.
+
+### Post-audit validation (2026-09-24)
+
+- Pinned Go 1.26.3 `go mod verify`, `go build ./...`, `go vet ./...`, and
+  `go test ./...` pass across all 12 packages.
+- `go test -count=2 ./internal/hub ./internal/bridge ./internal/pairing
+  ./internal/drop ./cmd/tantu` passes; duplicate-DropID ownership,
+  root-anchored staging, owner-safe marker release, orphan-artifact cleanup,
+  invalid-manifest preservation, and true resume-offset tests pass repeatedly.
+- `CGO_ENABLED=0` Linux/amd64 and Darwin/arm64 cross-builds pass. `git diff
+  --check` passes; targeted changed LF Go files are `gofmt`-clean, with only
+  the previously noted repository formatting conventions remaining.
+- The attempted Windows hardlink test is now enabled (the skip was removed);
+  the local Windows runtime test suite passes. A local `-race` run still stops
+  before compilation because `gcc` is unavailable, so CI Linux/macOS race
+  jobs remain authoritative and no race-safety claim is made.

@@ -1,5 +1,8 @@
 name: CI
 
+permissions:
+  contents: read
+
 on:
   push:
     branches:
@@ -23,8 +26,11 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26.x'
+          go-version: '1.26.3'
           cache: true
+
+      - name: Verify modules
+        run: go mod verify
 
       - name: Build
         run: go build ./...
@@ -38,4 +44,4 @@ jobs:
 
       - name: Test (Windows)
         if: matrix.os == 'windows-latest'
-        run: go test -count=1 ./...
+        run: go test -count=2 ./...
