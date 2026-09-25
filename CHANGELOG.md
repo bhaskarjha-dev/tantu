@@ -33,6 +33,32 @@ rollback procedures.
 - Clipboard image paste-to-upload on the dashboard; real XHR upload progress
   with cancel; GB/TB sizes; ARIA live regions; keyboard-operable drop zone;
   labelled inputs; inline SVG favicon.
+- Sender-side transfer operations: every Hub upload returns an operation ID
+  with explicit retry/duplicate/data safety and one next action
+  (`GET /api/transfers/recent`, `tantu transfers`, `tantu transfer list`).
+  History is durable (last 50, 30 days, `transfers.json`) and survives Hub
+  restart; the CLI falls back to last-saved history when the Hub is stopped.
+- `tantu doctor` diagnostics with plain-language checks and a safe next
+  action (human and `--json`); `tantu status --json` shares the contract.
+- Dashboard safe-send composer: file/image preview with destination,
+  size, and type before Send, explicit expert immediate-send opt-in,
+  always-visible destination, next-action banner, and a Transfers tab backed
+  by durable sender truth (last 50, 30 days).
+- `tantu doctor --bundle-path` redacted support bundle (health report,
+  transfer metadata, Hub logs; metadata only, owner-only file).
+- `tantu send --json` machine-readable contract (operation ID, destination,
+  verification, safety flags; never payload) with distinguished exit codes
+  (0 success, 1 failure, 2 invalid input, 3 duplicate-risk). Direct sends
+  assign and report their wire DropID; delegation surfaces the Hub's
+  operation truth including duplicate-risk errors.
+- `tantu transfer clear --yes` and a dashboard Clear button delete
+  sender-side transfer metadata (received files untouched) via an
+  authenticated API or, when the Hub is stopped, the saved file directly.
+- `tantu status` ends with one recommended next action; standalone
+  `serve`/`node`/`relay`/`drop` surfaces label themselves advanced or
+  compatibility and point at the Hub.
+- Pairing dialog traps Tab focus while open; cockpit file/text sends print
+  the resolved destination before transmitting.
 
 ### Changed
 - The Hub dashboard now receives a per-response CSP nonce and uses delegated
@@ -40,6 +66,14 @@ rollback procedures.
   show recovery guidance without firing a burst of 401 probes.
 - Peer status language now distinguishes paired/trusted state from live
   connectivity, and discovery SAS values are explicitly labeled unverified.
+  The dashboard header no longer claims reachability it has not probed
+  ("Trusted" instead of "ready/online"); the send destination stays visible
+  for single-peer setups, and clipboard/file sends stage for preview and
+  confirmation instead of auto-sending.
+- `tantu send` failures now exit 2 for invalid input and 3 for unknown
+  outcomes with duplicate risk (previously all failures exited 1), in both
+  human and `--json` modes; success output additionally names the
+  destination and operation ID.
 - OAuth `redirect_uri` without an explicit loopback port is now rejected
   (previously silently defaulted to 80/443).
 - Peer resolution no longer silently picks: cross-tier SAS/fingerprint
@@ -56,6 +90,9 @@ rollback procedures.
 ### Fixed
 - Concurrent QuickDrop attempts with a reused DropID can no longer make one
   attempt clean up or cancel another attempt's receiver state.
+- Transfer failures after the final byte no longer read as ordinary errors:
+  lost confirmations report possible duplicates with an inbox check instead
+  of a blind retry.
 - Private staging operations now use verified directory handles, a
   cross-process maintenance lock, and owner-checked activity-marker release;
   crash-orphaned markers and manifest temporaries are swept and budgeted.

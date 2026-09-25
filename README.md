@@ -83,9 +83,10 @@ Both machines run identical symmetric hubs. No server/client distinction. No clo
 - **Resumable QuickDrop** — interrupted transfers resume only when the sender deliberately reuses the same DropID; built-in one-shot commands generate a new ID per attempt. Private manifests bind transfer metadata and the first 64 KiB, chunks are synced before their offset is reused, and final SHA-256 is verified
 - **Bounded Transfers** — each long-lived receiver process caps aggregate active transfer reservations and separately trims Tantu-owned failed partials to an 8 GiB / 1,024-file retained-partial budget; unmarked legacy `.part` files are preserved for manual review rather than risking user data
 - **Smart Default LAN Transport** — binds to `0.0.0.0:9877` by default for instant local discovery, pairing, and transfers without `--transport` or `--peer` flags
-- **Single-Page Web Dashboard** (`http://localhost:9876`) — dark-mode browser UI with 4 workspaces:
-  - **QuickDrop:** Drag-and-drop or clipboard-paste send (up to 5GB, real progress + cancel), text snippets, live received items feed with 1-click clipboard copying and folder opening
+- **Single-Page Web Dashboard** (`http://localhost:9876`) — dark-mode browser UI with 5 workspaces:
+  - **QuickDrop:** Drag-and-drop, file-picker, or clipboard-paste send (up to 5GB, preview + confirm by default, real progress + cancel), text snippets, live received items feed with 1-click clipboard copying and folder opening
   - **OAuth Relay:** 1-click draggable bookmarklet, manual URL submission
+  - **Transfers:** Sender-side operation truth for this Hub session (destination, state, retry/duplicate safety, next action)
   - **Peers & Network:** Discovered nearby hubs (1-click pairing), in-band pairing wizard, paired peer cards (alias, default toggle, unpair)
   - **Activity Logs:** Live filtered log explorer with JSON export and Server-Sent Events (SSE)
 - **Interactive Developer Cockpit** — terminal dashboard with streaming logs, discovery badge, and hotkeys:
@@ -172,6 +173,10 @@ tantu wrap -- az login
 | `tantu pair` | Pair with a remote machine (mTLS + SAS verification) |
 | `tantu unpair` | Remove a paired peer |
 | `tantu status` | Show local identity, Hub liveness, and paired peers |
+| `tantu doctor` | Diagnose setup and show the safe next action |
+| `tantu transfer list` | List sender-side transfer operations for this Hub session |
+| `tantu transfer clear --yes` | Delete sender-side transfer metadata (received files kept) |
+| `tantu transfers` | Alias for `transfer list` |
 | `tantu dashboard` | Mint and open an authenticated dashboard link for a running Hub |
 | `tantu send <content>` | Send text, files, or images to a paired machine |
 | `tantu receive` | Receive content from a paired machine |

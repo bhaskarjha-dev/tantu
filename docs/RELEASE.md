@@ -39,15 +39,16 @@ lands, verify downloads against `checksums.txt` from the GitHub release page.
    in the foreground — there is no `hub stop` subcommand).
 2. Replace the binary, keeping the previous one as `tantu.prev` until the new
    version is verified.
-3. Start the new binary. `peers.json`/`identity.json`/`active.json` are
-   forward-compatible (JSON; unknown fields are ignored), and a stale
+3. Start the new binary. `peers.json`/`identity.json`/`active.json`/`transfers.json`
+   are forward-compatible (JSON; unknown fields are ignored), and a stale
    `hub.json` from the old process is taken over, not trusted blindly
    (PID/start-time probe).
 
 ## Rollback
 
-Restore `tantu.prev` over the binary and restart. Peer/identity state written
-by the newer version remains readable (same JSON schema, no migrations), so
+Restore `tantu.prev` over the binary and restart. Peer/identity/transfer state
+written by the newer version remains readable (same JSON schema, no
+migrations; an older binary simply ignores `transfers.json`), so
 rollback is a binary swap plus restart. Built-in one-shot transfers use a new
 DropID per attempt and are not resumed across a restart; library callers that
 deliberately reuse a DropID may resume a matching private partial. Stale

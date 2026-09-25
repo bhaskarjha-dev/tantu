@@ -773,3 +773,170 @@ hardlink gaps. The following were addressed before the final matrix:
   the local Windows runtime test suite passes. A local `-race` run still stops
   before compilation because `gcc` is unavailable, so CI Linux/macOS race
   jobs remain authoritative and no race-safety claim is made.
+
+## Batch Z — UX upgrade vertical slice 1 (2026-09-25, EVIDENCE-BASED)
+
+Plan `temp/tantu-ultimate-ux-upgrade-plan.md` (v6.0) was treated as strategy,
+not a literal patch. Each P0 was interrogated for wire-compat, privacy,
+and fake-history risk before implementation; the slice below is the
+dependency-ordered minimum that makes every send visible, intentional,
+verifiable, and recoverable without a framework migration or new transport.
+
+### What changed
+
+- **Canonical sender truth:** `internal/hub/operations.go` adds a bounded
+  (50) session-local outbound ledger with logical operation IDs, DropIDs,
+  destination snapshot, terminal states
+  (completed/retryable/terminal/cancelled/duplicate-risk), and explicit
+  retry/duplicate/data safety plus one next action. No payload bytes, text,
+  tokens, or URLs are stored.
+- **Honest upload contract:** `POST /api/drop/upload` (text + file) now
+  generates per-attempt DropIDs, tracks negotiation via OnAck, classifies
+  failures (dial/integrity/quota/drop_complete/drop_data/timeout/cancel),
+  records every dialled attempt, and returns operation_id, destination,
+  verified, code, plain_message, retry_safe, duplicate_risk, data_safe,
+  next_action, and diagnostic_id. Validation/slot rejections return the same
+  contract without ledger spam. `GET /api/transfers/recent` exposes the
+  ledger (capability-protected).
+- **Dashboard safe-send:** clipboard/drag/picker files stage for preview
+  (name/size/type/destination, image thumbnail <=8 MB via ObjectURL, revoked
+  after) with explicit Send/Cancel and a visible expert immediate-send
+  opt-in. Destination is always visible; header no longer claims unprobed
+  reachability ("Trusted"); next-action banner, Transfers tab, reduced-motion
+  and scroll-margin fixes included. Success/failure messages name the
+  destination, operation ID, and recovery.
+- **CLI recovery:** new `tantu doctor` (human + `--json`, exit 0/1, no
+  secrets), `tantu status --json` (same contract), `tantu transfer list` /
+  `tantu transfers` (session ledger, `--json`), and an explicit refusal of
+  blind `transfer retry` after unknown outcomes.
+
+### Decisions
+
+- Session-local (not yet durable) ledger with explicit restart-clears
+  labeling, per plan Q5 (persist after contract exists). Refresh/reconnect
+  within a Hub generation reconciles via snapshot; Hub restart starts a new
+  generation rather than lying about history.
+- No wire change: DropID stays per-attempt random; operation ID is
+  sender-local. Mixed-version policy unchanged (upgrade both).
+- Preview-by-default for all file sources (picker/drag/paste), not only
+  clipboard, per the risk-based confirmation table; expert skip is visible
+  and never hides destination.
+
+### Validation
+
+- `go build ./...`, `go vet ./...`, `go test -count=1 ./...` green (12 pkgs).
+- New tests: ledger bound, error taxonomy (dial/integrity/drop_complete/
+  drop_data), upload error/success contracts with privacy (no payload echo),
+  transfers auth, doctor fresh/live/transfer-fetch CLI tests, dashboard
+  markers for preview/destination/transfers and absence of auto-send patterns.
+- Dashboard JS passes `node --check` (with `{{SESSION_READY}}` stubbed).
+- `git diff --check` clean; changed Go files `gofmt`-clean. Local `-race`
+  still blocked (no gcc); CI remains authoritative. No commit or push.
+
+## Batch Z2 — durable history, support bundle, a11y gaps (2026-09-25)
+
+Continuation of the v6.0 vertical slices. The remaining P0 honesty gap was
+Hub restart wiping sender truth (Journey 10); the remaining P0 diagnostic
+gap was no redacted bundle path; remaining a11y gaps were modal focus trap
+and cockpit destination silence.
+
+### What changed
+
+- **Durable ledger:** `transfers.json` (v1 envelope, 0600, atomic
+  temp+fsync+rename with Windows retry) in the store dir, last 50 / 30 days,
+  metadata-only by construction. Saved synchronously on every record
+  (best-effort; never fails the upload); loaded and validated on Hub Start
+  (missing = clean first run, corrupt = warn + start empty). `Add` also
+  prunes by age so a months-long Hub generation cannot accumulate stale ops.
+- **Offline CLI truth:** `tantu transfers` / `transfer list` falls back to
+  last-saved history with an explicit stale label when the Hub is stopped;
+  errors only when neither live nor saved history exists.
+- **Support bundle:** `tantu doctor --bundle-path <file>` writes owner-only
+  JSON (health report, live-or-saved transfers, redacted Hub logs, redaction
+  note). Never contains payload bytes, snippets, tokens, keys, or full
+  sensitive URLs. JSON mode keeps stdout pure (bundle path to stderr).
+- **Focus trap:** pairing dialog cycles Tab/Shift-Tab within the modal;
+  Escape and focus-restore behavior unchanged.
+- **Cockpit destinations:** `cockpitDestinationName` resolves single, active,
+  or explicit targets without silent substitution (unresolvable echoes);
+  file and text sends print `Destination: X` before transmitting.
+
+### Decisions
+
+- Single-writer file (the Hub) + atomic rename: readers never see partial
+  content, no cross-process lock needed (one Hub owns a store dir via
+  hub.json). CLI reads the same file offline.
+- 30-day / 50-record bound matches the dashboard Transfers copy and CLI
+  note; configurable retention deferred (no demand signal yet).
+- `transfer retry` remains refused (at-least-once duplicate risk without
+  idempotency); `send --json` deferred to a later CLI-parity slice.
+
+### Validation
+
+- `go build`, `go vet`, `go test -count=1 ./...` green (12 pkgs);
+  linux/amd64 + darwin/arm64 cross-build clean; dashboard JS `node --check`
+  clean; `git diff --check` and `gofmt` clean.
+- New tests: age prune, persist round-trip (privacy: no payload in file),
+  restart-restore via two Hub generations, corrupt-starts-empty, saved-file
+  fallback read, offline + live bundle redaction (no key/token/capability
+  material, no payload echo), cockpit destination resolution, modal-trap
+  marker. No commit or push.
+
+## Batch Z3 — send contract, deletion, labels, status (2026-09-25)
+
+Final automatable slice of the v6.0 plan. Items were dependency-ordered:
+status next-action, `send --json` + exit codes, transfer-history deletion,
+standalone labels, release/threat docs, and an honest plan-tracking record.
+
+### What changed
+
+- **`tantu status` next action:** human output ends with one recommended
+  next action (identity → pair; no peers → pair; Hub stopped → start;
+  else send a test). No-peers path prints it before returning.
+- **`tantu send --json`:** machine-readable contract (operation ID,
+  destination, verification, safety flags; never payload) with exit codes
+  0/1/2/3. Direct sends assign and report their wire DropID
+  (`drop.NewDropID`); delegation parses the Hub success body and preserves
+  the Hub error contract via typed `hubError` (human `Error()` format
+  unchanged). Direct failures reuse the single taxonomy
+  (`hub.ClassifyTransferError`, newly exported) with OnAck negotiation
+  tracking; duplicate-risk exits 3 with an inbox check.
+- **Deletion:** `DELETE /api/transfers/recent` (capability-protected,
+  returns removed count) + dashboard Clear button with consequence
+  confirmation + `tantu transfer clear --yes` (live API when the Hub runs,
+  saved-file removal when stopped; refuses without `--yes`).
+- **Standalone labels:** `serve`/`node` print Hub pointers; usage marks
+  node/serve/relay/drop advanced or compatibility (`drop`/`relay` already
+  carried Hub tips).
+- **Docs:** `transfers.json` recorded forward-compatible in `docs/RELEASE.md`
+  (upgrade + rollback); threat-model assets/SR12/trust table include it;
+  new `docs/UX-STATUS.md` maps every P0/P1 to state + evidence level with a
+  stop-rule assessment that leaves gates 4–5 red (human validation
+  unproducible here) — no UX-complete claim is made.
+
+### Decisions
+
+- Human send output preserved byte-for-byte except additive ASCII
+  Destination/Operation-ID lines (no emoji-line edits, avoiding the
+  encoding fragility seen in earlier attempts).
+- `send --json` prints result JSON to stdout in all cases (success and
+  failure) for automation; validation maps to exit 2, duplicate-risk to 3.
+- Loopback self-send destination corrected to "local Hub" (was "default
+  peer"); old records keep their recorded values — history is never
+  rewritten.
+
+### Validation
+
+- Live smoke (real binaries, temp store, artifacts removed): delegated
+  `--json` success with Hub operation ID; cross-binary-restart history
+  restore (2 ops); validation exit 2; unresolvable-peer exit 2; offline
+  stale fallback; direct dial-refused exit 1 with full contract; offline
+  doctor + bundle write.
+- Flaky Windows TempDir cleanup in Hub-starting CLI tests fixed by waiting
+  for `Hub.Stop()` (same remedy as the earlier hub lifecycle case);
+  5/5 reruns green. Cockpit test Hub now uses an isolated output dir.
+- `go build`, `go vet`, `go test -count=1 ./...` green (12 pkgs);
+  `-count=2` lifecycle rerun green; linux/amd64 + darwin/arm64 clean;
+  dashboard JS `node --check` clean; `gofmt`/`git diff --check` clean.
+  Local `-race` still blocked (no gcc); CI remains authoritative. No commit
+  or push.

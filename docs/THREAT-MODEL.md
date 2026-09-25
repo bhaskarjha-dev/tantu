@@ -34,6 +34,7 @@
 4. **QuickDrop File & Snippet Payloads:** P2P file streams, code snippets, tokens, and binary assets (up to 5GB).
 5. **Node Pairing Credentials:** ECDSA P-256 private keys (`identity.json`) and trusted peer certificates (`peers.json`).
 6. **Daemon State Descriptor:** Ephemeral process coordinates (`hub.json`) for local REST IPC.
+7. **Transfer History (`transfers.json`):** Sender-side metadata only (destinations, states, times) — no payload; same sensitivity as peer metadata, same private/atomic handling.
 
 ---
 
@@ -161,7 +162,7 @@
 | **SR9** | Pairing requires out-of-band visual verification of the 6-character SAS code | T7 |
 | **SR10**| PKCE `code_verifier` must never leave the initiating node | T1, T2 |
 | **SR11**| Inbound sender identity must be cryptographically extracted from TLS client leaf cert | T9 |
-| **SR12**| Runtime state descriptor (`hub.json`), key material, peer state, and active-peer selection must use private permissions and ownership-safe publication; peer/identity mutations are serialized across processes; OS ACL enforcement is a deployment requirement | T10 |
+| **SR12**| Runtime state descriptor (`hub.json`), key material, peer state, transfer history (`transfers.json`), and active-peer selection must use private permissions and ownership-safe publication; peer/identity mutations are serialized across processes; OS ACL enforcement is a deployment requirement | T10 |
 | **SR13**| Received files must be sanitized via `SanitizeDropFilename` (traversal, NTFS ADS, DOS devices, control chars) and saved in sandboxed dir | T11 |
 | **SR14**| Existing files must not be silently overwritten by incoming drops | T11 |
 | **SR15**| Dynamic port fallbacks apply only to local loopback web/IPC, never to OAuth callbacks | T4 |
@@ -181,7 +182,7 @@
 | **Paired Peer** | Initiating OAuth requests, sending drops within quotas | Impersonating other peers, modifying PKCE |
 | **Transport Layer** | Mutual encryption, certificate pinning, provenance extraction | Opaque payload contents |
 | **Identity Provider** | Issuing OAuth tokens and validating PKCE | Inspecting local network topology |
-| **Local Filesystem** | Storing `identity.json`, `peers.json`, and `hub.json` with private modes and ownership-safe writes | Public shared directories; Windows ACL enforcement remains platform-specific |
+| **Local Filesystem** | Storing `identity.json`, `peers.json`, `transfers.json`, and `hub.json` with private modes and ownership-safe writes | Public shared directories; Windows ACL enforcement remains platform-specific |
 
 ---
 
