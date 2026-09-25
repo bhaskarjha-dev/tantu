@@ -2017,13 +2017,17 @@ const dashboardHTML = `<!DOCTYPE html>
         const data = await res.json();
         if (res.ok && data.status === 'success') {
           status.className = 'status-banner success';
-          status.textContent = '✅ Authentication completed successfully!';
+          status.textContent = 'Authentication completed successfully' + (data.destination ? ' via ' + data.destination : '') + '.';
           input.value = '';
-          addLog('OAUTH', 'OAuth flow completed successfully.');
+          addLog('OAUTH', 'OAuth flow completed successfully' + (data.destination ? ' via ' + data.destination : '') + '.');
         } else {
+          let msg = data.message || 'Unknown error';
+          if (data.next_action) msg += ' Next: ' + data.next_action;
+          if (data.operation_id) msg += ' (ID ' + data.operation_id + ')';
+          msg += ' See Recent Authorizations below for details.';
           status.className = 'status-banner error';
-          status.textContent = '❌ Relay failed: ' + (data.message || 'Unknown error');
-          addLog('ERROR', 'Relay failed: ' + (data.message || 'Unknown error'));
+          status.textContent = 'Relay failed: ' + msg;
+          addLog('ERROR', 'Relay failed: ' + msg);
         }
         loadAuthorizations();
       } catch (err) {
@@ -2285,8 +2289,11 @@ const dashboardHTML = `<!DOCTYPE html>
 </html>`
 
 type relayResponse struct {
-	Status  string `json:"status"`
-	Message string `json:"message"`
+	Status      string `json:"status"`
+	Message     string `json:"message"`
+	OperationID string `json:"operation_id,omitempty"`
+	Destination string `json:"destination,omitempty"`
+	NextAction  string `json:"next_action,omitempty"`
 }
 
 func newDashboardNonce() (string, error) {
@@ -2862,17 +2869,25 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			return
 		}
 
-		if err := h.relayOAuth(r.Context(), "", rawURL); err != nil {
+		attemptID, err := h.relayOAuth(r.Context(), "", rawURL)
+		if err != nil {
+			dest, _, _ := h.resolveOperationDestination("")
 			respond(http.StatusBadGateway, relayResponse{
-				Status:  "error",
-				Message: publicRelayError(err),
+				Status:      "error",
+				Message:     publicRelayError(err),
+				OperationID: attemptID,
+				Destination: dest,
+				NextAction:  h.relayAttemptNextAction(attemptID),
 			})
 			return
 		}
 
+		dest, _, _ := h.resolveOperationDestination("")
 		respond(http.StatusOK, relayResponse{
-			Status:  "success",
-			Message: "Authentication completed successfully",
+			Status:      "success",
+			Message:     "Authentication completed successfully",
+			OperationID: attemptID,
+			Destination: dest,
 		})
 	})
 
@@ -2914,17 +2929,25 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			return
 		}
 
-		if err := h.relayOAuth(r.Context(), req.Peer, rawURL); err != nil {
+		attemptID, err := h.relayOAuth(r.Context(), req.Peer, rawURL)
+		if err != nil {
+			dest, _, _ := h.resolveOperationDestination(req.Peer)
 			writeJSON(w, http.StatusBadGateway, relayResponse{
-				Status:  "error",
-				Message: publicRelayError(err),
+				Status:      "error",
+				Message:     publicRelayError(err),
+				OperationID: attemptID,
+				Destination: dest,
+				NextAction:  h.relayAttemptNextAction(attemptID),
 			})
 			return
 		}
 
+		dest, _, _ := h.resolveOperationDestination(req.Peer)
 		writeJSON(w, http.StatusOK, relayResponse{
-			Status:  "success",
-			Message: "Authentication completed successfully",
+			Status:      "success",
+			Message:     "Authentication completed successfully",
+			OperationID: attemptID,
+			Destination: dest,
 		})
 	})
 

@@ -482,12 +482,7 @@ func runSend(args []string) {
 	// Resolve a display destination without ever substituting a different
 	// peer silently: explicit target wins, otherwise the single or active
 	// peer, otherwise the raw dial address.
-	destDisplay = dialTarget
-	if *transportType == "lan" && lanStore != nil {
-		if rp, err := resolvePeerForDial(lanStore, *peerAddr); err == nil && rp != nil {
-			destDisplay = rp.DisplayName()
-		}
-	}
+	destDisplay = displayDestination(*transportType, lanStore, *peerAddr, dialTarget)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

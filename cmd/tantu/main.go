@@ -160,6 +160,22 @@ func resolvePeerForDial(store *pairing.PeerStore, query string) (*pairing.Peer, 
 	}
 }
 
+// displayDestination resolves a user-visible destination label for direct
+// (non-delegated) transfers without ever substituting a different peer
+// silently: an explicit resolvable target wins, otherwise the raw dial
+// address is echoed.
+func displayDestination(transportType string, store *pairing.PeerStore, peerQuery, dialTarget string) string {
+	if transportType == "lan" && store != nil {
+		if rp, err := resolvePeerForDial(store, peerQuery); err == nil && rp != nil {
+			return rp.DisplayName()
+		}
+	}
+	if strings.TrimSpace(dialTarget) == "" {
+		return "default peer"
+	}
+	return dialTarget
+}
+
 // defaultTransport returns "lan" by default to enable LAN discovery and pairing.
 func defaultTransport(store *pairing.PeerStore) string {
 	return "lan"

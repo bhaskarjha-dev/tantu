@@ -104,16 +104,16 @@ func relayRequestKey(peer, rawURL string) string {
 // relayOAuth performs one wire flow, with duplicate requests coalesced at the
 // local Hub boundary. The leader uses a detached timeout context so a browser
 // client disconnecting does not strand the peer connection or leave a callback
-// listener behind.
-func (h *Hub) relayOAuth(ctx context.Context, peer, rawURL string) error {
+// listener behind. It returns the recorded attempt ID ("" when the request
+// was coalesced onto another caller's in-flight flow) so API responses can
+// point at the durable authorization record.
+func (h *Hub) relayOAuth(ctx context.Context, peer, rawURL string) (string, error) {
 	oauthURL := browser.SanitizeURL(strings.TrimSpace(rawURL))
 	if len(oauthURL) > 64*1024 {
-		h.recordRelayFailure(peer, "", "invalid_input", "Fix the URL and retry.")
-		return errors.New("OAuth authorization URL exceeds the maximum supported length")
+		return h.recordRelayFailure(peer, "", "invalid_input", "Fix the URL and retry."), errors.New("OAuth authorization URL exceeds the maximum supported length")
 	}
 	if err := browser.ValidateURL(oauthURL); err != nil {
-		h.recordRelayFailure(peer, safeRelayOrigin(oauthURL), "invalid_input", "Fix the URL and retry.")
-		return err
+		return h.recordRelayFailure(peer, safeRelayOrigin(oauthURL), "invalid_input", "Fix the URL and retry."), err
 	}
 	h.mu.Lock()
 	coordinator := h.relayCoordinator
@@ -143,12 +143,12 @@ func (h *Hub) relayOAuth(ctx context.Context, peer, rawURL string) error {
 			keyPeer = resolved.Fingerprint
 			dialPeer = resolved.Fingerprint
 		} else if transportName == "lan" {
-			h.recordRelayFailure(peer, safeRelayOrigin(oauthURL), "destination_unreachable", "Check the peer is online and paired, then retry.")
-			return resolveErr
+			return h.recordRelayFailure(peer, safeRelayOrigin(oauthURL), "destination_unreachable", "Check the peer is online and paired, then retry."), resolveErr
 		}
 	}
 	key := relayRequestKey(keyPeer, oauthURL)
-	return coordinator.Do(ctx, key, func() error {
+	var attemptID string
+	err := coordinator.Do(ctx, key, func() error {
 		timeout := h.cfg.Timeout
 		if timeout <= 0 {
 			timeout = 5 * time.Minute
@@ -162,7 +162,7 @@ func (h *Hub) relayOAuth(ctx context.Context, peer, rawURL string) error {
 		relayCtx, cancel := context.WithTimeout(baseCtx, timeout)
 		defer cancel()
 
-		attemptID := newRelayID()
+		attemptID = newRelayID()
 		destName, destFP, destAddr := h.resolveOperationDestination(dialPeer)
 		origin := safeRelayOrigin(oauthURL)
 		now := time.Now()
@@ -193,12 +193,13 @@ func (h *Hub) relayOAuth(ctx context.Context, peer, rawURL string) error {
 		h.updateRelayAttempt(attemptID, RelayStateComplete, "", "")
 		return nil
 	})
+	return attemptID, err
 }
 
 // recordRelayFailure records a terminal failed attempt that never reached
-// the wire (validation or resolution). Only the safe origin host is kept,
-// never the raw URL, codes, or tokens.
-func (h *Hub) recordRelayFailure(peer, safeOrigin, code, next string) {
+// the wire (validation or resolution) and returns its ID. Only the safe
+// origin host is kept, never the raw URL, codes, or tokens.
+func (h *Hub) recordRelayFailure(peer, safeOrigin, code, next string) string {
 	destName, destFP, destAddr := h.resolveOperationDestination(peer)
 	now := time.Now()
 	id := newRelayID()
@@ -208,6 +209,7 @@ func (h *Hub) recordRelayFailure(peer, safeOrigin, code, next string) {
 		CreatedAt: now, UpdatedAt: now,
 		ErrorCode: code, NextAction: next, DiagnosticID: id,
 	})
+	return id
 }
 
 // updateRelayAttempt sets a follow-up state on a recorded attempt and
@@ -232,4 +234,24 @@ func (h *Hub) updateRelayAttempt(id, state, code, next string) {
 			h.logger.Warn(DomainOAuth, fmt.Sprintf("Could not save authorization history: %v", err))
 		}
 	}
+}
+
+// relayAttemptNextAction returns the recorded recovery guidance for an
+// attempt, letting API responses echo exactly what the ledger holds.
+func (h *Hub) relayAttemptNextAction(id string) string {
+	if h == nil || id == "" {
+		return ""
+	}
+	h.mu.RLock()
+	ledger := h.relayHistory
+	h.mu.RUnlock()
+	if ledger == nil {
+		return ""
+	}
+	for _, op := range ledger.GetAll() {
+		if op.ID == id {
+			return op.NextAction
+		}
+	}
+	return ""
 }

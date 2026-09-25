@@ -706,18 +706,70 @@ func delegateSend(storeDir, webAddr string, filePath string, text string, target
 	return nil
 }
 
+// RelayOpenResult carries the Hub's authorization record identity back to
+// the CLI so `tantu open` can report the same operation ID and destination
+// the dashboard and support bundle show.
+type RelayOpenResult struct {
+	OperationID string `json:"operation_id"`
+	Destination string `json:"destination"`
+}
+
+// RelayAPIError carries the Hub's relay error contract across the local IPC
+// boundary. Error() preserves the historical human format.
+type RelayAPIError struct {
+	StatusCode  int
+	Raw         string
+	Message     string
+	OperationID string
+	Destination string
+	NextAction  string
+}
+
+func (e *RelayAPIError) Error() string {
+	return fmt.Sprintf("hub returned relay error (status %d): %s", e.StatusCode, e.Raw)
+}
+
+func NewRelayAPIError(status int, body []byte) *RelayAPIError {
+	raw := strings.TrimSpace(string(body))
+	re := &RelayAPIError{StatusCode: status, Raw: raw, Message: raw}
+	var parsed struct {
+		Message     string `json:"message"`
+		OperationID string `json:"operation_id"`
+		Destination string `json:"destination"`
+		NextAction  string `json:"next_action"`
+	}
+	if err := json.Unmarshal(body, &parsed); err == nil {
+		if parsed.Message != "" {
+			re.Message = parsed.Message
+		}
+		re.OperationID = parsed.OperationID
+		re.Destination = parsed.Destination
+		re.NextAction = parsed.NextAction
+	}
+	if re.Message == "" {
+		re.Message = fmt.Sprintf("hub returned relay status %d", status)
+	}
+	return re
+}
+
+func DecodeRelayOpenResult(body []byte) *RelayOpenResult {
+	res := &RelayOpenResult{}
+	_ = json.Unmarshal(body, res)
+	return res
+}
+
 // DelegateOpen forwards an OAuth authorization URL via the local Hub's POST /api/relay/open endpoint.
 // If targetPeer is non-empty, it instructs the Hub to open with that specific peer.
-func DelegateOpen(webAddr string, targetURL string, targetPeer string) error {
+func DelegateOpen(webAddr string, targetURL string, targetPeer string) (*RelayOpenResult, error) {
 	return DelegateOpenFromStore("", webAddr, targetURL, targetPeer)
 }
 
 // DelegateOpenFromStore is DelegateOpen with an explicit Hub runtime store
 // directory used to retrieve the local IPC capability token.
-func DelegateOpenFromStore(storeDir, webAddr string, targetURL string, targetPeer string) error {
+func DelegateOpenFromStore(storeDir, webAddr string, targetURL string, targetPeer string) (*RelayOpenResult, error) {
 	webAddr = cleanWebAddr(webAddr)
 	if !validLoopbackWebAddr(webAddr) {
-		return fmt.Errorf("hub web address must be loopback: %q", webAddr)
+		return nil, fmt.Errorf("hub web address must be loopback: %q", webAddr)
 	}
 	client := newLoopbackIPCClient(5*time.Minute + 30*time.Second)
 	endpoint := fmt.Sprintf("http://%s/api/relay/open", webAddr)
@@ -731,7 +783,7 @@ func DelegateOpenFromStore(storeDir, webAddr string, targetURL string, targetPee
 	reqBody, _ := json.Marshal(bodyMap)
 	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(reqBody))
 	if err != nil {
-		return fmt.Errorf("create relay delegation request: %w", err)
+		return nil, fmt.Errorf("create relay delegation request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-CLI-Version", HubVersion)
@@ -741,13 +793,14 @@ func DelegateOpenFromStore(storeDir, webAddr string, targetURL string, targetPee
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("delegate relay request: %w", err)
+		return nil, fmt.Errorf("delegate relay request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return fmt.Errorf("hub returned relay error (status %d): %s", resp.StatusCode, string(body))
+		return nil, NewRelayAPIError(resp.StatusCode, body)
 	}
-	return nil
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	return DecodeRelayOpenResult(body), nil
 }

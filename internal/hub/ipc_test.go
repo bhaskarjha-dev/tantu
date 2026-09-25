@@ -252,7 +252,7 @@ func TestDelegateOpen_Success(t *testing.T) {
 
 	targetOAuth := "https://accounts.google.com/o/oauth2/v2/auth?client_id=123"
 	webAddr := strings.TrimPrefix(server.URL, "http://")
-	err := DelegateOpen(webAddr, targetOAuth, "")
+	_, err := DelegateOpen(webAddr, targetOAuth, "")
 	if err != nil {
 		t.Fatalf("DelegateOpen failed: %v", err)
 	}
@@ -290,7 +290,7 @@ func TestDelegateOpen_WithPeer(t *testing.T) {
 
 	webAddr := strings.TrimPrefix(server.URL, "http://")
 	targetOAuth := "https://accounts.google.com/o/oauth2/v2/auth?client_id=123"
-	if err := DelegateOpen(webAddr, targetOAuth, "linux-box"); err != nil {
+	if _, err := DelegateOpen(webAddr, targetOAuth, "linux-box"); err != nil {
 		t.Fatalf("DelegateOpen with peer failed: %v", err)
 	}
 	if receivedURL != targetOAuth {
@@ -309,7 +309,7 @@ func TestDelegateOpen_HubError(t *testing.T) {
 	defer server.Close()
 
 	webAddr := strings.TrimPrefix(server.URL, "http://")
-	err := DelegateOpen(webAddr, "https://example.com/oauth", "")
+	_, err := DelegateOpen(webAddr, "https://example.com/oauth", "")
 	if err == nil {
 		t.Fatalf("expected error from failed relay, got nil")
 	}

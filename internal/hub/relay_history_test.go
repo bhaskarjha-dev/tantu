@@ -60,6 +60,48 @@ func TestRelayHistory_PersistRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWebDashboard_RelayOpenResponseContract(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+
+	body, _ := json.Marshal(map[string]string{"url": "ftp://contract.example/x?code=SECRET"})
+	resp, err := testPost(h.ipcToken, "http://"+h.WebAddr()+"/api/relay/open", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	opID, _ := payload["operation_id"].(string)
+	if !strings.HasPrefix(opID, "rl-") {
+		t.Errorf("operation_id = %q, want rl- prefix", opID)
+	}
+	if payload["destination"] == "" || payload["destination"] == nil {
+		t.Error("failure must name its destination")
+	}
+	if payload["next_action"] == "" || payload["next_action"] == nil {
+		t.Error("failure must carry a next action")
+	}
+	// The response must point at the recorded ledger entry.
+	opsResp, err := testGet(h.ipcToken, "http://"+h.WebAddr()+"/api/relay/recent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opsResp.Body.Close()
+	var ops []RelayAttempt
+	if err := json.NewDecoder(opsResp.Body).Decode(&ops); err != nil {
+		t.Fatal(err)
+	}
+	if len(ops) != 1 || ops[0].ID != opID {
+		t.Fatalf("ledger must contain the responded attempt %q: %+v", opID, ops)
+	}
+}
+
 func TestWebDashboard_RelayOpenInvalidRecordsAttempt(t *testing.T) {
 	h, _, cleanup := startTestHub(t)
 	defer cleanup()
