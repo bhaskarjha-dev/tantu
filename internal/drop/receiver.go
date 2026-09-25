@@ -119,6 +119,19 @@ func validateDropMetadata(meta DropSend) error {
 	case "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
 		return errors.New("drop_id cannot be a reserved device name")
 	}
+	// The idempotency key rides the same staging-path-adjacent trust as the
+	// DropID (it will key future tombstones), so it earns the same alphabet
+	// and length discipline. Receivers validate only; no duplicate
+	// suppression happens yet.
+	if len(meta.IdempotencyKey) > MaxDropIDLength {
+		return fmt.Errorf("idempotency_key exceeds %d bytes", MaxDropIDLength)
+	}
+	for _, r := range meta.IdempotencyKey {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			continue
+		}
+		return errors.New("idempotency_key contains an invalid character")
+	}
 	if meta.Kind != DropKindText && meta.Kind != DropKindFile {
 		return fmt.Errorf("unsupported drop kind %q", meta.Kind)
 	}

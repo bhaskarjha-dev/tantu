@@ -1516,6 +1516,7 @@ func TestWebDashboard_UploadProgressAndPeerRenderMarkers(t *testing.T) {
 		"authorizationsList",
 		"loadAuthorizations",
 		"renderAuthorizations",
+		"stay where they were",
 	} {
 		if !strings.Contains(content, s) {
 			t.Errorf("dashboard HTML missing %q (upload-progress / focus-preservation UX)", s)

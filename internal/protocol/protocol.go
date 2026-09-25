@@ -13,10 +13,18 @@ const (
 	TypeHeartbeat      = "heartbeat"
 )
 
+// ProtocolVersion is the wire envelope version emitted by this release.
+// Zero (absent on the wire via omitempty) means a pre-versioning peer.
+// Decoders ignore unknown fields, so emitting it is backward compatible in
+// both directions: old peers ignore it, new peers read it. See
+// docs/SPEC-WIRE-VERSIONING.md for the rollout plan.
+const ProtocolVersion = 1
+
 // Envelope wraps any message for wire transmission.
 type Envelope struct {
-	Type    string          `json:"type"`    // "bridge_request", "bridge_ack", etc.
-	Payload json.RawMessage `json:"payload"` // JSON-encoded message
+	Type    string          `json:"type"`        // "bridge_request", "bridge_ack", etc.
+	Payload json.RawMessage `json:"payload"`     // JSON-encoded message
+	V       int             `json:"v,omitempty"` // envelope version; 0 = pre-versioning peer
 }
 
 // NewEnvelope creates an Envelope wrapping the given payload under msgType.

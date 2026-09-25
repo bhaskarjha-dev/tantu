@@ -38,6 +38,11 @@ type DropSend struct {
 	MIMEType  string   `json:"mime_type,omitempty"` // MIME type hint (e.g. "text/plain", "image/png")
 	ChunkSize int      `json:"chunk_size"`          // Max bytes per DropData chunk (default 1MB)
 	HeadHash  string   `json:"head_hash,omitempty"` // SHA-256 of first 64KB for resumption file identity check
+	// IdempotencyKey is the sender's logical-operation key, reserved for
+	// idempotent retry (see docs/SPEC-WIRE-VERSIONING.md). Receivers validate
+	// it but take no duplicate-suppression action yet; retries remain
+	// at-least-once with explicit duplicate-risk UX.
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 	// AttemptID is local dispatcher state and is never serialized on the wire.
 	// It lets receiver callbacks distinguish concurrent attempts that reuse a
 	// DropID, so cleanup for one attempt cannot tear down another.

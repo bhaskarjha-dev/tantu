@@ -170,6 +170,9 @@ func runSend(args []string) {
 			Name:   label,
 			Size:   int64(len(data)),
 		}
+		// One-shot CLI sends are their own logical operation: the wire
+		// attempt ID doubles as the idempotency key.
+		meta.IdempotencyKey = meta.DropID
 		textContent = string(data)
 		payload = bytes.NewReader(data)
 	} else {
@@ -229,6 +232,9 @@ func runSend(args []string) {
 				Size:     size,
 				MIMEType: mimeType,
 			}
+			// One-shot CLI sends are their own logical operation: the wire
+			// attempt ID doubles as the idempotency key.
+			meta.IdempotencyKey = meta.DropID
 			payload = f
 		} else {
 			// Text mode. Command-line text shares the 10MB text-drop limit
@@ -258,6 +264,9 @@ func runSend(args []string) {
 				Name:   *nameFlag,
 				Size:   int64(len(text)),
 			}
+			// One-shot CLI sends are their own logical operation: the wire
+			// attempt ID doubles as the idempotency key.
+			meta.IdempotencyKey = meta.DropID
 			textContent = text
 			payload = strings.NewReader(text)
 		}

@@ -73,6 +73,12 @@ func (e *Encoder) EncodeEnvelope(env *Envelope) error {
 	if len(env.Payload) == 0 || string(env.Payload) == "null" {
 		return ErrMissingPayload
 	}
+	// Stamp the envelope version at the single encoding choke point so every
+	// message type carries it without per-caller changes. An explicitly set
+	// version is never clobbered.
+	if env.V <= 0 {
+		env.V = ProtocolVersion
+	}
 	envBytes, err := json.Marshal(env)
 	if err != nil {
 		return fmt.Errorf("marshal envelope: %w", err)

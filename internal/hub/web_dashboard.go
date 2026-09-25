@@ -2103,6 +2103,8 @@ const dashboardHTML = `<!DOCTYPE html>
         const data = await res.json();
         if (res.ok && data.status === 'success') {
           document.getElementById('downloadDirPath').innerText = data.output_dir || newDir.trim();
+          addLog('DROP', 'Downloads directory changed. Previously received files stay where they were.');
+          alert('Downloads directory updated. Files received earlier stay in their previous location.');
         } else {
           alert('Failed to update directory: ' + (data.message || 'unknown error'));
         }
@@ -3000,10 +3002,11 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			defer conn.Close()
 
 			meta := drop.DropSend{
-				DropID: dropID,
-				Kind:   drop.DropKindText,
-				Name:   textReq.Name,
-				Size:   int64(len(textReq.Text)),
+				DropID:         dropID,
+				IdempotencyKey: opID,
+				Kind:           drop.DropKindText,
+				Name:           textReq.Name,
+				Size:           int64(len(textReq.Text)),
 			}
 			sendCtx, cancel := context.WithTimeout(r.Context(), h.cfg.Timeout)
 			defer cancel()
@@ -3084,11 +3087,12 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 		fileName := filepath.Base(header.Filename)
 		mimeType := mime.TypeByExtension(filepath.Ext(fileName))
 		meta := drop.DropSend{
-			DropID:   dropID,
-			Kind:     drop.DropKindFile,
-			Name:     fileName,
-			Size:     header.Size,
-			MIMEType: mimeType,
+			DropID:         dropID,
+			IdempotencyKey: opID,
+			Kind:           drop.DropKindFile,
+			Name:           fileName,
+			Size:           header.Size,
+			MIMEType:       mimeType,
 		}
 		if seeker, ok := file.(io.ReadSeeker); ok && header.Size >= 64*1024 {
 			_, _ = seeker.Seek(0, io.SeekStart)
