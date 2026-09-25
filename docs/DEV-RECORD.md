@@ -940,3 +940,44 @@ standalone labels, release/threat docs, and an honest plan-tracking record.
   dashboard JS `node --check` clean; `gofmt`/`git diff --check` clean.
   Local `-race` still blocked (no gcc); CI remains authoritative. No commit
   or push.
+
+## Batch Z4 — relay history, benchmark, fuzz, designs (2026-09-25)
+
+Final deferred-backend slice plus measurement and human-program materials.
+Pushed batches Z–Z3 to origin/main first (remote CI race jobs pending).
+
+### What changed
+
+- **Relay attempt ledger** (`internal/hub/relay_history.go`): sender-side
+  submitted → waiting_callback → complete/failed/cancelled with target
+  peer, origin host only, redacted code, and next action. Only the bare
+  host is ever stored (the sanitizer preserves single-use query values, so
+  full sanitized URLs are unpersistable by construction); failures keep a
+  category, never raw bridge errors. Durable `authorizations.json` (last
+  50, 30 days, same atomic/0600 pattern), `GET /api/relay/recent`,
+  dashboard Recent Authorizations card, and bundle inclusion (live or
+  saved-file). Recording hooks cover validation, resolution, dial, and
+  B-side phases; coalesced follower requests share the leader's attempt.
+- **Benchmark harness** (`internal/drop/throughput_bench_test.go`):
+  1 MiB loopback E2E (framing, chunk, staging sync, 2× SHA-256), stdlib
+  only. Local baseline (i9-13950HX, Windows): ~8.5 ms/op, ~123 MB/s,
+  ~12.6 MB/op, 235 allocs/op.
+- **Fuzz round 3:** all four targets 20 s each — decode ~6.0M execs,
+  beacon ~7.3M, metadata ~5.5M, callback-relay ~2.7M — zero crashes, no new
+  corpus files.
+- **Docs:** `docs/SPEC-WIRE-VERSIONING.md` (additive envelope version +
+  idempotency-key + receiver tombstone proposal with open decisions and
+  rollout), `docs/RESEARCH-PACKET.md` (consent, hypotheses, 28 grouped
+  tasks, cohorts/sample floor, thresholds, ledger template, matrices).
+  UX-STATUS: OAuth row done, tombstone deferred-with-design, perf harness
+  done, research packet linked; ARCHITECTURE relay tab and CHANGELOG synced.
+
+### Validation
+
+- New tests: ledger bound, origin redaction (host-only incl. adversarial
+  query), persist round-trip (no query material), invalid-URL API path
+  (failed/invalid_input, secret assert), relay/recent auth gate, dashboard
+  markers, live bundle authorizations (failed/host-only/no leak).
+- `go build`, `go vet`, full suite green; JS `node --check` clean;
+  cross-compile clean. Pushed Z–Z3 before starting this batch; this batch
+  uncommitted pending final verification. No push of new commits yet.

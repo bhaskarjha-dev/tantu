@@ -38,16 +38,16 @@ E5 cross-platform/accessibility/failure evidence.
 | Item | State | Notes |
 |---|---|---|
 | Transfer history and bounded persistence | Done | `transfers.json`, 50/30-day bounds, atomic writes, offline CLI fallback, explicit deletion (`transfer clear`, dashboard Clear). |
-| Completion tombstone/idempotency | Deferred | Requires wire change (no version field; mixed-version unsupported). Mitigation: duplicate-risk state + refused blind retry. See gaps. |
+| Completion tombstone/idempotency | Deferred (designed) | Requires wire change; full proposal in `docs/SPEC-WIRE-VERSIONING.md`. Mitigation stands: duplicate-risk state + refused blind retry. |
 | Retry/resume actions | Partial | Retry-as-new-transfer is always available (`send` again); in-place retry refused by design. Same-DropID resume stays library-only. |
 | CLI/dashboard state parity | Done | Shared taxonomy (`hub.ClassifyTransferError`), shared destination language, `send --json`. |
 | Standalone migration/deprecation labels | Done | `serve`/`node` print Hub pointers; usage labels advanced/compatibility; `drop`/`relay` already carried Hub tips. |
-| OAuth state machine | Deferred | Relay errors stay generic by privacy design; full authorization-state surfacing needs relay-coordinator work. See gaps. |
+| OAuth state machine | Done (faithful subset) | Sender-side submitted → waiting_callback → complete/failed/cancelled with redacted codes; browser-opened instant lives in A-side logs by architecture. Durable ledger + API + dashboard card + bundle; design for full versioning in `docs/SPEC-WIRE-VERSIONING.md`. |
 | Browser/platform clipboard matrix | Partial | Paste-event path + picker fallback implemented and marked; matrix measurements need real browsers/platforms. |
 | WCAG 2.2 AA audit | Partial | Code-level requirements implemented (names, live regions, focus, motion, drag alternative); formal audit with AT sessions not run. |
 | Failure-injection suite | Partial | Offline, quota-shape, checksum-shape, lost-ACK-shape, corrupt-history, restart-during-life covered; disk-full/permission-injection not covered. |
-| Performance measurement harness | Partial | Prior baselines recorded (cold start ~693 ms, idle ~14 MB, 100 MB ~12.5 MB/s); no standing harness. |
-| User research baseline | Not started | Requires human participants by definition. |
+| Performance measurement harness | Done (code-level) | `internal/drop/throughput_bench_test.go` (1 MiB E2E, stdlib-only) with recorded baselines; no CI schedule yet. |
+| User research baseline | Not started (human-only) | Ready-to-run materials in `docs/RESEARCH-PACKET.md`. |
 | Redacted support bundle | Done | `doctor --bundle-path`, redaction tests (offline + live). |
 | Upgrade/rollback UX | Done | `transfers.json` documented forward-compatible in `docs/RELEASE.md`; active-transfer guidance unchanged. |
 

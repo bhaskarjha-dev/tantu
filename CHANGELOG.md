@@ -59,6 +59,9 @@ rollback procedures.
   compatibility and point at the Hub.
 - Pairing dialog traps Tab focus while open; cockpit file/text sends print
   the resolved destination before transmitting.
+- OAuth relay attempts recorded with target peer, origin host only, state,
+  and next action (`GET /api/relay/recent`, dashboard card, support bundle;
+  durable last 50 / 30 days; never URLs, codes, or tokens).
 
 ### Changed
 - The Hub dashboard now receives a per-response CSP nonce and uses delegated
