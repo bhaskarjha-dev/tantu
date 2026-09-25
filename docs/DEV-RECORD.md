@@ -1005,5 +1005,35 @@ behind the spec's open design decisions.
 - New tests: version emitted/legacy-decode/explicit-preserved; key
   round-trip and rejection over a live E2E pair; dashboard marker for the
   old-file explanation.
-- Full suite, vet, JS check, and cross-compile green (below). No commit or
+- Full suite, vet, JS check, and cross-compile green (below). Committed as
+  feat(wire) + docs(wire) and pushed.
+
+## Batch Z6 — open --json and relay attempt IDs (2026-09-25)
+
+Parity slice for the relay path, mirroring the send contract: every command
+with a JSON mode reports operation identity, destination, and recovery.
+
+### What changed
+
+- `relayOAuth` returns its recorded attempt ID ("" for coalesced follower
+  requests, which run no flow of their own). Relay API responses (POST open
+  and legacy JSON) carry `operation_id`, `destination`, and the ledger's
+  `next_action` additively; HTML bookmarklet responses unchanged.
+- `DelegateOpen` returns a parsed result plus typed `RelayAPIError`
+  (historical human format preserved); existing mock-server tests pass
+  unmodified in behavior.
+- `tantu open --json` with exit codes 0/1/2 (no duplicate-risk code: relay
+  performs no publication), shared `displayDestination` helper now used by
+  both send and open direct paths, and destination print on direct success.
+- Dashboard relay outcomes name the destination and link failures to Recent
+  Authorizations with the recorded ID and next action.
+
+### Validation
+
+- New tests: relay error/result parsing, failure-JSON mapping, destination
+  helper, relay response contract (ID matches the ledger entry).
+- Live smoke (real Hub binary, artifacts removed): delegated `open --json`
+  failure returns operation ID + destination + next action with exit 1;
+  missing-URL validation exits 2.
+- Full suite, vet, JS check, cross-compile green (below). No commit or
   push yet.

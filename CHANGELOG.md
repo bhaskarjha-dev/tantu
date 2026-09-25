@@ -54,6 +54,10 @@ rollback procedures.
 - `tantu transfer clear --yes` and a dashboard Clear button delete
   sender-side transfer metadata (received files untouched) via an
   authenticated API or, when the Hub is stopped, the saved file directly.
+- `tantu open --json` machine-readable contract (operation ID, destination;
+  never the URL) with exit codes 0/1/2; relay API responses now carry the
+  recorded attempt ID, destination, and next action, and the dashboard names
+  the destination in relay outcomes.
 - `tantu status` ends with one recommended next action; standalone
   `serve`/`node`/`relay`/`drop` surfaces label themselves advanced or
   compatibility and point at the Hub.

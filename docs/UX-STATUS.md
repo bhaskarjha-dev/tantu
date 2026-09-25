@@ -40,7 +40,7 @@ E5 cross-platform/accessibility/failure evidence.
 | Transfer history and bounded persistence | Done | `transfers.json`, 50/30-day bounds, atomic writes, offline CLI fallback, explicit deletion (`transfer clear`, dashboard Clear). |
 | Completion tombstone/idempotency | Partial (phase 1) | Wire fields emitted (`v: 1`, validated `idempotency_key` end to end); tombstone + retry UX pending the open design decisions in `docs/SPEC-WIRE-VERSIONING.md`. Mitigation stands: duplicate-risk state + refused blind retry. |
 | Retry/resume actions | Partial | Retry-as-new-transfer is always available (`send` again); in-place retry refused by design. Same-DropID resume stays library-only. |
-| CLI/dashboard state parity | Done | Shared taxonomy (`hub.ClassifyTransferError`), shared destination language, `send --json`. |
+| CLI/dashboard state parity | Done | Shared taxonomy (`hub.ClassifyTransferError`), shared destination language, `send --json` and `open --json` with matching exit-code discipline. |
 | Standalone migration/deprecation labels | Done | `serve`/`node` print Hub pointers; usage labels advanced/compatibility; `drop`/`relay` already carried Hub tips. |
 | OAuth state machine | Done (faithful subset) | Sender-side submitted → waiting_callback → complete/failed/cancelled with redacted codes; browser-opened instant lives in A-side logs by architecture. Durable ledger + API + dashboard card + bundle; design for full versioning in `docs/SPEC-WIRE-VERSIONING.md`. |
 | Browser/platform clipboard matrix | Partial | Paste-event path + picker fallback implemented and marked; matrix measurements need real browsers/platforms. |
