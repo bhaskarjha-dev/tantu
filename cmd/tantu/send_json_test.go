@@ -82,3 +82,12 @@ func TestSendFailureJSON_PreservesContract(t *testing.T) {
 		t.Errorf("generic error wrong: %+v", plain)
 	}
 }
+
+func TestSendIdempotencyKey(t *testing.T) {
+	if got := sendIdempotencyKey("drop-1", ""); got != "drop-1" {
+		t.Errorf("empty flag must fall back to DropID, got %q", got)
+	}
+	if got := sendIdempotencyKey("drop-1", "op-retry-7"); got != "op-retry-7" {
+		t.Errorf("explicit flag must win, got %q", got)
+	}
+}

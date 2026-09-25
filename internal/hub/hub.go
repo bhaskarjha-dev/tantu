@@ -1526,6 +1526,7 @@ func (h *Hub) Start(parent context.Context) (err error) {
 			MaxSize:     drop.DefaultMaxDropSize,
 			MaxTextSize: drop.DefaultMaxTextSize,
 			Quota:       drop.DefaultTransferQuota(),
+			Tombstones:  drop.NewTombstones(filepath.Join(storeDir, drop.TombstoneFilename)),
 			TouchActivity: func(meta drop.DropSend) error {
 				dropMu.Lock()
 				owner := attemptOwners[meta.DropID]
@@ -1766,6 +1767,12 @@ func (h *Hub) Start(parent context.Context) (err error) {
 			},
 		},
 		OnDropReceived: func(res *drop.ReceiveDropResult) {
+			if res.Duplicate {
+				// A re-acknowledged retry: no staging ran, nothing published,
+				// and no inbox item is created. A debug trace keeps the
+				// suppression observable without notifying as new content.
+				h.logger.Debug(DomainDrop, fmt.Sprintf("Duplicate delivery suppressed (idempotency key %q)", res.Meta.IdempotencyKey))
+			}
 			dropMu.Lock()
 			if attemptOwners[res.Meta.DropID] != res.Meta.AttemptID {
 				dropMu.Unlock()

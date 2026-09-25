@@ -63,6 +63,15 @@ func emitSendJSON(res sendJSONResult, exitCode int) {
 	os.Exit(exitCode)
 }
 
+// sendIdempotencyKey prefers an explicit caller key (validated before
+// payload handling), falling back to the per-attempt DropID.
+func sendIdempotencyKey(dropID, sendKey string) string {
+	if sendKey != "" {
+		return sendKey
+	}
+	return dropID
+}
+
 // sendExitForHubError maps a delegation failure to an exit code using the
 // Hub's structured contract when available.
 func sendExitForHubError(err error) int {
@@ -115,6 +124,7 @@ func runSend(args []string) {
 	verbose := fs.Bool("v", false, "Enable verbose output")
 	nameFlag := fs.String("name", "", "Override filename or text label")
 	jsonOut := fs.Bool("json", false, "Print machine-readable JSON result (never includes payload content)")
+	keyFlag := fs.String("idempotency-key", "", "Caller-supplied idempotency key for duplicate-safe retry (1-128 identifier chars); default: per-attempt ID")
 	_ = fs.Parse(args)
 
 	transportExplicit := false
@@ -131,6 +141,15 @@ func runSend(args []string) {
 		}
 		fmt.Fprintln(os.Stderr, "Error: missing content or file to send")
 		fmt.Fprintln(os.Stderr, "Usage: tantu send [flags] <text|file|->")
+		os.Exit(sendExitUsage)
+	}
+
+	sendKey := strings.TrimSpace(*keyFlag)
+	if sendKey != "" && !drop.ValidTombstoneKey(sendKey) {
+		if *jsonOut {
+			emitSendJSON(sendJSONResult{Status: "error", Code: "invalid_input", Message: "invalid idempotency key", NextAction: "Use 1-128 identifier characters (letters, digits, -, _, .) or omit it."}, sendExitUsage)
+		}
+		fmt.Fprintln(os.Stderr, "Error: invalid idempotency key (use 1-128 identifier characters or omit it)")
 		os.Exit(sendExitUsage)
 	}
 
@@ -170,9 +189,9 @@ func runSend(args []string) {
 			Name:   label,
 			Size:   int64(len(data)),
 		}
-		// One-shot CLI sends are their own logical operation: the wire
-		// attempt ID doubles as the idempotency key.
-		meta.IdempotencyKey = meta.DropID
+		// Without --idempotency-key, one-shot CLI sends are their own logical
+		// operation: the wire attempt ID doubles as the idempotency key.
+		meta.IdempotencyKey = sendIdempotencyKey(meta.DropID, sendKey)
 		textContent = string(data)
 		payload = bytes.NewReader(data)
 	} else {
@@ -232,9 +251,9 @@ func runSend(args []string) {
 				Size:     size,
 				MIMEType: mimeType,
 			}
-			// One-shot CLI sends are their own logical operation: the wire
-			// attempt ID doubles as the idempotency key.
-			meta.IdempotencyKey = meta.DropID
+			// Without --idempotency-key, one-shot CLI sends are their own logical
+			// operation: the wire attempt ID doubles as the idempotency key.
+			meta.IdempotencyKey = sendIdempotencyKey(meta.DropID, sendKey)
 			payload = f
 		} else {
 			// Text mode. Command-line text shares the 10MB text-drop limit
@@ -264,9 +283,9 @@ func runSend(args []string) {
 				Name:   *nameFlag,
 				Size:   int64(len(text)),
 			}
-			// One-shot CLI sends are their own logical operation: the wire
-			// attempt ID doubles as the idempotency key.
-			meta.IdempotencyKey = meta.DropID
+			// Without --idempotency-key, one-shot CLI sends are their own logical
+			// operation: the wire attempt ID doubles as the idempotency key.
+			meta.IdempotencyKey = sendIdempotencyKey(meta.DropID, sendKey)
 			textContent = text
 			payload = strings.NewReader(text)
 		}
@@ -296,7 +315,7 @@ func runSend(args []string) {
 			} else if *verbose {
 				fmt.Printf("Delegating text transfer to local Hub...\n")
 			}
-			delegRes, err := delegateSendWithNameFromStore(*storeDir, delegateAddr, delegatedFilePath, textContent, meta.Name, *peerAddr, *timeout)
+			delegRes, err := delegateSendWithNameFromStore(*storeDir, delegateAddr, delegatedFilePath, textContent, meta.Name, *peerAddr, *timeout, sendKey)
 			if err != nil {
 				if *jsonOut {
 					res := sendFailureJSON(err)

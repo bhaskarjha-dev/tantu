@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -137,6 +138,11 @@ func runReceive(args []string) {
 	}
 	defer listener.Close()
 	receiveQuota := drop.DefaultTransferQuota()
+	tombstoneDir := *outputDir
+	if tombstoneDir == "" {
+		tombstoneDir = "."
+	}
+	receiveTombstones := drop.NewTombstones(filepath.Join(tombstoneDir, drop.StagingDirName, drop.TombstoneFilename))
 
 	fmt.Fprintf(os.Stderr, "Listening for drops on %s (transport: %s)...\n", listener.Addr().String(), *transportType)
 	if removed, _ := drop.SweepStalePartials(*outputDir, drop.DefaultStagingMaxAge); removed > 0 && *verbose {
@@ -184,6 +190,7 @@ func runReceive(args []string) {
 				MaxSize:     drop.DefaultMaxDropSize,
 				MaxTextSize: standaloneTextDropLimit,
 				Quota:       receiveQuota,
+				Tombstones:  receiveTombstones,
 				TouchActivity: func(drop.DropSend) error {
 					if partPath == "" {
 						return nil
@@ -210,6 +217,11 @@ func runReceive(args []string) {
 					return stdoutTextWriter(), nil
 				},
 				BeforeComplete: func(res *drop.ReceiveDropResult) error {
+					if res.Duplicate {
+						// Re-acknowledged retry: staging never ran, so there
+						// is nothing to publish.
+						return nil
+					}
 					if res.Meta.Kind != drop.DropKindFile {
 						return nil
 					}
@@ -247,7 +259,9 @@ func runReceive(args []string) {
 				return err
 			}
 
-			if result.Meta.Kind == drop.DropKindFile {
+			if result.Duplicate {
+				fmt.Fprintf(os.Stderr, "Duplicate delivery suppressed, no new file (idempotency key %q)\n", result.Meta.IdempotencyKey)
+			} else if result.Meta.Kind == drop.DropKindFile {
 				fmt.Fprintf(os.Stderr, "📥 Received file %q (%s) → %s\n", result.Meta.Name, formatSize(result.BytesWritten), targetPath)
 			} else {
 				fmt.Fprintf(os.Stderr, "📥 Received text (%d bytes)\n", result.BytesWritten)

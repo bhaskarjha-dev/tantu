@@ -553,6 +553,7 @@ func runDrop(args []string) {
 	if removed, freed := drop.EnforcePartialBudget(outDir, drop.DefaultRetainedPartialBudget); removed > 0 && *verbose {
 		fmt.Printf("Trimmed %d retained partial file(s) to the disk budget (%s reclaimed)\n", removed, formatBytes(freed))
 	}
+	dropTombstones := drop.NewTombstones(filepath.Join(outDir, drop.StagingDirName, drop.TombstoneFilename))
 
 	var lanStore *pairing.PeerStore
 	switch *transportType {
@@ -765,6 +766,7 @@ func runDrop(args []string) {
 							MaxSize:     drop.DefaultMaxDropSize,
 							MaxTextSize: standaloneTextDropLimit,
 							Quota:       receiveQuota,
+							Tombstones:  dropTombstones,
 							TouchActivity: func(meta drop.DropSend) error {
 								dropMu.Lock()
 								partPath := activeParts[meta.DropID]
@@ -804,6 +806,11 @@ func runDrop(args []string) {
 								return &textBuf, nil
 							},
 							BeforeComplete: func(res *drop.ReceiveDropResult) error {
+								if res.Duplicate {
+									// Re-acknowledged retry: staging never ran, so
+									// there is nothing to publish.
+									return nil
+								}
 								if res.Meta.Kind != drop.DropKindFile {
 									return nil
 								}
@@ -857,6 +864,15 @@ func runDrop(args []string) {
 						}
 
 						dropID := res.Meta.DropID
+						if res.Duplicate {
+							// Re-acknowledged retry: no new content arrived, so
+							// no history item is created. The sender holds the
+							// operation record.
+							if *verbose {
+								fmt.Fprintf(os.Stderr, "Duplicate delivery suppressed (idempotency key %q)\n", res.Meta.IdempotencyKey)
+							}
+							return
+						}
 						if dropID == "" {
 							dropID = fmt.Sprintf("d-%d", time.Now().UnixNano())
 						}

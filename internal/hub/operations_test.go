@@ -12,6 +12,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bhaskarjha-dev/tantu/internal/drop"
+	"github.com/bhaskarjha-dev/tantu/internal/transport"
 )
 
 var (
@@ -220,6 +223,108 @@ func TestClassifyTransferError_DropDataIsInterrupted(t *testing.T) {
 	}
 	if !retrySafe || duplicateRisk {
 		t.Errorf("drop_data flags wrong: retry=%v dup=%v", retrySafe, duplicateRisk)
+	}
+}
+
+func TestWebDashboard_UploadClientKeyContract(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+
+	// A caller-supplied key is accepted and recorded.
+	body, _ := json.Marshal(map[string]string{"text": "keyed", "idempotency_key": "op-client-1"})
+	resp, err := testPost(h.ipcToken, "http://"+h.WebAddr()+"/api/drop/upload", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("keyed upload status = %d, want 200", resp.StatusCode)
+	}
+
+	// An invalid key fails fast with invalid_input and no ledger entry.
+	bad, _ := json.Marshal(map[string]string{"text": "keyed", "idempotency_key": "../evil"})
+	badResp, err := testPost(h.ipcToken, "http://"+h.WebAddr()+"/api/drop/upload", "application/json", bytes.NewReader(bad))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer badResp.Body.Close()
+	if badResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad-key status = %d, want 400", badResp.StatusCode)
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(badResp.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["code"] != "invalid_input" {
+		t.Errorf("bad-key code = %v", payload["code"])
+	}
+	if _, ok := payload["operation_id"]; ok {
+		t.Error("validation failures must not mint operation IDs")
+	}
+
+	opsResp, err := testGet(h.ipcToken, "http://"+h.WebAddr()+"/api/transfers/recent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opsResp.Body.Close()
+	var ops []OperationRecord
+	if err := json.NewDecoder(opsResp.Body).Decode(&ops); err != nil {
+		t.Fatal(err)
+	}
+	if len(ops) != 1 {
+		t.Fatalf("ledger length = %d, want exactly the 1 accepted upload", len(ops))
+	}
+}
+
+func TestHub_SameKeyRedeliveryPublishesOnce(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+
+	content := []byte("same-key redelivery must publish exactly once")
+	send := func(t *testing.T, dropID string) {
+		t.Helper()
+		tr := transport.NewLoopbackTransport()
+		conn, err := tr.Dial(h.P2PAddr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		meta := drop.DropSend{
+			DropID:         dropID,
+			IdempotencyKey: "op-hub-e2e-1",
+			Kind:           drop.DropKindFile,
+			Name:           "redeliver.txt",
+			Size:           int64(len(content)),
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := drop.SendDrop(ctx, conn, meta, bytes.NewReader(content), drop.SendDropConfig{}); err != nil {
+			t.Fatalf("send %s failed: %v", dropID, err)
+		}
+	}
+	send(t, "hub-redeliver-1")
+	send(t, "hub-redeliver-2")
+
+	entries, err := os.ReadDir(h.OutputDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	published := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), "redeliver") {
+			continue
+		}
+		published++
+		got, err := os.ReadFile(filepath.Join(h.OutputDir(), e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, content) {
+			t.Fatalf("published content mismatch in %s", e.Name())
+		}
+	}
+	if published != 1 {
+		t.Fatalf("published %d files, want exactly 1", published)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -173,6 +174,11 @@ func runNode(args []string) {
 	reservedDrops := make(map[string]struct{})
 	attemptOwners := make(map[string]string)
 	activityReleases := make(map[string]func())
+	nodeOutDir := *outputDir
+	if nodeOutDir == "" {
+		nodeOutDir = "."
+	}
+	nodeTombstones := drop.NewTombstones(filepath.Join(nodeOutDir, drop.StagingDirName, drop.TombstoneFilename))
 
 	var nodeLogger *log.Logger
 	if *verbose {
@@ -190,6 +196,7 @@ func runNode(args []string) {
 			MaxSize:     drop.DefaultMaxDropSize,
 			MaxTextSize: standaloneTextDropLimit,
 			Quota:       drop.DefaultTransferQuota(),
+			Tombstones:  nodeTombstones,
 			TouchActivity: func(meta drop.DropSend) error {
 				fileMu.Lock()
 				owner := attemptOwners[meta.DropID]
@@ -255,6 +262,11 @@ func runNode(args []string) {
 				return stdoutTextWriter(), nil
 			},
 			BeforeComplete: func(res *drop.ReceiveDropResult) error {
+				if res.Duplicate {
+					// Re-acknowledged retry: staging never ran, so there is
+					// nothing to publish.
+					return nil
+				}
 				if res.Meta.Kind != drop.DropKindFile {
 					return nil
 				}
@@ -282,6 +294,10 @@ func runNode(args []string) {
 			},
 		},
 		OnDropReceived: func(res *drop.ReceiveDropResult) {
+			if res.Duplicate {
+				fmt.Fprintf(os.Stderr, "Duplicate delivery suppressed, no new file (idempotency key %q)\n", res.Meta.IdempotencyKey)
+				return
+			}
 			fileMu.Lock()
 			owned := attemptOwners[res.Meta.DropID] == res.Meta.AttemptID
 			fileMu.Unlock()

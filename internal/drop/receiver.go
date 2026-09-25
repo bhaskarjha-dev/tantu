@@ -33,11 +33,18 @@ type ReceiveDropConfig struct {
 	Quota *TransferQuota
 	// TouchActivity optionally refreshes a receiver's cross-process staging
 	// activity marker while data is arriving. It is called with the validated
-	// drop metadata before each non-empty data chunk is written.
+	// drop metadata before each non-empty data chunk is written. It is not
+	// called for duplicate re-acknowledgements, which stage nothing.
 	TouchActivity  func(DropSend) error
 	ReceivedBytes  int64                                  // Initial existing bytes for resumption (default 0)
 	OnMeta         func(meta DropSend) (io.Writer, error) // Optional: if set and w is nil, called to obtain writer
 	BeforeComplete func(*ReceiveDropResult) error         // Optional finalization hook run before success is acknowledged
+	// Tombstones optionally suppresses duplicate publication: when the
+	// incoming idempotency key matches a recorded completion with identical
+	// metadata, the payload still streams (into a discard sink, SHA-verified)
+	// but OnMeta and BeforeComplete are skipped and the result reports
+	// Duplicate. Nil preserves the legacy always-publish behavior.
+	Tombstones *Tombstones
 	// AttemptID is local correlation state for callbacks. It is never sent on
 	// the wire; the dispatcher supplies one value per receive attempt.
 	AttemptID string
@@ -86,6 +93,7 @@ type ReceiveDropResult struct {
 	Meta            DropSend // The metadata from the sender
 	BytesWritten    int64    // Total bytes written to the output
 	SHA256          string   // Verified SHA-256 hex digest
+	Duplicate       bool     // True when the bytes matched a completion tombstone: nothing was staged or published
 	PeerFingerprint string   // Verified cryptographic fingerprint of peer (if mTLS)
 	PeerAddress     string   // Remote network address of the sender
 }
@@ -121,16 +129,10 @@ func validateDropMetadata(meta DropSend) error {
 	}
 	// The idempotency key rides the same staging-path-adjacent trust as the
 	// DropID (it will key future tombstones), so it earns the same alphabet
-	// and length discipline. Receivers validate only; no duplicate
-	// suppression happens yet.
-	if len(meta.IdempotencyKey) > MaxDropIDLength {
-		return fmt.Errorf("idempotency_key exceeds %d bytes", MaxDropIDLength)
-	}
-	for _, r := range meta.IdempotencyKey {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
-			continue
-		}
-		return errors.New("idempotency_key contains an invalid character")
+	// and length discipline. Receivers validate only; duplicate suppression
+	// is handled by the tombstone store.
+	if meta.IdempotencyKey != "" && !ValidTombstoneKey(meta.IdempotencyKey) {
+		return errors.New("idempotency_key is invalid: use 1-128 identifier characters (letters, digits, -, _, .)")
 	}
 	if meta.Kind != DropKindText && meta.Kind != DropKindFile {
 		return fmt.Errorf("unsupported drop kind %q", meta.Kind)
@@ -260,6 +262,23 @@ func ReceiveDrop(ctx context.Context, conn transport.Conn, w io.Writer, cfg Rece
 		return nil, errors.New(errMsg)
 	}
 
+	// 2b. Completion tombstone: a known key with identical metadata means
+	// this exact transfer already published. Mismatched metadata under a
+	// known key fails closed before any quota or staging is consumed.
+	var tombstone TombstoneEntry
+	duplicate := false
+	if cfg.Tombstones != nil && meta.IdempotencyKey != "" {
+		if entry, ok := cfg.Tombstones.Lookup(meta.IdempotencyKey); ok {
+			if !entry.Matches(meta) {
+				errMsg := "idempotency key reuse with different transfer metadata"
+				_ = conn.Send(TypeDropAck, DropAck{DropID: meta.DropID, Error: errMsg})
+				return nil, errors.New(errMsg)
+			}
+			duplicate = true
+			tombstone = entry
+		}
+	}
+
 	// Reserve receiver capacity only after the complete metadata has passed
 	// validation. The reservation covers the whole receive attempt and is
 	// released on every return path, including quota rejection and context
@@ -285,7 +304,12 @@ func ReceiveDrop(ctx context.Context, conn transport.Conn, w io.Writer, cfg Rece
 
 	// 3. Resolve destination writer
 	dest := w
-	if dest == nil && cfg.OnMeta != nil {
+	if duplicate {
+		// The sender transmits regardless, so the bytes still stream — but
+		// into a discard sink. Nothing is staged, published, or retained;
+		// the final SHA-256 must match the recorded digest.
+		dest = io.Discard
+	} else if dest == nil && cfg.OnMeta != nil {
 		var err error
 		dest, err = cfg.OnMeta(meta)
 		if err != nil {
@@ -319,6 +343,11 @@ func ReceiveDrop(ctx context.Context, conn transport.Conn, w io.Writer, cfg Rece
 		errMsg := "invalid existing byte count for resumption"
 		_ = conn.Send(TypeDropAck, DropAck{DropID: meta.DropID, Error: errMsg})
 		return nil, errors.New(errMsg)
+	}
+	if duplicate {
+		// Duplicates always replay from the start against the recorded
+		// digest; resuming a discarded stream is meaningless.
+		cfg.ReceivedBytes = 0
 	}
 
 	// 4. Send TypeDropAck accepted
@@ -481,7 +510,7 @@ func ReceiveDrop(ctx context.Context, conn transport.Conn, w io.Writer, cfg Rece
 		}
 
 		if len(chunk.Data) > 0 {
-			if cfg.TouchActivity != nil {
+			if !duplicate && cfg.TouchActivity != nil {
 				if err := cfg.TouchActivity(meta); err != nil {
 					_ = conn.Send(TypeDropComplete, DropComplete{
 						DropID:    meta.DropID,
@@ -560,6 +589,11 @@ func ReceiveDrop(ctx context.Context, conn transport.Conn, w io.Writer, cfg Rece
 				})
 				return nil, errors.New(errMsg)
 			}
+			if duplicate && !strings.EqualFold(computedSHA, tombstone.SHA256) {
+				errMsg := "content does not match the recorded completion for this idempotency key"
+				_ = conn.Send(TypeDropComplete, DropComplete{DropID: meta.DropID, Error: errMsg})
+				return nil, errors.New(errMsg)
+			}
 			break
 		}
 	}
@@ -574,10 +608,11 @@ func ReceiveDrop(ctx context.Context, conn transport.Conn, w io.Writer, cfg Rece
 		Meta:            meta,
 		BytesWritten:    totalBytes,
 		SHA256:          computedSHA,
+		Duplicate:       duplicate,
 		PeerFingerprint: peerFP,
 		PeerAddress:     peerAddr,
 	}
-	if cfg.BeforeComplete != nil {
+	if !duplicate && cfg.BeforeComplete != nil {
 		if err := cfg.BeforeComplete(result); err != nil {
 			_ = conn.Send(TypeDropComplete, DropComplete{
 				DropID:    meta.DropID,
@@ -588,6 +623,19 @@ func ReceiveDrop(ctx context.Context, conn transport.Conn, w io.Writer, cfg Rece
 			})
 			return nil, err
 		}
+	}
+
+	if !duplicate && cfg.Tombstones != nil && meta.IdempotencyKey != "" {
+		recordChunk := meta.ChunkSize
+		if recordChunk <= 0 {
+			recordChunk = DefaultChunkSize
+		}
+		cfg.Tombstones.Record(TombstoneEntry{
+			Key: meta.IdempotencyKey, DropID: meta.DropID, Kind: meta.Kind,
+			Name: meta.Name, Size: meta.Size, MIMEType: meta.MIMEType,
+			ChunkSize: recordChunk, HeadHash: meta.HeadHash,
+			SHA256: computedSHA, Bytes: totalBytes,
+		})
 	}
 
 	// 6. Send TypeDropComplete

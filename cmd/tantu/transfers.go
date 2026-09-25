@@ -189,8 +189,9 @@ func runTransfer(args []string) {
 		return
 	}
 	if rest[0] == "retry" {
-		fmt.Fprintln(os.Stderr, "Error: `tantu transfer retry` is not offered because retry after an unknown outcome may create a duplicate.")
-		fmt.Fprintln(os.Stderr, "Check `tantu transfers` for duplicate-risk flags and the receiver inbox first; then send again as a new transfer.")
+		fmt.Fprintln(os.Stderr, "Error: `tantu transfer retry` is not offered because the Hub keeps no payload to resend, and retry after an unknown outcome may create a duplicate.")
+		fmt.Fprintln(os.Stderr, "For a duplicate-safe retry, re-run the original send with the same --idempotency-key: the receiver re-acknowledges instead of publishing twice.")
+		fmt.Fprintln(os.Stderr, "Otherwise check `tantu transfers` for duplicate-risk flags and the receiver inbox first; then send again as a new transfer.")
 		os.Exit(1)
 		return
 	}

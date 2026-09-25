@@ -2989,9 +2989,10 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			}
 			defer releaseSlot(h.textSlots)
 			var textReq struct {
-				Text string `json:"text"`
-				Name string `json:"name"`
-				Peer string `json:"peer"`
+				Text           string `json:"text"`
+				Name           string `json:"name"`
+				Peer           string `json:"peer"`
+				IdempotencyKey string `json:"idempotency_key"`
 			}
 			r.Body = http.MaxBytesReader(w, r.Body, 11*1024*1024)
 			if err := json.NewDecoder(r.Body).Decode(&textReq); err != nil {
@@ -3004,6 +3005,10 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			}
 			if int64(len(textReq.Text)) > drop.DefaultMaxTextSize {
 				writeTransferError(w, http.StatusRequestEntityTooLarge, "text payload exceeds 10 MiB limit", "limit_exceeded", "Text exceeds the 10 MiB limit. Nothing was sent.", "text payload exceeds 10 MiB limit", false, false, true, "Send it as a file instead.", "", "", "", "")
+				return
+			}
+			if textReq.IdempotencyKey != "" && !drop.ValidTombstoneKey(textReq.IdempotencyKey) {
+				writeTransferError(w, http.StatusBadRequest, "invalid idempotency key", "invalid_input", "The idempotency key was not a valid identifier. Nothing was sent.", "invalid idempotency key", false, false, true, "Use 1-128 identifier characters (letters, digits, -, _, .) or omit it.", "", "", "", "")
 				return
 			}
 
@@ -3024,9 +3029,15 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			}
 			defer conn.Close()
 
+			// A caller-supplied key makes retried sends duplicate-safe; it was
+			// validated above. Otherwise the operation ID is the key.
+			wireKey := opID
+			if textReq.IdempotencyKey != "" {
+				wireKey = textReq.IdempotencyKey
+			}
 			meta := drop.DropSend{
 				DropID:         dropID,
-				IdempotencyKey: opID,
+				IdempotencyKey: wireKey,
 				Kind:           drop.DropKindText,
 				Name:           textReq.Name,
 				Size:           int64(len(textReq.Text)),
@@ -3090,6 +3101,11 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 		defer file.Close()
 
 		targetPeer := r.FormValue("peer")
+		formKey := strings.TrimSpace(r.FormValue("idempotency_key"))
+		if formKey != "" && !drop.ValidTombstoneKey(formKey) {
+			writeTransferError(w, http.StatusBadRequest, "invalid idempotency key", "invalid_input", "The idempotency key was not a valid identifier. Nothing was sent.", "invalid idempotency key", false, false, true, "Use 1-128 identifier characters (letters, digits, -, _, .) or omit it.", "", "", "", "")
+			return
+		}
 		opID := newOperationID()
 		dropID := newOutboundDropID()
 		opCreated := time.Now()
@@ -3109,9 +3125,13 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 
 		fileName := filepath.Base(header.Filename)
 		mimeType := mime.TypeByExtension(filepath.Ext(fileName))
+		wireKey := opID
+		if formKey != "" {
+			wireKey = formKey
+		}
 		meta := drop.DropSend{
 			DropID:         dropID,
-			IdempotencyKey: opID,
+			IdempotencyKey: wireKey,
 			Kind:           drop.DropKindFile,
 			Name:           fileName,
 			Size:           header.Size,

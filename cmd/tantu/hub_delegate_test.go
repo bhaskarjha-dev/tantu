@@ -31,7 +31,7 @@ func TestDelegateSendWithNamePreservesTextName(t *testing.T) {
 	defer server.Close()
 
 	addr := strings.TrimPrefix(server.URL, "http://")
-	if _, err := delegateSendWithName(addr, "", "hello", "custom label", "", time.Second); err != nil {
+	if _, err := delegateSendWithName(addr, "", "hello", "custom label", "", time.Second, ""); err != nil {
 		t.Fatalf("text delegation failed: %v", err)
 	}
 	if gotName != "custom label" {
@@ -63,10 +63,35 @@ func TestDelegateSendWithNamePreservesMultipartFilename(t *testing.T) {
 		t.Fatal(err)
 	}
 	addr := strings.TrimPrefix(server.URL, "http://")
-	if _, err := delegateSendWithName(addr, path, "", "renamed.txt", "", time.Second); err != nil {
+	if _, err := delegateSendWithName(addr, path, "", "renamed.txt", "", time.Second, ""); err != nil {
 		t.Fatalf("file delegation failed: %v", err)
 	}
 	if gotName != "renamed.txt" {
 		t.Fatalf("delegated filename = %q, want %q", gotName, "renamed.txt")
+	}
+}
+
+func TestDelegateSendWithNameForwardsIdempotencyKey(t *testing.T) {
+	var gotKey string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Text           string `json:"text"`
+			IdempotencyKey string `json:"idempotency_key"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		gotKey = body.IdempotencyKey
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	addr := strings.TrimPrefix(server.URL, "http://")
+	if _, err := delegateSendWithName(addr, "", "hello", "", "", time.Second, "op-retry-1"); err != nil {
+		t.Fatalf("text delegation failed: %v", err)
+	}
+	if gotKey != "op-retry-1" {
+		t.Fatalf("delegated idempotency key = %q, want %q", gotKey, "op-retry-1")
 	}
 }

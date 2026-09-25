@@ -90,11 +90,11 @@ func decodeDelegatedResult(body []byte) *delegatedSendResult {
 // carries the caller's --name through the local Hub. The Hub IPC API accepts a
 // name for JSON text drops and derives file names from the multipart filename,
 // so using this helper avoids losing an explicit label in delegation mode.
-func delegateSendWithName(webAddr, filePath, text, name, targetPeer string, timeout time.Duration) (*delegatedSendResult, error) {
-	return delegateSendWithNameFromStore("", webAddr, filePath, text, name, targetPeer, timeout)
+func delegateSendWithName(webAddr, filePath, text, name, targetPeer string, timeout time.Duration, key string) (*delegatedSendResult, error) {
+	return delegateSendWithNameFromStore("", webAddr, filePath, text, name, targetPeer, timeout, key)
 }
 
-func delegateSendWithNameFromStore(storeDir, webAddr, filePath, text, name, targetPeer string, timeout time.Duration) (*delegatedSendResult, error) {
+func delegateSendWithNameFromStore(storeDir, webAddr, filePath, text, name, targetPeer string, timeout time.Duration, key string) (*delegatedSendResult, error) {
 	if webAddr == "" {
 		webAddr = hub.DefaultWebAddr
 	}
@@ -115,7 +115,7 @@ func delegateSendWithNameFromStore(storeDir, webAddr, filePath, text, name, targ
 	defer client.CloseIdleConnections()
 
 	if filePath != "" {
-		return delegateFileWithName(client, storeDir, webAddr, filePath, name, targetPeer)
+		return delegateFileWithName(client, storeDir, webAddr, filePath, name, targetPeer, key)
 	}
 
 	bodyMap := map[string]string{"text": text}
@@ -124,6 +124,9 @@ func delegateSendWithNameFromStore(storeDir, webAddr, filePath, text, name, targ
 	}
 	if targetPeer != "" {
 		bodyMap["peer"] = targetPeer
+	}
+	if key != "" {
+		bodyMap["idempotency_key"] = key
 	}
 	body, err := json.Marshal(bodyMap)
 	if err != nil {
@@ -140,7 +143,7 @@ func delegateSendWithNameFromStore(storeDir, webAddr, filePath, text, name, targ
 	return doDelegationRequest(client, req)
 }
 
-func delegateFileWithName(client *http.Client, storeDir, webAddr, filePath, name, targetPeer string) (*delegatedSendResult, error) {
+func delegateFileWithName(client *http.Client, storeDir, webAddr, filePath, name, targetPeer, key string) (*delegatedSendResult, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("open file for delegation: %w", err)
@@ -168,6 +171,12 @@ func delegateFileWithName(client *http.Client, storeDir, webAddr, filePath, name
 
 		if targetPeer != "" {
 			if err := writer.WriteField("peer", targetPeer); err != nil {
+				pipeErr = err
+				return
+			}
+		}
+		if key != "" {
+			if err := writer.WriteField("idempotency_key", key); err != nil {
 				pipeErr = err
 				return
 			}
