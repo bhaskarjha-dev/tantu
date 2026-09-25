@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -40,7 +41,19 @@ func formatRelativeTime(t time.Time) string {
 func runStatus(args []string) {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	storeDir := fs.String("store-dir", "", "Override config directory (default: ~/.config/tantu)")
+	jsonOut := fs.Bool("json", false, "Print machine-readable JSON (same contract as `tantu doctor --json`)")
 	_ = fs.Parse(args)
+
+	if *jsonOut {
+		report := buildHealthReport(*storeDir, "")
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(report)
+		if report.Status != "healthy" {
+			os.Exit(1)
+		}
+		return
+	}
 
 	store, err := openPeerStore(*storeDir)
 	if err != nil {
@@ -63,7 +76,9 @@ func runStatus(args []string) {
 	// Hub liveness first: most user-facing state (dashboard URL, transport)
 	// lives with the running Hub, and a stale hub.json must read as
 	// "not running" rather than surfacing a dead endpoint.
+	hubRunning := false
 	if live, ok := hub.ProbeHubWithStoreDir("", *storeDir); ok {
+		hubRunning = true
 		noteHubVersionSkew(live)
 		dash := live.WebAddr
 		if dash != "" && !strings.Contains(dash, "://") {
@@ -91,6 +106,7 @@ func runStatus(args []string) {
 	peers := store.ListPeers()
 	if len(peers) == 0 {
 		fmt.Println("\nNo paired peers.")
+		fmt.Println("Next action: Run `tantu pair` to connect another machine.")
 		return
 	}
 
@@ -104,5 +120,19 @@ func runStatus(args []string) {
 		sas := pairing.SASCode(p.Fingerprint)
 		timeStr := formatRelativeTime(p.FirstSeen)
 		fmt.Printf("  %-18s  %-21s  (SAS: %s, paired %s)%s\n", pName, p.Address, sas, timeStr, marker)
+	}
+
+	// One recommended next action: the first unmet prerequisite wins so
+	// every status output ends with a concrete recovery path, never a dead end.
+	fmt.Print("\nNext action: ")
+	switch {
+	case id == nil:
+		fmt.Println("Run `tantu pair` to generate an identity and connect a machine.")
+	case len(peers) == 0:
+		fmt.Println("Run `tantu pair` to connect another machine.")
+	case !hubRunning:
+		fmt.Println("Start the Hub with `tantu` or `tantu hub`, then open the dashboard with `tantu dashboard`.")
+	default:
+		fmt.Println("Send a test file or snippet from the dashboard or with `tantu send`.")
 	}
 }

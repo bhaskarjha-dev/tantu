@@ -124,6 +124,7 @@ func RunCockpit(ctx context.Context, h *hub.Hub, cancel context.CancelFunc, init
 						continue
 					}
 
+					fmt.Printf("Destination: %s\n", cockpitDestinationName(h, targetPeer))
 					go func(path string, size int64, peer string) {
 						fmt.Printf("⏳ Streaming %s (%d bytes) to peer...\n", filepath.Base(path), size)
 						f, err := os.Open(path)
@@ -216,6 +217,34 @@ func RunCockpit(ctx context.Context, h *hub.Hub, cancel context.CancelFunc, init
 			}
 		}
 	}()
+}
+
+// cockpitDestinationName resolves a display destination for sends without
+// ever substituting a different peer silently. Empty with a single peer
+// means that peer; empty with an active peer means the active peer.
+func cockpitDestinationName(h *hub.Hub, targetPeer string) string {
+	if h == nil || h.Store() == nil {
+		if strings.TrimSpace(targetPeer) == "" {
+			return "default peer"
+		}
+		return targetPeer
+	}
+	peers := h.Store().ListPeers()
+	if strings.TrimSpace(targetPeer) != "" {
+		if rp, err := h.Store().ResolvePeer(targetPeer); err == nil && rp != nil {
+			return rp.DisplayName()
+		}
+		return targetPeer
+	}
+	if len(peers) == 1 {
+		return peers[0].DisplayName()
+	}
+	if activeFP := h.GetActivePeer(); activeFP != "" {
+		if ap, err := h.Store().ResolvePeer(activeFP); err == nil && ap != nil {
+			return ap.DisplayName()
+		}
+	}
+	return "default peer"
 }
 
 // parsePeerSelection maps a cockpit peer-prompt answer to a peer fingerprint.
@@ -323,6 +352,7 @@ func promptSendText(ctx context.Context, scanner *bufio.Scanner, h *hub.Hub, tar
 		return
 	}
 	content := strings.Join(lines, "\n")
+	fmt.Printf("Destination: %s\n", cockpitDestinationName(h, targetPeer))
 	go func(snippet string, peer string) {
 		preview := snippet
 		if len(preview) > 40 {

@@ -175,18 +175,21 @@ Usage:
 
 Commands:
   hub           Start the Unified Symmetric Hub (default when run with no arguments)
-  node          Start unified peer node (OAuth + QuickDrop listener simultaneously)
-  serve         Start the A-side bridge listener (on the machine with the browser)
+  node          Start unified peer node - advanced (Hub preferred)
+  serve         Start the A-side bridge listener - advanced (Hub preferred)
   open <url>    Send an OAuth authorization URL through the bridge (on the remote/app machine)
-  relay         Start a local HTTP server for one-click bookmarklet and Web UI relay
+  relay         Start a local HTTP server for one-click bookmarklet and Web UI relay - compatibility (Hub preferred)
   dashboard     Open an authenticated dashboard for a running Hub
   wrap          Execute a command with BROWSER set to tantu
   pair          Pair with a remote machine for direct LAN transport (mTLS)
   unpair        Remove a paired peer from the trusted peer store
   status        Show Hub, identity, and paired-peer diagnostics
+  doctor        Diagnose setup and show the safe next action
+  transfer      List sender-side transfer operations (transfer list)
+  transfers     List sender-side transfer operations (alias)
   send          Send text, images, or files to a paired machine (QuickDrop)
   receive       Receive text, images, or files from a paired machine (QuickDrop)
-  drop          Start a local Web UI for drag-and-drop file sharing (QuickDrop)
+  drop          Start a local Web UI for drag-and-drop file sharing (QuickDrop) - compatibility (Hub preferred)
   version       Print tantu version
 
 Flags:
@@ -233,6 +236,12 @@ func main() {
 		runUnpair(subArgs)
 	case "status":
 		runStatus(subArgs)
+	case "doctor":
+		runDoctor(subArgs)
+	case "transfer":
+		runTransfer(subArgs)
+	case "transfers":
+		runTransfers(subArgs)
 	case "send":
 		runSend(subArgs)
 	case "receive":

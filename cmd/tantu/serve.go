@@ -138,6 +138,7 @@ func runServe(args []string) {
 	defer listener.Close()
 
 	fmt.Printf("Listening on %s (transport: %s, timeout: %v)...\n", listener.Addr().String(), *transportType, *timeout)
+	fmt.Println("Note: advanced standalone listener. For the dashboard, history, and doctor, run `tantu` (or `tantu hub`) instead.")
 	if *verbose {
 		fmt.Printf("Verbose output enabled. A-side bridge listener active on %s\n", listener.Addr().String())
 	}

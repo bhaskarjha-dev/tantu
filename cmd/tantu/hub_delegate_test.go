@@ -31,7 +31,7 @@ func TestDelegateSendWithNamePreservesTextName(t *testing.T) {
 	defer server.Close()
 
 	addr := strings.TrimPrefix(server.URL, "http://")
-	if err := delegateSendWithName(addr, "", "hello", "custom label", "", time.Second); err != nil {
+	if _, err := delegateSendWithName(addr, "", "hello", "custom label", "", time.Second); err != nil {
 		t.Fatalf("text delegation failed: %v", err)
 	}
 	if gotName != "custom label" {
@@ -63,7 +63,7 @@ func TestDelegateSendWithNamePreservesMultipartFilename(t *testing.T) {
 		t.Fatal(err)
 	}
 	addr := strings.TrimPrefix(server.URL, "http://")
-	if err := delegateSendWithName(addr, path, "", "renamed.txt", "", time.Second); err != nil {
+	if _, err := delegateSendWithName(addr, path, "", "renamed.txt", "", time.Second); err != nil {
 		t.Fatalf("file delegation failed: %v", err)
 	}
 	if gotName != "renamed.txt" {
