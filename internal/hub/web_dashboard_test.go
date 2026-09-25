@@ -1476,7 +1476,6 @@ func TestWebDashboard_UploadProgressAndPeerRenderMarkers(t *testing.T) {
 		"addEventListener('paste'",
 		"TextEncoder",
 		"maxTextBytes",
-		"zone.focus",
 		"received-item-preview",
 		"mode=inline",
 		"mode=download",
@@ -1492,9 +1491,43 @@ func TestWebDashboard_UploadProgressAndPeerRenderMarkers(t *testing.T) {
 		`aria-label="OAuth authorization URL"`,
 		`aria-label="Search live logs"`,
 		`for="pairRemoteAddrInput"`,
+		"stageFileForSend",
+		"confirmPendingSend",
+		"cancelPendingSend",
+		"filePreviewCard",
+		"btnConfirmSend",
+		"btnCancelPreview",
+		"expertImmediateSend",
+		"destinationSummary",
+		"nextActionBanner",
+		"tab-btn-transfers",
+		"tab-transfers",
+		"loadTransfers",
+		"transfersList",
+		"/api/transfers/recent",
+		"prefers-reduced-motion",
+		"scroll-margin-top",
+		" · Trusted",
+		"Destination: ",
+		"querySelectorAll('button, input')",
+		"clear-transfers",
+		"clearTransfers",
 	} {
 		if !strings.Contains(content, s) {
 			t.Errorf("dashboard HTML missing %q (upload-progress / focus-preservation UX)", s)
+		}
+	}
+	// Clipboard and file inputs must stage for confirmation, never auto-send.
+	// The old trusted-but-vague peer label and generic success text are gone.
+	for _, s := range []string{
+		"uploadFile(image)",
+		"uploadFile(e.dataTransfer.files[0])",
+		"uploadFile(fileInput.files[0])",
+		"[Paired · ready]",
+		"File transferred successfully to peer!",
+	} {
+		if strings.Contains(content, s) {
+			t.Errorf("dashboard HTML still contains unsafe/auto-send pattern %q", s)
 		}
 	}
 	// The old faked progress must be gone: no hard-coded staged percentages.

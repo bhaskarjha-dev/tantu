@@ -455,6 +455,48 @@ const dashboardHTML = `<!DOCTYPE html>
   .status-banner.success { display: block; background: var(--success-bg); border: 1px solid var(--success); color: #34d399; }
   .status-banner.error { display: block; background: var(--error-bg); border: 1px solid var(--error); color: #f87171; }
   .status-banner.relaying { display: block; background: var(--warning-bg); border: 1px solid var(--warning); color: #fbbf24; }
+  [id] { scroll-margin-top: 84px; }
+  #nextActionBanner {
+    display: none;
+    background: rgba(59,130,246,0.08);
+    border: 1px solid rgba(59,130,246,0.4);
+    color: #bfdbfe;
+    border-radius: 12px;
+    padding: 0.85rem 1.25rem;
+    margin-bottom: 1.25rem;
+    font-size: 0.9rem;
+  }
+  #destinationSummary {
+    font-size: 0.85rem;
+    color: var(--text);
+    background: rgba(59,130,246,0.08);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.5rem 0.75rem;
+    margin-bottom: 0.75rem;
+  }
+  #filePreviewCard {
+    border: 1px solid var(--accent);
+    background: rgba(59,130,246,0.06);
+    border-radius: 12px;
+    padding: 1rem 1.25rem;
+    margin-top: 1rem;
+  }
+  #filePreviewCard img {
+    max-width: 100%;
+    max-height: 240px;
+    border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.08);
+    object-fit: contain;
+    display: block;
+    margin-bottom: 0.75rem;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .tab-pane.active { animation: none; }
+    .progress-fill { transition: none; }
+    .tab-btn { transition: none; }
+    .drop-zone { transition: none; }
+  }
 </style>
 </head>
 <body>
@@ -473,6 +515,7 @@ const dashboardHTML = `<!DOCTYPE html>
     <button id="tab-btn-drop" class="tab-btn active" role="tab" aria-selected="true" aria-controls="tab-drop" data-tab="tab-drop">📦 QuickDrop</button>
     <button id="tab-btn-relay" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-relay" data-tab="tab-relay">⚡ OAuth Relay</button>
     <button id="tab-btn-peers" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-peers" data-tab="tab-peers">🔗 Peers & Network</button>
+    <button id="tab-btn-transfers" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-transfers" data-tab="tab-transfers">🔄 Transfers</button>
     <button id="tab-btn-logs" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-logs" data-tab="tab-logs">📋 Live Logs</button>
   </nav>
 
@@ -481,6 +524,7 @@ const dashboardHTML = `<!DOCTYPE html>
       ⚠️ <strong>Dashboard session not established.</strong>
       <span>Actions on this page will fail until you reconnect. Reopen the dashboard from the Hub terminal (press <kbd>o</kbd>) or reload the page the Hub opened for you.</span>
     </div>
+    <div id="nextActionBanner" role="status" aria-live="polite" style="display: none;"></div>
     <!-- INBOUND PAIRING APPROVAL BANNER -->
     <div id="pendingPairingsBanner" style="display: none; margin-bottom: 1.5rem; background: rgba(245, 158, 11, 0.12); border: 1px solid #f59e0b; border-radius: 12px; padding: 1.25rem;">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
@@ -519,12 +563,26 @@ const dashboardHTML = `<!DOCTYPE html>
               <span style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">Destination:</span>
               <div id="dropPeerPills" style="display: flex; gap: 0.4rem; flex-wrap: wrap;"></div>
             </div>
+            <div id="destinationSummary" role="status" aria-live="polite">Destination: checking…</div>
             <div class="drop-zone" id="dropZone" data-action="choose-file" tabindex="0" role="button" aria-label="Choose a file to send to your peer">
               <div class="drop-zone-icon">📁</div>
               <div class="drop-zone-text">Drag & drop files here, or click to browse</div>
               <div class="drop-zone-subtext">Direct peer-to-peer streaming via mTLS • zero intermediate servers</div>
             </div>
             <input type="file" id="fileInput" aria-label="File to send to your peer" style="display: none;">
+            <div id="filePreviewCard" hidden>
+              <div class="card-title" id="filePreviewTitle">Ready to send</div>
+              <img id="filePreviewThumb" alt="">
+              <div id="filePreviewMeta" style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.75rem;"></div>
+              <div id="filePreviewDest" style="font-size: 0.85rem; margin-bottom: 0.75rem;"></div>
+              <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                <button type="button" class="btn-primary" id="btnConfirmSend" data-action="confirm-send">Send</button>
+                <button type="button" class="btn-sm" id="btnCancelPreview" data-action="cancel-preview">Cancel</button>
+              </div>
+            </div>
+            <label style="display: flex; gap: 0.5rem; align-items: center; font-size: 0.8rem; color: var(--text-muted); margin-top: 0.75rem;">
+              <input type="checkbox" id="expertImmediateSend"> Expert immediate-send (skip preview; destination stays visible)
+            </label>
             
             <div class="progress-container" id="uploadProgress">
               <div class="progress-bar" role="progressbar" aria-label="File upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progressBar">
@@ -667,6 +725,23 @@ const dashboardHTML = `<!DOCTYPE html>
       </div>
     </div>
 
+<!-- TAB: TRANSFERS (sender truth, durable) -->
+    <div id="tab-transfers" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-transfers">
+      <div class="card">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+          <div class="card-title" style="margin-bottom: 0;">🔄 Transfers</div>
+          <div style="display: flex; gap: 0.5rem;">
+            <button class="btn-sm" data-action="load-transfers">🔄 Refresh</button>
+            <button class="btn-sm" data-action="clear-transfers">🗑️ Clear</button>
+          </div>
+        </div>
+        <p class="hint-text" style="margin-top: 0; margin-bottom: 0.75rem;">Sender-side truth, kept 30 days (last 50). Received items stay under QuickDrop.</p>
+        <div id="transfersList" style="display: flex; flex-direction: column; gap: 0.75rem;">
+          <p style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 2rem 0;">No transfers yet.<br>Send text, an image, or a file from QuickDrop.</p>
+        </div>
+      </div>
+    </div>
+
     <!-- TAB 4: LIVE LOGS -->
     <div id="tab-logs" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-logs">
       <div class="card">
@@ -772,6 +847,18 @@ const dashboardHTML = `<!DOCTYPE html>
         case 'cancel-upload':
           cancelUpload();
           break;
+        case 'confirm-send':
+          confirmPendingSend();
+          break;
+        case 'cancel-preview':
+          cancelPendingSend();
+          break;
+        case 'load-transfers':
+          loadTransfers();
+          break;
+        case 'clear-transfers':
+          clearTransfers();
+          break;
         case 'send-text':
           sendTextDrop();
           break;
@@ -845,6 +932,21 @@ const dashboardHTML = `<!DOCTYPE html>
       if (event.key === 'Escape' && modal && modal.style.display !== 'none') {
         event.preventDefault();
         closePairModal();
+        return;
+      }
+      if (modal && modal.style.display !== 'none' && event.key === 'Tab') {
+        const focusables = modal.querySelectorAll('button, input');
+        if (focusables && focusables.length > 0) {
+          const first = focusables[0];
+          const last = focusables[focusables.length - 1];
+          if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+          } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+          }
+        }
         return;
       }
       const zone = event.target && event.target.closest ? event.target.closest('#dropZone') : null;
@@ -1035,6 +1137,8 @@ const dashboardHTML = `<!DOCTYPE html>
         }
 
         const peers = data.peers || [];
+        lastPeers = peers;
+        lastTransport = data.transport || 'loopback';
         const peersList = document.getElementById('peersList');
         const dropSelector = document.getElementById('dropPeerSelector');
         const dropPills = document.getElementById('dropPeerPills');
@@ -1061,13 +1165,13 @@ const dashboardHTML = `<!DOCTYPE html>
         if (peerSig !== lastPeerSignature && !headerFocused) {
           lastPeerSignature = peerSig;
         if (peers.length === 0) {
-          peerLabel.innerText = 'Loopback Mode (No LAN Peers)';
+          peerLabel.innerText = 'No trusted peers yet';
           peerDot.className = 'status-dot offline';
           peersList.innerHTML = '<p style="color: var(--text-muted); font-size: 0.9rem;">No paired LAN peers yet. Run <code>tantu pair</code> to connect another machine.</p>';
           if (dropSelector) dropSelector.style.display = 'none';
         } else if (peers.length === 1) {
           const p = peers[0];
-          peerLabel.innerText = (p.name || 'Peer') + ' [Paired · ready]';
+          peerLabel.innerText = (p.name || 'Peer') + ' · Trusted';
           peerDot.className = 'status-dot';
           if (dropSelector) dropSelector.style.display = 'none';
           renderPeersList(peers);
@@ -1102,6 +1206,9 @@ const dashboardHTML = `<!DOCTYPE html>
         document.getElementById('peerLabel').innerText = 'Disconnected';
         document.getElementById('peerDot').className = 'status-dot offline';
       }
+
+      updateDestinationSummary();
+      updateNextAction();
 
       // Query discovered LAN peers
       try {
@@ -1420,20 +1527,20 @@ const dashboardHTML = `<!DOCTYPE html>
 
     dropZone.addEventListener('drop', (e) => {
       if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-        uploadFile(e.dataTransfer.files[0]);
+        stageFileForSend(e.dataTransfer.files[0]);
       }
     });
     fileInput.addEventListener('change', () => {
       if (fileInput.files && fileInput.files.length > 0) {
-        uploadFile(fileInput.files[0]);
+        stageFileForSend(fileInput.files[0]);
       }
     });
 
     // Clipboard-first uploads: pasting an image (screenshot, copied file)
-    // anywhere on the dashboard sends it directly through the authenticated
-    // upload path. Text pastes fall through to the focused field (e.g. the
-    // snippet textarea). Only file payloads are logged (name + size); no
-    // clipboard content ever enters logs or URLs.
+    // anywhere on the dashboard stages it for preview and confirmation
+    // through the authenticated upload path. Text pastes fall through to the
+    // focused field (e.g. the snippet textarea). Only file payloads are
+    // logged (name + size); no clipboard content ever enters logs or URLs.
     document.addEventListener('paste', (e) => {
       const files = (e.clipboardData && e.clipboardData.files) || [];
       if (files.length === 0) return;
@@ -1447,11 +1554,7 @@ const dashboardHTML = `<!DOCTYPE html>
       // Move keyboard/screen-reader context to the upload target after the
       // automatic tab switch. Focusing never opens the file dialog (click
       // only); the outcome is also announced via the aria-live status region.
-      const zone = document.getElementById('dropZone');
-      if (zone && typeof zone.focus === 'function') {
-        zone.focus({ preventScroll: true });
-      }
-      uploadFile(image);
+      stageFileForSend(image);
     });
 
     // At most one dashboard file upload at a time. A second upload while one
@@ -1464,6 +1567,206 @@ const dashboardHTML = `<!DOCTYPE html>
       if (uploadXhr) {
         uploadXhr.abort();
       }
+    }
+
+    // Safe send composer: every file (picker, drag/drop, clipboard paste)
+    // stages for preview and explicit confirmation by default. Expert
+    // immediate-send is an explicit visible opt-in; it never hides the
+    // destination. Only file name and size are logged, never content.
+    let pendingFile = null;
+    let pendingFileURL = null;
+    let pendingFileReturnFocus = null;
+    let lastPeers = [];
+    let lastTransport = 'loopback';
+
+    function expertImmediateSendEnabled() {
+      try {
+        const box = document.getElementById('expertImmediateSend');
+        if (box) return box.checked;
+      } catch (_) {}
+      return false;
+    }
+
+    function destinationDisplayName() {
+      const peers = lastPeers || [];
+      if (peers.length === 0) {
+        if (lastTransport === 'loopback') return 'this Hub (local-only test)';
+        return 'no trusted peer — pair first';
+      }
+      if (peers.length === 1) {
+        return peers[0].name || 'Peer';
+      }
+      const sel = peers.filter(function(p) { return p.fingerprint === selectedPeerTarget; })[0]
+        || peers.filter(function(p) { return p.active; })[0]
+        || peers[0];
+      return (sel && sel.name) || 'Peer';
+    }
+
+    function updateDestinationSummary() {
+      const el = document.getElementById('destinationSummary');
+      if (!el) return;
+      el.textContent = 'Destination: ' + destinationDisplayName();
+      const previewDest = document.getElementById('filePreviewDest');
+      if (previewDest && pendingFile) {
+        previewDest.textContent = 'Destination: ' + destinationDisplayName();
+      }
+    }
+
+    function updateNextAction() {
+      const banner = document.getElementById('nextActionBanner');
+      if (!banner) return;
+      const peers = lastPeers || [];
+      let html = '';
+      if (peers.length === 0) {
+        if (lastTransport === 'loopback') {
+          html = 'Local-only mode: send a test file to this Hub, or run <code>tantu pair</code> to connect another machine.';
+        } else {
+          html = 'No trusted peers yet. Run <code>tantu pair</code> to connect another machine, then send.';
+        }
+      } else if (pendingFile) {
+        html = 'Review the file preview below, confirm the destination, then Send.';
+      } else {
+        html = 'Choose text, an image, or a file above. The destination is shown before anything is sent.';
+      }
+      banner.innerHTML = html;
+      banner.style.display = 'block';
+    }
+
+    function clearPendingPreviewURL() {
+      if (pendingFileURL) {
+        try { URL.revokeObjectURL(pendingFileURL); } catch (_) {}
+        pendingFileURL = null;
+      }
+    }
+
+    function stageFileForSend(file) {
+      if (!file) return;
+      if (uploadXhr) {
+        const status = document.getElementById('dropStatus');
+        status.style.display = 'block';
+        status.className = 'status-banner error';
+        status.textContent = 'An upload is already in progress — cancel it before starting another.';
+        return;
+      }
+      if (expertImmediateSendEnabled()) {
+        uploadFile(file);
+        return;
+      }
+      pendingFileReturnFocus = document.activeElement;
+      pendingFile = file;
+      clearPendingPreviewURL();
+      const card = document.getElementById('filePreviewCard');
+      const title = document.getElementById('filePreviewTitle');
+      const meta = document.getElementById('filePreviewMeta');
+      const dest = document.getElementById('filePreviewDest');
+      const thumb = document.getElementById('filePreviewThumb');
+      const type = file.type || 'unknown type';
+      title.textContent = 'Ready to send';
+      meta.textContent = (file.name || 'pasted image') + ' (' + formatBytes(file.size) + ', ' + type + ')';
+      dest.textContent = 'Destination: ' + destinationDisplayName();
+      if (thumb) {
+        thumb.style.display = 'none';
+        thumb.removeAttribute('src');
+        if (file.type && file.type.indexOf('image/') === 0 && file.size > 0 && file.size <= 8 * 1024 * 1024) {
+          try {
+            pendingFileURL = URL.createObjectURL(file);
+            thumb.src = pendingFileURL;
+            thumb.alt = 'Preview of ' + (file.name || 'pasted image');
+            thumb.style.display = 'block';
+          } catch (_) {}
+        }
+      }
+      if (card) card.hidden = false;
+      addLog('DROP', 'Staged file for preview: ' + (file.name || 'pasted image') + ' (' + file.size + ' bytes)');
+      updateNextAction();
+      const confirm = document.getElementById('btnConfirmSend');
+      if (confirm && typeof confirm.focus === 'function') confirm.focus();
+    }
+
+    function cancelPendingSend() {
+      pendingFile = null;
+      clearPendingPreviewURL();
+      const card = document.getElementById('filePreviewCard');
+      if (card) card.hidden = true;
+      const fileInput = document.getElementById('fileInput');
+      if (fileInput) fileInput.value = '';
+      updateNextAction();
+      if (pendingFileReturnFocus && typeof pendingFileReturnFocus.focus === 'function') {
+        try { pendingFileReturnFocus.focus(); } catch (_) {}
+      }
+      pendingFileReturnFocus = null;
+    }
+
+    function confirmPendingSend() {
+      if (!pendingFile) return;
+      const file = pendingFile;
+      pendingFile = null;
+      clearPendingPreviewURL();
+      const card = document.getElementById('filePreviewCard');
+      if (card) card.hidden = true;
+      const fileInput = document.getElementById('fileInput');
+      if (fileInput) fileInput.value = '';
+      updateNextAction();
+      uploadFile(file);
+    }
+
+    function renderTransfers(items) {
+      const list = document.getElementById('transfersList');
+      if (!list) return;
+      if (!items || items.length === 0) {
+        list.innerHTML = '<p style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 2rem 0;">No transfers yet.<br>Send text, an image, or a file from QuickDrop.</p>';
+        return;
+      }
+      const reversed = items.slice().reverse();
+      list.innerHTML = reversed.map(function(op) {
+        const when = op.updated_at || op.created_at;
+        const timeStr = when ? new Date(when).toLocaleTimeString() : '';
+        const name = op.name || op.kind || 'transfer';
+        const sizeStr = formatBytes(op.size || 0);
+        const dest = op.destination || 'unknown destination';
+        let state = op.state || 'unknown';
+        let extra = '';
+        if (op.verified) extra += ' · verified';
+        if (op.duplicate_risk) extra += ' · check inbox before retry';
+        else if (op.retry_safe && state !== 'completed') extra += ' · safe to retry';
+        let recovery = '';
+        if (op.next_action && state !== 'completed') {
+          recovery = '<div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">Next: ' + escapeHTML(op.next_action) + '</div>';
+        }
+        return '<div class="received-item">' +
+          '<div class="received-item-header"><span><strong>' + escapeHTML(name) + '</strong> to ' + escapeHTML(dest) + '</span>' +
+          '<span>' + escapeHTML(timeStr) + ' &bull; ' + escapeHTML(sizeStr) + '</span></div>' +
+          '<div style="font-size: 0.8rem; color: var(--text-muted);">State: ' + escapeHTML(state) + escapeHTML(extra) + '</div>' +
+          recovery +
+        '</div>';
+      }).join('');
+    }
+
+    async function loadTransfers() {
+      try {
+        const res = await apiFetch('/api/transfers/recent');
+        if (!res.ok) return;
+        const items = await res.json();
+        renderTransfers(items);
+      } catch (_) {}
+    }
+
+    async function clearTransfers() {
+      if (!confirm('Clear transfer history? This removes sender-side metadata only (destinations, states, times). Received files are kept. This cannot be undone.')) {
+        return;
+      }
+      try {
+        const res = await apiFetch('/api/transfers/recent', { method: 'DELETE' });
+        const data = await res.json();
+        if (res.ok && data.status === 'success') {
+          addLog('DROP', 'Transfer history cleared.');
+        } else {
+          addLog('ERROR', 'Failed to clear transfers: ' + (data.message || 'Unknown error'));
+        }
+      } catch (err) {
+        addLog('ERROR', 'Failed to clear transfers: ' + err.message);
+      }
+      loadTransfers();
     }
 
     async function uploadFile(file) {
@@ -1523,7 +1826,7 @@ const dashboardHTML = `<!DOCTYPE html>
           pPercent.innerText = formatBytes(e.loaded) + ' sent...';
         }
       };
-      const finishUpload = (ok, message) => {
+      const finishUpload = (ok, message, server) => {
         uploadXhr = null;
         cancelBtn.style.display = 'none';
         if (fileInput) fileInput.value = '';
@@ -1533,8 +1836,10 @@ const dashboardHTML = `<!DOCTYPE html>
           bar.setAttribute('aria-valuenow', '100');
           pPercent.innerText = '100% · ' + formatBytes(file.size) + ' / ' + formatBytes(file.size);
           status.className = 'status-banner success';
-          status.textContent = '✅ File transferred successfully to peer!';
-          addLog('DROP', 'Completed transfer of ' + file.name);
+          const dest = (server && server.destination) || destinationDisplayName();
+          const op = (server && server.operation_id) ? ' (ID ' + server.operation_id + ')' : '';
+          status.textContent = 'File sent to ' + dest + ' · verified' + op;
+          addLog('DROP', 'Completed transfer of ' + file.name + ' to ' + dest);
           setTimeout(() => { progress.style.display = 'none'; fill.style.width = '0%'; }, 2500);
         } else {
           status.className = 'status-banner error';
@@ -1542,16 +1847,23 @@ const dashboardHTML = `<!DOCTYPE html>
           // Keep the progress bar visible on failure so the final state is
           // inspectable; the next upload resets it.
         }
+        loadTransfers();
+        updateNextAction();
       };
       xhr.onload = () => {
         let message = 'Unknown error';
+        let server = null;
         try {
           const data = JSON.parse(xhr.responseText);
           if (xhr.status >= 200 && xhr.status < 300 && data.status === 'success') {
-            finishUpload(true);
+            finishUpload(true, '', data);
             return;
           }
-          message = data.message || ('HTTP ' + xhr.status);
+          server = data;
+          message = data.plain_message || data.message || ('HTTP ' + xhr.status);
+          if (data.next_action) message += ' Next: ' + data.next_action;
+          if (data.duplicate_risk) message = 'File may already be saved. ' + message;
+          if (data.operation_id) message += ' (ID ' + data.operation_id + ')';
         } catch (_) {
           message = 'HTTP ' + xhr.status;
         }
@@ -1559,7 +1871,7 @@ const dashboardHTML = `<!DOCTYPE html>
           message += ' (server busy — wait a moment and retry)';
         }
         addLog('ERROR', 'Drop failed: ' + message);
-        finishUpload(false, '❌ Transfer failed: ' + message);
+        finishUpload(false, 'Transfer failed: ' + message, server);
       };
       xhr.onerror = () => {
         addLog('ERROR', 'Upload error: connection failed');
@@ -1609,10 +1921,18 @@ const dashboardHTML = `<!DOCTYPE html>
         const data = await res.json();
         if (res.ok && data.status === 'success') {
           textarea.value = '';
-          addLog('DROP', 'Text snippet sent successfully.');
+          const dest = data.destination || destinationDisplayName();
+          const op = data.operation_id ? ' (ID ' + data.operation_id + ')' : '';
+          addLog('DROP', 'Text snippet sent to ' + dest + op + '.');
         } else {
-          addLog('ERROR', 'Failed to send text: ' + (data.message || 'Unknown error'));
+          let msg = data.plain_message || data.message || 'Unknown error';
+          if (data.next_action) msg += ' Next: ' + data.next_action;
+          if (data.duplicate_risk) msg = 'Text may already be saved. ' + msg;
+          if (data.operation_id) msg += ' (ID ' + data.operation_id + ')';
+          addLog('ERROR', 'Failed to send text: ' + msg);
         }
+        loadTransfers();
+        updateNextAction();
       } catch (err) {
         addLog('ERROR', 'Text send failed: ' + err.message);
       } finally {
@@ -1902,6 +2222,7 @@ const dashboardHTML = `<!DOCTYPE html>
       updateStatus();
       loadConfig();
       loadRecentDrops();
+      loadTransfers();
       loadInitialLogs();
     });
   </script>
@@ -2571,7 +2892,7 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 		if strings.HasPrefix(contentType, "application/json") {
 			if !acquireSlot(h.textSlots) {
 				w.Header().Set("Retry-After", "10")
-				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "error", "message": "too many concurrent uploads, retry later"})
+				writeTransferError(w, http.StatusServiceUnavailable, "too many concurrent uploads, retry later", "hub_busy", "Hub is busy. No data was sent.", "too many concurrent uploads", true, false, true, "Wait a moment and retry. If it persists, try again later.", "", "", "", "")
 				return
 			}
 			defer releaseSlot(h.textSlots)
@@ -2582,42 +2903,69 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			}
 			r.Body = http.MaxBytesReader(w, r.Body, 11*1024*1024)
 			if err := json.NewDecoder(r.Body).Decode(&textReq); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"status": "error", "message": "invalid json payload"})
+				writeTransferError(w, http.StatusBadRequest, "invalid json payload", "invalid_input", "Request was not valid JSON. Nothing was sent.", "invalid json payload", false, false, true, "Fix the request and retry.", "", "", "", "")
 				return
 			}
 			if textReq.Text == "" {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"status": "error", "message": "empty text payload"})
+				writeTransferError(w, http.StatusBadRequest, "empty text payload", "invalid_input", "Text was empty. Nothing was sent.", "empty text payload", false, false, true, "Type or paste text, then send again.", "", "", "", "")
 				return
 			}
 			if int64(len(textReq.Text)) > drop.DefaultMaxTextSize {
-				writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"status": "error", "message": "text payload exceeds 10 MiB limit"})
+				writeTransferError(w, http.StatusRequestEntityTooLarge, "text payload exceeds 10 MiB limit", "limit_exceeded", "Text exceeds the 10 MiB limit. Nothing was sent.", "text payload exceeds 10 MiB limit", false, false, true, "Send it as a file instead.", "", "", "", "")
 				return
 			}
 
+			opID := newOperationID()
+			dropID := newOutboundDropID()
+			opCreated := time.Now()
+			destName, destFP, destAddr := h.resolveOperationDestination(textReq.Peer)
+			opKind := "text"
+			opName := textReq.Name
+			opSize := int64(len(textReq.Text))
 			conn, err := h.DialPeer(textReq.Peer)
 			if err != nil {
-				writeJSON(w, http.StatusBadGateway, map[string]string{"status": "error", "message": fmt.Sprintf("dial peer failed: %v", err)})
+				code, plain, nextAction, retrySafe, duplicateRisk, dataSafe := ClassifyTransferError(err, 0, opSize, false)
+				opState := operationStateForFailure(retrySafe, duplicateRisk, false)
+				h.recordOutboundOperation(OperationRecord{OperationID: opID, DropID: dropID, Kind: opKind, Name: opName, Size: opSize, Destination: destName, DestinationFingerprint: destFP, DestinationAddress: destAddr, State: opState, CreatedAt: opCreated, UpdatedAt: time.Now(), RetrySafe: retrySafe, DuplicateRisk: duplicateRisk, DataSafe: dataSafe, ErrorCode: code, ErrorMessage: plain, NextAction: nextAction, DiagnosticID: opID})
+				writeTransferError(w, http.StatusBadGateway, fmt.Sprintf("dial peer failed: %v", err), code, plain, err.Error(), retrySafe, duplicateRisk, dataSafe, nextAction, opID, destName, destFP, destAddr)
 				return
 			}
 			defer conn.Close()
 
 			meta := drop.DropSend{
-				Kind: drop.DropKindText,
-				Name: textReq.Name,
-				Size: int64(len(textReq.Text)),
+				DropID: dropID,
+				Kind:   drop.DropKindText,
+				Name:   textReq.Name,
+				Size:   int64(len(textReq.Text)),
 			}
 			sendCtx, cancel := context.WithTimeout(r.Context(), h.cfg.Timeout)
 			defer cancel()
 
-			if err := drop.SendDrop(sendCtx, conn, meta, strings.NewReader(textReq.Text), drop.SendDropConfig{Timeout: h.cfg.Timeout}); err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"status": "error", "message": fmt.Sprintf("send drop failed: %v", err)})
+			negotiated := false
+			sendCfg := drop.SendDropConfig{Timeout: h.cfg.Timeout}
+			sendCfg.OnAck = func(drop.DropAck) { negotiated = true }
+			if err = drop.SendDrop(sendCtx, conn, meta, strings.NewReader(textReq.Text), sendCfg); err != nil {
+				bytesForClassify := int64(0)
+				if negotiated {
+					bytesForClassify = opSize
+				}
+				preNegotiationCancel := !negotiated && (r.Context().Err() != nil || sendCtx.Err() != nil)
+				code, plain, nextAction, retrySafe, duplicateRisk, dataSafe := ClassifyTransferError(err, bytesForClassify, opSize, preNegotiationCancel)
+				cancelled := preNegotiationCancel
+				opState := operationStateForFailure(retrySafe, duplicateRisk, cancelled)
+				h.recordOutboundOperation(OperationRecord{OperationID: opID, DropID: dropID, Kind: opKind, Name: opName, Size: opSize, Destination: destName, DestinationFingerprint: destFP, DestinationAddress: destAddr, State: opState, CreatedAt: opCreated, UpdatedAt: time.Now(), RetrySafe: retrySafe, DuplicateRisk: duplicateRisk, DataSafe: dataSafe, ErrorCode: code, ErrorMessage: plain, NextAction: nextAction, DiagnosticID: opID})
+				writeTransferError(w, http.StatusInternalServerError, fmt.Sprintf("send drop failed: %v", err), code, plain, err.Error(), retrySafe, duplicateRisk, dataSafe, nextAction, opID, destName, destFP, destAddr)
 				return
 			}
 
+			h.recordOutboundOperation(OperationRecord{OperationID: opID, DropID: dropID, Kind: opKind, Name: opName, Size: opSize, Destination: destName, DestinationFingerprint: destFP, DestinationAddress: destAddr, State: OperationStateCompleted, CreatedAt: opCreated, UpdatedAt: time.Now(), BytesSent: opSize, Verified: true, RetrySafe: false, DuplicateRisk: false, DataSafe: true, NextAction: "", DiagnosticID: opID})
 			writeJSON(w, http.StatusOK, map[string]any{
-				"status":  "success",
-				"message": "Text drop sent successfully",
-				"size":    len(textReq.Text),
+				"status":       "success",
+				"message":      "Text drop sent successfully",
+				"size":         len(textReq.Text),
+				"operation_id": opID,
+				"destination":  destName,
+				"verified":     true,
 			})
 			return
 		}
@@ -2626,13 +2974,13 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 		// body buffering so rejected uploads cost nothing.
 		if !h.acquireUploadSlot() {
 			w.Header().Set("Retry-After", "30")
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "error", "message": "too many concurrent uploads, retry later"})
+			writeTransferError(w, http.StatusServiceUnavailable, "too many concurrent uploads, retry later", "hub_busy", "Hub is busy. No data was sent.", "too many concurrent uploads", true, false, true, "Wait a moment and retry. If it persists, try again later.", "", "", "", "")
 			return
 		}
 		defer h.releaseUploadSlot()
 		r.Body = http.MaxBytesReader(w, r.Body, drop.DefaultMaxDropSize)
 		if err := r.ParseMultipartForm(32 * 1024 * 1024); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"status": "error", "message": fmt.Sprintf("multipart parse error (max 5GB): %v", err)})
+			writeTransferError(w, http.StatusBadRequest, fmt.Sprintf("multipart parse error (max 5GB): %v", err), "invalid_input", "Upload could not be read. Nothing was sent.", fmt.Sprintf("multipart parse error: %v", err), false, false, true, "Check the file and retry.", "", "", "", "")
 			return
 		}
 		defer func() {
@@ -2643,15 +2991,25 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 
 		file, header, err := r.FormFile("file")
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"status": "error", "message": "missing file field in form"})
+			writeTransferError(w, http.StatusBadRequest, "missing file field in form", "invalid_input", "No file was attached. Nothing was sent.", "missing file field in form", false, false, true, "Choose a file, then send again.", "", "", "", "")
 			return
 		}
 		defer file.Close()
 
 		targetPeer := r.FormValue("peer")
+		opID := newOperationID()
+		dropID := newOutboundDropID()
+		opCreated := time.Now()
+		destName, destFP, destAddr := h.resolveOperationDestination(targetPeer)
+		opKind := "file"
+		opName := filepath.Base(header.Filename)
+		opSize := header.Size
 		conn, err := h.DialPeer(targetPeer)
 		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"status": "error", "message": fmt.Sprintf("dial peer failed: %v", err)})
+			code, plain, nextAction, retrySafe, duplicateRisk, dataSafe := ClassifyTransferError(err, 0, opSize, false)
+			opState := operationStateForFailure(retrySafe, duplicateRisk, false)
+			h.recordOutboundOperation(OperationRecord{OperationID: opID, DropID: dropID, Kind: opKind, Name: opName, Size: opSize, Destination: destName, DestinationFingerprint: destFP, DestinationAddress: destAddr, State: opState, CreatedAt: opCreated, UpdatedAt: time.Now(), RetrySafe: retrySafe, DuplicateRisk: duplicateRisk, DataSafe: dataSafe, ErrorCode: code, ErrorMessage: plain, NextAction: nextAction, DiagnosticID: opID})
+			writeTransferError(w, http.StatusBadGateway, fmt.Sprintf("dial peer failed: %v", err), code, plain, err.Error(), retrySafe, duplicateRisk, dataSafe, nextAction, opID, destName, destFP, destAddr)
 			return
 		}
 		defer conn.Close()
@@ -2659,6 +3017,7 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 		fileName := filepath.Base(header.Filename)
 		mimeType := mime.TypeByExtension(filepath.Ext(fileName))
 		meta := drop.DropSend{
+			DropID:   dropID,
 			Kind:     drop.DropKindFile,
 			Name:     fileName,
 			Size:     header.Size,
@@ -2677,16 +3036,32 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 		sendCtx, cancel := context.WithTimeout(r.Context(), h.cfg.Timeout)
 		defer cancel()
 
-		if err := drop.SendDrop(sendCtx, conn, meta, file, drop.SendDropConfig{Timeout: h.cfg.Timeout}); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"status": "error", "message": fmt.Sprintf("drop file transfer failed: %v", err)})
+		negotiated := false
+		sendCfg := drop.SendDropConfig{Timeout: h.cfg.Timeout}
+		sendCfg.OnAck = func(drop.DropAck) { negotiated = true }
+		if err = drop.SendDrop(sendCtx, conn, meta, file, sendCfg); err != nil {
+			bytesForClassify := int64(0)
+			if negotiated {
+				bytesForClassify = opSize
+			}
+			preNegotiationCancel := !negotiated && (r.Context().Err() != nil || sendCtx.Err() != nil)
+			code, plain, nextAction, retrySafe, duplicateRisk, dataSafe := ClassifyTransferError(err, bytesForClassify, opSize, preNegotiationCancel)
+			cancelled := preNegotiationCancel
+			opState := operationStateForFailure(retrySafe, duplicateRisk, cancelled)
+			h.recordOutboundOperation(OperationRecord{OperationID: opID, DropID: dropID, Kind: opKind, Name: opName, Size: opSize, MIMEType: mimeType, Destination: destName, DestinationFingerprint: destFP, DestinationAddress: destAddr, State: opState, CreatedAt: opCreated, UpdatedAt: time.Now(), RetrySafe: retrySafe, DuplicateRisk: duplicateRisk, DataSafe: dataSafe, ErrorCode: code, ErrorMessage: plain, NextAction: nextAction, DiagnosticID: opID})
+			writeTransferError(w, http.StatusInternalServerError, fmt.Sprintf("drop file transfer failed: %v", err), code, plain, err.Error(), retrySafe, duplicateRisk, dataSafe, nextAction, opID, destName, destFP, destAddr)
 			return
 		}
 
+		h.recordOutboundOperation(OperationRecord{OperationID: opID, DropID: dropID, Kind: opKind, Name: opName, Size: opSize, MIMEType: mimeType, Destination: destName, DestinationFingerprint: destFP, DestinationAddress: destAddr, State: OperationStateCompleted, CreatedAt: opCreated, UpdatedAt: time.Now(), BytesSent: opSize, Verified: true, RetrySafe: false, DuplicateRisk: false, DataSafe: true, DiagnosticID: opID})
 		writeJSON(w, http.StatusOK, map[string]any{
-			"status":  "success",
-			"message": "File drop sent successfully",
-			"name":    fileName,
-			"size":    header.Size,
+			"status":       "success",
+			"message":      "File drop sent successfully",
+			"name":         fileName,
+			"size":         header.Size,
+			"operation_id": opID,
+			"destination":  destName,
+			"verified":     true,
 		})
 	})
 
@@ -2719,6 +3094,30 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 		} else {
 			writeJSON(w, http.StatusOK, []ReceivedDropItem{})
 		}
+	})
+
+	// 9a. GET/DELETE /api/transfers/recent — Sender-side operation truth
+	// (durable: last 50, 30 days; metadata only, never payload). DELETE
+	// clears the ledger and its file; received files are unaffected.
+	mux.HandleFunc("/api/transfers/recent", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			removed := h.clearOutboundOperations()
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status":  "success",
+				"message": "Transfer history cleared",
+				"removed": removed,
+			})
+			return
+		}
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"status": "error", "message": "method not allowed"})
+			return
+		}
+		ops := h.listOutboundOperations()
+		if ops == nil {
+			ops = []OperationRecord{}
+		}
+		writeJSON(w, http.StatusOK, ops)
 	})
 
 	// 9b. GET /api/drop/file — Serve one received file for inline preview

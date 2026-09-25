@@ -34,6 +34,14 @@ func generateDropID() string {
 	return hex.EncodeToString(b)
 }
 
+// NewDropID generates a sender-side DropID for one transfer attempt. It is
+// exported so CLI send paths can assign the ID before dialing and report the
+// same identifier the wire carries, keeping CLI output consistent with Hub
+// operation records.
+func NewDropID() string {
+	return generateDropID()
+}
+
 // SendDrop sends content over a transport connection to a receiver.
 // meta contains the drop metadata (kind, name, size, etc.).
 // payload is an io.Reader providing the content bytes.

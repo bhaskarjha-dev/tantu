@@ -227,6 +227,8 @@ type Hub struct {
 	startTime        time.Time
 	logger           *EventLogger
 	recentDrops      *RecentDropsBuffer
+	outboundOps      *OperationLedger
+	storeDir         string
 	relayCoordinator *relayCoordinator
 	// relayToken, ipcToken, and dashboardBootstrapToken are guarded by
 	// dashboardMu so listener-generation rotation cannot race HTTP handlers.
@@ -630,6 +632,7 @@ func NewHub(cfg HubConfig) (*Hub, error) {
 		cfg:                     cfg,
 		logger:                  NewEventLogger(DefaultRingBufferSize),
 		recentDrops:             NewRecentDropsBuffer(50),
+		outboundOps:             NewOperationLedger(maxOutboundOperations),
 		relayCoordinator:        newRelayCoordinator(),
 		relayToken:              hex.EncodeToString(tokenBytes),
 		ipcToken:                hex.EncodeToString(ipcTokenBytes),
@@ -1252,6 +1255,7 @@ func (h *Hub) Start(parent context.Context) (err error) {
 		h.p2pLn = nil
 		h.tr = nil
 		h.store = nil
+		h.storeDir = ""
 		h.identity = nil
 		h.actualP2P = nil
 		h.actualWeb = ""
@@ -1325,7 +1329,9 @@ func (h *Hub) Start(parent context.Context) (err error) {
 	}
 	h.mu.Lock()
 	h.store = store
+	h.storeDir = storeDir
 	h.mu.Unlock()
+	h.loadOutboundOperations(storeDir)
 
 	// 2. Self-healing identity
 	id, err := h.EnsureIdentity()
