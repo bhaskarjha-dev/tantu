@@ -143,7 +143,7 @@ func TestWebDashboard_ProtectedReadsRequireCapability(t *testing.T) {
 	h, _, cleanup := startTestHub(t)
 	defer cleanup()
 
-	paths := []string{"/api/status", "/api/logs", "/api/drop/recent", "/api/pair/pending", "/api/discovery/peers"}
+	paths := []string{"/api/status", "/api/logs", "/api/drop/recent", "/api/transfers/recent", "/api/relay/recent", "/api/pair/pending", "/api/discovery/peers"}
 	for _, path := range paths {
 		resp, err := http.Get("http://" + h.WebAddr() + path)
 		if err != nil {
@@ -1512,6 +1512,10 @@ func TestWebDashboard_UploadProgressAndPeerRenderMarkers(t *testing.T) {
 		"querySelectorAll('button, input')",
 		"clear-transfers",
 		"clearTransfers",
+		"api/relay/recent",
+		"authorizationsList",
+		"loadAuthorizations",
+		"renderAuthorizations",
 	} {
 		if !strings.Contains(content, s) {
 			t.Errorf("dashboard HTML missing %q (upload-progress / focus-preservation UX)", s)

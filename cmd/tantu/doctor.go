@@ -347,10 +347,42 @@ func fetchHubLogs(webAddr, storeDir string) ([]hub.LogEvent, error) {
 	return events, nil
 }
 
+// fetchRelayAttempts returns the Hub's authorization ledger. Only origin
+// hosts are ever present; URLs, codes, and tokens never leave the Hub.
+func fetchRelayAttempts(webAddr, storeDir string) ([]hub.RelayAttempt, error) {
+	token := hub.RuntimeIPCTokenForAddr(storeDir, webAddr)
+	if token == "" {
+		return nil, fmt.Errorf("running Hub runtime metadata is unavailable")
+	}
+	client := &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: &http.Transport{Proxy: nil},
+	}
+	defer client.CloseIdleConnections()
+	req, err := http.NewRequest(http.MethodGet, "http://"+webAddr+"/api/relay/recent", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set(hub.IPCTokenHeader, token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Hub returned authorizations status %d", resp.StatusCode)
+	}
+	var attempts []hub.RelayAttempt
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&attempts); err != nil {
+		return nil, fmt.Errorf("decode Hub authorizations: %w", err)
+	}
+	return attempts, nil
+}
+
 // writeSupportBundle exports a redacted diagnostic bundle: health report,
-// transfer metadata (live or last-saved), and redacted Hub logs. It never
-// contains payload bytes, text snippets, clipboard content, tokens, private
-// keys, or full sensitive URLs. Written owner-only (0600).
+// transfer and authorization metadata (live or last-saved), and redacted Hub
+// logs. It never contains payload bytes, text snippets, clipboard content,
+// tokens, private keys, or full sensitive URLs. Written owner-only (0600).
 func writeSupportBundle(path string, report healthReport, storeDir, bridgeAddr string) error {
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("bundle path is empty")
@@ -376,6 +408,13 @@ func writeSupportBundle(path string, report healthReport, storeDir, bridgeAddr s
 			bundle["logs"] = []hub.LogEvent{}
 			bundle["logs_source"] = "hub-live-unavailable"
 		}
+		if attempts, err := fetchRelayAttempts(live.WebAddr, storeDir); err == nil {
+			bundle["authorizations"] = attempts
+			bundle["authorizations_source"] = "hub-live"
+		} else {
+			bundle["authorizations"] = []hub.RelayAttempt{}
+			bundle["authorizations_source"] = "hub-live-unavailable"
+		}
 	} else {
 		if saved, err := readSavedTransferRecords(storeDir); err == nil {
 			bundle["transfers"] = saved
@@ -386,6 +425,13 @@ func writeSupportBundle(path string, report healthReport, storeDir, bridgeAddr s
 		}
 		bundle["logs"] = []hub.LogEvent{}
 		bundle["logs_source"] = "hub-not-running"
+		if saved, err := hub.ReadSavedRelayHistory(report.StoreDir); err == nil && saved != nil {
+			bundle["authorizations"] = saved
+			bundle["authorizations_source"] = "saved-file-stale"
+		} else {
+			bundle["authorizations"] = []hub.RelayAttempt{}
+			bundle["authorizations_source"] = "unavailable"
+		}
 	}
 	data, err := json.MarshalIndent(bundle, "", "  ")
 	if err != nil {

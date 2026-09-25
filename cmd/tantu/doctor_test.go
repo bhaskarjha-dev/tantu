@@ -224,9 +224,11 @@ func TestWriteSupportBundle_LiveHub(t *testing.T) {
 	}
 	raw, _ := os.ReadFile(out)
 	var bundle struct {
-		Transfers       []transferRecord `json:"transfers"`
-		TransfersSource string           `json:"transfers_source"`
-		Logs            []hub.LogEvent   `json:"logs"`
+		Transfers            []transferRecord   `json:"transfers"`
+		TransfersSource      string             `json:"transfers_source"`
+		Logs                 []hub.LogEvent     `json:"logs"`
+		Authorizations       []hub.RelayAttempt `json:"authorizations"`
+		AuthorizationsSource string             `json:"authorizations_source"`
 	}
 	if err := json.Unmarshal(raw, &bundle); err != nil {
 		t.Fatal(err)
@@ -239,6 +241,41 @@ func TestWriteSupportBundle_LiveHub(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "bundle-probe") {
 		t.Error("bundle leaked payload text")
+	}
+
+	// Seed one failed authorization (invalid scheme: no dial, no browser),
+	// then re-export and verify the redacted authorization record.
+	relayBody, _ := json.Marshal(map[string]string{"url": "ftp://bundle.example/auth?code=BUNDLESECRET"})
+	relayReq, _ := http.NewRequest(http.MethodPost, "http://"+webAddr+"/api/relay/open", bytes.NewReader(relayBody))
+	relayReq.Header.Set("Content-Type", "application/json")
+	relayReq.Header.Set(hub.IPCTokenHeader, token)
+	relayResp, err := http.DefaultClient.Do(relayReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayResp.Body.Close()
+	out2 := filepath.Join(dir, "live-bundle-2.json")
+	report2 := buildHealthReport(dir, "")
+	if err := writeSupportBundle(out2, report2, dir, ""); err != nil {
+		t.Fatal(err)
+	}
+	raw2, _ := os.ReadFile(out2)
+	var bundle2 struct {
+		Authorizations       []hub.RelayAttempt `json:"authorizations"`
+		AuthorizationsSource string             `json:"authorizations_source"`
+	}
+	if err := json.Unmarshal(raw2, &bundle2); err != nil {
+		t.Fatal(err)
+	}
+	if bundle2.AuthorizationsSource != "hub-live" || len(bundle2.Authorizations) != 1 {
+		t.Fatalf("live bundle authorizations wrong: %+v", bundle2)
+	}
+	got := bundle2.Authorizations[0]
+	if got.State != "failed" || got.SafeOrigin != "bundle.example" {
+		t.Errorf("authorization record wrong: %+v", got)
+	}
+	if strings.Contains(string(raw2), "BUNDLESECRET") {
+		t.Error("bundle leaked authorization URL secret")
 	}
 }
 

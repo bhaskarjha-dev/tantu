@@ -228,6 +228,7 @@ type Hub struct {
 	logger           *EventLogger
 	recentDrops      *RecentDropsBuffer
 	outboundOps      *OperationLedger
+	relayHistory     *RelayLedger
 	storeDir         string
 	relayCoordinator *relayCoordinator
 	// relayToken, ipcToken, and dashboardBootstrapToken are guarded by
@@ -633,6 +634,7 @@ func NewHub(cfg HubConfig) (*Hub, error) {
 		logger:                  NewEventLogger(DefaultRingBufferSize),
 		recentDrops:             NewRecentDropsBuffer(50),
 		outboundOps:             NewOperationLedger(maxOutboundOperations),
+		relayHistory:            NewRelayLedger(maxRelayHistory),
 		relayCoordinator:        newRelayCoordinator(),
 		relayToken:              hex.EncodeToString(tokenBytes),
 		ipcToken:                hex.EncodeToString(ipcTokenBytes),
@@ -1332,6 +1334,7 @@ func (h *Hub) Start(parent context.Context) (err error) {
 	h.storeDir = storeDir
 	h.mu.Unlock()
 	h.loadOutboundOperations(storeDir)
+	h.loadRelayHistoryInto(storeDir)
 
 	// 2. Self-healing identity
 	id, err := h.EnsureIdentity()

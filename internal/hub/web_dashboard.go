@@ -635,6 +635,17 @@ const dashboardHTML = `<!DOCTYPE html>
         </form>
         <div class="status-banner" id="relayStatus" role="status" aria-live="polite"></div>
       </div>
+
+      <div class="card">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+          <div class="card-title" style="margin-bottom: 0;">🔐 Recent Authorizations</div>
+          <button class="btn-sm" data-action="load-authorizations">🔄 Refresh</button>
+        </div>
+        <p class="hint-text" style="margin-top: 0; margin-bottom: 0.75rem;">Origin hosts only — URLs, codes, and tokens are never stored. Kept 30 days (last 50).</p>
+        <div id="authorizationsList" style="display: flex; flex-direction: column; gap: 0.75rem;">
+          <p style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 2rem 0;">No authorizations yet.<br>Relay a login above to record its outcome here.</p>
+        </div>
+      </div>
     </div>
 
     <!-- TAB 3: PEERS & NETWORK -->
@@ -855,6 +866,9 @@ const dashboardHTML = `<!DOCTYPE html>
           break;
         case 'load-transfers':
           loadTransfers();
+          break;
+        case 'load-authorizations':
+          loadAuthorizations();
           break;
         case 'clear-transfers':
           clearTransfers();
@@ -1742,6 +1756,42 @@ const dashboardHTML = `<!DOCTYPE html>
       }).join('');
     }
 
+    function renderAuthorizations(items) {
+      const list = document.getElementById('authorizationsList');
+      if (!list) return;
+      if (!items || items.length === 0) {
+        list.innerHTML = '<p style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 2rem 0;">No authorizations yet.<br>Relay a login above to record its outcome here.</p>';
+        return;
+      }
+      const reversed = items.slice().reverse();
+      list.innerHTML = reversed.map(function(op) {
+        const when = op.updated_at || op.created_at;
+        const timeStr = when ? new Date(when).toLocaleTimeString() : '';
+        const dest = op.target_peer || 'unknown peer';
+        const origin = op.safe_origin || 'unknown origin';
+        const state = op.state || 'unknown';
+        let recovery = '';
+        if (op.next_action && state !== 'complete') {
+          recovery = '<div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">Next: ' + escapeHTML(op.next_action) + '</div>';
+        }
+        return '<div class="received-item">' +
+          '<div class="received-item-header"><span><strong>🔐 ' + escapeHTML(origin) + '</strong> via ' + escapeHTML(dest) + '</span>' +
+          '<span>' + escapeHTML(timeStr) + '</span></div>' +
+          '<div style="font-size: 0.8rem; color: var(--text-muted);">State: ' + escapeHTML(state) + '</div>' +
+          recovery +
+        '</div>';
+      }).join('');
+    }
+
+    async function loadAuthorizations() {
+      try {
+        const res = await apiFetch('/api/relay/recent');
+        if (!res.ok) return;
+        const items = await res.json();
+        renderAuthorizations(items);
+      } catch (_) {}
+    }
+
     async function loadTransfers() {
       try {
         const res = await apiFetch('/api/transfers/recent');
@@ -1975,10 +2025,12 @@ const dashboardHTML = `<!DOCTYPE html>
           status.textContent = '❌ Relay failed: ' + (data.message || 'Unknown error');
           addLog('ERROR', 'Relay failed: ' + (data.message || 'Unknown error'));
         }
+        loadAuthorizations();
       } catch (err) {
         status.className = 'status-banner error';
         status.textContent = '❌ Connection error: ' + err.message;
         addLog('ERROR', 'Relay error: ' + err.message);
+        loadAuthorizations();
       } finally {
         btn.disabled = false;
       }
@@ -2223,6 +2275,7 @@ const dashboardHTML = `<!DOCTYPE html>
       loadConfig();
       loadRecentDrops();
       loadTransfers();
+      loadAuthorizations();
       loadInitialLogs();
     });
   </script>
@@ -2871,6 +2924,20 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			Status:  "success",
 			Message: "Authentication completed successfully",
 		})
+	})
+
+	// 5b. GET /api/relay/recent — Sender-side authorization truth (durable:
+	// last 50, 30 days; origin hosts only, never URLs, codes, or tokens).
+	mux.HandleFunc("/api/relay/recent", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"status": "error", "message": "method not allowed"})
+			return
+		}
+		ops := h.listRelayAttempts()
+		if ops == nil {
+			ops = []RelayAttempt{}
+		}
+		writeJSON(w, http.StatusOK, ops)
 	})
 
 	// 6. POST /api/drop/upload — File & Text QuickDrop transfer

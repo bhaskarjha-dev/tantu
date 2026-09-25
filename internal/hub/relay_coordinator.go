@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/url"
 	"strings"
 	"sync"
@@ -107,9 +108,11 @@ func relayRequestKey(peer, rawURL string) string {
 func (h *Hub) relayOAuth(ctx context.Context, peer, rawURL string) error {
 	oauthURL := browser.SanitizeURL(strings.TrimSpace(rawURL))
 	if len(oauthURL) > 64*1024 {
+		h.recordRelayFailure(peer, "", "invalid_input", "Fix the URL and retry.")
 		return errors.New("OAuth authorization URL exceeds the maximum supported length")
 	}
 	if err := browser.ValidateURL(oauthURL); err != nil {
+		h.recordRelayFailure(peer, safeRelayOrigin(oauthURL), "invalid_input", "Fix the URL and retry.")
 		return err
 	}
 	h.mu.Lock()
@@ -140,6 +143,7 @@ func (h *Hub) relayOAuth(ctx context.Context, peer, rawURL string) error {
 			keyPeer = resolved.Fingerprint
 			dialPeer = resolved.Fingerprint
 		} else if transportName == "lan" {
+			h.recordRelayFailure(peer, safeRelayOrigin(oauthURL), "destination_unreachable", "Check the peer is online and paired, then retry.")
 			return resolveErr
 		}
 	}
@@ -158,11 +162,74 @@ func (h *Hub) relayOAuth(ctx context.Context, peer, rawURL string) error {
 		relayCtx, cancel := context.WithTimeout(baseCtx, timeout)
 		defer cancel()
 
+		attemptID := newRelayID()
+		destName, destFP, destAddr := h.resolveOperationDestination(dialPeer)
+		origin := safeRelayOrigin(oauthURL)
+		now := time.Now()
+		h.recordRelayAttempt(RelayAttempt{
+			ID: attemptID, TargetPeer: destName, TargetFP: destFP,
+			TargetAddress: destAddr, SafeOrigin: origin,
+			State: RelayStateSubmitted, CreatedAt: now, UpdatedAt: now,
+			DiagnosticID: attemptID,
+		})
+		h.updateRelayAttempt(attemptID, RelayStateWaiting, "", "")
+
 		conn, err := h.DialPeer(dialPeer)
 		if err != nil {
+			h.updateRelayAttempt(attemptID, RelayStateFailed, "destination_unreachable", "Check the peer is online and paired, then retry.")
 			return err
 		}
 		defer conn.Close()
-		return bridge.HandleBSide(relayCtx, conn, oauthURL, bridge.BSideConfig{Timeout: timeout})
+		if err := bridge.HandleBSide(relayCtx, conn, oauthURL, bridge.BSideConfig{Timeout: timeout}); err != nil {
+			state, code, next := RelayStateFailed, "relay_failed", "Check the peer is online, then retry the login."
+			if ctx.Err() != nil || relayCtx.Err() != nil {
+				state, code, next = RelayStateCancelled, "cancelled", "Retry the login flow."
+			} else if msg := strings.ToLower(err.Error()); strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline") {
+				code, next = "relay_timeout", "Retry; the authorization callback may have expired."
+			}
+			h.updateRelayAttempt(attemptID, state, code, next)
+			return err
+		}
+		h.updateRelayAttempt(attemptID, RelayStateComplete, "", "")
+		return nil
 	})
+}
+
+// recordRelayFailure records a terminal failed attempt that never reached
+// the wire (validation or resolution). Only the safe origin host is kept,
+// never the raw URL, codes, or tokens.
+func (h *Hub) recordRelayFailure(peer, safeOrigin, code, next string) {
+	destName, destFP, destAddr := h.resolveOperationDestination(peer)
+	now := time.Now()
+	id := newRelayID()
+	h.recordRelayAttempt(RelayAttempt{
+		ID: id, TargetPeer: destName, TargetFP: destFP, TargetAddress: destAddr,
+		SafeOrigin: safeOrigin, State: RelayStateFailed,
+		CreatedAt: now, UpdatedAt: now,
+		ErrorCode: code, NextAction: next, DiagnosticID: id,
+	})
+}
+
+// updateRelayAttempt sets a follow-up state on a recorded attempt and
+// persists the ledger best-effort.
+func (h *Hub) updateRelayAttempt(id, state, code, next string) {
+	if h == nil {
+		return
+	}
+	h.mu.RLock()
+	ledger := h.relayHistory
+	h.mu.RUnlock()
+	if ledger == nil {
+		return
+	}
+	ledger.Update(id, func(op *RelayAttempt) {
+		op.State = state
+		op.ErrorCode = code
+		op.NextAction = next
+	})
+	if dir := h.hubStoreDir(); dir != "" {
+		if err := persistRelayHistory(dir, ledger.GetAll()); err != nil && h.logger != nil {
+			h.logger.Warn(DomainOAuth, fmt.Sprintf("Could not save authorization history: %v", err))
+		}
+	}
 }
