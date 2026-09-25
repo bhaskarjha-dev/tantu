@@ -62,6 +62,12 @@ rollback procedures.
 - OAuth relay attempts recorded with target peer, origin host only, state,
   and next action (`GET /api/relay/recent`, dashboard card, support bundle;
   durable last 50 / 30 days; never URLs, codes, or tokens).
+- Wire versioning phase 1: envelopes carry `v: 1` and drop metadata carries
+  a validated `idempotency_key` (Hub: operation ID; CLI: DropID); receivers
+  validate and otherwise ignore both, preserving legacy interop. Tombstone
+  lookup remains future work per `docs/SPEC-WIRE-VERSIONING.md`.
+- Changing the dashboard downloads directory now states that previously
+  received files stay in their former location.
 
 ### Changed
 - The Hub dashboard now receives a per-response CSP nonce and uses delegated

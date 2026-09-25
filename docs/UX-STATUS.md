@@ -38,7 +38,7 @@ E5 cross-platform/accessibility/failure evidence.
 | Item | State | Notes |
 |---|---|---|
 | Transfer history and bounded persistence | Done | `transfers.json`, 50/30-day bounds, atomic writes, offline CLI fallback, explicit deletion (`transfer clear`, dashboard Clear). |
-| Completion tombstone/idempotency | Deferred (designed) | Requires wire change; full proposal in `docs/SPEC-WIRE-VERSIONING.md`. Mitigation stands: duplicate-risk state + refused blind retry. |
+| Completion tombstone/idempotency | Partial (phase 1) | Wire fields emitted (`v: 1`, validated `idempotency_key` end to end); tombstone + retry UX pending the open design decisions in `docs/SPEC-WIRE-VERSIONING.md`. Mitigation stands: duplicate-risk state + refused blind retry. |
 | Retry/resume actions | Partial | Retry-as-new-transfer is always available (`send` again); in-place retry refused by design. Same-DropID resume stays library-only. |
 | CLI/dashboard state parity | Done | Shared taxonomy (`hub.ClassifyTransferError`), shared destination language, `send --json`. |
 | Standalone migration/deprecation labels | Done | `serve`/`node` print Hub pointers; usage labels advanced/compatibility; `drop`/`relay` already carried Hub tips. |

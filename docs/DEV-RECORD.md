@@ -979,5 +979,31 @@ Pushed batches Z–Z3 to origin/main first (remote CI race jobs pending).
   (failed/invalid_input, secret assert), relay/recent auth gate, dashboard
   markers, live bundle authorizations (failed/host-only/no leak).
 - `go build`, `go vet`, full suite green; JS `node --check` clean;
-  cross-compile clean. Pushed Z–Z3 before starting this batch; this batch
-  uncommitted pending final verification. No push of new commits yet.
+  cross-compile clean. Pushed Z–Z3 before starting this batch. Committed as
+  `1fb209c feat(oauth)` + `9844c5a docs(ux)` and pushed.
+
+## Batch Z5 — wire phase 1, output-dir note (2026-09-25)
+
+First implementable slice of `docs/SPEC-WIRE-VERSIONING.md`: additive-only
+wire fields with zero behavior change, keeping the tombstone and retry UX
+behind the spec's open design decisions.
+
+### What changed
+
+- Envelopes carry `v: 1` stamped at the single encode choke point
+  (`protocol.ProtocolVersion`); legacy frames without `v` decode to V == 0;
+  explicit versions are never clobbered.
+- `drop_send` carries a validated `idempotency_key` (identifier alphabet,
+  ≤128 bytes, fail-closed rejection). Hub uploads set key = operation ID;
+  direct CLI sends set key = DropID. Receivers validate only.
+- Dashboard downloads-directory change now states that previously received
+  files stay in their former location (alert + log, matching the existing
+  dialog style and the documented orphan-by-design semantics).
+
+### Validation
+
+- New tests: version emitted/legacy-decode/explicit-preserved; key
+  round-trip and rejection over a live E2E pair; dashboard marker for the
+  old-file explanation.
+- Full suite, vet, JS check, and cross-compile green (below). No commit or
+  push yet.

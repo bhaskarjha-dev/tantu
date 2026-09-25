@@ -1,11 +1,10 @@
 # Wire Versioning & Idempotent Retry — Design Proposal
 
-> **Status:** Design only — not implemented
+> **Status:** Phase 1 implemented (emit + validate); phases 2–3 pending
+> design decisions below. Until the tombstone lands, retry-after-unknown-
+> outcome stays at-least-once with explicit duplicate-risk UX; `transfer
+> retry` stays refused.
 > **Date:** 2026-09-25
-> **Unblocks:** plan P1 "completion tombstone/idempotency" and any
-> mixed-version future. Until this lands, retry-after-unknown-outcome stays
-> at-least-once with explicit duplicate-risk UX; `transfer retry` stays
-> refused.
 
 ## 1. Problem
 
@@ -72,6 +71,11 @@ framework, changing the same-release supported topology.
 
 1. Emit `v: 1` + `idempotency_key`; receivers ignore. Compat matrix:
    new↔new, new↔old, old↔new transfer tests.
+   **Implemented 2026-09-25:** envelope `V` stamped at the encode choke
+   point (`protocol.ProtocolVersion`), `idempotency_key` emitted by Hub
+   uploads (key = operation ID) and direct CLI sends (key = DropID),
+   receiver-side alphabet/length validation with fail-closed rejection.
+   Tombstone lookup explicitly not yet performed.
 2. Tombstone + re-ack path with duplicate-DropID ownership tests extended
    to same-key redelivery (no second publication, identical digest).
 3. Idempotent retry UX: `transfer retry <id>` allowed only for tombstoned
