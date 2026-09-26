@@ -1167,5 +1167,24 @@ state") while offering no way to start a distinct flow.
   logins open 4 browser flows; Hub key unit test (equal/reordered vs
   distinct).
 - Pre-existing coalescing tests (identical URLs) pass unmodified.
-- Full suite, vet, JS check, cross-compile green (below). No commit or
-  push yet.
+- Full suite, vet, JS check, cross-compile green (below). Committed as
+  `1b42151 fix(oauth)` + `69c1f1e docs(oauth)` and pushed.
+
+## Batch Z11 — relay confirmation autofocus (2026-09-25)
+
+Follow-up to a usability challenge on Z9: the interstitial's second click
+felt redundant next to the bookmark click. Auto-submitting was rejected on
+a concrete threat analysis (a bare navigation — phishing link, restored
+tab — would fire logins on the paired machine with no gesture; the click
+is the proof of intent, and it cannot move receiver-side because initiation
+carries the intent). Kept the click; removed the friction around it: the
+Relay button autofocuses once actionable (click → Enter), and the popup
+still auto-closes on success.
+
+### Validation
+
+- Serving-path assertion for the focus call; full hub/cmd suites green;
+  isolated-worktree check; cross-compile clean. Committed and pushed.
+- Live artifact check caught a stale-Hub-on-9876 smoke artifact (previous
+  test Hub still releasing the port; new instance fell back silently while
+  the probe hit the old one) — reran clean against a fresh instance.
