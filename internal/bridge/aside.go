@@ -259,7 +259,9 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 
 	// Coalesce retries of the same logical OAuth transaction.  A retry gets a
 	// new transport connection and request ID, so connection-local state alone
-	// cannot prevent the browser/page storm seen in production.
+	// cannot prevent the browser/page storm seen in production. Only
+	// byte-identical requests share a session: a new login mints fresh
+	// per-attempt values and always opens its own browser flow.
 	lease := a.cfg.Sessions.acquire(oauthSessionKey(a.conn, req))
 	if lease.err != nil {
 		ackErr := "too many active OAuth sessions"

@@ -436,11 +436,36 @@ func DeriveOAuthFlowID(rawURL string) string {
 	return "oauth-" + hex.EncodeToString(digest[:])
 }
 
+// RequestURLIdentity returns a non-secret discriminator for the exact
+// authorization request: the canonical URL with ALL query values preserved
+// (sorted). Two requests for the same login carry byte-identical URLs and
+// share the identity; a new login mints fresh state/PKCE values and never
+// does. Only the SHA-256 digest leaves this function, so no secret material
+// is retained for matching.
+func RequestURLIdentity(rawURL string) string {
+	canonical := browser.SanitizeURL(strings.TrimSpace(rawURL))
+	if parsed, err := url.Parse(canonical); err == nil {
+		parsed.RawQuery = parsed.Query().Encode()
+		parsed.Fragment = ""
+		parsed.RawFragment = ""
+		canonical = parsed.String()
+	}
+	digest := sha256.Sum256([]byte(canonical))
+	return hex.EncodeToString(digest[:])
+}
+
 // oauthSessionKey returns a non-sensitive, stable identity for a logical
 // request.  Query parameters are sorted by net/url, so harmless parameter
 // ordering changes do not create a second browser session.  The peer identity
 // is included to prevent one peer from replaying another peer's completed
 // request.
+//
+// The normalized flow identity deliberately ignores regenerated values such
+// as state and PKCE challenges, but the exact-request identity does not: a
+// retry of the same login carries a byte-identical URL and coalesces, while
+// a new login (fresh state/PKCE after logout) always starts its own flow.
+// Suppressing the second case reported success without delivering the new
+// login's callback, making repeat logins impossible.
 func oauthSessionKey(conn transport.Conn, req protocol.BridgeRequest) string {
 	peerIdentity := transport.GetPeerFingerprint(conn)
 	if peerIdentity == "" && conn.RemoteAddr() != nil {
@@ -463,12 +488,14 @@ func oauthSessionKey(conn transport.Conn, req protocol.BridgeRequest) string {
 		// Bind an application-supplied FlowID to the authorization request as
 		// well. A peer must not be able to reuse one opaque ID to coalesce two
 		// unrelated URLs; state/PKCE/loopback-port churn is already normalized
-		// by derivedFlowID.
+		// by derivedFlowID. The exact-request identity keeps distinct logins
+		// (fresh per-attempt values) in separate sessions while identical
+		// retries still share one.
 		flowBinding := derivedFlowID
 		if flowBinding == "" {
 			flowBinding = browser.SanitizeURL(req.URL)
 		}
-		raw := strings.ToLower(peerIdentity) + "\x00" + flowID + "\x00" + flowBinding
+		raw := strings.ToLower(peerIdentity) + "\x00" + flowID + "\x00" + flowBinding + "\x00" + RequestURLIdentity(req.URL)
 		digest := sha256.Sum256([]byte(raw))
 		return hex.EncodeToString(digest[:])
 	}

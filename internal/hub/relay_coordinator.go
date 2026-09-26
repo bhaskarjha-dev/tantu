@@ -83,12 +83,15 @@ func (c *relayCoordinator) Do(ctx context.Context, key string, fn func() error) 
 }
 
 // relayRequestKey builds a bounded, non-secret key.  It intentionally hashes
-// the canonical URL rather than retaining OAuth query values in memory.
+// the canonical URL rather than retaining OAuth query values in memory. The
+// normalized flow identity is paired with the exact-request identity, so
+// identical retries coalesce while a new login (fresh per-attempt values)
+// always runs its own flow.
 func relayRequestKey(peer, rawURL string) string {
 	canonical := browser.SanitizeURL(strings.TrimSpace(rawURL))
 	flowID := bridge.DeriveOAuthFlowID(canonical)
 	if flowID != "" {
-		raw := strings.TrimSpace(peer) + "\x00" + flowID
+		raw := strings.TrimSpace(peer) + "\x00" + flowID + "\x00" + bridge.RequestURLIdentity(canonical)
 		digest := sha256.Sum256([]byte(raw))
 		return hex.EncodeToString(digest[:])
 	}

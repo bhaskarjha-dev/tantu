@@ -316,12 +316,12 @@ func (b *BSide) Run(parent context.Context, oauthURL string) error {
 			return fmt.Errorf("bridge ack error: %s", redactBridgeMessage(ack.Error))
 		}
 		if ack.Replay {
-			// A coalesced duplicate: a matching flow completed (or is
-			// completing) on the A-side. No callback is delivered for THIS
-			// request — the request key normalizes away per-attempt OAuth
-			// values such as state — so say so explicitly instead of
-			// implying this login's own code was handed to the local app.
-			// Callers that need their own code must start a distinct flow.
+			// A coalesced duplicate: the byte-identical request completed (or
+			// is completing) on the A-side. No callback is delivered for THIS
+			// request object — say so explicitly instead of implying this
+			// login's own code was handed to the local app. A login with
+			// fresh per-attempt values is a distinct flow and is never
+			// coalesced here.
 			b.logf("⚠️ Duplicate OAuth request coalesced with a recently completed flow %s; no callback was delivered for this request", reqID)
 			return nil
 		}

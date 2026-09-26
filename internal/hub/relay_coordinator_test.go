@@ -8,8 +8,9 @@ import (
 )
 
 // Sequential duplicates must each run the flow: replaying a past success
-// would falsely report delivery for a login whose own callback never arrived
-// (request keys normalize away per-attempt state/PKCE values).
+// would falsely report delivery for a login whose own callback never arrived.
+// Session keys bind the exact request URL, so only byte-identical retries
+// share a flow.
 func TestRelayCoordinator_NoPostSuccessReplay(t *testing.T) {
 	c := newRelayCoordinator()
 	var runs atomic.Int32
@@ -50,5 +51,22 @@ func TestRelayCoordinator_ConcurrentCoalesce(t *testing.T) {
 	}
 	if runs.Load() != 1 {
 		t.Fatalf("concurrent calls ran fn %d times, want 1", runs.Load())
+	}
+}
+
+// Relay keys bind the exact request: identical retries share a flow while a
+// new login (fresh per-attempt values) never joins another login's session.
+func TestRelayRequestKey_DistinguishesAttempts(t *testing.T) {
+	base := "https://auth.example.test/authorize?client_id=demo&state=one"
+	if relayRequestKey("peer", base) != relayRequestKey("peer", base) {
+		t.Fatal("identical requests must share a key")
+	}
+	other := "https://auth.example.test/authorize?client_id=demo&state=two"
+	if relayRequestKey("peer", base) == relayRequestKey("peer", other) {
+		t.Fatal("distinct logins must not share a key")
+	}
+	reordered := "https://auth.example.test/authorize?state=one&client_id=demo"
+	if relayRequestKey("peer", base) != relayRequestKey("peer", reordered) {
+		t.Fatal("harmless parameter reordering must not split a flow")
 	}
 }
