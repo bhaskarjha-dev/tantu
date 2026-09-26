@@ -67,6 +67,10 @@ rollback procedures.
 - OAuth relay attempts recorded with target peer, origin host only, state,
   and next action (`GET /api/relay/recent`, dashboard card, support bundle;
   durable last 50 / 30 days; never URLs, codes, or tokens).
+- The OAuth bookmarklet is permanent and ticket-free: unauthenticated clicks
+  render a confirmation interstitial (safe origin, destination lookup,
+  explicit Relay button) instead of dying on an expired one-use ticket, and
+  the relay still requires a click plus a valid session at POST time.
 - Wire versioning phase 1: envelopes carry `v: 1` and drop metadata carries
   a validated `idempotency_key` (Hub: operation ID, overridable per request;
   CLI: DropID, overridable via `--idempotency-key`).

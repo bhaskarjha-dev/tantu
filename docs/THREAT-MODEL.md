@@ -142,7 +142,7 @@
 |-------|--------|
 | **Threat** | Malicious website visited by developer in their browser executes cross-origin `fetch()`/`XHR` calls to `http://127.0.0.1:9876/api/*` (e.g., `/api/open-folder`, `/api/config`, `/api/status`) or exploits wildcard CORS |
 | **Impact** | High — drive-by configuration tampering, local directory opening, or sensitive mesh state leakage |
-| **Mitigation** | Elimination of wildcard CORS; exact loopback authority/Origin/Referer validation; sensitive `/api/*` reads and mutations require an IPC capability or one-time HttpOnly dashboard session; the legacy GET relay requires an explicit capability or one-use ticket. |
+| **Mitigation** | Elimination of wildcard CORS; exact loopback authority/Origin/Referer validation; sensitive `/api/*` reads and mutations require an IPC capability or one-time HttpOnly dashboard session; the legacy GET relay requires an explicit capability, else renders a confirmation shell that authorizes nothing. |
 | **Residual Risk** | Negligible |
 
 ---
@@ -191,6 +191,6 @@
 `tantu` delivers a security posture that is **strictly superior to ad-hoc SSH port forwarding (`ssh -R`) and cloud relays**:
 - **Zero-Trust Sender Provenance:** Every byte received is cryptographically bound to a verified TLS leaf certificate.
 - **Defense in Depth via PKCE:** Intercepted authorization codes are mathematically useless without the local `code_verifier`.
-- **Loopback & Browser-Access Control:** External network interfaces cannot access the Web Dashboard, REST IPC, or local callback listeners; exact-authority checks, capability/session authorization, and one-use relay tickets block ordinary cross-origin and tokenless local-browser access. Inline dashboard scripts and OS ACLs remain tracked hardening work.
+- **Loopback & Browser-Access Control:** External network interfaces cannot access the Web Dashboard, REST IPC, or local callback listeners; exact-authority checks and capability/session authorization block ordinary cross-origin and tokenless local-browser access, and the bookmarklet confirmation shell authorizes nothing without a click and a valid session. Inline dashboard scripts and OS ACLs remain tracked hardening work.
 - **Hardened Filesystem Defense:** Incoming files are sanitized against path traversal, NTFS ADS, Win32-invalid characters, and DOS reserved device conflicts; private staging operations are anchored to verified directory handles. Windows ACL enforcement and power-loss guarantees remain deployment/platform boundaries.
 - **No Cloud Dependencies:** Traffic travels directly peer-to-peer across LAN or native SSH tunnels with zero third-party metadata leakage.

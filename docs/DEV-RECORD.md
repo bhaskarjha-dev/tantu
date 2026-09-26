@@ -1087,6 +1087,37 @@ parallel sessions on one checkout need branch-per-agent discipline.
 - Full suite, vet, JS check, cross-compile green (below). Committed after
   the rebase; pushed with the batch.
 
+## Batch Z9 — permanent bookmarklet (2026-09-25)
+
+User-reported defect: the dashboard bookmarklet baked in a one-use ticket,
+so the second click (or any click after 10 minutes or a Hub restart) died
+with "relay token or dashboard session required" until the bookmark was
+re-dragged. A bookmark that works once is not a bookmark.
+
+### What changed
+
+- The bookmark carries no credential and never expires. Unauthenticated
+  clicks render a confirmation interstitial (safe origin host, destination
+  lookup, explicit Relay button); the relay itself still needs the click
+  plus a valid session at POST time. Burned-ticket links degrade to the
+  same page with an expiry note instead of a 403.
+- Removed the Hub one-use ticket machinery (`relayTickets` map, mint and
+  consume paths). The per-process token fallback and IPC-header paths relay
+  immediately, unchanged. The session cookie is still never accepted as GET
+  relay authorization (existing test now pins render-without-relay).
+- The interstitial shell is fully static (no user data embedded — the page
+  reads its own address bar), proven byte-identical across secrets.
+
+### Validation
+
+- New tests: interstitial render/expiry-note/redaction/static-shell,
+  evolved cookie-only assertions, ticket-free bookmark markers.
+- Real headless-Chrome run (isolated profile, virtual-time budget): shell
+  renders, recovery state shown without a session, no secret in DOM, zero
+  console errors.
+- Full suite, vet, JS check, cross-compile green (below). No commit or
+  push yet.
+
 ## Batch Z8 — tombstone docs accuracy and failure taxonomy (2026-09-25)
 
 Audit follow-through: the parallel tombstone feature shipped without
