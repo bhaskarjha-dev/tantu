@@ -328,8 +328,8 @@ func TestWebDashboard_BootstrapSessionAndNoEmbeddedTokens(t *testing.T) {
 	}
 	authenticatedRootBody, _ := io.ReadAll(authenticatedRootResp.Body)
 	authenticatedRootResp.Body.Close()
-	if !strings.Contains(string(authenticatedRootBody), "/relay?url=") || !strings.Contains(string(authenticatedRootBody), "ticket=") {
-		t.Fatal("authenticated dashboard did not receive a one-use relay ticket")
+	if !strings.Contains(string(authenticatedRootBody), "/relay?url=") || strings.Contains(string(authenticatedRootBody), "ticket=") {
+		t.Fatal("authenticated dashboard bookmark must be ticket-free and permanent")
 	}
 	cookieOnlyRelay, err := http.NewRequest(http.MethodGet, "http://"+h.WebAddr()+"/relay?url=https%3A%2F%2Fexample.com%2F", nil)
 	if err != nil {
@@ -340,9 +340,19 @@ func TestWebDashboard_BootstrapSessionAndNoEmbeddedTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cookieOnlyRelayBody, _ := io.ReadAll(cookieOnlyRelayResp.Body)
 	cookieOnlyRelayResp.Body.Close()
-	if cookieOnlyRelayResp.StatusCode != http.StatusForbidden {
-		t.Fatalf("cookie-only legacy relay status = %d, want 403", cookieOnlyRelayResp.StatusCode)
+	// The session cookie must not authorize a relay by itself: a cookie-only
+	// request renders the confirmation shell (200) but records no attempt.
+	// The relay itself still needs an explicit click plus POST-time session.
+	if cookieOnlyRelayResp.StatusCode != http.StatusOK {
+		t.Fatalf("cookie-only legacy relay status = %d, want 200 interstitial", cookieOnlyRelayResp.StatusCode)
+	}
+	if !strings.Contains(string(cookieOnlyRelayBody), "Relay this authorization?") {
+		t.Fatal("cookie-only relay did not render the confirmation interstitial")
+	}
+	if got := h.listRelayAttempts(); len(got) != 0 {
+		t.Fatalf("rendering the interstitial must not record an attempt, got %+v", got)
 	}
 }
 
@@ -413,6 +423,66 @@ func TestWebDashboard_LegacyRelayBookmarkletEndpoint(t *testing.T) {
 	// Missing-URL validation must not emit wildcard CORS.
 	if origin := resp.Header.Get("Access-Control-Allow-Origin"); origin != "" {
 		t.Errorf("expected no wildcard CORS header, got %q", origin)
+	}
+}
+
+func TestWebDashboard_RelayInterstitial(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+
+	// 1. A burned/expired ticket degrades to the interstitial, not a 403.
+	expired, err := http.Get("http://" + h.WebAddr() + "/relay?url=https%3A%2F%2Fexample.com%2Flogin&ticket=deadbeef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiredBody, _ := io.ReadAll(expired.Body)
+	expired.Body.Close()
+	if expired.StatusCode != http.StatusOK {
+		t.Fatalf("expired-ticket relay status = %d, want 200 interstitial", expired.StatusCode)
+	}
+	if !strings.Contains(string(expiredBody), "already expired") {
+		t.Error("expired-ticket interstitial must explain the extra step")
+	}
+	if got := h.listRelayAttempts(); len(got) != 0 {
+		t.Fatalf("interstitial must not record an attempt, got %+v", got)
+	}
+
+	// 2. Secrets never enter the shell: query values stay out of the HTML.
+	secret, err := http.Get("http://" + h.WebAddr() + "/relay?url=" + url.QueryEscape("https://accounts.google.com/o/oauth2/v2/auth?client_id=x&code=SECRET999"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secretBody, _ := io.ReadAll(secret.Body)
+	secret.Body.Close()
+	if secret.StatusCode != http.StatusOK {
+		t.Fatalf("secret-URL relay status = %d, want 200", secret.StatusCode)
+	}
+	if strings.Contains(string(secretBody), "SECRET999") || strings.Contains(string(secretBody), "code=") {
+		t.Error("interstitial leaked URL secret material")
+	}
+	if !strings.Contains(string(secretBody), "accounts.google.com") {
+		t.Error("interstitial must show the safe origin host")
+	}
+	// The shell must be fully static: a different secret in the same origin
+	// must produce a byte-identical page (nothing user-specific embedded).
+	secret2, err := http.Get("http://" + h.WebAddr() + "/relay?url=" + url.QueryEscape("https://accounts.google.com/o/oauth2/v2/auth?client_id=x&code=OTHER777"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secretBody2, _ := io.ReadAll(secret2.Body)
+	secret2.Body.Close()
+	if string(secretBody) != string(secretBody2) {
+		t.Error("interstitial shell is not static across secrets")
+	}
+
+	// 3. Non-relayable URLs fail closed before any shell renders.
+	bad, err := http.Get("http://" + h.WebAddr() + "/relay?url=" + url.QueryEscape("javascript:alert(1)"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad.Body.Close()
+	if bad.StatusCode != http.StatusBadRequest {
+		t.Errorf("dangerous-scheme relay status = %d, want 400", bad.StatusCode)
 	}
 }
 
@@ -1521,6 +1591,7 @@ func TestWebDashboard_UploadProgressAndPeerRenderMarkers(t *testing.T) {
 		"stay where they were",
 		"See Recent Authorizations below",
 		"via ' + data.destination",
+		"never expires",
 	} {
 		if !strings.Contains(content, s) {
 			t.Errorf("dashboard HTML missing %q (upload-progress / focus-preservation UX)", s)
@@ -1528,12 +1599,14 @@ func TestWebDashboard_UploadProgressAndPeerRenderMarkers(t *testing.T) {
 	}
 	// Clipboard and file inputs must stage for confirmation, never auto-send.
 	// The old trusted-but-vague peer label and generic success text are gone.
+	// Bookmarks must never carry single-use tickets again.
 	for _, s := range []string{
 		"uploadFile(image)",
 		"uploadFile(e.dataTransfer.files[0])",
 		"uploadFile(fileInput.files[0])",
 		"[Paired · ready]",
 		"File transferred successfully to peer!",
+		"ticket=",
 	} {
 		if strings.Contains(content, s) {
 			t.Errorf("dashboard HTML still contains unsafe/auto-send pattern %q", s)

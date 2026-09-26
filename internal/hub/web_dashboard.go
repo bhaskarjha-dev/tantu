@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bhaskarjha-dev/tantu/internal/browser"
 	"github.com/bhaskarjha-dev/tantu/internal/drop"
 	"github.com/bhaskarjha-dev/tantu/internal/pairing"
 )
@@ -624,7 +625,7 @@ const dashboardHTML = `<!DOCTYPE html>
     <div id="tab-relay" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-relay">
       <div class="bookmarklet-box">
         <a class="bookmarklet-btn" href="{{BOOKMARKLET_HREF}}">⚡ Tantu</a>
-        <div class="hint-text">Drag this button to your browser Bookmarks Bar. When logging in on any OAuth tab, click it to relay authorization directly back to your dev terminal!</div>
+        <div class="hint-text">Drag this button to your browser Bookmarks Bar. When logging in on any OAuth tab, click it, confirm in the popup, and the authorization is relayed back to your dev terminal. The saved bookmark never expires.</div>
       </div>
 
       <div class="card">
@@ -2682,6 +2683,111 @@ type peerStatus struct {
 	Active      bool   `json:"active"`
 }
 
+// relayInterstitialHTML is the bookmarklet confirmation shell. It carries
+// no credential and authorizes nothing: the full authorization URL reaches
+// the relay endpoint only through an explicit same-origin POST after a click.
+// Dynamic values enter via textContent or a JSON-encoded literal, never via
+// HTML interpolation of untrusted content.
+const relayInterstitialHTML = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Confirm OAuth Relay</title><style>body{background:#090b10;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;}.box{background:#131722;border:1px solid #232a3b;border-radius:12px;padding:2rem;max-width:450px;width:90%;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,0.5);}.icon{font-size:2.5rem;margin-bottom:0.75rem;}h2{margin:0 0 0.5rem 0;}h2.ok{color:#34d399;}p{color:#8b949e;font-size:0.9rem;margin:0 0 1rem 0;}p strong{color:#e6edf3;}.note{background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.4);color:#fbbf24;border-radius:8px;padding:0.6rem 0.8rem;font-size:0.85rem;}.hint{color:#64748b;font-size:0.8rem;}.btn{background:#3b82f6;border:none;color:#fff;padding:0.6rem 1.25rem;border-radius:8px;font-weight:600;font-size:0.9rem;cursor:pointer;}.btn:disabled{opacity:0.5;cursor:not-allowed;}.btn-ghost{background:transparent;border:1px solid #323c52;color:#e6edf3;}</style></head><body><div class="box"><div id="confirmView"><div class="icon">🔐</div><h2>Relay this authorization?</h2><p>From: <strong>{{ORIGIN}}</strong></p>{{NOTICE}}<p class="hint" id="peerLine">Checking destination…</p><div id="noSession" style="display:none" class="hint">Dashboard session not established. Open the dashboard from the Hub terminal, then retry this bookmark.</div><div style="display:flex;gap:0.5rem;justify-content:center;margin-top:1rem;"><button id="btnRelayNow" class="btn" disabled>Relay now</button><button id="btnCancel" class="btn btn-ghost">Cancel</button></div><div class="hint" id="resultLine" role="status" aria-live="polite" style="margin-top:0.75rem;"></div></div><div id="okView" style="display:none"><div class="icon">✅</div><h2 class="ok">Authentication Relayed!</h2><p id="okText"></p><div class="hint">This window will close automatically in 3 seconds...</div></div></div><script>
+const relayURL = new URLSearchParams(window.location.search).get('url') || '';
+function show(el) { el.style.display = 'block'; }
+function hide(el) { el.style.display = 'none'; }
+async function boot() {
+  const peerLine = document.getElementById('peerLine');
+  const noSession = document.getElementById('noSession');
+  const btnRelay = document.getElementById('btnRelayNow');
+  if (!relayURL) {
+    peerLine.textContent = 'No authorization URL found. Start from the OAuth login page and retry the bookmark.';
+    return;
+  }
+  try {
+    const res = await fetch('/api/status', { credentials: 'same-origin' });
+    if (!res.ok) throw new Error('status ' + res.status);
+    const data = await res.json();
+    const peers = data.peers || [];
+    let dest = 'Default peer';
+    if (peers.length === 1) { dest = peers[0].name || 'Peer'; }
+    else if (peers.length > 1) {
+      const sel = peers.filter(function(p) { return p.active; })[0] || peers[0];
+      dest = (sel && sel.name) || 'Peer';
+    } else if ((data.transport || 'loopback') === 'loopback') { dest = 'this Hub (local)'; }
+    else { dest = 'No trusted peers yet'; btnRelay.disabled = true; peerLine.textContent = 'Destination: ' + dest + ' — pair a peer first.'; return; }
+    peerLine.textContent = 'Destination: ' + dest;
+    btnRelay.disabled = false;
+  } catch (_) {
+    hide(peerLine);
+    show(noSession);
+  }
+}
+document.getElementById('btnCancel').addEventListener('click', function() { window.close(); });
+document.getElementById('btnRelayNow').addEventListener('click', async function() {
+  const btnRelay = document.getElementById('btnRelayNow');
+  const resultLine = document.getElementById('resultLine');
+  btnRelay.disabled = true;
+  resultLine.textContent = 'Relaying…';
+  try {
+    const res = await fetch('/api/relay/open', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ url: relayURL }) });
+    let data = {};
+    try { data = await res.json(); } catch (_) {}
+    if (res.ok && data.status === 'success') {
+      hide(document.getElementById('confirmView'));
+      const okText = document.getElementById('okText');
+      okText.textContent = 'Authentication completed successfully' + (data.destination ? ' via ' + data.destination : '') + '.' + (data.operation_id ? ' (ID ' + data.operation_id + ')' : '');
+      show(document.getElementById('okView'));
+      setTimeout(function() { window.close(); }, 3000);
+    } else {
+      if (res.status === 401) { hide(document.getElementById('peerLine')); show(document.getElementById('noSession')); }
+      let msg = (data && data.message) || 'Relay failed';
+      if (data && data.next_action) msg += ' Next: ' + data.next_action;
+      if (data && data.operation_id) msg += ' (ID ' + data.operation_id + ')';
+      resultLine.textContent = msg;
+      btnRelay.disabled = false;
+    }
+  } catch (err) {
+    resultLine.textContent = 'Connection error: ' + err.message;
+    btnRelay.disabled = false;
+  }
+});
+boot();
+</script></body></html>`
+
+// renderRelayInterstitial serves the bookmarklet confirmation shell for a
+// relay request that carries no credential. It authorizes nothing: the page
+// shows only the safe origin host and offers an explicit Relay button, which
+// POSTs same-origin so the dashboard session flows. Without a click and a
+// valid session, no relay happens. expiredLink notes a previously-ticketed
+// bookmark and explains the extra step instead of dead-ending.
+func (h *Hub) renderRelayInterstitial(w http.ResponseWriter, rawURL string, expiredLink bool) {
+	sanitized := browser.SanitizeURL(strings.TrimSpace(rawURL))
+	renderErr := func() {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Relay Error</title></head><body><p>This link cannot be relayed. Start from the OAuth login page and retry the bookmark.</p></body></html>`))
+	}
+	if err := browser.ValidateURL(sanitized); err != nil {
+		renderErr()
+		return
+	}
+	origin := ""
+	if u, err := url.Parse(sanitized); err == nil {
+		origin = u.Hostname()
+	}
+	if origin == "" {
+		renderErr()
+		return
+	}
+	notice := ""
+	if expiredLink {
+		notice = `<p class="note">This saved link already expired — confirm below to continue. Your bookmark still works; nothing needs re-saving.</p>`
+	}
+	page := relayInterstitialHTML
+	page = strings.ReplaceAll(page, "{{ORIGIN}}", escapeHTMLText(origin))
+	page = strings.ReplaceAll(page, "{{NOTICE}}", notice)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(page))
+}
+
 // registerDashboardRoutes configures all routes for the Single-Page Web Dashboard and APIs.
 func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 	// 1. GET / — Unified Dashboard SPA
@@ -2705,9 +2811,11 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 		}
 		bookmarkletJS := "javascript:void(0)"
 		if h.requestHasDashboardCapability(r) {
-			if relayTicket := h.newRelayTicket(); relayTicket != "" {
-				bookmarkletJS = fmt.Sprintf("javascript:void(window.open('http://%s/relay?url='+encodeURIComponent(location.href)+'&ticket=%s','_blank','width=550,height=380'))", webAddr, url.QueryEscape(relayTicket))
-			}
+			// The bookmark carries no credential: opening it renders a
+			// confirmation interstitial, and the relay itself still needs an
+			// explicit click plus a valid dashboard session at POST time.
+			// Nothing here expires, so a saved bookmark keeps working.
+			bookmarkletJS = fmt.Sprintf("javascript:void(window.open('http://%s/relay?url='+encodeURIComponent(location.href),'_blank','width=550,height=380'))", webAddr)
 		}
 		// `unsafe-hashes` is limited to the exact generated bookmarklet
 		// navigation; ordinary inline scripts still require the per-response
@@ -2874,22 +2982,23 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			return
 		}
 		// The legacy GET endpoint deliberately does not accept the browser
-		// session cookie: a cross-site top-level navigation must not be able to
-		// turn that cookie into a relay capability. Authenticated dashboard
-		// mutations use POST /api/relay/open; the bookmarklet uses a one-use
-		// ticket.
+		// session cookie as relay authorization: a cross-site top-level
+		// navigation must not be able to turn that cookie into a relay
+		// capability. Authenticated dashboard mutations use POST
+		// /api/relay/open. Requests without an explicit credential render a
+		// confirmation interstitial instead of relaying: the shell authorizes
+		// nothing, and the relay itself still requires an explicit click plus
+		// a valid session at POST time. A previously-ticketed bookmark whose
+		// ticket is gone degrades to the same page instead of dead-ending.
 		ipcToken := h.currentIPCToken()
 		relayAuthorized := ipcToken != "" && subtle.ConstantTimeCompare([]byte(r.Header.Get(IPCTokenHeader)), []byte(ipcToken)) == 1
-		if !relayAuthorized {
-			relayAuthorized = h.consumeRelayTicket(r.URL.Query().Get("ticket"))
-		}
 		if !relayAuthorized {
 			providedRelayToken := r.URL.Query().Get("token")
 			relayToken := h.currentRelayToken()
 			relayAuthorized = relayToken != "" && subtle.ConstantTimeCompare([]byte(providedRelayToken), []byte(relayToken)) == 1
 		}
 		if !relayAuthorized {
-			http.Error(w, "relay token or dashboard session required", http.StatusForbidden)
+			h.renderRelayInterstitial(w, rawURL, strings.TrimSpace(r.URL.Query().Get("ticket")) != "")
 			return
 		}
 

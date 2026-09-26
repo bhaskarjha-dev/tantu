@@ -238,7 +238,6 @@ type Hub struct {
 	dashboardBootstrapToken string
 	dashboardMu             sync.Mutex
 	dashboardSessions       map[string]time.Time
-	relayTickets            map[string]time.Time
 	// skewWarnedFor dedupes version-skew warnings per caller version
 	// (guarded by dashboardMu) so a skewed script cannot flood the log.
 	skewWarnedFor string
@@ -640,7 +639,6 @@ func NewHub(cfg HubConfig) (*Hub, error) {
 		ipcToken:                hex.EncodeToString(ipcTokenBytes),
 		dashboardBootstrapToken: hex.EncodeToString(dashboardBootstrapBytes),
 		dashboardSessions:       make(map[string]time.Time),
-		relayTickets:            make(map[string]time.Time),
 		uploadSlots:             make(chan struct{}, maxHubConcurrentUploads),
 		textSlots:               make(chan struct{}, maxHubConcurrentTextUploads),
 		pairSlots:               make(chan struct{}, maxHubConcurrentPairings),
@@ -853,49 +851,8 @@ func (h *Hub) currentRelayToken() string {
 func (h *Hub) resetDashboardSessions() {
 	h.dashboardMu.Lock()
 	h.dashboardSessions = make(map[string]time.Time)
-	h.relayTickets = make(map[string]time.Time)
 	h.dashboardBootstrapToken = ""
 	h.dashboardMu.Unlock()
-}
-
-func (h *Hub) newRelayTicket() string {
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return ""
-	}
-	ticket := hex.EncodeToString(buf)
-	h.dashboardMu.Lock()
-	defer h.dashboardMu.Unlock()
-	if h.relayTickets == nil {
-		h.relayTickets = make(map[string]time.Time)
-	}
-	now := time.Now()
-	for id, expires := range h.relayTickets {
-		if !expires.After(now) {
-			delete(h.relayTickets, id)
-		}
-	}
-	const maxRelayTickets = 128
-	if len(h.relayTickets) >= maxRelayTickets {
-		return ""
-	}
-	h.relayTickets[ticket] = now.Add(10 * time.Minute)
-	return ticket
-}
-
-func (h *Hub) consumeRelayTicket(ticket string) bool {
-	if ticket == "" {
-		return false
-	}
-	h.dashboardMu.Lock()
-	defer h.dashboardMu.Unlock()
-	expires, ok := h.relayTickets[ticket]
-	if !ok || !expires.After(time.Now()) {
-		delete(h.relayTickets, ticket)
-		return false
-	}
-	delete(h.relayTickets, ticket)
-	return true
 }
 
 func (h *Hub) newDashboardSession() (string, error) {
