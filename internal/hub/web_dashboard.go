@@ -2979,37 +2979,69 @@ type peerStatus struct {
 // the relay endpoint only through an explicit same-origin POST after a click.
 // Dynamic values enter via textContent or a JSON-encoded literal, never via
 // HTML interpolation of untrusted content.
-const relayInterstitialHTML = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Confirm OAuth Relay</title><style>body{background:#090b10;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;-webkit-font-smoothing:antialiased;}.box{background:#131722;border:1px solid #232a3b;border-radius:16px;padding:2rem;max-width:460px;width:92%;text-align:center;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);}.icon{font-size:2.5rem;margin-bottom:0.75rem;}h2{margin:0 0 0.5rem 0;letter-spacing:-0.01em;}h2.ok{color:#34d399;}p{color:#8b949e;font-size:0.9rem;margin:0 0 1rem 0;}p strong{color:#e6edf3;}.note{background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.4);color:#fbbf24;border-radius:8px;padding:0.6rem 0.8rem;font-size:0.85rem;}.hint{color:#64748b;font-size:0.8rem;}.btn{background:#3b82f6;border:none;color:#fff;padding:0.6rem 1.25rem;border-radius:8px;font-weight:600;font-size:0.9rem;cursor:pointer;box-shadow:0 4px 14px rgba(59,130,246,0.35);transition:transform 150ms ease-out,opacity 150ms ease-out;}.btn:hover:not(:disabled){transform:translateY(-1px);}.btn:disabled{opacity:0.5;cursor:not-allowed;}.btn-ghost{background:transparent;border:1px solid #323c52;color:#e6edf3;box-shadow:none;}button:focus-visible{outline:2px solid #3b82f6;outline-offset:2px;}@media (prefers-color-scheme: light){body{background:#f4f6fb;color:#16213a;}.box{background:#ffffff;border-color:#d9e0ec;box-shadow:0 25px 50px -12px rgba(22,33,58,0.25);}p{color:#5b6478;}p strong{color:#16213a;}.hint{color:#7b8499;}.btn-ghost{border-color:#b9c4d8;color:#16213a;}}@media (prefers-reduced-motion: reduce){.btn{transition:none;}}</style></head><body><div class="box"><div id="confirmView"><div class="icon">🔐</div><h2>Relay this authorization?</h2><p>From: <strong>{{ORIGIN}}</strong></p>{{NOTICE}}<p class="hint" id="peerLine">Checking destination…</p><div id="noSession" style="display:none" class="hint">Dashboard session not established. Open the dashboard from the Hub terminal, then retry this bookmark.</div><div style="display:flex;gap:0.5rem;justify-content:center;margin-top:1rem;"><button id="btnRelayNow" class="btn" disabled>Relay now</button><button id="btnCancel" class="btn btn-ghost">Cancel</button></div><div class="hint" id="resultLine" role="status" aria-live="polite" style="margin-top:0.75rem;"></div></div><div id="okView" style="display:none"><div class="icon">✅</div><h2 class="ok">Authentication Relayed!</h2><p id="okText"></p><div class="hint">This window will close automatically in 3 seconds...</div></div></div><script>
+const relayInterstitialHTML = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Confirm OAuth Relay</title><style>body{background:#090b10;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;-webkit-font-smoothing:antialiased;}.box{background:#131722;border:1px solid #232a3b;border-radius:16px;padding:2rem;max-width:460px;width:92%;text-align:center;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);}.icon{font-size:2.5rem;margin-bottom:0.75rem;}h2{margin:0 0 0.5rem 0;letter-spacing:-0.01em;}h2.ok{color:#34d399;}p{color:#8b949e;font-size:0.9rem;margin:0 0 1rem 0;}p strong{color:#e6edf3;}.note{background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.4);color:#fbbf24;border-radius:8px;padding:0.6rem 0.8rem;font-size:0.85rem;}.hint{color:#64748b;font-size:0.8rem;}.btn{background:#3b82f6;border:none;color:#fff;padding:0.6rem 1.25rem;border-radius:8px;font-weight:600;font-size:0.9rem;cursor:pointer;box-shadow:0 4px 14px rgba(59,130,246,0.35);transition:transform 150ms ease-out,opacity 150ms ease-out;}.btn:hover:not(:disabled){transform:translateY(-1px);}.btn:disabled{opacity:0.5;cursor:not-allowed;}.btn-ghost{background:transparent;border:1px solid #323c52;color:#e6edf3;box-shadow:none;}button:focus-visible{outline:2px solid #3b82f6;outline-offset:2px;}@media (prefers-color-scheme: light){body{background:#f4f6fb;color:#16213a;}.box{background:#ffffff;border-color:#d9e0ec;box-shadow:0 25px 50px -12px rgba(22,33,58,0.25);}p{color:#5b6478;}p strong{color:#16213a;}.hint{color:#7b8499;}.btn-ghost{border-color:#b9c4d8;color:#16213a;}}@media (prefers-reduced-motion: reduce){.btn{transition:none;}}</style></head><body><div class="box"><div id="confirmView"><div class="icon">🔐</div><h2>Relay this authorization?</h2><p>From: <strong>{{ORIGIN}}</strong></p>{{NOTICE}}<p class="hint" id="peerLine">Checking destination…</p><div id="noSession" style="display:none" class="hint">Dashboard session not established. Open the dashboard from the Hub terminal (press o) — this popup will continue automatically.</div><div style="display:flex;gap:0.5rem;justify-content:center;margin-top:1rem;"><button id="btnRelayNow" class="btn" disabled>Relay now</button><button id="btnCancel" class="btn btn-ghost">Cancel</button></div><div class="hint" id="resultLine" role="status" aria-live="polite" style="margin-top:0.75rem;"></div></div><div id="okView" style="display:none"><div class="icon">✅</div><h2 class="ok">Authentication Relayed!</h2><p id="okText"></p><div class="hint">This window will close automatically in 3 seconds...</div></div></div><script>
 const relayURL = new URLSearchParams(window.location.search).get('url') || '';
 function show(el) { el.style.display = 'block'; }
 function hide(el) { el.style.display = 'none'; }
-async function boot() {
+let statusTimer = null;
+let sessionWasReady = false;
+async function refreshSessionState() {
   const peerLine = document.getElementById('peerLine');
   const noSession = document.getElementById('noSession');
   const btnRelay = document.getElementById('btnRelayNow');
+  const resultLine = document.getElementById('resultLine');
   if (!relayURL) {
     peerLine.textContent = 'No authorization URL found. Start from the OAuth login page and retry the bookmark.';
     return;
   }
+  let authed = false;
+  let data = null;
   try {
     const res = await fetch('/api/status', { credentials: 'same-origin' });
-    if (!res.ok) throw new Error('status ' + res.status);
-    const data = await res.json();
-    const peers = data.peers || [];
-    let dest = 'Default peer';
-    if (peers.length === 1) { dest = peers[0].name || 'Peer'; }
-    else if (peers.length > 1) {
-      const sel = peers.filter(function(p) { return p.active; })[0] || peers[0];
-      dest = (sel && sel.name) || 'Peer';
-    } else if ((data.transport || 'loopback') === 'loopback') { dest = 'this Hub (local)'; }
-    else { dest = 'No trusted peers yet'; btnRelay.disabled = true; peerLine.textContent = 'Destination: ' + dest + ' — pair a peer first.'; return; }
-    peerLine.textContent = 'Destination: ' + dest;
-    btnRelay.disabled = false;
-    btnRelay.focus();
-  } catch (_) {
+    if (res.ok) {
+      authed = true;
+      data = await res.json();
+    }
+  } catch (_) {}
+  // Readiness is the HTTP result, not the payload shape: an authenticated
+  // Hub with zero peers answers 200 with peers:null, which is a valid
+  // session that must enable the button.
+  if (!authed || data == null || typeof data !== 'object') {
+    // No session (or Hub unreachable): guidance stays up and the button
+    // stays off. If a session appears later — e.g. the dashboard was just
+    // opened in another tab — the next poll enables everything by itself.
+    if (sessionWasReady) {
+      sessionWasReady = false;
+      btnRelay.disabled = true;
+      resultLine.textContent = '';
+    }
     hide(peerLine);
     show(noSession);
+    return;
   }
+  const peers = Array.isArray(data.peers) ? data.peers : [];
+  let dest = 'Default peer';
+  if (peers.length === 1) { dest = peers[0].name || 'Peer'; }
+  else if (peers.length > 1) {
+    const sel = peers.filter(function(p) { return p.active; })[0] || peers[0];
+    dest = (sel && sel.name) || 'Peer';
+  } else if ((data.transport || 'loopback') === 'loopback') { dest = 'this Hub (local)'; }
+  else { dest = 'No trusted peers yet'; btnRelay.disabled = true; peerLine.textContent = 'Destination: ' + dest + ' — pair a peer first.'; return; }
+  show(peerLine);
+  hide(noSession);
+  peerLine.textContent = 'Destination: ' + dest;
+  btnRelay.disabled = false;
+  if (!sessionWasReady) {
+    // Transition only: announce once and focus, never steal focus or
+    // repeat announcements on routine polls.
+    sessionWasReady = true;
+    resultLine.textContent = 'Dashboard session established. Relay button enabled.';
+    btnRelay.focus();
+  }
+}
+async function boot() {
+  await refreshSessionState();
+  statusTimer = setInterval(refreshSessionState, 3000);
 }
 document.getElementById('btnCancel').addEventListener('click', function() { window.close(); });
 document.getElementById('btnRelayNow').addEventListener('click', async function() {
@@ -3026,14 +3058,22 @@ document.getElementById('btnRelayNow').addEventListener('click', async function(
       const okText = document.getElementById('okText');
       okText.textContent = 'Authentication completed successfully' + (data.destination ? ' via ' + data.destination : '') + '.' + (data.operation_id ? ' (ID ' + data.operation_id + ')' : '');
       show(document.getElementById('okView'));
+      if (statusTimer != null) { clearInterval(statusTimer); statusTimer = null; }
       setTimeout(function() { window.close(); }, 3000);
     } else {
-      if (res.status === 401) { hide(document.getElementById('peerLine')); show(document.getElementById('noSession')); }
+      if (res.status === 401) {
+        sessionWasReady = false;
+        btnRelay.disabled = true;
+        hide(document.getElementById('peerLine'));
+        show(document.getElementById('noSession'));
+      }
       let msg = (data && data.message) || 'Relay failed';
       if (data && data.next_action) msg += ' Next: ' + data.next_action;
       if (data && data.operation_id) msg += ' (ID ' + data.operation_id + ')';
       resultLine.textContent = msg;
-      btnRelay.disabled = false;
+      if (res.status !== 401) {
+        btnRelay.disabled = false;
+      }
     }
   } catch (err) {
     resultLine.textContent = 'Connection error: ' + err.message;

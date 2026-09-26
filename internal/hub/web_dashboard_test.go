@@ -477,6 +477,17 @@ func TestWebDashboard_RelayInterstitial(t *testing.T) {
 	if string(secretBody) != string(secretBody2) {
 		t.Error("interstitial shell is not static across secrets")
 	}
+	// The recovery path must promise auto-continuation (not a retry loop)
+	// and the page must watch for a session instead of checking once.
+	for _, want := range []string{
+		"will continue automatically",
+		"setInterval(refreshSessionState",
+		"Relay button enabled.",
+	} {
+		if !strings.Contains(string(secretBody), want) {
+			t.Errorf("interstitial missing session-watch behavior %q", want)
+		}
+	}
 
 	// 3. Non-relayable URLs fail closed before any shell renders.
 	bad, err := http.Get("http://" + h.WebAddr() + "/relay?url=" + url.QueryEscape("javascript:alert(1)"))
