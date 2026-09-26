@@ -68,6 +68,10 @@ rollback procedures.
   OS-driven light/dark themes, purposeful motion with full reduced-motion
   support, upload speed and ETA, status chips, and a matching interstitial,
   relay pages, and pairing dialog.
+- Information-architecture audit fixes: one shared send-destination header
+  governing file and text sends, pairing approval banner above guidance,
+  "Received Items" labeled session-local, and expert mode stated
+  per-session.
 - OAuth relay attempts recorded with target peer, origin host only, state,
   and next action (`GET /api/relay/recent`, dashboard card, support bundle;
   durable last 50 / 30 days; never URLs, codes, or tokens).

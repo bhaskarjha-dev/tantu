@@ -1114,8 +1114,8 @@ re-dragged. A bookmark that works once is not a bookmark.
 - Real headless-Chrome run (isolated profile, virtual-time budget): shell
   renders, recovery state shown without a session, no secret in DOM, zero
   console errors.
-- Full suite, vet, JS check, cross-compile green (below). No commit or
-  push yet.
+- Full suite, vet, JS check, cross-compile green (below). Committed as
+  `8bf8555 feat(oauth)` + `1edb30d docs(oauth)` and pushed.
 
 ## Batch Z8 — tombstone docs accuracy and failure taxonomy (2026-09-25)
 
@@ -1214,5 +1214,34 @@ no external assets, and no weakened guarantee.
 - Marker tests extended (theme query, chips, ETA, modal, focus); real
   headless-Chrome runs in both themes for dashboard, interstitial, and the
   opened modal with zero console errors.
-- Full suite, vet, JS check, cross-compile green (below). No commit or
-  push yet.
+- Full suite, vet, JS check, cross-compile green (below). Committed after
+  verification; pushed with the batch.
+
+## Batch Z13 — IA audit fixes (2026-09-25)
+
+Decision-by-decision audit of every placement (Plan-mode review): kept the
+combined QuickDrop composer and the separate Transfers tab, and fixed what
+failed the five user questions.
+
+### What changed
+
+- Shared send-destination header above the composer grid: one visible
+  control now governs file, image, clipboard, and text sends (the text
+  composer previously inherited an off-screen selection).
+- Banner severity order: pairing approval above next-action guidance.
+- "Received Items & History" renamed to "Received Items" with an explicit
+  session-local note (inbound is memory-only by privacy design; the
+  alternative — persisting snippets — was rejected, recorded here).
+- Expert mode labeled per-session. Pairing dialog kept in its tab (a move
+  to body level was evaluated and rejected as risk without product value);
+  `openPairModal` now ensures its tab is visible first.
+- Inbox per-item delete deferred with rationale: entry-only removal strands
+  files, file removal needs OS-trash semantics — a real design decision,
+  not a gap to improvise.
+
+### Validation
+
+- Marker for the shared header; full hub/cmd suites green; re-shot
+  dashboard in both themes against a port-pinned Hub (prior round probed
+  the user's own Hub on the shared port — evidence hygiene noted).
+- Committed after verification; pushed with the batch.
