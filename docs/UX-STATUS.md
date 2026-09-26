@@ -45,7 +45,7 @@ E5 cross-platform/accessibility/failure evidence.
 | OAuth state machine | Done (faithful subset) | Sender-side submitted → waiting_callback → complete/failed/cancelled with redacted codes; browser-opened instant lives in A-side logs by architecture. Durable ledger + API + dashboard card + bundle; design for full versioning in `docs/SPEC-WIRE-VERSIONING.md`. |
 | Browser/platform clipboard matrix | Partial | Paste-event path + picker fallback implemented and marked; matrix measurements need real browsers/platforms. |
 | WCAG 2.2 AA audit | Partial | Code-level requirements implemented (names, live regions, focus, motion, drag alternative); formal audit with AT sessions not run. |
-| Failure-injection suite | Partial | Offline, quota-shape, checksum-shape, lost-ACK-shape, receiver-rejection (Unix-gated), corrupt-history, restart-during-life covered; disk-full not covered. |
+| Failure-injection suite | Partial | Offline, quota-shape, checksum-shape, lost-ACK-shape, receiver-rejection (Unix-gated), disk-full taxonomy + write-failure E2E, corrupt-history, restart-during-life covered; true OS disk-full condition not injected. |
 | Performance measurement harness | Done (code-level) | `internal/drop/throughput_bench_test.go` (1 MiB E2E, stdlib-only) with recorded baselines; no CI schedule yet. |
 | User research baseline | Not started (human-only) | Ready-to-run materials in `docs/RESEARCH-PACKET.md`. |
 | Redacted support bundle | Done | `doctor --bundle-path`, redaction tests (offline + live). |

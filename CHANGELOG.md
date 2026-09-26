@@ -68,9 +68,13 @@ rollback procedures.
   and next action (`GET /api/relay/recent`, dashboard card, support bundle;
   durable last 50 / 30 days; never URLs, codes, or tokens).
 - Wire versioning phase 1: envelopes carry `v: 1` and drop metadata carries
-  a validated `idempotency_key` (Hub: operation ID; CLI: DropID); receivers
-  validate and otherwise ignore both, preserving legacy interop. Tombstone
-  lookup remains future work per `docs/SPEC-WIRE-VERSIONING.md`.
+  a validated `idempotency_key` (Hub: operation ID, overridable per request;
+  CLI: DropID, overridable via `--idempotency-key`).
+- Receiver completion tombstones: same-key redelivery streams to discard,
+  verifies the digest, and re-acknowledges without staging, publishing, or
+  duplicate inbox/history (bounded LRU 1024, 24 h retention, durable file,
+  fail-closed mismatch). Re-run a send with the same `--idempotency-key`
+  for a duplicate-safe retry; `transfer retry` teaches this pattern.
 - Changing the dashboard downloads directory now states that previously
   received files stay in their former location.
 

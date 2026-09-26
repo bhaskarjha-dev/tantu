@@ -1086,3 +1086,24 @@ parallel sessions on one checkout need branch-per-agent discipline.
   CI Unix executes it), dashboard clear markers.
 - Full suite, vet, JS check, cross-compile green (below). Committed after
   the rebase; pushed with the batch.
+
+## Batch Z8 — tombstone docs accuracy and failure taxonomy (2026-09-25)
+
+Audit follow-through: the parallel tombstone feature shipped without
+user-facing documentation, and disk-full paths lacked tests.
+
+### What changed
+
+- CHANGELOG tombstone entry corrected (lookup shipped, not future) with
+  `--idempotency-key` retry semantics; README resumable-transfer line
+  documents duplicate-safe retry.
+- Disk-full taxonomy tests (write/sync/read failure strings classify as
+  interrupted, safe retry, no duplicate risk) plus a drop-layer write-failure
+  E2E. Incidental finding, kept as designed: the receiver returns the raw
+  local error while the sender observes the messaged failure relayed through
+  the completion frame; the test asserts both sides of that contract.
+
+### Validation
+
+- New tests listed above, green. Full suite, vet, JS check, cross-compile
+  green (below). No commit or push yet.
