@@ -1,9 +1,9 @@
 # Wire Versioning & Idempotent Retry — Design Proposal
 
-> **Status:** Phase 1 implemented (emit + validate); phases 2–3 pending
-> design decisions below. Until the tombstone lands, retry-after-unknown-
-> outcome stays at-least-once with explicit duplicate-risk UX; `transfer
-> retry` stays refused.
+> **Status:** Phases 1–2 implemented (emit + validate + receiver tombstone);
+> phase 3 (idempotent retry UX) partially addressed: `transfer retry` still
+> refuses blind retry but now teaches duplicate-safe key-reuse, since the Hub
+> keeps no payload to resend.
 > **Date:** 2026-09-25
 
 ## 1. Problem
@@ -55,17 +55,14 @@ framework, changing the same-release supported topology.
 - Bounding (count + age) mirrors existing budgets (quotas, 50-op ledgers,
   8 GiB partial budget) instead of inventing unbounded state.
 
-## 5. Open decisions
+## 5. Open decisions (resolved 2026-09-25; recommendations adopted)
 
-1. Tombstone durability: memory-only (lost on restart, like SSE buffer) vs
-   persisted beside `transfers.json`. Recommendation: persisted, same
-   atomic/0600 pattern — crash recovery is the point.
-2. Retention: 24 h to match the partial sweep, or 30 d to match history?
-   Recommendation: 24 h; idempotency windows longer than a day invite
-   surprising re-acks.
-3. Mixed-version support window: same-release-only stays, or N/N-1
-   best-effort after this lands? Recommendation: keep same-release as the
-   supported topology; versioning only improves error quality.
+1. Tombstone durability: persisted beside transfer history (atomic/0600) —
+   crash recovery is the point. Memory-only stays available via an empty
+   path for tests and short-lived receivers.
+2. Retention: 24 h to match the partial sweep.
+3. Mixed-version support window: same-release-only stays the supported
+   topology; versioning improves error quality.
 
 ## 6. Rollout (each phase independently testable)
 
@@ -74,13 +71,20 @@ framework, changing the same-release supported topology.
    **Implemented 2026-09-25:** envelope `V` stamped at the encode choke
    point (`protocol.ProtocolVersion`), `idempotency_key` emitted by Hub
    uploads (key = operation ID) and direct CLI sends (key = DropID),
-   receiver-side alphabet/length validation with fail-closed rejection.
-   Tombstone lookup explicitly not yet performed.
+   receiver-side alphabet/length validation with fail-closed rejection
+   (refactored to the shared `drop.ValidTombstoneKey` helper).
 2. Tombstone + re-ack path with duplicate-DropID ownership tests extended
    to same-key redelivery (no second publication, identical digest).
+   **Implemented 2026-09-25** (`internal/drop/tombstone.go`): bounded LRU
+   1024, 24 h retention, durable file, fail-closed mismatch; same-key
+   redelivery streams to discard, verifies the digest, and re-acknowledges
+   without staging, publishing, or duplicate inbox/history.
 3. Idempotent retry UX: `transfer retry <id>` allowed only for tombstoned
    operations; everything else keeps the current refusal. Duplicate-risk
    state remains for the legacy path.
+   **Partially addressed 2026-09-25:** retry stays refused (the Hub keeps
+   no payload to resend) but now teaches duplicate-safe key-reuse with
+   `--idempotency-key` instead of only refusing.
 
 ## 7. Risks
 

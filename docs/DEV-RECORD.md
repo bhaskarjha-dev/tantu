@@ -1035,5 +1035,54 @@ with a JSON mode reports operation identity, destination, and recovery.
 - Live smoke (real Hub binary, artifacts removed): delegated `open --json`
   failure returns operation ID + destination + next action with exit 1;
   missing-URL validation exits 2.
-- Full suite, vet, JS check, cross-compile green (below). No commit or
-  push yet.
+- Full suite, vet, JS check, cross-compile green (below). Committed as
+  `e5a78d1 feat(relay)` + `bf38d66 docs(relay)` and pushed.
+
+## Batch Z7 — relay deletion, rejection evidence, tombstone collision (2026-09-25)
+
+### Mid-session collision (resolved without loss)
+
+While this batch was uncommitted, a parallel agent landed `797a924
+feat(drop): idempotency tombstone with sender key control` on top of the
+same base — full SPEC phase-2 implementation (receiver tombstone store,
+`send --idempotency-key`, key-reuse teaching in the retry refusal),
+touching 14 overlapping files. Discovery: `git status` showed foreign
+staged deletions. Response, in order: no commits; verified my work intact
+in the worktree; `git reset` to safe the index; `git stash push -u`;
+verified their tree green; reviewed their diff; restored their versions of
+all files outside my 7-file scope; re-applied my changes onto their tree;
+full re-verification. Nothing of either party was destroyed; their commit
+was local-only (never pushed), so no history rewrite was needed. Lesson:
+parallel sessions on one checkout need branch-per-agent discipline.
+
+### Review of 797a924 (adversarial read)
+
+- Ordering correct: validate → tombstone lookup (fail-closed mismatch
+  before quota) → quota → discard sink → SHA gate → record-on-success.
+- Tombstones live in the private staging dir (0600/atomic), same posture
+  as manifests — no new exposure class. Duplicate path skips OnMeta, so no
+  staging/buffer/reservation leaks; quota lease held during re-stream is
+  released by defer.
+- Inline key validation refactored into shared `drop.ValidTombstoneKey`,
+  guarded for empty (legacy keyless sends unaffected).
+- Sender key control is coherent end to end (flag → delegation → Hub
+  acceptance → receiver). Retry refusal preserved with key-reuse teaching.
+- No secret logging introduced (keys are random identifiers; digests only).
+
+### What changed (this batch, rebased)
+
+- `DELETE /api/relay/recent` (capability-protected, removed count),
+  dashboard Clear button with consequence confirmation, and `transfer clear`
+  extended to both ledgers (live API when the Hub runs, saved files when
+  stopped; still requires `--yes`).
+- Live receiver-rejection test: read-only output dir (Unix-gated, root
+  skip) proves the terminal, non-duplicate-risk failure path end to end
+  with ledger agreement. Skips honestly on Windows ACLs.
+
+### Validation
+
+- New tests: relay DELETE contract (auth gate, removed count, empty
+  reread), CLI relay-file clear, read-only rejection (skipped on Windows;
+  CI Unix executes it), dashboard clear markers.
+- Full suite, vet, JS check, cross-compile green (below). Committed after
+  the rebase; pushed with the batch.

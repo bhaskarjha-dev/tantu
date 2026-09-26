@@ -38,14 +38,14 @@ E5 cross-platform/accessibility/failure evidence.
 | Item | State | Notes |
 |---|---|---|
 | Transfer history and bounded persistence | Done | `transfers.json`, 50/30-day bounds, atomic writes, offline CLI fallback, explicit deletion (`transfer clear`, dashboard Clear). |
-| Completion tombstone/idempotency | Partial (phase 1) | Wire fields emitted (`v: 1`, validated `idempotency_key` end to end); tombstone + retry UX pending the open design decisions in `docs/SPEC-WIRE-VERSIONING.md`. Mitigation stands: duplicate-risk state + refused blind retry. |
+| Completion tombstone/idempotency | Done | Receiver tombstone store (bounded LRU 1024, 24 h, durable file, fail-closed mismatch): same-key redelivery streams to discard, verifies the digest, and re-acknowledges without staging, publishing, or duplicate inbox/history. Sender key control via `send --idempotency-key` (validated, forwarded through delegation); `transfer retry` teaches key-reuse instead of blind retry. |
 | Retry/resume actions | Partial | Retry-as-new-transfer is always available (`send` again); in-place retry refused by design. Same-DropID resume stays library-only. |
 | CLI/dashboard state parity | Done | Shared taxonomy (`hub.ClassifyTransferError`), shared destination language, `send --json` and `open --json` with matching exit-code discipline. |
 | Standalone migration/deprecation labels | Done | `serve`/`node` print Hub pointers; usage labels advanced/compatibility; `drop`/`relay` already carried Hub tips. |
 | OAuth state machine | Done (faithful subset) | Sender-side submitted → waiting_callback → complete/failed/cancelled with redacted codes; browser-opened instant lives in A-side logs by architecture. Durable ledger + API + dashboard card + bundle; design for full versioning in `docs/SPEC-WIRE-VERSIONING.md`. |
 | Browser/platform clipboard matrix | Partial | Paste-event path + picker fallback implemented and marked; matrix measurements need real browsers/platforms. |
 | WCAG 2.2 AA audit | Partial | Code-level requirements implemented (names, live regions, focus, motion, drag alternative); formal audit with AT sessions not run. |
-| Failure-injection suite | Partial | Offline, quota-shape, checksum-shape, lost-ACK-shape, corrupt-history, restart-during-life covered; disk-full/permission-injection not covered. |
+| Failure-injection suite | Partial | Offline, quota-shape, checksum-shape, lost-ACK-shape, receiver-rejection (Unix-gated), corrupt-history, restart-during-life covered; disk-full not covered. |
 | Performance measurement harness | Done (code-level) | `internal/drop/throughput_bench_test.go` (1 MiB E2E, stdlib-only) with recorded baselines; no CI schedule yet. |
 | User research baseline | Not started (human-only) | Ready-to-run materials in `docs/RESEARCH-PACKET.md`. |
 | Redacted support bundle | Done | `doctor --bundle-path`, redaction tests (offline + live). |

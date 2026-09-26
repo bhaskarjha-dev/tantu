@@ -51,9 +51,10 @@ rollback procedures.
   (0 success, 1 failure, 2 invalid input, 3 duplicate-risk). Direct sends
   assign and report their wire DropID; delegation surfaces the Hub's
   operation truth including duplicate-risk errors.
-- `tantu transfer clear --yes` and a dashboard Clear button delete
-  sender-side transfer metadata (received files untouched) via an
-  authenticated API or, when the Hub is stopped, the saved file directly.
+- `tantu transfer clear --yes` and dashboard Clear buttons delete
+  sender-side transfer and authorization metadata (received files untouched)
+  via an authenticated API or, when the Hub is stopped, the saved files
+  directly.
 - `tantu open --json` machine-readable contract (operation ID, destination;
   never the URL) with exit codes 0/1/2; relay API responses now carry the
   recorded attempt ID, destination, and next action, and the dashboard names
