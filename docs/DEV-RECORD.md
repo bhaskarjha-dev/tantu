@@ -1088,7 +1088,6 @@ parallel sessions on one checkout need branch-per-agent discipline.
   the rebase; pushed with the batch.
 
 ## Batch Z9 — permanent bookmarklet (2026-09-25)
-
 User-reported defect: the dashboard bookmarklet baked in a one-use ticket,
 so the second click (or any click after 10 minutes or a Hub restart) died
 with "relay token or dashboard session required" until the bookmark was
@@ -1137,4 +1136,36 @@ user-facing documentation, and disk-full paths lacked tests.
 ### Validation
 
 - New tests listed above, green. Full suite, vet, JS check, cross-compile
-  green (below). No commit or push yet.
+  green (below). Committed as `96fea9f test(failures)` + `63b6cc7
+  docs(tombstone)` and pushed.
+
+## Batch Z10 — repeat logins are never coalesced (2026-09-26)
+
+User-reported defect with logs: after one successful OAuth login, logging
+out and logging in again replayed the previous session — "Duplicate OAuth
+request suppressed" with success but no browser opening, so the new login
+could never complete. Root cause: session keys normalized away
+per-attempt values (state/PKCE/nonce), so a new login mapped onto the
+previous login's 2-minute replay entry. The code even documented the flaw
+(bside.go: the key "normalizes away per-attempt OAuth values such as
+state") while offering no way to start a distinct flow.
+
+### What changed
+
+- Session keys now bind the exact request URL (canonical, all values,
+  sha256 — no secret retention) alongside the normalized flow identity, in
+  both the bridge session manager and the Hub relay coordinator. Identical
+  retries still coalesce in-flight and replay post-success; a new login
+  always owns a fresh session and opens its own browser flow.
+- Stale comments corrected (bside/aside/coordinator test); `DeriveOAuthFlowID`
+  itself unchanged (tested contract holds).
+
+### Validation
+
+- New failing-first test proving the report (same log line, then green
+  after the fix): sequential post-logout login plus concurrent distinct
+  logins open 4 browser flows; Hub key unit test (equal/reordered vs
+  distinct).
+- Pre-existing coalescing tests (identical URLs) pass unmodified.
+- Full suite, vet, JS check, cross-compile green (below). No commit or
+  push yet.

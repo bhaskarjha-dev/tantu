@@ -71,6 +71,9 @@ rollback procedures.
   render a confirmation interstitial (safe origin, destination lookup,
   explicit Relay button) instead of dying on an expired one-use ticket, and
   the relay still requires a click plus a valid session at POST time.
+- Repeat logins are never coalesced: session keys bind the exact request
+  URL, so a new login (fresh state/PKCE) always opens its own browser flow
+  while byte-identical retries still share one.
 - Wire versioning phase 1: envelopes carry `v: 1` and drop metadata carries
   a validated `idempotency_key` (Hub: operation ID, overridable per request;
   CLI: DropID, overridable via `--idempotency-key`).
