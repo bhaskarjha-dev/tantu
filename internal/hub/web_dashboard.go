@@ -50,11 +50,57 @@ const dashboardHTML = `<!DOCTYPE html>
     --accent-gradient: linear-gradient(135deg, #3b82f6, #6366f1);
     --success: #10b981;
     --success-bg: rgba(16, 185, 129, 0.12);
+    --success-text: #34d399;
     --warning: #f59e0b;
     --warning-bg: rgba(245, 158, 11, 0.12);
+    --warning-text: #fbbf24;
     --error: #ef4444;
     --error-bg: rgba(239, 68, 68, 0.12);
+    --error-text: #f87171;
     --purple: #a855f7;
+    --radius-sm: 6px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --radius-pill: 9999px;
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 4px 20px rgba(0, 0, 0, 0.3);
+    --shadow-lg: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    --ease-out: cubic-bezier(0.2, 0, 0, 1);
+    --dur-fast: 150ms;
+    --dur-med: 250ms;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f4f6fb;
+      --card-bg: #ffffff;
+      --card-hover: #f0f4fa;
+      --surface: #eef1f7;
+      --surface-hover: #e2e8f2;
+      --border: #d9e0ec;
+      --border-light: #b9c4d8;
+      --text: #16213a;
+      --text-muted: #5b6478;
+      --accent: #2563eb;
+      --accent-hover: #1d4ed8;
+      --accent-gradient: linear-gradient(135deg, #2563eb, #4f46e5);
+      --success: #047857;
+      --success-bg: rgba(4, 120, 87, 0.1);
+      --success-text: #047857;
+      --warning: #b45309;
+      --warning-bg: rgba(180, 83, 9, 0.1);
+      --warning-text: #b45309;
+      --error: #dc2626;
+      --error-bg: rgba(220, 38, 38, 0.08);
+      --error-text: #b91c1c;
+      --purple: #7e22ce;
+      --shadow-sm: 0 1px 2px rgba(22, 33, 58, 0.08);
+      --shadow-md: 0 4px 20px rgba(22, 33, 58, 0.1);
+      --shadow-lg: 0 25px 50px -12px rgba(22, 33, 58, 0.25);
+      color-scheme: light;
+    }
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -145,7 +191,7 @@ const dashboardHTML = `<!DOCTYPE html>
   }
   .tab-btn.active {
     color: var(--accent);
-    border-bottom-color: var(--accent);
+    border-bottom-color: transparent;
   }
   .tab-btn:focus-visible {
     outline: 2px solid var(--accent);
@@ -257,17 +303,18 @@ const dashboardHTML = `<!DOCTYPE html>
   }
   input[type="text"], textarea {
     width: 100%;
-    background: #090b10;
+    background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     padding: 0.75rem 1rem;
     color: var(--text);
     font-size: 0.95rem;
     outline: none;
-    transition: border-color 0.2s;
+    transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
   }
   input[type="text"]:focus, textarea:focus {
     border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
   }
   textarea {
     min-height: 100px;
@@ -309,11 +356,12 @@ const dashboardHTML = `<!DOCTYPE html>
     border-color: var(--border-light);
   }
   .received-item {
-    background: #090b10;
+    background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     padding: 0.85rem;
-    transition: border-color 0.2s;
+    box-shadow: var(--shadow-sm);
+    transition: border-color var(--dur-fast) var(--ease-out);
   }
   .received-item:hover {
     border-color: var(--border-light);
@@ -327,11 +375,11 @@ const dashboardHTML = `<!DOCTYPE html>
     margin-bottom: 0.5rem;
   }
   .received-item-content {
-    background: #06070a;
-    border: 1px solid rgba(255,255,255,0.05);
-    border-radius: 6px;
+    background: var(--surface);
+    border: 1px solid rgba(127, 140, 160, 0.18);
+    border-radius: var(--radius-sm);
     padding: 0.6rem 0.75rem;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+    font-family: var(--font-mono);
     font-size: 0.85rem;
     color: var(--text);
     white-space: pre-wrap;
@@ -493,10 +541,202 @@ const dashboardHTML = `<!DOCTYPE html>
     margin-bottom: 0.75rem;
   }
   @media (prefers-reduced-motion: reduce) {
-    .tab-pane.active { animation: none; }
-    .progress-fill { transition: none; }
-    .tab-btn { transition: none; }
-    .drop-zone { transition: none; }
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+  /* ---- Premium layer: elevation, motion, and component polish ---- */
+  body {
+    font-feature-settings: "cv11";
+    -webkit-font-smoothing: antialiased;
+  }
+  header {
+    box-shadow: var(--shadow-sm);
+  }
+  .logo-title {
+    letter-spacing: -0.03em;
+  }
+  .card {
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md);
+    transition: border-color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+  }
+  .peer-status-pill {
+    box-shadow: var(--shadow-sm);
+    border-radius: var(--radius-pill);
+  }
+  .peer-status-pill select {
+    font: inherit;
+    max-width: 16rem;
+    text-overflow: ellipsis;
+  }
+  .tab-btn {
+    position: relative;
+    border-radius: 8px 8px 0 0;
+  }
+  .tab-btn::after {
+    content: "";
+    position: absolute;
+    left: 0.75rem;
+    right: 0.75rem;
+    bottom: -1px;
+    height: 2px;
+    border-radius: 2px;
+    background: transparent;
+    transition: background var(--dur-fast) var(--ease-out);
+  }
+  .tab-btn.active::after {
+    background: var(--accent);
+  }
+  .drop-zone {
+    border-radius: var(--radius-lg);
+    transition: border-color var(--dur-med) var(--ease-out), background var(--dur-med) var(--ease-out), transform var(--dur-med) var(--ease-out);
+  }
+  .drop-zone.dragover {
+    transform: scale(1.01);
+    box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.15);
+  }
+  .progress-fill {
+    transition: width var(--dur-fast) linear;
+  }
+  .progress-meta {
+    font-variant-numeric: tabular-nums;
+  }
+  .btn-primary {
+    border-radius: var(--radius-md);
+    box-shadow: 0 4px 14px rgba(59, 130, 246, 0.35);
+    transition: transform var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+  }
+  .btn-primary:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 18px rgba(59, 130, 246, 0.45);
+  }
+  .btn-primary:active:not(:disabled) {
+    transform: translateY(0);
+  }
+  .btn-sm {
+    border-radius: var(--radius-sm);
+    transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+  }
+  .status-banner {
+    border-radius: var(--radius-md);
+    animation: bannerIn var(--dur-med) var(--ease-out);
+  }
+  @keyframes bannerIn {
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .status-banner.success { color: var(--success-text); }
+  .status-banner.error { color: var(--error-text); }
+  .status-banner.relaying { color: var(--warning-text); }
+  .status-chip {
+    display: inline-block;
+    padding: 0.15rem 0.6rem;
+    border-radius: var(--radius-pill);
+    font-size: 0.75rem;
+    font-weight: 600;
+    border: 1px solid transparent;
+    white-space: nowrap;
+  }
+  .status-chip.ok { background: var(--success-bg); border-color: var(--success); color: var(--success-text); }
+  .status-chip.warn { background: var(--warning-bg); border-color: var(--warning); color: var(--warning-text); }
+  .status-chip.err { background: var(--error-bg); border-color: var(--error); color: var(--error-text); }
+  .status-chip.info { background: rgba(59, 130, 246, 0.1); border-color: var(--accent); color: var(--accent); }
+  .status-chip.neutral { background: rgba(139, 148, 158, 0.12); border-color: var(--border-light); color: var(--text-muted); }
+  .received-item {
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-sm);
+  }
+  .received-item-preview, #filePreviewThumb {
+    opacity: 0;
+    transition: opacity var(--dur-med) var(--ease-out);
+  }
+  .received-item-preview.loaded, #filePreviewThumb.loaded {
+    opacity: 1;
+  }
+  .log-console {
+    border-radius: var(--radius-md);
+    font-variant-numeric: tabular-nums;
+  }
+  .empty-state {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    text-align: center;
+    padding: 2rem 0;
+  }
+  .empty-state strong {
+    display: block;
+    color: var(--text);
+    font-size: 0.95rem;
+    margin-bottom: 0.25rem;
+  }
+  input[type="text"]:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .modal-overlay {
+    background: rgba(4, 6, 12, 0.7);
+    animation: fadeIn var(--dur-fast) var(--ease-out);
+  }
+  .modal-box {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    animation: modalIn var(--dur-med) var(--ease-out);
+  }
+  @media (prefers-color-scheme: light) {
+    .modal-overlay { background: rgba(22, 33, 58, 0.45); }
+  }
+  .pair-title { margin: 0; font-size: 1.1rem; color: var(--text); }
+  .pair-close { background: none; border: none; color: var(--text-muted); font-size: 1.4rem; cursor: pointer; line-height: 1; border-radius: var(--radius-sm); }
+  .pair-close:hover { color: var(--text); }
+  .pair-text { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1.25rem; }
+  .pair-sas-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 1rem; margin-bottom: 1.25rem; text-align: center; }
+  .pair-sas-label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 0.25rem; }
+  .pair-sas-code { font-family: var(--font-mono); font-size: 1.5rem; font-weight: 700; color: var(--accent); letter-spacing: 0.1em; }
+  .pair-opt-label { display: block; font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 0.5rem; }
+  .pair-cmd { flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.5rem 0.75rem; font-size: 0.8rem; color: var(--accent); overflow-x: auto; white-space: nowrap; font-family: var(--font-mono); }
+  @keyframes modalIn {
+    from { opacity: 0; transform: translateY(8px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  .bookmarklet-box {
+    border-radius: var(--radius-lg);
+  }
+  .bookmarklet-btn {
+    transition: transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+  }
+  .bookmarklet-btn:hover {
+    transform: translateY(-1px);
+  }
+  #destinationSummary {
+    border-radius: var(--radius-md);
+    border-left: 3px solid var(--accent);
+  }
+  #filePreviewCard {
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md);
+  }
+  #nextActionBanner {
+    border-radius: var(--radius-lg);
+    animation: bannerIn var(--dur-med) var(--ease-out);
+  }
+  #sessionBanner {
+    border-radius: var(--radius-lg);
+  }
+  .stat-val {
+    font-variant-numeric: tabular-nums;
+  }
+  @media (max-width: 640px) {
+    header { padding: 0.75rem 1rem; }
+    nav.tabs-nav { padding: 0.75rem 1rem 0; }
+    main.tab-content { padding: 1rem; }
+    .card { padding: 1rem; }
+    .form-group { flex-direction: column; }
+    .btn-primary { width: 100%; }
+    .peer-status-pill select { max-width: 9rem; }
   }
 </style>
 </head>
@@ -700,35 +940,35 @@ const dashboardHTML = `<!DOCTYPE html>
       </div>
 
       <!-- PAIRING MODAL -->
-      <div id="pairModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="pairModalTitle" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.75); backdrop-filter:blur(4px); z-index:9999; align-items:center; justify-content:center;">
-        <div class="modal-box" style="background:#0f172a; border:1px solid #334155; border-radius:12px; width:90%; max-width:500px; padding:1.5rem; box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);">
+      <div id="pairModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="pairModalTitle" style="display:none; position:fixed; inset:0; backdrop-filter:blur(4px); z-index:9999; align-items:center; justify-content:center;">
+        <div class="modal-box" style="width:90%; max-width:500px; padding:1.5rem; box-shadow:var(--shadow-lg); border-radius:16px;">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
-            <h3 id="pairModalTitle" style="margin:0; font-size:1.1rem; color:#f8fafc;">🔗 Pair New Device</h3>
-            <button data-action="close-pair-modal" aria-label="Close pairing dialog" style="background:none; border:none; color:#94a3b8; font-size:1.4rem; cursor:pointer; line-height:1;">&times;</button>
+            <h3 id="pairModalTitle" class="pair-title">🔗 Pair New Device</h3>
+            <button data-action="close-pair-modal" aria-label="Close pairing dialog" class="pair-close">&times;</button>
           </div>
           
-          <p style="font-size:0.85rem; color:#94a3b8; margin-bottom:1.25rem;">
+          <p class="pair-text">
             Pairing establishes mutual zero-trust encryption (TLS + SAS authentication) between this machine and another tantu instance over in-band port 9877.
           </p>
 
-          <div style="background:rgba(30,41,59,0.7); border:1px solid #334155; border-radius:8px; padding:1rem; margin-bottom:1.25rem; text-align:center;">
-            <div style="font-size:0.75rem; text-transform:uppercase; letter-spacing:0.05em; color:#94a3b8; margin-bottom:0.25rem;">Local SAS Verification Code</div>
-            <div id="pairModalSAS" style="font-family:monospace; font-size:1.5rem; font-weight:700; color:#60a5fa; letter-spacing:0.1em;">---</div>
+          <div class="pair-sas-box">
+            <div class="pair-sas-label">Local SAS Verification Code</div>
+            <div id="pairModalSAS" class="pair-sas-code">---</div>
           </div>
 
           <div style="margin-bottom:1.25rem;">
-            <label style="display:block; font-size:0.8rem; font-weight:600; color:#cbd5e1; margin-bottom:0.5rem;">Option 1: Discover and pair from the remote device</label>
+            <label class="pair-opt-label">Option 1: Discover and pair from the remote device</label>
             <div style="display:flex; gap:0.5rem; align-items:center;">
-              <code id="pairCmdText" style="flex:1; background:rgba(0,0,0,0.4); border:1px solid #334155; border-radius:6px; padding:0.5rem 0.75rem; font-size:0.8rem; color:#38bdf8; overflow-x:auto; white-space:nowrap;">tantu pair --peer=&lt;THIS_IP&gt;:9877</code>
+              <code id="pairCmdText" class="pair-cmd">tantu pair --peer=&lt;THIS_IP&gt;:9877</code>
               <button class="btn-sm" id="btnCopyPairCmd" data-action="copy-pair-command">📋 Copy</button>
             </div>
           </div>
 
           <div style="margin-bottom:1.25rem;">
-            <label for="pairRemoteAddrInput" style="display:block; font-size:0.8rem; font-weight:600; color:#cbd5e1; margin-bottom:0.5rem;">Option 2: Connect to Remote Peer Address</label>
+            <label for="pairRemoteAddrInput" class="pair-opt-label">Option 2: Connect to Remote Peer Address</label>
             <div style="display:flex; gap:0.5rem; align-items:center;">
               <input type="text" id="pairRemoteAddrInput" placeholder="192.168.1.50:9877" style="flex:1; font-size:0.85rem; padding:0.5rem 0.75rem;">
-              <button class="btn" id="btnPairConnect" data-action="pair-connect" style="white-space:nowrap; padding:0.5rem 1rem;">Pair Device</button>
+              <button class="btn-primary" id="btnPairConnect" data-action="pair-connect" style="white-space:nowrap; padding:0.5rem 1rem;">Pair Device</button>
             </div>
             <div id="pairStatusMsg" role="status" aria-live="polite" style="font-size:0.8rem; margin-top:0.5rem; min-height:1.2rem;"></div>
           </div>
@@ -980,6 +1220,12 @@ const dashboardHTML = `<!DOCTYPE html>
       const image = event.target;
       if (image && image.matches && image.matches('img.received-item-preview')) {
         image.remove();
+      }
+    }, true);
+    document.addEventListener('load', function(event) {
+      const image = event.target;
+      if (image && image.matches && (image.matches('img.received-item-preview') || image.id === 'filePreviewThumb')) {
+        image.classList.add('loaded');
       }
     }, true);
 
@@ -1583,6 +1829,16 @@ const dashboardHTML = `<!DOCTYPE html>
     // silently orphaned) so progress, completion, and cancellation always
     // refer to exactly one transfer.
     let uploadXhr = null;
+    let uploadLastLoaded = 0;
+    let uploadLastTick = 0;
+
+    function formatDuration(totalSeconds) {
+      totalSeconds = Math.max(0, Math.round(totalSeconds));
+      if (totalSeconds < 60) return totalSeconds + 's';
+      const mins = Math.floor(totalSeconds / 60);
+      const secs = totalSeconds % 60;
+      return mins + 'm ' + (secs < 10 ? '0' : '') + secs + 's';
+    }
 
     function cancelUpload() {
       if (uploadXhr) {
@@ -1731,6 +1987,14 @@ const dashboardHTML = `<!DOCTYPE html>
       uploadFile(file);
     }
 
+    function transferChipClass(state) {
+      if (state === 'completed') return 'ok';
+      if (state === 'duplicate_risk' || state === 'terminal_failure' || state === 'failed') return 'err';
+      if (state === 'retryable_failure') return 'warn';
+      if (state === 'cancelled') return 'neutral';
+      return 'info';
+    }
+
     function renderTransfers(items) {
       const list = document.getElementById('transfersList');
       if (!list) return;
@@ -1757,7 +2021,7 @@ const dashboardHTML = `<!DOCTYPE html>
         return '<div class="received-item">' +
           '<div class="received-item-header"><span><strong>' + escapeHTML(name) + '</strong> to ' + escapeHTML(dest) + '</span>' +
           '<span>' + escapeHTML(timeStr) + ' &bull; ' + escapeHTML(sizeStr) + '</span></div>' +
-          '<div style="font-size: 0.8rem; color: var(--text-muted);">State: ' + escapeHTML(state) + escapeHTML(extra) + '</div>' +
+          '<div style="margin-top: 0.25rem;"><span class="status-chip ' + transferChipClass(state) + '">' + escapeHTML(state) + escapeHTML(extra) + '</span></div>' +
           recovery +
         '</div>';
       }).join('');
@@ -1784,7 +2048,7 @@ const dashboardHTML = `<!DOCTYPE html>
         return '<div class="received-item">' +
           '<div class="received-item-header"><span><strong>🔐 ' + escapeHTML(origin) + '</strong> via ' + escapeHTML(dest) + '</span>' +
           '<span>' + escapeHTML(timeStr) + '</span></div>' +
-          '<div style="font-size: 0.8rem; color: var(--text-muted);">State: ' + escapeHTML(state) + '</div>' +
+          '<div style="margin-top: 0.25rem;"><span class="status-chip ' + transferChipClass(state) + '">' + escapeHTML(state) + '</span></div>' +
           recovery +
         '</div>';
       }).join('');
@@ -1875,6 +2139,8 @@ const dashboardHTML = `<!DOCTYPE html>
       cancelBtn.style.display = 'inline-block';
       fill.style.width = '0%';
       bar.setAttribute('aria-valuenow', '0');
+      uploadLastLoaded = 0;
+      uploadLastTick = Date.now();
       pFile.innerText = file.name + ' (' + formatBytes(file.size) + ')';
       pPercent.innerText = 'Preparing...';
       status.style.display = 'none';
@@ -1892,11 +2158,26 @@ const dashboardHTML = `<!DOCTYPE html>
       xhr.open('POST', '/api/drop/upload');
       xhr.withCredentials = true;
       xhr.upload.onprogress = (e) => {
+        // The bar tracks every event; the text (screen-reader announced)
+        // refreshes at most twice per second with speed and ETA.
+        const now = Date.now();
         if (e.lengthComputable) {
           const pct = Math.floor((e.loaded / e.total) * 100);
           fill.style.width = pct + '%';
           bar.setAttribute('aria-valuenow', String(pct));
-          pPercent.innerText = pct + '% · ' + formatBytes(e.loaded) + ' / ' + formatBytes(e.total);
+          if (now - uploadLastTick >= 500 || pct >= 100) {
+            const elapsed = Math.max((now - uploadLastTick) / 1000, 0.001);
+            const speed = Math.max(Math.round((e.loaded - uploadLastLoaded) / elapsed), 0);
+            let extra = '';
+            if (speed > 0) {
+              extra = ' · ' + formatBytes(speed) + '/s';
+              const remaining = e.total - e.loaded;
+              if (remaining > 0) extra += ' · ETA ' + formatDuration(remaining / speed);
+            }
+            pPercent.innerText = pct + '% · ' + formatBytes(e.loaded) + ' / ' + formatBytes(e.total) + extra;
+            uploadLastLoaded = e.loaded;
+            uploadLastTick = now;
+          }
         } else {
           pPercent.innerText = formatBytes(e.loaded) + ' sent...';
         }
@@ -2688,7 +2969,7 @@ type peerStatus struct {
 // the relay endpoint only through an explicit same-origin POST after a click.
 // Dynamic values enter via textContent or a JSON-encoded literal, never via
 // HTML interpolation of untrusted content.
-const relayInterstitialHTML = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Confirm OAuth Relay</title><style>body{background:#090b10;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;}.box{background:#131722;border:1px solid #232a3b;border-radius:12px;padding:2rem;max-width:450px;width:90%;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,0.5);}.icon{font-size:2.5rem;margin-bottom:0.75rem;}h2{margin:0 0 0.5rem 0;}h2.ok{color:#34d399;}p{color:#8b949e;font-size:0.9rem;margin:0 0 1rem 0;}p strong{color:#e6edf3;}.note{background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.4);color:#fbbf24;border-radius:8px;padding:0.6rem 0.8rem;font-size:0.85rem;}.hint{color:#64748b;font-size:0.8rem;}.btn{background:#3b82f6;border:none;color:#fff;padding:0.6rem 1.25rem;border-radius:8px;font-weight:600;font-size:0.9rem;cursor:pointer;}.btn:disabled{opacity:0.5;cursor:not-allowed;}.btn-ghost{background:transparent;border:1px solid #323c52;color:#e6edf3;}</style></head><body><div class="box"><div id="confirmView"><div class="icon">🔐</div><h2>Relay this authorization?</h2><p>From: <strong>{{ORIGIN}}</strong></p>{{NOTICE}}<p class="hint" id="peerLine">Checking destination…</p><div id="noSession" style="display:none" class="hint">Dashboard session not established. Open the dashboard from the Hub terminal, then retry this bookmark.</div><div style="display:flex;gap:0.5rem;justify-content:center;margin-top:1rem;"><button id="btnRelayNow" class="btn" disabled>Relay now</button><button id="btnCancel" class="btn btn-ghost">Cancel</button></div><div class="hint" id="resultLine" role="status" aria-live="polite" style="margin-top:0.75rem;"></div></div><div id="okView" style="display:none"><div class="icon">✅</div><h2 class="ok">Authentication Relayed!</h2><p id="okText"></p><div class="hint">This window will close automatically in 3 seconds...</div></div></div><script>
+const relayInterstitialHTML = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Confirm OAuth Relay</title><style>body{background:#090b10;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;-webkit-font-smoothing:antialiased;}.box{background:#131722;border:1px solid #232a3b;border-radius:16px;padding:2rem;max-width:460px;width:92%;text-align:center;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);}.icon{font-size:2.5rem;margin-bottom:0.75rem;}h2{margin:0 0 0.5rem 0;letter-spacing:-0.01em;}h2.ok{color:#34d399;}p{color:#8b949e;font-size:0.9rem;margin:0 0 1rem 0;}p strong{color:#e6edf3;}.note{background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.4);color:#fbbf24;border-radius:8px;padding:0.6rem 0.8rem;font-size:0.85rem;}.hint{color:#64748b;font-size:0.8rem;}.btn{background:#3b82f6;border:none;color:#fff;padding:0.6rem 1.25rem;border-radius:8px;font-weight:600;font-size:0.9rem;cursor:pointer;box-shadow:0 4px 14px rgba(59,130,246,0.35);transition:transform 150ms ease-out,opacity 150ms ease-out;}.btn:hover:not(:disabled){transform:translateY(-1px);}.btn:disabled{opacity:0.5;cursor:not-allowed;}.btn-ghost{background:transparent;border:1px solid #323c52;color:#e6edf3;box-shadow:none;}button:focus-visible{outline:2px solid #3b82f6;outline-offset:2px;}@media (prefers-color-scheme: light){body{background:#f4f6fb;color:#16213a;}.box{background:#ffffff;border-color:#d9e0ec;box-shadow:0 25px 50px -12px rgba(22,33,58,0.25);}p{color:#5b6478;}p strong{color:#16213a;}.hint{color:#7b8499;}.btn-ghost{border-color:#b9c4d8;color:#16213a;}}@media (prefers-reduced-motion: reduce){.btn{transition:none;}}</style></head><body><div class="box"><div id="confirmView"><div class="icon">🔐</div><h2>Relay this authorization?</h2><p>From: <strong>{{ORIGIN}}</strong></p>{{NOTICE}}<p class="hint" id="peerLine">Checking destination…</p><div id="noSession" style="display:none" class="hint">Dashboard session not established. Open the dashboard from the Hub terminal, then retry this bookmark.</div><div style="display:flex;gap:0.5rem;justify-content:center;margin-top:1rem;"><button id="btnRelayNow" class="btn" disabled>Relay now</button><button id="btnCancel" class="btn btn-ghost">Cancel</button></div><div class="hint" id="resultLine" role="status" aria-live="polite" style="margin-top:0.75rem;"></div></div><div id="okView" style="display:none"><div class="icon">✅</div><h2 class="ok">Authentication Relayed!</h2><p id="okText"></p><div class="hint">This window will close automatically in 3 seconds...</div></div></div><script>
 const relayURL = new URLSearchParams(window.location.search).get('url') || '';
 function show(el) { el.style.display = 'block'; }
 function hide(el) { el.style.display = 'none'; }
@@ -2963,9 +3244,9 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
 				w.WriteHeader(status)
 				if resp.Status == "success" {
-					fmt.Fprintf(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>✅ Auth Relayed</title><style>body{background:#090b10;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}.box{background:#131722;border:1px solid #232a3b;border-radius:12px;padding:2rem;max-width:450px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,0.5);}.icon{font-size:2.5rem;margin-bottom:0.75rem;}h2{color:#34d399;margin:0 0 0.5rem 0;}p{color:#8b949e;font-size:0.9rem;margin:0 0 1rem 0;}.hint{color:#64748b;font-size:0.8rem;}</style></head><body><div class="box"><div class="icon">✅</div><h2>Authentication Relayed!</h2><p>%s</p><div class="hint">This window will close automatically in 3 seconds...</div></div><script>setTimeout(function(){window.close();},3000);</script></body></html>`, escapeHTMLText(resp.Message))
+					fmt.Fprintf(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>✅ Auth Relayed</title><style>body{background:#090b10;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;-webkit-font-smoothing:antialiased;}.box{background:#131722;border:1px solid #232a3b;border-radius:16px;padding:2rem;max-width:460px;width:92%%;text-align:center;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);}.icon{font-size:2.5rem;margin-bottom:0.75rem;}h2{color:#34d399;margin:0 0 0.5rem 0;letter-spacing:-0.01em;}p{color:#8b949e;font-size:0.9rem;margin:0 0 1rem 0;}.hint{color:#64748b;font-size:0.8rem;}@media (prefers-color-scheme: light){body{background:#f4f6fb;color:#16213a;}.box{background:#ffffff;border-color:#d9e0ec;box-shadow:0 25px 50px -12px rgba(22,33,58,0.25);}p{color:#5b6478;}.hint{color:#7b8499;}}</style></head><body><div class="box"><div class="icon">✅</div><h2>Authentication Relayed!</h2><p>%s</p><div class="hint">This window will close automatically in 3 seconds...</div></div><script>setTimeout(function(){window.close();},3000);</script></body></html>`, escapeHTMLText(resp.Message))
 				} else {
-					fmt.Fprintf(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>❌ Relay Error</title><style>body{background:#090b10;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}.box{background:#131722;border:1px solid #232a3b;border-radius:12px;padding:2rem;max-width:450px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,0.5);}.icon{font-size:2.5rem;margin-bottom:0.75rem;}h2{color:#f87171;margin:0 0 0.5rem 0;}p{color:#8b949e;font-size:0.9rem;margin:0 0 1rem 0;}.hint{color:#64748b;font-size:0.8rem;}</style></head><body><div class="box"><div class="icon">❌</div><h2>Relay Error</h2><p>%s</p><div class="hint">Check terminal logs or verify your peer is connected.</div></div></body></html>`, escapeHTMLText(resp.Message))
+					fmt.Fprintf(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>❌ Relay Error</title><style>body{background:#090b10;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;-webkit-font-smoothing:antialiased;}.box{background:#131722;border:1px solid #232a3b;border-radius:16px;padding:2rem;max-width:460px;width:92%%;text-align:center;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);}.icon{font-size:2.5rem;margin-bottom:0.75rem;}h2{color:#f87171;margin:0 0 0.5rem 0;letter-spacing:-0.01em;}p{color:#8b949e;font-size:0.9rem;margin:0 0 1rem 0;}.hint{color:#64748b;font-size:0.8rem;}@media (prefers-color-scheme: light){body{background:#f4f6fb;color:#16213a;}.box{background:#ffffff;border-color:#d9e0ec;box-shadow:0 25px 50px -12px rgba(22,33,58,0.25);}p{color:#5b6478;}.hint{color:#7b8499;}}</style></head><body><div class="box"><div class="icon">❌</div><h2>Relay Error</h2><p>%s</p><div class="hint">Check terminal logs or verify your peer is connected.</div></div></body></html>`, escapeHTMLText(resp.Message))
 				}
 				return
 			}
