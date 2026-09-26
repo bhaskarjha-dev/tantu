@@ -765,7 +765,6 @@ const dashboardHTML = `<!DOCTYPE html>
       ⚠️ <strong>Dashboard session not established.</strong>
       <span>Actions on this page will fail until you reconnect. Reopen the dashboard from the Hub terminal (press <kbd>o</kbd>) or reload the page the Hub opened for you.</span>
     </div>
-    <div id="nextActionBanner" role="status" aria-live="polite" style="display: none;"></div>
     <!-- INBOUND PAIRING APPROVAL BANNER -->
     <div id="pendingPairingsBanner" style="display: none; margin-bottom: 1.5rem; background: rgba(245, 158, 11, 0.12); border: 1px solid #f59e0b; border-radius: 12px; padding: 1.25rem;">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
@@ -777,6 +776,7 @@ const dashboardHTML = `<!DOCTYPE html>
       </div>
       <div id="pendingPairingsList" style="display: flex; flex-direction: column; gap: 0.75rem;"></div>
     </div>
+    <div id="nextActionBanner" role="status" aria-live="polite" style="display: none;"></div>
 
     <!-- TAB 1: QUICKDROP -->
     <div id="tab-drop" class="tab-pane active" role="tabpanel" aria-labelledby="tab-btn-drop">
@@ -794,17 +794,22 @@ const dashboardHTML = `<!DOCTYPE html>
         </div>
       </div>
 
+      <!-- Shared send destination: one visible control governing file,
+           image, clipboard, and text sends alike. -->
+      <div class="card" style="margin-bottom: 1.25rem; padding: 0.75rem 1.25rem;">
+        <div id="dropPeerSelector" style="display:none; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.5rem;">
+          <span style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">Destination:</span>
+          <div id="dropPeerPills" style="display: flex; gap: 0.4rem; flex-wrap: wrap;"></div>
+        </div>
+        <div id="destinationSummary" role="status" aria-live="polite">Destination: checking…</div>
+      </div>
+
       <!-- Responsive Dual-Pane Layout -->
       <div class="grid-2">
         <!-- Left Pane: Outbound Sending -->
         <div style="display: flex; flex-direction: column; gap: 1.25rem;">
           <div class="card">
             <div class="card-title">📤 Send File or Image (up to 5GB)</div>
-            <div id="dropPeerSelector" style="display:none; margin-bottom: 0.75rem; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
-              <span style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">Destination:</span>
-              <div id="dropPeerPills" style="display: flex; gap: 0.4rem; flex-wrap: wrap;"></div>
-            </div>
-            <div id="destinationSummary" role="status" aria-live="polite">Destination: checking…</div>
             <div class="drop-zone" id="dropZone" data-action="choose-file" tabindex="0" role="button" aria-label="Choose a file to send to your peer">
               <div class="drop-zone-icon">📁</div>
               <div class="drop-zone-text">Drag & drop files here, or click to browse</div>
@@ -822,7 +827,7 @@ const dashboardHTML = `<!DOCTYPE html>
               </div>
             </div>
             <label style="display: flex; gap: 0.5rem; align-items: center; font-size: 0.8rem; color: var(--text-muted); margin-top: 0.75rem;">
-              <input type="checkbox" id="expertImmediateSend"> Expert immediate-send (skip preview; destination stays visible)
+              <input type="checkbox" id="expertImmediateSend"> Expert immediate-send for this session (skip preview; destination stays visible)
             </label>
             
             <div class="progress-container" id="uploadProgress">
@@ -851,11 +856,11 @@ const dashboardHTML = `<!DOCTYPE html>
         <!-- Right Pane: Received Items & History -->
         <div class="card" style="display: flex; flex-direction: column;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
-            <div class="card-title" style="margin-bottom: 0;">📥 Received Items & History</div>
+            <div class="card-title" style="margin-bottom: 0;">📥 Received Items</div>
             <button class="btn-sm" data-action="load-recent">🔄 Refresh</button>
           </div>
           <div id="receivedDropsList" style="flex: 1; overflow-y: auto; max-height: 580px; display: flex; flex-direction: column; gap: 0.75rem;">
-            <p style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 2rem 0;">No received items yet.<br>Snippets and files sent by your peer appear here in real-time.</p>
+            <p style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 2rem 0;">No received items yet.<br>Snippets and files sent by your peer appear here in real-time.<br>Session items — cleared when the Hub restarts. Sent transfers live under Transfers.</p>
           </div>
         </div>
       </div>
@@ -1695,6 +1700,11 @@ const dashboardHTML = `<!DOCTYPE html>
 
     let pairModalReturnFocus = null;
     function openPairModal() {
+      // The dialog nests inside the Peers tab pane, so make its tab visible
+      // first: opening it from any other tab would otherwise set display on
+      // a node hidden by an ancestor. This keeps the single dialog instance
+      // correct for present and future callers alike.
+      switchTab('tab-peers');
       const modal = document.getElementById('pairModal');
       pairModalReturnFocus = document.activeElement;
       const sas = document.getElementById('idSAS').innerText || '---';
@@ -2467,7 +2477,7 @@ const dashboardHTML = `<!DOCTYPE html>
       receivedActionValues = Object.create(null);
       const list = document.getElementById('receivedDropsList');
       if (!items || items.length === 0) {
-        list.innerHTML = '<p style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 2rem 0;">No received items yet.<br>Snippets and files sent by your peer appear here in real-time.</p>';
+        list.innerHTML = '<p style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 2rem 0;">No received items yet.<br>Snippets and files sent by your peer appear here in real-time.<br>Session items — cleared when the Hub restarts. Sent transfers live under Transfers.</p>';
         return;
       }
       const reversed = items.slice().reverse();

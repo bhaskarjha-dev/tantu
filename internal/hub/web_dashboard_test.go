@@ -1582,6 +1582,7 @@ func TestWebDashboard_UploadProgressAndPeerRenderMarkers(t *testing.T) {
 		"scroll-margin-top",
 		" · Trusted",
 		"Destination: ",
+		"Shared send destination",
 		"querySelectorAll('button, input')",
 		"clear-transfers",
 		"clearTransfers",
