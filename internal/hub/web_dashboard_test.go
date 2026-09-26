@@ -139,6 +139,55 @@ func TestWebDashboard_ServeSPA(t *testing.T) {
 	}
 }
 
+// The send preview stages the chosen local File as a page-created object URL.
+// If img-src does not authorize blob:, the browser blocks the thumbnail, the
+// image never loads, the "loaded" class is never applied, and every paste,
+// drop, and file-picker selection logs a CSP violation: the clipboard-image
+// confirmation renders an invisible broken image. A substring marker could not
+// have caught that, so the served policy is parsed and matched against the
+// scheme the page actually assigns.
+func TestWebDashboard_SendPreviewImageSchemeIsAuthorized(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+
+	resp, err := http.Get("http://" + h.WebAddr() + "/")
+	if err != nil {
+		t.Fatalf("GET / failed: %v", err)
+	}
+	defer resp.Body.Close()
+	csp := resp.Header.Get("Content-Security-Policy")
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read body: %v", err)
+	}
+
+	imgSrc := ""
+	for _, directive := range strings.Split(csp, ";") {
+		if strings.HasPrefix(strings.TrimSpace(directive), "img-src") {
+			imgSrc = directive
+		}
+	}
+	if imgSrc == "" {
+		t.Fatal("dashboard CSP has no img-src directive")
+	}
+	for _, scheme := range []string{"'self'", "data:", "blob:"} {
+		if !strings.Contains(imgSrc, scheme) {
+			t.Errorf("dashboard img-src %q does not authorize %s; the staged send preview would be blocked", imgSrc, scheme)
+		}
+	}
+	// blob: is scoped to the creating document, but a wildcard would not be.
+	if strings.Contains(imgSrc, "*") || strings.Contains(imgSrc, "https:") {
+		t.Errorf("dashboard img-src widened beyond same-origin page-created URLs: %q", imgSrc)
+	}
+	if !strings.Contains(string(body), "URL.createObjectURL(file)") {
+		t.Error("dashboard no longer stages the send preview as an object URL; revisit the img-src assertion")
+	}
+	// The unblock must not have relaxed the script policy.
+	if strings.Contains(csp, "script-src 'self' 'unsafe-inline'") || !strings.Contains(csp, "'nonce-") {
+		t.Errorf("dashboard CSP regressed while authorizing the preview image: %q", csp)
+	}
+}
+
 func TestWebDashboard_ProtectedReadsRequireCapability(t *testing.T) {
 	h, _, cleanup := startTestHub(t)
 	defer cleanup()

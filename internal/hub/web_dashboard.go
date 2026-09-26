@@ -3152,7 +3152,13 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 		// `unsafe-hashes` is limited to the exact generated bookmarklet
 		// navigation; ordinary inline scripts still require the per-response
 		// nonce, and all DOM actions are delegated from that script.
-		w.Header().Set("Content-Security-Policy", fmt.Sprintf("default-src 'self'; script-src 'self' 'nonce-%s' 'unsafe-hashes' %s; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'", nonce, javascriptCSPHashes(bookmarkletJS)))
+		// img-src allows blob: because the send preview stages the chosen local
+		// File as a page-created object URL. A blob: URL is same-origin and
+		// scoped to this document's lifetime, so it adds no remote origin and
+		// no cross-document read; without it the clipboard-image confirmation
+		// card renders an invisible, permanently broken thumbnail and logs a
+		// CSP violation on every paste, drop, and file-picker selection.
+		w.Header().Set("Content-Security-Policy", fmt.Sprintf("default-src 'self'; script-src 'self' 'nonce-%s' 'unsafe-hashes' %s; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'", nonce, javascriptCSPHashes(bookmarkletJS)))
 
 		page := strings.ReplaceAll(dashboardHTML, "{{VERSION}}", escapeHTMLText(HubVersion))
 		page = strings.ReplaceAll(page, "{{BOOKMARKLET_HREF}}", escapeHTMLText(bookmarkletJS))
