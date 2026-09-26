@@ -79,7 +79,8 @@ rollback procedures.
   render a confirmation interstitial (safe origin, destination lookup,
   explicit auto-focused Relay button for Enter-to-confirm) instead of dying
   on an expired one-use ticket, and the relay still requires a click plus a
-  valid session at POST time.
+  valid session at POST time. The popup watches for a session and enables
+  itself (once, with announcement) when one appears — no bookmark retry.
 - Repeat logins are never coalesced: session keys bind the exact request
   URL, so a new login (fresh state/PKCE) always opens its own browser flow
   while byte-identical retries still share one.

@@ -1189,6 +1189,36 @@ still auto-closes on success.
   test Hub still releasing the port; new instance fell back silently while
   the probe hit the old one) — reran clean against a fresh instance.
 
+## Batch Z14 — interstitial session watch (2026-09-26)
+
+Follow-up to the "session not established" dead end: the popup showed
+recovery guidance but sat disabled until the bookmark was retried.
+
+### What changed
+
+- The interstitial polls `/api/status` every 3 s and enables itself the
+  moment a session exists (e.g. the dashboard was just opened in another
+  tab): destination rendered, button enabled and focused once, announcement
+  emitted once via the live region. Polling never steals focus or repeats
+  itself; POST 401 returns to watching; the timer stops on success.
+- Readiness keys on HTTP success, not payload shape: an authenticated Hub
+  with zero peers answers `peers: null`, which an earlier draft mistook
+  for "no session" — caught by live CDP probing against a peerless Hub
+  before any commit. New users and loopback testers would have been the
+  victims.
+- Notable environment finding: a second live agent session is active in
+  this environment (`tantu-ux-z14`); all smoke work kept to unique ports,
+  paths, and process names, and foreign processes were never touched.
+
+### Validation
+
+- Static markers for the watch behavior; server contract unchanged.
+- Live real-Chrome arc: recovery state → bootstrap in-profile → enabled
+  button with destination and one-time announcement, stable across polls,
+  zero console errors; enabled-state screenshot reviewed.
+- Full suite, vet, JS check, cross-compile green (below). No commit or
+  push yet.
+
 ## Batch Z12 — premium visual refresh (2026-09-25)
 
 Design-token foundation (radius, elevation, type, motion), OS-driven light
