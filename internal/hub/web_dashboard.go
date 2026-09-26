@@ -639,7 +639,10 @@ const dashboardHTML = `<!DOCTYPE html>
       <div class="card">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
           <div class="card-title" style="margin-bottom: 0;">🔐 Recent Authorizations</div>
-          <button class="btn-sm" data-action="load-authorizations">🔄 Refresh</button>
+          <div style="display: flex; gap: 0.5rem;">
+            <button class="btn-sm" data-action="load-authorizations">🔄 Refresh</button>
+            <button class="btn-sm" data-action="clear-authorizations">🗑️ Clear</button>
+          </div>
         </div>
         <p class="hint-text" style="margin-top: 0; margin-bottom: 0.75rem;">Origin hosts only — URLs, codes, and tokens are never stored. Kept 30 days (last 50).</p>
         <div id="authorizationsList" style="display: flex; flex-direction: column; gap: 0.75rem;">
@@ -869,6 +872,9 @@ const dashboardHTML = `<!DOCTYPE html>
           break;
         case 'load-authorizations':
           loadAuthorizations();
+          break;
+        case 'clear-authorizations':
+          clearAuthorizations();
           break;
         case 'clear-transfers':
           clearTransfers();
@@ -1790,6 +1796,24 @@ const dashboardHTML = `<!DOCTYPE html>
         const items = await res.json();
         renderAuthorizations(items);
       } catch (_) {}
+    }
+
+    async function clearAuthorizations() {
+      if (!confirm('Clear authorization history? This removes sender-side metadata only (peers, origins, states). Received files and transfer history are kept. This cannot be undone.')) {
+        return;
+      }
+      try {
+        const res = await apiFetch('/api/relay/recent', { method: 'DELETE' });
+        const data = await res.json();
+        if (res.ok && data.status === 'success') {
+          addLog('OAUTH', 'Authorization history cleared.');
+        } else {
+          addLog('ERROR', 'Failed to clear authorizations: ' + (data.message || 'Unknown error'));
+        }
+      } catch (err) {
+        addLog('ERROR', 'Failed to clear authorizations: ' + err.message);
+      }
+      loadAuthorizations();
     }
 
     async function loadTransfers() {
@@ -2951,9 +2975,20 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 		})
 	})
 
-	// 5b. GET /api/relay/recent — Sender-side authorization truth (durable:
-	// last 50, 30 days; origin hosts only, never URLs, codes, or tokens).
+	// 5b. GET/DELETE /api/relay/recent — Sender-side authorization truth
+	// (durable: last 50, 30 days; origin hosts only, never URLs, codes, or
+	// tokens). DELETE clears the ledger and its file; transfer history and
+	// received files are unaffected.
 	mux.HandleFunc("/api/relay/recent", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			removed := h.clearRelayHistory()
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status":  "success",
+				"message": "Authorization history cleared",
+				"removed": removed,
+			})
+			return
+		}
 		if r.Method != http.MethodGet {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"status": "error", "message": "method not allowed"})
 			return

@@ -211,7 +211,7 @@ func runTransferClear(args []string) {
 	_ = fs.Parse(NormalizeArgs(args))
 
 	if !*confirm {
-		fmt.Fprintln(os.Stderr, "This removes all sender-side transfer metadata (destinations, states, times) for this store.")
+		fmt.Fprintln(os.Stderr, "This removes all sender-side transfer and authorization metadata (destinations, states, times, origins) for this store.")
 		fmt.Fprintln(os.Stderr, "Received files are kept. Re-run with --yes to confirm.")
 		os.Exit(2)
 	}
@@ -221,7 +221,13 @@ func runTransferClear(args []string) {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+		authRemoved, err := deleteLiveAuthorizations(status.WebAddr, *storeDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 		fmt.Printf("Transfer history cleared (%d record(s) removed).\n", removed)
+		fmt.Printf("Authorization history cleared (%d record(s) removed).\n", authRemoved)
 		return
 	}
 	removed, err := clearSavedTransferFile(*storeDir)
@@ -229,15 +235,30 @@ func runTransferClear(args []string) {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	if removed {
-		fmt.Println("Saved transfer history cleared (Hub was not running).")
+	authRemoved, authErr := clearSavedRelayHistoryFile(*storeDir)
+	if authErr != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", authErr)
+		os.Exit(1)
+	}
+	if removed || authRemoved {
+		fmt.Println("Saved transfer and authorization history cleared (Hub was not running).")
 	} else {
-		fmt.Println("No saved transfer history to clear (Hub was not running).")
+		fmt.Println("No saved transfer or authorization history to clear (Hub was not running).")
 	}
 }
 
-// deleteLiveTransfers clears the Hub ledger via the authenticated API.
+// deleteLiveTransfers clears the Hub transfer ledger via the authenticated API.
 func deleteLiveTransfers(webAddr, storeDir string) (int, error) {
+	return deleteLiveLedger(webAddr, storeDir, "/api/transfers/recent")
+}
+
+// deleteLiveAuthorizations clears the Hub authorization ledger via the
+// authenticated API.
+func deleteLiveAuthorizations(webAddr, storeDir string) (int, error) {
+	return deleteLiveLedger(webAddr, storeDir, "/api/relay/recent")
+}
+
+func deleteLiveLedger(webAddr, storeDir, endpoint string) (int, error) {
 	token := hub.RuntimeIPCTokenForAddr(storeDir, webAddr)
 	if token == "" {
 		return 0, fmt.Errorf("running Hub runtime metadata is unavailable")
@@ -247,7 +268,7 @@ func deleteLiveTransfers(webAddr, storeDir string) (int, error) {
 		Transport: &http.Transport{Proxy: nil},
 	}
 	defer client.CloseIdleConnections()
-	req, err := http.NewRequest(http.MethodDelete, "http://"+webAddr+"/api/transfers/recent", nil)
+	req, err := http.NewRequest(http.MethodDelete, "http://"+webAddr+endpoint, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -287,6 +308,27 @@ func clearSavedTransferFile(storeDir string) (bool, error) {
 	}
 	if err != nil {
 		return false, fmt.Errorf("remove saved transfer history: %w", err)
+	}
+	return true, nil
+}
+
+// clearSavedRelayHistoryFile removes the durable authorization ledger file.
+// It reports whether a file existed; a missing file is not an error.
+func clearSavedRelayHistoryFile(storeDir string) (bool, error) {
+	dir := storeDir
+	if dir == "" {
+		def, err := pairing.DefaultStoreDir()
+		if err != nil {
+			return false, err
+		}
+		dir = def
+	}
+	err := os.Remove(filepath.Join(dir, hub.RelayHistoryFilename))
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("remove saved authorization history: %w", err)
 	}
 	return true, nil
 }

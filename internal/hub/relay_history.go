@@ -298,6 +298,31 @@ func (h *Hub) recordRelayAttempt(op RelayAttempt) {
 	}
 }
 
+// clearRelayHistory empties the authorization ledger and removes its
+// persisted file (best-effort). Transfer history and received files are
+// unaffected: only sender-side authorization metadata is deleted, and the
+// deletion itself is logged.
+func (h *Hub) clearRelayHistory() int {
+	if h == nil {
+		return 0
+	}
+	h.mu.RLock()
+	ledger := h.relayHistory
+	dir := h.storeDir
+	h.mu.RUnlock()
+	removed := 0
+	if ledger != nil {
+		removed = ledger.Clear()
+	}
+	if dir != "" {
+		_ = os.Remove(filepath.Join(dir, RelayHistoryFilename))
+	}
+	if h.logger != nil {
+		h.logger.Warn(DomainOAuth, fmt.Sprintf("Authorization history cleared (%d record(s) removed)", removed))
+	}
+	return removed
+}
+
 // listRelayAttempts returns a copy of the ledger.
 func (h *Hub) listRelayAttempts() []RelayAttempt {
 	if h == nil {

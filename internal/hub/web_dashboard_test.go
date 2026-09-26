@@ -1512,6 +1512,8 @@ func TestWebDashboard_UploadProgressAndPeerRenderMarkers(t *testing.T) {
 		"querySelectorAll('button, input')",
 		"clear-transfers",
 		"clearTransfers",
+		"clear-authorizations",
+		"clearAuthorizations",
 		"api/relay/recent",
 		"authorizationsList",
 		"loadAuthorizations",
