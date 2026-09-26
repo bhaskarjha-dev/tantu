@@ -463,6 +463,9 @@ func TestWebDashboard_RelayInterstitial(t *testing.T) {
 	if !strings.Contains(string(secretBody), "accounts.google.com") {
 		t.Error("interstitial must show the safe origin host")
 	}
+	if !strings.Contains(string(secretBody), "btnRelay.focus()") {
+		t.Error("interstitial must autofocus the Relay button for keyboard confirmation")
+	}
 	// The shell must be fully static: a different secret in the same origin
 	// must produce a byte-identical page (nothing user-specific embedded).
 	secret2, err := http.Get("http://" + h.WebAddr() + "/relay?url=" + url.QueryEscape("https://accounts.google.com/o/oauth2/v2/auth?client_id=x&code=OTHER777"))

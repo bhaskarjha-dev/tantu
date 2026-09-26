@@ -69,8 +69,9 @@ rollback procedures.
   durable last 50 / 30 days; never URLs, codes, or tokens).
 - The OAuth bookmarklet is permanent and ticket-free: unauthenticated clicks
   render a confirmation interstitial (safe origin, destination lookup,
-  explicit Relay button) instead of dying on an expired one-use ticket, and
-  the relay still requires a click plus a valid session at POST time.
+  explicit auto-focused Relay button for Enter-to-confirm) instead of dying
+  on an expired one-use ticket, and the relay still requires a click plus a
+  valid session at POST time.
 - Repeat logins are never coalesced: session keys bind the exact request
   URL, so a new login (fresh state/PKCE) always opens its own browser flow
   while byte-identical retries still share one.

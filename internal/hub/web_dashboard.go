@@ -2714,6 +2714,7 @@ async function boot() {
     else { dest = 'No trusted peers yet'; btnRelay.disabled = true; peerLine.textContent = 'Destination: ' + dest + ' — pair a peer first.'; return; }
     peerLine.textContent = 'Destination: ' + dest;
     btnRelay.disabled = false;
+    btnRelay.focus();
   } catch (_) {
     hide(peerLine);
     show(noSession);
