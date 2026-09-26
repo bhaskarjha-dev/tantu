@@ -1188,3 +1188,31 @@ still auto-closes on success.
 - Live artifact check caught a stale-Hub-on-9876 smoke artifact (previous
   test Hub still releasing the port; new instance fell back silently while
   the probe hit the old one) — reran clean against a fresh instance.
+
+## Batch Z12 — premium visual refresh (2026-09-25)
+
+Design-token foundation (radius, elevation, type, motion), OS-driven light
+theme alongside the dark theme, and component polish across the dashboard,
+interstitial, legacy relay pages, and pairing dialog — with no framework,
+no external assets, and no weakened guarantee.
+
+### Review findings fixed from screenshots
+
+- User-content areas kept hardcoded near-black backgrounds, unreadable in
+  light mode (textarea, received items) — now theme-variable driven. The
+  log console stays deliberately dark in both themes (terminal convention).
+- Pairing dialog colors were inline and theme-blind — converted to classes.
+- `go vet` caught bare `%` sequences in restyled Fprintf templates before
+  they could render as runtime garbage.
+- An early screenshot round probed the user's own Hub on the shared port
+  (stale-process collision); all evidence since is port-pinned and
+  version-tag verified. The modal "invisibility" scare was harness error
+  (clicked inside a hidden tab); the dialog correctly lives in its tab.
+
+### Validation
+
+- Marker tests extended (theme query, chips, ETA, modal, focus); real
+  headless-Chrome runs in both themes for dashboard, interstitial, and the
+  opened modal with zero console errors.
+- Full suite, vet, JS check, cross-compile green (below). No commit or
+  push yet.

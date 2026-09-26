@@ -64,6 +64,10 @@ rollback procedures.
   compatibility and point at the Hub.
 - Pairing dialog traps Tab focus while open; cockpit file/text sends print
   the resolved destination before transmitting.
+- Premium visual refresh with zero dependencies: design-token system,
+  OS-driven light/dark themes, purposeful motion with full reduced-motion
+  support, upload speed and ETA, status chips, and a matching interstitial,
+  relay pages, and pairing dialog.
 - OAuth relay attempts recorded with target peer, origin host only, state,
   and next action (`GET /api/relay/recent`, dashboard card, support bundle;
   durable last 50 / 30 days; never URLs, codes, or tokens).
