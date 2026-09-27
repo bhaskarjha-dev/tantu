@@ -72,6 +72,10 @@ const dashboardHTML = `<!DOCTYPE html>
     --dur-med: 250ms;
     color-scheme: dark;
   }
+  /* Header and tab-bar chrome stay dark in both OS themes by design: it reads
+     as an intentional app frame, and the alternative churned every token in
+     both palettes. Text sitting on that dark chrome must therefore not
+     inherit the light-theme body colour; see .version-tag. */
   @media (prefers-color-scheme: light) {
     :root {
       --bg: #f4f6fb;
@@ -88,7 +92,9 @@ const dashboardHTML = `<!DOCTYPE html>
       --accent-gradient: linear-gradient(135deg, #2563eb, #4f46e5);
       --success: #047857;
       --success-bg: rgba(4, 120, 87, 0.1);
-      --success-text: #047857;
+      /* #047857 on this tint measured 4.24:1 at 12px; deepening the text
+         clears 4.5:1 while staying the same hue. */
+      --success-text: #065f46;
       --warning: #b45309;
       --warning-bg: rgba(180, 83, 9, 0.1);
       --warning-text: #b45309;
@@ -138,9 +144,12 @@ const dashboardHTML = `<!DOCTYPE html>
   }
   .version-tag {
     font-size: 0.75rem;
-    color: var(--text-muted);
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid var(--border);
+    /* Declared here, not earlier: the version tag sits on the deliberately
+       dark header chrome in both themes, so it must not inherit the light
+       theme's muted body colour (that pairing measured 1.69:1). */
+    color: #b8c4d6;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
     padding: 0.15rem 0.45rem;
     border-radius: 9999px;
   }
@@ -440,6 +449,10 @@ const dashboardHTML = `<!DOCTYPE html>
   }
   .stat-label { color: var(--text-muted); }
   .stat-val { font-family: monospace; font-weight: 600; }
+  .stat-val.mono-accent { color: #1d4ed8; }
+  @media (prefers-color-scheme: dark) {
+    .stat-val.mono-accent { color: #93c5fd; }
+  }
   .log-console {
     background: #06070a;
     border: 1px solid var(--border);
@@ -492,6 +505,9 @@ const dashboardHTML = `<!DOCTYPE html>
     border-color: var(--accent);
     color: #fff;
   }
+  /* White on --accent measured 3.68:1 at 12px, under AA for small text.
+     Deepening the active fill clears 4.5:1 without changing the hue. */
+  .pill.active { background: var(--accent-hover); }
   .status-banner {
     display: none;
     border-radius: 8px;
@@ -507,11 +523,20 @@ const dashboardHTML = `<!DOCTYPE html>
     display: none;
     background: rgba(59,130,246,0.08);
     border: 1px solid rgba(59,130,246,0.4);
-    color: #bfdbfe;
+    color: var(--banner-text, #bfdbfe);
     border-radius: 12px;
     padding: 0.85rem 1.25rem;
     margin-bottom: 1.25rem;
     font-size: 0.9rem;
+  }
+  /* #bfdbfe measured 1.2:1 on the light page; guidance must be readable
+     because it is the only thing telling a new user what to do next. */
+  @media (prefers-color-scheme: light) {
+    #nextActionBanner {
+      --banner-text: #123a7a;
+      background: rgba(59, 130, 246, 0.12);
+      border-color: rgba(37, 99, 235, 0.45);
+    }
   }
   #destinationSummary {
     font-size: 0.85rem;
@@ -643,6 +668,23 @@ const dashboardHTML = `<!DOCTYPE html>
   .status-chip.err { background: var(--error-bg); border-color: var(--error); color: var(--error-text); }
   .status-chip.info { background: rgba(59, 130, 246, 0.1); border-color: var(--accent); color: var(--accent); }
   .status-chip.neutral { background: rgba(139, 148, 158, 0.12); border-color: var(--border-light); color: var(--text-muted); }
+  .record-state { margin-top: 0.25rem; }
+  .record-next { font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem; }
+  /* Monospace accent chip. #60a5fa on white measured 2.27:1 and 2.54:1, so
+     the accent text steps down in the light theme while keeping the tint. */
+  .mono-chip {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: var(--radius-sm);
+    background: rgba(59, 130, 246, 0.1);
+    color: #1d4ed8;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  @media (prefers-color-scheme: dark) {
+    .mono-chip { color: #93c5fd; }
+  }
   .received-item {
     border-radius: var(--radius-md);
     box-shadow: var(--shadow-sm);
@@ -849,6 +891,18 @@ const dashboardHTML = `<!DOCTYPE html>
      does not need. */
   .pill { min-height: 32px; }
   .log-filters { gap: 0.6rem; }
+  /* Destructive actions are marked visually as well as confirmed, so the
+     three Clear buttons do not read as neutral housekeeping. */
+  .btn-destructive {
+    color: var(--error-text);
+    border-color: var(--error);
+    background: var(--error-bg);
+  }
+  .btn-destructive:hover {
+    background: var(--error-bg);
+    border-color: var(--error);
+    color: var(--error-text);
+  }
 </style>
 </head>
 <body>
@@ -899,7 +953,7 @@ const dashboardHTML = `<!DOCTYPE html>
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem;">
           <div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem;">
             <span style="color: var(--text-muted);">📁 Downloads location:</span>
-            <code id="downloadDirPath" style="color: #60a5fa; background: rgba(59,130,246,0.1); padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.85rem; overflow-wrap: anywhere; word-break: break-word;">...</code>
+            <code id="downloadDirPath" class="mono-chip">...</code>
           </div>
           <div style="display: flex; gap: 0.5rem;">
             <button class="btn-sm" data-action="change-download-dir">✏️ Change</button>
@@ -927,7 +981,7 @@ const dashboardHTML = `<!DOCTYPE html>
             <div class="drop-zone" id="dropZone" data-action="choose-file" tabindex="0" role="button" aria-label="Choose a file to send to your peer">
               <div class="drop-zone-icon">📁</div>
               <div class="drop-zone-text">Drag & drop files here, or click to browse</div>
-              <div class="drop-zone-subtext">Direct peer-to-peer streaming via mTLS • zero intermediate servers</div>
+              <div class="drop-zone-subtext" id="dropZoneTransportNote">Direct encrypted peer-to-peer streaming • no intermediate server</div>
             </div>
             <input type="file" id="fileInput" aria-label="File to send to your peer" style="display: none;">
             <div id="filePreviewCard" hidden>
@@ -1006,7 +1060,7 @@ const dashboardHTML = `<!DOCTYPE html>
           <h2 class="card-title" style="margin-bottom: 0;">🔐 Recent Authorizations</h2>
           <div style="display: flex; gap: 0.5rem;">
             <button class="btn-sm" data-action="load-authorizations">🔄 Refresh</button>
-            <button class="btn-sm" data-action="clear-authorizations">🗑️ Clear</button>
+            <button class="btn-sm btn-destructive" data-action="clear-authorizations">🗑️ Clear</button>
           </div>
         </div>
         <p class="hint-text" style="margin-top: 0; margin-bottom: 0.75rem;">Origin hosts only — URLs, codes, and tokens are never stored. Kept 30 days (last 50).</p>
@@ -1036,7 +1090,7 @@ const dashboardHTML = `<!DOCTYPE html>
           </div>
           <div class="stat-row">
             <span class="stat-label">SAS Verification Code</span>
-            <span class="stat-val" id="idSAS" style="color: #60a5fa;">-</span>
+            <span class="stat-val mono-accent" id="idSAS">-</span>
           </div>
           <div class="stat-row">
             <span class="stat-label">P2P Listen Socket</span>
@@ -1111,7 +1165,7 @@ const dashboardHTML = `<!DOCTYPE html>
           <h2 class="card-title" style="margin-bottom: 0;">🔄 Transfers</h2>
           <div style="display: flex; gap: 0.5rem;">
             <button class="btn-sm" data-action="load-transfers">🔄 Refresh</button>
-            <button class="btn-sm" data-action="clear-transfers">🗑️ Clear</button>
+            <button class="btn-sm btn-destructive" data-action="clear-transfers">🗑️ Clear</button>
           </div>
         </div>
         <p class="hint-text" style="margin-top: 0; margin-bottom: 0.75rem;">Sender-side truth, kept 30 days (last 50). Received items stay under QuickDrop.</p>
@@ -1128,7 +1182,7 @@ const dashboardHTML = `<!DOCTYPE html>
           <h2 class="card-title" style="margin-bottom: 0;">📋 Live Diagnostics & Activity Feed</h2>
           <div style="display: flex; gap: 0.5rem;">
             <button class="btn-sm" data-action="export-logs">📥 Export Logs</button>
-            <button class="btn-sm" data-action="clear-logs">Clear</button>
+            <button class="btn-sm btn-destructive" data-action="clear-logs">🗑️ Clear feed</button>
           </div>
         </div>
 
@@ -1270,6 +1324,9 @@ const dashboardHTML = `<!DOCTYPE html>
           exportLogs();
           break;
         case 'clear-logs':
+          // aria-pressed style destructive affordance is visual only; the
+          // confirmation lives in clearLogs() so the rule cannot be bypassed
+          // by invoking the handler directly.
           clearLogs();
           break;
         case 'select-peer':
@@ -1528,7 +1585,15 @@ const dashboardHTML = `<!DOCTYPE html>
       } catch (_) {}
     }
 
+    // Clearing the visible console was unconfirmed and unlabelled, while the
+    // two sibling Clear buttons (transfers, authorizations) both explain what
+    // is removed. Same rule applies here: say what this does and does not do.
     function clearLogs() {
+      if (!confirm('Clear the visible log feed?\n\n' +
+        'This only empties what is shown in this tab. The Hub keeps its own log, and transfer and authorization history are untouched. ' +
+        'Use Export Logs first if you want a copy.')) {
+        return;
+      }
       document.getElementById('logConsole').innerHTML = '';
     }
 
@@ -1566,6 +1631,14 @@ const dashboardHTML = `<!DOCTYPE html>
         const peers = data.peers || [];
         lastPeers = peers;
         lastTransport = data.transport || 'loopback';
+        // "via mTLS" was asserted unconditionally, but mTLS is only the LAN
+        // transport. Name the transport actually in use instead.
+        const transportNote = document.getElementById('dropZoneTransportNote');
+        if (transportNote) {
+          transportNote.textContent = (lastTransport === 'loopback')
+            ? 'Delivered to this Hub over the local loopback transport • for testing only'
+            : 'Direct encrypted ' + lastTransport + ' streaming • no intermediate server';
+        }
         const peersList = document.getElementById('peersList');
         const dropSelector = document.getElementById('dropPeerSelector');
         const dropPills = document.getElementById('dropPeerPills');
@@ -1658,6 +1731,7 @@ const dashboardHTML = `<!DOCTYPE html>
     // inbound request - the one action that grants permanent mutual trust -
     // impossible to complete with a keyboard or screen reader.
     let lastPendingPairingsSignature = '';
+    let lastPendingPairingName = '';
     async function loadPendingPairings() {
       try {
         const res = await apiFetch('/api/pair/pending');
@@ -1678,6 +1752,9 @@ const dashboardHTML = `<!DOCTYPE html>
         }));
         if (signature === lastPendingPairingsSignature) return;
         lastPendingPairingsSignature = signature;
+        // Only the first request is nameable in a single confirm() dialog; a
+        // queue of several still requires the user to read the banner.
+        lastPendingPairingName = (list[0] && list[0].peer_name) ? String(list[0].peer_name) : '';
         banner.style.display = 'block';
         container.innerHTML = list.map(function(item) {
           var name = escapeHTML(item.peer_name || 'Nearby Device');
@@ -1700,7 +1777,19 @@ const dashboardHTML = `<!DOCTYPE html>
       }
     }
 
+    // Approving an inbound request grants permanent mutual trust on a single
+    // click, which is inconsistent with confirming an unpair. The name and
+    // SAS are named back so the user confirms the right request.
+    function approvePairingConsequenceText(name) {
+      return 'Approve pairing with ' + (name || 'this device') + '?\n\n' +
+        'This saves its identity as trusted. You can send files, text and OAuth authorizations to it, and it can do the same to you, without asking again.\n\n' +
+        'Only approve if the SAS code matches the one shown on that device. If it does not, reject it instead.';
+    }
+
     async function decidePairing(id, accept) {
+      if (accept && !confirm(approvePairingConsequenceText(lastPendingPairingName))) {
+        return;
+      }
       try {
         const res = await apiFetch('/api/pair/decision', {
           method: 'POST',
@@ -1807,6 +1896,16 @@ const dashboardHTML = `<!DOCTYPE html>
       }).join('');
     }
 
+    // Unpairing is a trust change, not a delete, so the confirmation says what
+    // it revokes, what it does not touch, and whether it is reversible. The
+    // old copy said only "revoke mutual zero-trust encryption".
+    function unpairConsequenceText(name) {
+      const label = name || 'this peer';
+      return 'Unpair from ' + label + '?\n\n' +
+        'This revokes the stored identity: the two machines will no longer accept each other, and a new pairing with fresh SAS verification is required before you can send anything again.\n\n' +
+        'Files already received stay on this machine. Nothing is deleted.';
+    }
+
     async function promptEditAlias(fp, currentAlias) {
       const newAlias = prompt('Enter friendly nickname / alias for this peer:', currentAlias || '');
       if (newAlias === null) return;
@@ -1846,7 +1945,7 @@ const dashboardHTML = `<!DOCTYPE html>
     }
 
     async function confirmUnpair(fp, name) {
-      if (!confirm('Are you sure you want to unpair from ' + (name || 'this peer') + '? This will revoke mutual zero-trust encryption.')) {
+      if (!confirm(unpairConsequenceText(name))) {
         return;
       }
       try {
@@ -1883,6 +1982,17 @@ const dashboardHTML = `<!DOCTYPE html>
       const sas = document.getElementById('idSAS').innerText || '---';
       document.getElementById('pairModalSAS').innerText = sas;
       document.getElementById('pairStatusMsg').innerText = '';
+      // Copy a command that actually runs. The dialog used to overwrite the
+      // placeholder with a bare "tantu pair", which carries neither an address
+      // nor a port, so pasting it on the remote machine did nothing useful.
+      // The listening address is already polled into idP2P, so use it.
+      const p2p = (document.getElementById('idP2P').innerText || '').trim();
+      const pairCmd = document.getElementById('pairCmdText');
+      if (pairCmd) {
+        pairCmd.textContent = (/:\d+$/.test(p2p) && p2p.indexOf('0.0.0.0') !== 0)
+          ? 'tantu pair --peer ' + p2p
+          : 'tantu pair --peer <remote-ip>:9877';
+      }
       modal.style.display = 'flex';
       const input = document.getElementById('pairRemoteAddrInput');
       if (input) input.focus();
@@ -2070,10 +2180,22 @@ const dashboardHTML = `<!DOCTYPE html>
       return (sel && sel.name) || 'Peer';
     }
 
+    // The send/relay buttons used to say "Send to Peer" regardless of where
+    // the payload actually went, which contradicted the destination summary
+    // sitting directly above them. Name the resolved destination instead.
+    function updateComposerActionLabels() {
+      const dest = destinationDisplayName();
+      const sendBtn = document.getElementById('btnSendText');
+      if (sendBtn) sendBtn.textContent = 'Send text to ' + dest;
+      const relayBtn = document.getElementById('btnRelay');
+      if (relayBtn) relayBtn.textContent = 'Relay to ' + dest;
+    }
+
     function updateDestinationSummary() {
       const el = document.getElementById('destinationSummary');
       if (!el) return;
       el.textContent = 'Destination: ' + destinationDisplayName();
+      updateComposerActionLabels();
       const previewDest = document.getElementById('filePreviewDest');
       if (previewDest && pendingFile) {
         previewDest.textContent = 'Destination: ' + destinationDisplayName();
@@ -2200,10 +2322,64 @@ const dashboardHTML = `<!DOCTYPE html>
 
     function transferChipClass(state) {
       if (state === 'completed') return 'ok';
-      if (state === 'duplicate_risk' || state === 'terminal_failure' || state === 'failed') return 'err';
+      // duplicate_risk is a warning, not a failure: the file may already be
+      // saved and a blind retry is what causes the duplicate.
+      if (state === 'duplicate_risk') return 'warn';
+      if (state === 'terminal_failure' || state === 'failed') return 'err';
       if (state === 'retryable_failure') return 'warn';
       if (state === 'cancelled') return 'neutral';
       return 'info';
+    }
+
+    // One vocabulary for operation state, shared by Transfers and
+    // Authorizations. Raw taxonomy on a safety-critical state is not a label,
+    // it is a leak: "duplicate_risk" says nothing about what the user should
+    // do, and rendering it verbatim invited a blind retry.
+    const OPERATION_STATE_LABELS = {
+      completed: 'File saved on peer',
+      completed_with_warning: 'Saved on peer, with a warning',
+      duplicate_risk: 'File may already be saved',
+      retryable_failure: 'Not delivered',
+      terminal_failure: 'Not delivered',
+      failed: 'Not delivered',
+      cancelled: 'Cancelled by you',
+      stale: 'Result unknown',
+      unknown: 'Result unknown',
+      incomplete: 'Incomplete',
+      sending: 'Sending',
+      publishing: 'Saving on peer',
+      submitted: 'Waiting to send',
+      negotiating: 'Connecting to peer',
+      waiting_callback: 'Waiting for the browser',
+      browser_opened: 'Browser opened',
+      callback_received: 'Authorization received',
+      verifying: 'Verifying',
+      complete: 'Authorization relayed',
+    };
+    function operationStateLabel(state, isAuthorization) {
+      if (!state) return isAuthorization ? 'Result unknown' : 'Result unknown';
+      if (OPERATION_STATE_LABELS[state]) return OPERATION_STATE_LABELS[state];
+      // Unknown states degrade to something honest instead of leaking the
+      // internal identifier into the UI.
+      return 'Unrecognised state';
+    }
+
+    // Records are kept 30 days, so a bare clock time cannot answer "when".
+    // Same-day records read as "today at HH:MM"; older ones carry the date.
+    function formatRecordTime(iso) {
+      if (!iso) return '';
+      const when = new Date(iso);
+      if (isNaN(when.getTime())) return '';
+      const now = new Date();
+      const time = when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const sameDay = when.getFullYear() === now.getFullYear() &&
+        when.getMonth() === now.getMonth() && when.getDate() === now.getDate();
+      if (sameDay) return 'today ' + time;
+      const yesterday = new Date(now.getTime() - 86400000);
+      const isYesterday = when.getFullYear() === yesterday.getFullYear() &&
+        when.getMonth() === yesterday.getMonth() && when.getDate() === yesterday.getDate();
+      if (isYesterday) return 'yesterday ' + time;
+      return when.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + time;
     }
 
     function renderTransfers(items) {
@@ -2216,23 +2392,26 @@ const dashboardHTML = `<!DOCTYPE html>
       const reversed = items.slice().reverse();
       list.innerHTML = reversed.map(function(op) {
         const when = op.updated_at || op.created_at;
-        const timeStr = when ? new Date(when).toLocaleTimeString() : '';
+        const timeStr = formatRecordTime(when);
         const name = op.name || op.kind || 'transfer';
         const sizeStr = formatBytes(op.size || 0);
         const dest = op.destination || 'unknown destination';
-        let state = op.state || 'unknown';
+        const state = op.state || 'unknown';
+        const label = operationStateLabel(state, false);
         let extra = '';
-        if (op.verified) extra += ' · verified';
-        if (op.duplicate_risk) extra += ' · check inbox before retry';
+        // verified is only claimed when the receiver acknowledged the digest.
+        if (op.verified && state === 'completed') extra += ' · digest verified';
+        if (op.duplicate_risk) extra += ' · check the receiving inbox before retrying';
         else if (op.retry_safe && state !== 'completed') extra += ' · safe to retry';
         let recovery = '';
         if (op.next_action && state !== 'completed') {
-          recovery = '<div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">Next: ' + escapeHTML(op.next_action) + '</div>';
+          recovery = '<div class="record-next">Next: ' + escapeHTML(op.next_action) + '</div>';
         }
+        const timePart = timeStr ? ' &bull; ' + escapeHTML(timeStr) : '';
         return '<div class="received-item">' +
           '<div class="received-item-header"><span><strong>' + escapeHTML(name) + '</strong> to ' + escapeHTML(dest) + '</span>' +
-          '<span>' + escapeHTML(timeStr) + ' &bull; ' + escapeHTML(sizeStr) + '</span></div>' +
-          '<div style="margin-top: 0.25rem;"><span class="status-chip ' + transferChipClass(state) + '">' + escapeHTML(state) + escapeHTML(extra) + '</span></div>' +
+          '<span>' + escapeHTML(sizeStr) + timePart + '</span></div>' +
+          '<div class="record-state"><span class="status-chip ' + transferChipClass(state) + '">' + escapeHTML(label) + escapeHTML(extra) + '</span></div>' +
           recovery +
         '</div>';
       }).join('');
@@ -2248,18 +2427,20 @@ const dashboardHTML = `<!DOCTYPE html>
       const reversed = items.slice().reverse();
       list.innerHTML = reversed.map(function(op) {
         const when = op.updated_at || op.created_at;
-        const timeStr = when ? new Date(when).toLocaleTimeString() : '';
+        const timeStr = formatRecordTime(when);
         const dest = op.target_peer || 'unknown peer';
         const origin = op.safe_origin || 'unknown origin';
         const state = op.state || 'unknown';
+        const label = operationStateLabel(state, true);
         let recovery = '';
         if (op.next_action && state !== 'complete') {
-          recovery = '<div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">Next: ' + escapeHTML(op.next_action) + '</div>';
+          recovery = '<div class="record-next">Next: ' + escapeHTML(op.next_action) + '</div>';
         }
+        const timePart = timeStr ? ' &bull; ' + escapeHTML(timeStr) : '';
         return '<div class="received-item">' +
           '<div class="received-item-header"><span><strong>🔐 ' + escapeHTML(origin) + '</strong> via ' + escapeHTML(dest) + '</span>' +
-          '<span>' + escapeHTML(timeStr) + '</span></div>' +
-          '<div style="margin-top: 0.25rem;"><span class="status-chip ' + transferChipClass(state) + '">' + escapeHTML(state) + '</span></div>' +
+          '<span>' + escapeHTML(timePart.replace(/^ &bull; /, '')) + '</span></div>' +
+          '<div class="record-state"><span class="status-chip ' + transferChipClass(state) + '">' + escapeHTML(label) + '</span></div>' +
           recovery +
         '</div>';
       }).join('');
@@ -2470,12 +2651,23 @@ const dashboardHTML = `<!DOCTYPE html>
       // megabytes the server will reject.
       const maxTextBytes = 10 * 1024 * 1024;
       if (textBytes > maxTextBytes) {
+        // Report it on the tab the user clicked from. A silent rejection is
+        // indistinguishable from a dead button, and the draft is kept so
+        // nothing the user typed is lost to a limit they cannot see.
+        const banner = document.getElementById('dropStatus');
+        banner.style.display = 'block';
+        banner.className = 'status-banner error';
+        banner.textContent = 'This snippet is ' + formatBytes(textBytes) + ', over the 10.0 MB limit. Send it as a file instead, or trim it here first. Nothing was sent.';
         addLog('ERROR', 'Text snippet too large (' + formatBytes(textBytes) + ' exceeds the 10.0 MB limit). Send it as a file instead.');
         return;
       }
 
       const btn = document.getElementById('btnSendText');
       btn.disabled = true;
+      const banner = document.getElementById('dropStatus');
+      banner.style.display = 'block';
+      banner.className = 'status-banner relaying';
+      banner.textContent = 'Sending ' + formatBytes(textBytes) + ' to ' + destinationDisplayName() + '…';
       addLog('DROP', 'Sending text snippet (' + text.length + ' chars, ' + formatBytes(textBytes) + ')...');
 
       const payload = { text: text };
@@ -2490,21 +2682,36 @@ const dashboardHTML = `<!DOCTYPE html>
           body: JSON.stringify(payload)
         });
         const data = await res.json();
+        // Report success the same way the file path does: destination, and
+        // verified only when the server actually confirmed it. The previous
+        // behaviour logged the outcome and showed nothing on this tab, so a
+        // successful text send looked identical to a dead button.
         if (res.ok && data.status === 'success') {
           textarea.value = '';
           const dest = data.destination || destinationDisplayName();
           const op = data.operation_id ? ' (ID ' + data.operation_id + ')' : '';
+          banner.style.display = 'block';
+          banner.className = 'status-banner success';
+          banner.textContent = 'Text sent to ' + dest + (data.verified ? ' · verified' : '') + op;
           addLog('DROP', 'Text snippet sent to ' + dest + op + '.');
         } else {
           let msg = data.plain_message || data.message || 'Unknown error';
           if (data.next_action) msg += ' Next: ' + data.next_action;
           if (data.duplicate_risk) msg = 'Text may already be saved. ' + msg;
           if (data.operation_id) msg += ' (ID ' + data.operation_id + ')';
+          banner.style.display = 'block';
+          banner.className = 'status-banner error';
+          // The draft is intentionally kept so a recoverable failure does not
+          // silently discard what the user wrote.
+          banner.textContent = 'Not sent: ' + msg;
           addLog('ERROR', 'Failed to send text: ' + msg);
         }
         loadTransfers();
         updateNextAction();
       } catch (err) {
+        banner.style.display = 'block';
+        banner.className = 'status-banner error';
+        banner.textContent = 'Not sent: ' + err.message + ' Your text is still here.';
         addLog('ERROR', 'Text send failed: ' + err.message);
       } finally {
         btn.disabled = false;
@@ -2704,13 +2911,19 @@ const dashboardHTML = `<!DOCTYPE html>
       list.innerHTML = reversed.map(function(item) {
         const copyID = rememberReceivedValue(item.content || '');
         const urlID = rememberReceivedValue(item.content || '');
-        const timeStr = item.timestamp ? new Date(item.timestamp).toLocaleTimeString() : '';
+        const timeStr = formatRecordTime(item.timestamp);
         const isFile = item.kind === 'file';
         const isURL = item.is_url;
         const icon = isFile ? '📁' : (isURL ? '🌐' : '📝');
         const title = isFile ? (item.name || 'Received File') : (isURL ? 'Web URL' : 'Text Snippet');
         const safeTitle = escapeHTML(title);
         const sizeStr = formatBytes(item.size);
+        // A loopback self-send is labelled "Unauthenticated Peer" by the
+        // receiver, which reads as an unknown third party. Say what happened.
+        let fromPeer = item.from_peer || 'Peer';
+        if (/^unauthenticated peer$/i.test(fromPeer)) {
+          fromPeer = lastTransport === 'loopback' ? 'this Hub (local loopback)' : 'a peer that did not identify itself';
+        }
 
         let contentHTML = '';
         if (isFile) {
@@ -2745,7 +2958,7 @@ const dashboardHTML = `<!DOCTYPE html>
 
         return '<div class="received-item">' +
           '<div class="received-item-header">' +
-            '<span><strong>' + icon + ' ' + safeTitle + '</strong> from ' + escapeHTML(item.from_peer || 'Peer') + '</span>' +
+            '<span><strong>' + icon + ' ' + safeTitle + '</strong> from ' + escapeHTML(fromPeer) + '</span>' +
             '<span>' + timeStr + ' &bull; ' + sizeStr + '</span>' +
           '</div>' +
           contentHTML +

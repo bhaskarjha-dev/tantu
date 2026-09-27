@@ -188,6 +188,130 @@ func TestWebDashboard_SendPreviewImageSchemeIsAuthorized(t *testing.T) {
 	}
 }
 
+// The text composer is a primary journey and used to report nothing at all on
+// the tab the user clicked from: a successful send and an over-limit rejection
+// were both visible only in the Live Logs tab. It now uses the same inline
+// outcome surface as the file path, and never claims verification the server
+// did not confirm.
+func TestWebDashboard_TextComposerReportsOutcomeInline(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+
+	resp, err := http.Get("http://" + h.WebAddr() + "/")
+	if err != nil {
+		t.Fatalf("GET / failed: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read body: %v", err)
+	}
+	content := string(body)
+
+	for _, s := range []string{
+		// In-flight state, success, and failure all land in #dropStatus.
+		`banner.textContent = 'Sending ' + formatBytes(textBytes) + ' to ' + destinationDisplayName()`,
+		`banner.textContent = 'Text sent to ' + dest + (data.verified ? ' · verified' : '')`,
+		`banner.textContent = 'Not sent: ' + msg`,
+		`banner.textContent = 'Not sent: ' + err.message + ' Your text is still here.'`,
+		// Over-limit rejection is visible and says nothing was sent.
+		`over the 10.0 MB limit`,
+		`Nothing was sent.`,
+		// A draft is never silently discarded on failure.
+		`const textarea = document.getElementById('textPayload');`,
+	} {
+		if !strings.Contains(content, s) {
+			t.Errorf("text composer missing inline outcome behaviour %q", s)
+		}
+	}
+
+	// "verified" must stay conditional on the server confirming it.
+	if strings.Contains(content, "Text sent to ' + dest + ' · verified'") {
+		t.Error("text success claims verification unconditionally; it must depend on the server response")
+	}
+	// The text-limit rejection must not be log-only any more: the banner write
+	// has to appear in the same branch that returns early.
+	limitBranch := strings.Index(content, "if (textBytes > maxTextBytes) {")
+	if limitBranch < 0 {
+		t.Fatal("no client-side text size guard found")
+	}
+	limitEnd := strings.Index(content[limitBranch:], "\n      }")
+	if limitEnd < 0 {
+		t.Fatal("could not delimit the text size guard")
+	}
+	guard := content[limitBranch : limitBranch+limitEnd]
+	if !strings.Contains(guard, "dropStatus") || !strings.Contains(guard, "Nothing was sent") {
+		t.Error("over-limit text rejection is still log-only and invisible on the composer")
+	}
+}
+
+// Internal state names are not user labels. A raw "duplicate_risk" on a
+// safety-critical state tells the user nothing about what to do next and
+// invites the blind retry the design explicitly forbids.
+func TestWebDashboard_UserLanguageStateVocabulary(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+
+	resp, err := http.Get("http://" + h.WebAddr() + "/")
+	if err != nil {
+		t.Fatalf("GET / failed: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read body: %v", err)
+	}
+	content := string(body)
+
+	for _, s := range []string{
+		"const OPERATION_STATE_LABELS = {",
+		`duplicate_risk: 'File may already be saved'`,
+		`completed: 'File saved on peer'`,
+		`retryable_failure: 'Not delivered'`,
+		`terminal_failure: 'Not delivered'`,
+		`complete: 'Authorization relayed'`,
+		`waiting_callback: 'Waiting for the browser'`,
+		"return 'Unrecognised state';",
+		"function operationStateLabel(",
+		"function formatRecordTime(",
+		// duplicate_risk reads as a warning, not a hard failure.
+		"if (state === 'duplicate_risk') return 'warn';",
+		// Dated records: a 30-day ledger cannot be read from a bare clock time.
+		"return 'today ' + time;",
+		"return 'yesterday ' + time;",
+		// Action labels name the resolved destination.
+		"sendBtn.textContent = 'Send text to ' + dest;",
+		"relayBtn.textContent = 'Relay to ' + dest;",
+		// Unconditional mTLS claim removed.
+		"Direct encrypted ' + lastTransport + ' streaming",
+		// Consequence-stating confirmations.
+		"function unpairConsequenceText(",
+		"function approvePairingConsequenceText(",
+		"new pairing with fresh SAS verification is required",
+		"Only approve if the SAS code matches",
+		"function clearLogs()",
+		"Clear the visible log feed?",
+		"btn-destructive",
+	} {
+		if !strings.Contains(content, s) {
+			t.Errorf("dashboard missing user-language vocabulary %q", s)
+		}
+	}
+
+	// Raw taxonomy must not reach the DOM: the chip renders the mapped label.
+	if strings.Contains(content, `escapeHTML(state) + escapeHTML(extra)`) {
+		t.Error("a state chip renders the raw internal state name again")
+	}
+	// The old bare toLocaleTimeString-only rendering is gone from both ledgers.
+	if strings.Count(content, "toLocaleTimeString()") > 1 {
+		t.Error("a ledger row still renders a bare clock time with no date")
+	}
+	// The unconditional mTLS claim must be gone.
+	if strings.Contains(content, "Direct peer-to-peer streaming via mTLS") {
+		t.Error("drop zone still claims mTLS regardless of the transport in use")
+	}
+}
+
 // Accessibility mechanics: headings, landmarks, a bypass block, keyboard
 // reachability, and live regions that do not over-announce. These are the
 // structural fixes from the frontend audit; each one was verified in a real
