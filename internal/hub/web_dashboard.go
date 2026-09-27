@@ -166,8 +166,6 @@ const dashboardHTML = `<!DOCTYPE html>
     box-shadow: 0 0 8px var(--warning);
   }
   nav.tabs-nav {
-    display: flex;
-    gap: 0.5rem;
     padding: 1rem 2rem 0;
     border-bottom: 1px solid var(--border);
     background: rgba(19, 23, 34, 0.4);
@@ -431,7 +429,7 @@ const dashboardHTML = `<!DOCTYPE html>
   }
   @media (max-width: 768px) {
     .grid-2 { grid-template-columns: 1fr; }
-    nav.tabs-nav { overflow-x: auto; }
+    .tabs-list { overflow-x: auto; }
   }
   .stat-row {
     display: flex;
@@ -504,7 +502,7 @@ const dashboardHTML = `<!DOCTYPE html>
   .status-banner.success { display: block; background: var(--success-bg); border: 1px solid var(--success); color: #34d399; }
   .status-banner.error { display: block; background: var(--error-bg); border: 1px solid var(--error); color: #f87171; }
   .status-banner.relaying { display: block; background: var(--warning-bg); border: 1px solid var(--warning); color: #fbbf24; }
-  [id] { scroll-margin-top: 84px; }
+  [id] { scroll-margin-top: calc(var(--chrome-h, 129px) + 12px); }
   #nextActionBanner {
     display: none;
     background: rgba(59,130,246,0.08);
@@ -738,9 +736,124 @@ const dashboardHTML = `<!DOCTYPE html>
     .btn-primary { width: 100%; }
     .peer-status-pill select { max-width: 9rem; }
   }
+  /* ---- Accessibility mechanics ---- */
+  /* Bypass block: the five tabs are the first focusable things on the page. */
+  .skip-link {
+    position: absolute;
+    left: -9999px;
+    top: 0;
+    z-index: 10000;
+    background: var(--card-bg);
+    color: var(--text);
+    border: 1px solid var(--accent);
+    border-radius: 0 0 var(--radius-md) 0;
+    padding: 0.75rem 1rem;
+    font-weight: 600;
+    text-decoration: none;
+  }
+  .skip-link:focus {
+    left: 0;
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  main:focus { outline: none; }
+  /* The tab list scrolls inside the navigation landmark rather than replacing
+     it, so a screen reader still gets banner / navigation / main. */
+  .tabs-list {
+    display: flex;
+    gap: 0.5rem;
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+  @media (max-width: 768px) {
+    .tabs-list { overflow-x: auto; }
+  }
+  /* The log console is a terminal surface and stays dark in both OS themes by
+     design. It therefore owns its text colours instead of inheriting body
+     colour, which flips to a dark navy in the light theme and made the whole
+     console unreadable there. */
+  .log-console {
+    color: #d7dde8;
+  }
+  .log-console .log-time { color: #8b98ad; }
+  /* Inbound pairing approval: the only action that grants permanent mutual
+     trust, so it gets a real heading, theme-aware classes, and full-size
+     targets instead of hardcoded inline colours. */
+  .pairing-banner {
+    background: var(--warning-bg);
+    border: 1px solid var(--warning);
+    border-radius: var(--radius-lg);
+    padding: 1.25rem;
+    margin-bottom: 1.5rem;
+  }
+  .pairing-banner-title {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--warning-text);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .pairing-banner-badge {
+    font-size: 0.75rem;
+    background: var(--warning-bg);
+    border: 1px solid var(--warning);
+    color: var(--warning-text);
+    padding: 0.2rem 0.6rem;
+    border-radius: var(--radius-pill);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .pairing-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 0.75rem 1rem;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+  }
+  .pairing-row-name { font-weight: 600; color: var(--text); }
+  .pairing-row-addr { font-size: 0.8rem; color: var(--text-muted); font-weight: 400; }
+  .pairing-row-meta { font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem; }
+  .pairing-sas {
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 1.05rem;
+    letter-spacing: 0.05em;
+    background: rgba(59, 130, 246, 0.12);
+    padding: 0.15rem 0.5rem;
+    border-radius: var(--radius-sm);
+  }
+  .pairing-actions { display: flex; gap: 0.5rem; }
+  .btn-approve, .btn-reject {
+    min-height: 44px;
+    padding: 0.5rem 1.1rem;
+    font-weight: 600;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    color: #fff;
+  }
+  .btn-approve { background: var(--success); border: 1px solid var(--success); }
+  .btn-reject { background: var(--error); border: 1px solid var(--error); }
+  /* Dismiss control of a modal dialog: a 13x22 hit area is not a target. */
+  /* 44px is the measured target including the border box, so the floor is
+     declared slightly higher to survive sub-pixel layout rounding. */
+  .pair-close { min-width: 46px; min-height: 46px; text-align: center; }
+  .btn-approve, .btn-reject { min-height: 46px; }
+  /* Filter and destination pills: target size is met with spacing rather than
+     by inflating every pill to full height, which the diagnostics density
+     does not need. */
+  .pill { min-height: 32px; }
+  .log-filters { gap: 0.6rem; }
 </style>
 </head>
 <body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <h1 class="sr-only">Tantu Hub dashboard</h1>
   <header>
     <div class="logo-group">
       <div class="logo-title">🔐 tantu</div>
@@ -752,27 +865,28 @@ const dashboardHTML = `<!DOCTYPE html>
     </div>
   </header>
 
-  <nav class="tabs-nav" role="tablist" aria-label="Dashboard sections">
-    <button id="tab-btn-drop" class="tab-btn active" role="tab" aria-selected="true" aria-controls="tab-drop" data-tab="tab-drop">📦 QuickDrop</button>
-    <button id="tab-btn-relay" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-relay" data-tab="tab-relay">⚡ OAuth Relay</button>
-    <button id="tab-btn-peers" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-peers" data-tab="tab-peers">🔗 Peers & Network</button>
-    <button id="tab-btn-transfers" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-transfers" data-tab="tab-transfers">🔄 Transfers</button>
-    <button id="tab-btn-logs" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-logs" data-tab="tab-logs">📋 Live Logs</button>
+  <nav class="tabs-nav" aria-label="Dashboard sections">
+    <div class="tabs-list" role="tablist" aria-label="Dashboard sections">
+      <button id="tab-btn-drop" class="tab-btn active" role="tab" aria-selected="true" aria-controls="tab-drop" data-tab="tab-drop" tabindex="0">📦 QuickDrop</button>
+      <button id="tab-btn-relay" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-relay" data-tab="tab-relay" tabindex="-1">⚡ OAuth Relay</button>
+      <button id="tab-btn-peers" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-peers" data-tab="tab-peers" tabindex="-1">🔗 Peers & Network</button>
+      <button id="tab-btn-transfers" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-transfers" data-tab="tab-transfers" tabindex="-1">🔄 Transfers</button>
+      <button id="tab-btn-logs" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-logs" data-tab="tab-logs" tabindex="-1">📋 Live Logs</button>
+    </div>
   </nav>
 
-  <main class="tab-content">
+  <main class="tab-content" id="main" tabindex="-1">
     <div id="sessionBanner" role="alert" style="display: none; background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.4); color: #fbbf24; border-radius: 12px; padding: 0.85rem 1.25rem; margin-bottom: 1.25rem; font-size: 0.9rem;">
       ⚠️ <strong>Dashboard session not established.</strong>
       <span>Actions on this page will fail until you reconnect. Reopen the dashboard from the Hub terminal (press <kbd>o</kbd>) or reload the page the Hub opened for you.</span>
     </div>
-    <!-- INBOUND PAIRING APPROVAL BANNER -->
-    <div id="pendingPairingsBanner" style="display: none; margin-bottom: 1.5rem; background: rgba(245, 158, 11, 0.12); border: 1px solid #f59e0b; border-radius: 12px; padding: 1.25rem;">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
-        <div style="display: flex; align-items: center; gap: 0.5rem;">
-          <span style="font-size: 1.25rem;">🔐</span>
-          <span style="font-weight: 600; color: #fbbf24; font-size: 1rem;">Incoming Pairing Request</span>
-        </div>
-        <span style="font-size: 0.75rem; background: rgba(245, 158, 11, 0.25); color: #fbbf24; padding: 0.2rem 0.6rem; border-radius: 9999px; font-weight: 500;">Action Required</span>
+    <!-- INBOUND PAIRING APPROVAL BANNER: the only action in the product that
+         grants permanent mutual trust, so it is an announced status region
+         with theme-aware classes and full-size targets. -->
+    <div id="pendingPairingsBanner" class="pairing-banner" role="status" aria-live="polite" style="display: none;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; flex-wrap: wrap; gap: 0.5rem;">
+        <h2 class="pairing-banner-title"><span aria-hidden="true">🔐</span> Incoming pairing request</h2>
+        <span class="pairing-banner-badge">Action required</span>
       </div>
       <div id="pendingPairingsList" style="display: flex; flex-direction: column; gap: 0.75rem;"></div>
     </div>
@@ -785,7 +899,7 @@ const dashboardHTML = `<!DOCTYPE html>
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem;">
           <div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem;">
             <span style="color: var(--text-muted);">📁 Downloads location:</span>
-            <code id="downloadDirPath" style="color: #60a5fa; background: rgba(59,130,246,0.1); padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.85rem;">...</code>
+            <code id="downloadDirPath" style="color: #60a5fa; background: rgba(59,130,246,0.1); padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.85rem; overflow-wrap: anywhere; word-break: break-word;">...</code>
           </div>
           <div style="display: flex; gap: 0.5rem;">
             <button class="btn-sm" data-action="change-download-dir">✏️ Change</button>
@@ -809,7 +923,7 @@ const dashboardHTML = `<!DOCTYPE html>
         <!-- Left Pane: Outbound Sending -->
         <div style="display: flex; flex-direction: column; gap: 1.25rem;">
           <div class="card">
-            <div class="card-title">📤 Send File or Image (up to 5GB)</div>
+            <h2 class="card-title">📤 Send File or Image (up to 5GB)</h2>
             <div class="drop-zone" id="dropZone" data-action="choose-file" tabindex="0" role="button" aria-label="Choose a file to send to your peer">
               <div class="drop-zone-icon">📁</div>
               <div class="drop-zone-text">Drag & drop files here, or click to browse</div>
@@ -817,7 +931,7 @@ const dashboardHTML = `<!DOCTYPE html>
             </div>
             <input type="file" id="fileInput" aria-label="File to send to your peer" style="display: none;">
             <div id="filePreviewCard" hidden>
-              <div class="card-title" id="filePreviewTitle">Ready to send</div>
+              <h3 class="card-title" id="filePreviewTitle">Ready to send</h3>
               <img id="filePreviewThumb" alt="">
               <div id="filePreviewMeta" style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.75rem;"></div>
               <div id="filePreviewDest" style="font-size: 0.85rem; margin-bottom: 0.75rem;"></div>
@@ -831,12 +945,16 @@ const dashboardHTML = `<!DOCTYPE html>
             </label>
             
             <div class="progress-container" id="uploadProgress">
-              <div class="progress-bar" role="progressbar" aria-label="File upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progressBar">
+              <div class="progress-bar" role="progressbar" aria-label="File upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-describedby="progressFile" id="progressBar">
                 <div class="progress-fill" id="progressFill"></div>
               </div>
               <div class="progress-meta">
                 <span id="progressFile">Uploading...</span>
-                <span id="progressPercent" aria-live="polite">0%</span>
+                <!-- Deliberately not a live region: role="progressbar" already
+                     exposes the value programmatically, and mirroring it here
+                     announced this span ~1.3x/second for the whole transfer.
+                     The byte/ETA detail now rides on aria-valuetext instead. -->
+                <span id="progressPercent">0%</span>
                 <button type="button" class="btn-sm" id="btnCancelUpload" data-action="cancel-upload" style="display: none;">✕ Cancel</button>
               </div>
             </div>
@@ -844,7 +962,7 @@ const dashboardHTML = `<!DOCTYPE html>
           </div>
 
           <div class="card">
-            <div class="card-title">📝 Quick Text & Snippet Sharing</div>
+            <h2 class="card-title">📝 Quick Text & Snippet Sharing</h2>
             <label class="sr-only" for="textPayload">Text snippet to send</label>
             <textarea id="textPayload" placeholder="Paste code snippet, auth tokens, commands, or notes to send immediately to the peer..."></textarea>
             <div style="display: flex; justify-content: flex-end; margin-top: 0.75rem;">
@@ -856,12 +974,13 @@ const dashboardHTML = `<!DOCTYPE html>
         <!-- Right Pane: Received Items & History -->
         <div class="card" style="display: flex; flex-direction: column;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
-            <div class="card-title" style="margin-bottom: 0;">📥 Received Items</div>
+            <h2 class="card-title" style="margin-bottom: 0;">📥 Received Items</h2>
             <button class="btn-sm" data-action="load-recent">🔄 Refresh</button>
           </div>
           <div id="receivedDropsList" style="flex: 1; overflow-y: auto; max-height: 580px; display: flex; flex-direction: column; gap: 0.75rem;">
             <p style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 2rem 0;">No received items yet.<br>Snippets and files sent by your peer appear here in real-time.<br>Session items — cleared when the Hub restarts. Sent transfers live under Transfers.</p>
           </div>
+          <p id="inboxStatus" class="sr-only" role="status" aria-live="polite"></p>
         </div>
       </div>
     </div>
@@ -874,7 +993,7 @@ const dashboardHTML = `<!DOCTYPE html>
       </div>
 
       <div class="card">
-        <div class="card-title">⚡ Manual OAuth URL Forwarder</div>
+        <h2 class="card-title">⚡ Manual OAuth URL Forwarder</h2>
         <form data-action="relay-oauth" class="form-group">
           <input type="text" id="oauthUrlInput" aria-label="OAuth authorization URL" placeholder="Paste OAuth URL (https://accounts.google.com/o/oauth2/...)" required>
           <button type="submit" class="btn-primary" id="btnRelay">Relay to Peer</button>
@@ -884,7 +1003,7 @@ const dashboardHTML = `<!DOCTYPE html>
 
       <div class="card">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
-          <div class="card-title" style="margin-bottom: 0;">🔐 Recent Authorizations</div>
+          <h2 class="card-title" style="margin-bottom: 0;">🔐 Recent Authorizations</h2>
           <div style="display: flex; gap: 0.5rem;">
             <button class="btn-sm" data-action="load-authorizations">🔄 Refresh</button>
             <button class="btn-sm" data-action="clear-authorizations">🗑️ Clear</button>
@@ -902,7 +1021,7 @@ const dashboardHTML = `<!DOCTYPE html>
       <!-- Discovered Nearby Hubs (Auto-detected via mDNS/LAN Beacon) -->
       <div id="discoveredHubsCard" class="card" style="display: none; margin-bottom: 1.5rem; border: 1px solid var(--accent); background: rgba(59, 130, 246, 0.05);">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
-          <div class="card-title" style="margin-bottom: 0; color: var(--accent);">⚡ Discovered Nearby Hubs</div>
+          <h2 class="card-title" style="margin-bottom: 0; color: var(--accent);">⚡ Discovered Nearby Hubs</h2>
           <span style="font-size: 0.75rem; color: var(--text-muted); background: var(--surface-hover); padding: 0.2rem 0.5rem; border-radius: 4px;">Zero-Typing Discovery</span>
         </div>
         <div id="discoveredHubsList" style="display: flex; flex-direction: column; gap: 0.5rem;"></div>
@@ -910,7 +1029,7 @@ const dashboardHTML = `<!DOCTYPE html>
 
       <div class="grid-2">
         <div class="card">
-          <div class="card-title">💻 Local Hub Identity</div>
+          <h2 class="card-title">💻 Local Hub Identity</h2>
           <div class="stat-row">
             <span class="stat-label">Transport</span>
             <span class="stat-val" id="idTransport">-</span>
@@ -935,7 +1054,7 @@ const dashboardHTML = `<!DOCTYPE html>
 
         <div class="card">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
-            <div class="card-title" style="margin-bottom: 0;">👥 Trusted Peers</div>
+            <h2 class="card-title" style="margin-bottom: 0;">👥 Trusted Peers</h2>
             <button class="btn-sm" data-action="open-pair-modal">+ Pair New Device</button>
           </div>
           <div id="peersList">
@@ -989,7 +1108,7 @@ const dashboardHTML = `<!DOCTYPE html>
     <div id="tab-transfers" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-transfers">
       <div class="card">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
-          <div class="card-title" style="margin-bottom: 0;">🔄 Transfers</div>
+          <h2 class="card-title" style="margin-bottom: 0;">🔄 Transfers</h2>
           <div style="display: flex; gap: 0.5rem;">
             <button class="btn-sm" data-action="load-transfers">🔄 Refresh</button>
             <button class="btn-sm" data-action="clear-transfers">🗑️ Clear</button>
@@ -1006,7 +1125,7 @@ const dashboardHTML = `<!DOCTYPE html>
     <div id="tab-logs" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-logs">
       <div class="card">
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1rem;">
-          <div class="card-title" style="margin-bottom: 0;">📋 Live Diagnostics & Activity Feed</div>
+          <h2 class="card-title" style="margin-bottom: 0;">📋 Live Diagnostics & Activity Feed</h2>
           <div style="display: flex; gap: 0.5rem;">
             <button class="btn-sm" data-action="export-logs">📥 Export Logs</button>
             <button class="btn-sm" data-action="clear-logs">Clear</button>
@@ -1015,15 +1134,15 @@ const dashboardHTML = `<!DOCTYPE html>
 
         <!-- Filter Pills & Search Bar -->
         <div style="display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 1rem;">
-          <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
+          <div style="display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center;" class="log-filters">
             <span style="font-size: 0.8rem; color: var(--text-muted); margin-right: 0.25rem;">Filter:</span>
-            <button class="pill active" data-filter="ALL">All</button>
-            <button class="pill" data-filter="OAUTH">🔵 OAuth</button>
-            <button class="pill" data-filter="DROP">🟢 QuickDrop</button>
-            <button class="pill" data-filter="PEER">🟣 Peer</button>
-            <button class="pill" data-filter="NET">🟡 Network</button>
-            <button class="pill" data-filter="DEBUG">🐛 Debug / Verbose</button>
-            <button class="pill" data-filter="ERROR">🔴 Errors</button>
+            <button class="pill active" data-filter="ALL" aria-pressed="true">All</button>
+            <button class="pill" data-filter="OAUTH" aria-pressed="false">🔵 OAuth</button>
+            <button class="pill" data-filter="DROP" aria-pressed="false">🟢 QuickDrop</button>
+            <button class="pill" data-filter="PEER" aria-pressed="false">🟣 Peer</button>
+            <button class="pill" data-filter="NET" aria-pressed="false">🟡 Network</button>
+            <button class="pill" data-filter="DEBUG" aria-pressed="false">🐛 Debug / Verbose</button>
+            <button class="pill" data-filter="ERROR" aria-pressed="false">🔴 Errors</button>
           </div>
 
           <div style="position: relative;">
@@ -1031,8 +1150,12 @@ const dashboardHTML = `<!DOCTYPE html>
           </div>
         </div>
 
-        <div class="log-console" id="logConsole">
-          <div class="log-entry" data-domain="NET" data-level="INFO"><span style="color:#64748b; margin-right:0.5rem;">--:--:--</span><span class="tag tag-net">NET</span> Hub initialized and listening.</div>
+        <!-- role=log gives the region a name and makes it a findable landmark;
+             aria-live=off is deliberate: 500 append-only diagnostic lines are
+             not status messages and announcing each one would be unusable.
+             tabindex=0 makes the scrolled region keyboard-reachable. -->
+        <div class="log-console" id="logConsole" tabindex="0" role="log" aria-live="off" aria-label="Live diagnostic log">
+          <div class="log-entry" data-domain="NET" data-level="INFO"><span class="log-time" style="color:#8b98ad; margin-right:0.5rem;">--:--:--</span><span class="tag tag-net">NET</span> Hub initialized and listening.</div>
         </div>
       </div>
     </div>
@@ -1194,6 +1317,24 @@ const dashboardHTML = `<!DOCTYPE html>
       }
     });
     document.addEventListener('keydown', function(event) {
+      // Arrow/Home/End inside the tablist move between tabs with automatic
+      // activation, so a screen-reader or keyboard user is not forced to Tab
+      // through five separate stops to reach Live Logs.
+      const tab = event.target && event.target.closest ? event.target.closest('.tab-btn') : null;
+      if (tab && (event.key === 'ArrowRight' || event.key === 'ArrowLeft' || event.key === 'Home' || event.key === 'End')) {
+        event.preventDefault();
+        const tabs = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+        let next = tabs.indexOf(tab);
+        if (event.key === 'Home') next = 0;
+        else if (event.key === 'End') next = tabs.length - 1;
+        else next = (next + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+        const target = tabs[next];
+        if (target) {
+          switchTab(target.getAttribute('data-tab'), target);
+          target.focus();
+        }
+        return;
+      }
       const modal = document.getElementById('pairModal');
       if (event.key === 'Escape' && modal && modal.style.display !== 'none') {
         event.preventDefault();
@@ -1201,8 +1342,12 @@ const dashboardHTML = `<!DOCTYPE html>
         return;
       }
       if (modal && modal.style.display !== 'none' && event.key === 'Tab') {
-        const focusables = modal.querySelectorAll('button, input');
-        if (focusables && focusables.length > 0) {
+        // Buttons and inputs are the whole dialog today; the second query
+        // keeps the trap correct if a link or custom control is ever added,
+        // so focus can never leak out of an open modal.
+        const focusables = Array.prototype.slice.call(modal.querySelectorAll('button, input'))
+          .concat(Array.prototype.slice.call(modal.querySelectorAll('a[href], select, textarea, [tabindex]')));
+        if (focusables.length > 0) {
           const first = focusables[0];
           const last = focusables[focusables.length - 1];
           if (event.shiftKey && document.activeElement === first) {
@@ -1238,6 +1383,9 @@ const dashboardHTML = `<!DOCTYPE html>
       document.querySelectorAll('.tab-btn').forEach(b => {
         b.classList.remove('active');
         b.setAttribute('aria-selected', 'false');
+        // Roving tabindex: a tablist is a single tab stop, so only the
+        // selected tab stays in the Tab order and arrow keys move within it.
+        b.setAttribute('tabindex', '-1');
       });
       document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
       // Click path passes the source button explicitly; programmatic callers
@@ -1246,6 +1394,7 @@ const dashboardHTML = `<!DOCTYPE html>
       if (btn) {
         btn.classList.add('active');
         btn.setAttribute('aria-selected', 'true');
+        btn.setAttribute('tabindex', '0');
       }
       const pane = document.getElementById(tabId);
       if (pane) pane.classList.add('active');
@@ -1276,7 +1425,7 @@ const dashboardHTML = `<!DOCTYPE html>
         metaHTML = '<details style="margin-top:0.25rem; font-size:0.75rem; color:#94a3b8;"><summary style="cursor:pointer; color:#60a5fa;">inspect metadata</summary><pre style="background:rgba(0,0,0,0.3); padding:0.4rem; border-radius:4px; margin-top:0.25rem; overflow-x:auto;">' + escapeHTML(JSON.stringify(meta, null, 2)) + '</pre></details>';
       }
 
-      row.innerHTML = '<span style="color:#64748b; margin-right:0.5rem;">' + timeStr + '</span><span class="tag ' + tagClass + '">' + escapeHTML(domain) + '</span> ' + escapeHTML(msg) + metaHTML;
+      row.innerHTML = '<span class="log-time" style="margin-right:0.5rem;">' + timeStr + '</span><span class="tag ' + tagClass + '">' + escapeHTML(domain) + '</span> ' + escapeHTML(msg) + metaHTML;
       console.appendChild(row);
 
       if (console.children.length > 500) {
@@ -1289,8 +1438,14 @@ const dashboardHTML = `<!DOCTYPE html>
 
     function setLogFilter(filter, btn) {
       currentFilter = filter;
-      document.querySelectorAll('.pill').forEach(p => p.classList.remove('active'));
-      if (btn) btn.classList.add('active');
+      document.querySelectorAll('.pill[data-filter]').forEach(p => {
+        p.classList.remove('active');
+        p.setAttribute('aria-pressed', 'false');
+      });
+      if (btn) {
+        btn.classList.add('active');
+        btn.setAttribute('aria-pressed', 'true');
+      }
       applyLogFilters();
     }
 
@@ -1467,7 +1622,7 @@ const dashboardHTML = `<!DOCTYPE html>
               const isSelected = (p.fingerprint === selectedPeerTarget);
               const pillClass = isSelected ? 'pill active' : 'pill';
               const defTag = p.is_default ? ' ⭐️' : '';
-              return '<button type="button" class="' + pillClass + '" data-action="select-peer" data-value="' + escapeHTML(p.fingerprint) + '">' + escapeHTML(p.name) + defTag + '</button>';
+              return '<button type="button" class="' + pillClass + '" data-action="select-peer" data-value="' + escapeHTML(p.fingerprint) + '" aria-pressed="' + (isSelected ? 'true' : 'false') + '">' + escapeHTML(p.name) + defTag + '</button>';
             }).join('');
           }
 
@@ -1497,6 +1652,12 @@ const dashboardHTML = `<!DOCTYPE html>
       await loadPendingPairings();
     }
 
+    // Signature of the last rendered pending-pairing set. loadPendingPairings
+    // runs on every 3s status poll; rebuilding the banner unconditionally threw
+    // keyboard focus onto <body> every three seconds, which made approving an
+    // inbound request - the one action that grants permanent mutual trust -
+    // impossible to complete with a keyboard or screen reader.
+    let lastPendingPairingsSignature = '';
     async function loadPendingPairings() {
       try {
         const res = await apiFetch('/api/pair/pending');
@@ -1506,24 +1667,31 @@ const dashboardHTML = `<!DOCTYPE html>
         const container = document.getElementById('pendingPairingsList');
         if (!banner || !container) return;
         if (!list || list.length === 0) {
+          lastPendingPairingsSignature = '';
+          if (banner.style.display === 'none' && container.innerHTML === '') return;
           banner.style.display = 'none';
           container.innerHTML = '';
           return;
         }
+        const signature = JSON.stringify((list || []).map(function(item) {
+          return [item.id, item.peer_name, item.remote_addr, item.peer_sas];
+        }));
+        if (signature === lastPendingPairingsSignature) return;
+        lastPendingPairingsSignature = signature;
         banner.style.display = 'block';
         container.innerHTML = list.map(function(item) {
           var name = escapeHTML(item.peer_name || 'Nearby Device');
           var addr = escapeHTML(item.remote_addr);
           var sas = escapeHTML(item.peer_sas);
           var id = escapeHTML(item.id);
-          return '<div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.3); padding: 0.75rem 1rem; border-radius: 8px; flex-wrap: wrap; gap: 0.75rem;">' +
+          return '<div class="pairing-row">' +
             '<div>' +
-              '<div style="font-weight: 600; color: #fff;">' + name + ' <span style="font-size: 0.8rem; color: #94a3b8; font-weight: 400;">(' + addr + ')</span></div>' +
-              '<div style="font-size: 0.85rem; color: #cbd5e1; margin-top: 0.25rem;">Compare SAS Code with remote screen: <strong style="color: #38bdf8; font-family: monospace; font-size: 1.05rem; letter-spacing: 0.05em; background: rgba(56,189,248,0.15); padding: 0.15rem 0.5rem; border-radius: 4px;">' + sas + '</strong></div>' +
+              '<div class="pairing-row-name">' + name + ' <span class="pairing-row-addr">(' + addr + ')</span></div>' +
+              '<div class="pairing-row-meta">Compare this code with the code shown on the remote screen: <strong class="pairing-sas">' + sas + '</strong></div>' +
             '</div>' +
-            '<div style="display: flex; gap: 0.5rem;">' +
-              '<button class="btn-sm" style="background: #10b981; color: white; border: none; font-weight: 600; padding: 0.4rem 1rem; cursor: pointer; border-radius: 6px;" data-action="decide-pairing" data-value="' + escapeHTML(id) + '" data-accept="true">✓ Approve</button>' +
-              '<button class="btn-sm" style="background: #ef4444; color: white; border: none; font-weight: 600; padding: 0.4rem 1rem; cursor: pointer; border-radius: 6px;" data-action="decide-pairing" data-value="' + escapeHTML(id) + '" data-accept="false">✕ Reject</button>' +
+            '<div class="pairing-actions">' +
+              '<button type="button" class="btn-approve" data-action="decide-pairing" data-value="' + escapeHTML(id) + '" data-accept="true" aria-label="Approve pairing request from ' + name + '">✓ Approve</button>' +
+              '<button type="button" class="btn-reject" data-action="decide-pairing" data-value="' + escapeHTML(id) + '" data-accept="false" aria-label="Reject pairing request from ' + name + '">✕ Reject</button>' +
             '</div>' +
           '</div>';
         }).join('');
@@ -1699,6 +1867,7 @@ const dashboardHTML = `<!DOCTYPE html>
     }
 
     let pairModalReturnFocus = null;
+    let pairModalOpener = null;
     function openPairModal() {
       // The dialog nests inside the Peers tab pane, so make its tab visible
       // first: opening it from any other tab would otherwise set display on
@@ -1706,10 +1875,13 @@ const dashboardHTML = `<!DOCTYPE html>
       // correct for present and future callers alike.
       switchTab('tab-peers');
       const modal = document.getElementById('pairModal');
+      // Remember the opener by selector as well as by node: a programmatic
+      // open has no focused element to restore to, and a node captured at
+      // open time may have been re-rendered away by a status poll.
       pairModalReturnFocus = document.activeElement;
+      pairModalOpener = document.querySelector('[data-action="open-pair-modal"]');
       const sas = document.getElementById('idSAS').innerText || '---';
       document.getElementById('pairModalSAS').innerText = sas;
-      document.getElementById('pairCmdText').innerText = 'tantu pair';
       document.getElementById('pairStatusMsg').innerText = '';
       modal.style.display = 'flex';
       const input = document.getElementById('pairRemoteAddrInput');
@@ -1720,10 +1892,19 @@ const dashboardHTML = `<!DOCTYPE html>
       const modal = document.getElementById('pairModal');
       if (!modal || modal.style.display === 'none') return;
       modal.style.display = 'none';
-      if (pairModalReturnFocus && typeof pairModalReturnFocus.focus === 'function') {
-        pairModalReturnFocus.focus();
+      // Never dump a keyboard user on <body>: fall back through the captured
+      // node, the opener, then the tab that owns the dialog.
+      const candidates = [pairModalReturnFocus, pairModalOpener, document.querySelector('[data-tab="tab-peers"]')];
+      for (const el of candidates) {
+        // <body> is connected and focusable, so it would silently win and
+        // dump the user at the top of the document. It is never a valid
+        // restore target: a programmatic open has no meaningful prior focus.
+        if (!el || el === document.body || typeof el.focus !== 'function' || !el.isConnected) continue;
+        el.focus();
+        break;
       }
       pairModalReturnFocus = null;
+      pairModalOpener = null;
     }
 
     async function copyPairCmd() {
@@ -1899,6 +2080,10 @@ const dashboardHTML = `<!DOCTYPE html>
       }
     }
 
+    // updateNextAction runs on every 3s poll. #nextActionBanner is a live
+    // status region, so reassigning its innerHTML unconditionally re-announced
+    // the same sentence forever. Only write when the guidance actually changes.
+    let lastNextActionHTML = '';
     function updateNextAction() {
       const banner = document.getElementById('nextActionBanner');
       if (!banner) return;
@@ -1915,9 +2100,25 @@ const dashboardHTML = `<!DOCTYPE html>
       } else {
         html = 'Choose text, an image, or a file above. The destination is shown before anything is sent.';
       }
+      if (html === lastNextActionHTML) return;
+      lastNextActionHTML = html;
       banner.innerHTML = html;
       banner.style.display = 'block';
     }
+
+    // The sticky header plus tab bar is 129px at desktop width and taller on
+    // narrow screens once the header wraps. scroll-margin-top is derived from
+    // the measured height so a focused control is never parked underneath it.
+    function measureChrome() {
+      const header = document.querySelector('header');
+      const nav = document.querySelector('nav.tabs-nav');
+      if (!header || !nav) return;
+      const height = header.offsetHeight + nav.offsetHeight;
+      if (height > 0) {
+        document.documentElement.style.setProperty('--chrome-h', height + 'px');
+      }
+    }
+    window.addEventListener('resize', measureChrome);
 
     function clearPendingPreviewURL() {
       if (pendingFileURL) {
@@ -2185,6 +2386,10 @@ const dashboardHTML = `<!DOCTYPE html>
               if (remaining > 0) extra += ' · ETA ' + formatDuration(remaining / speed);
             }
             pPercent.innerText = pct + '% · ' + formatBytes(e.loaded) + ' / ' + formatBytes(e.total) + extra;
+            // The visible span is no longer a live region, so carry the same
+            // detail on the progressbar itself: a screen reader gets bytes and
+            // ETA on demand instead of a spoken counter twice a second.
+            bar.setAttribute('aria-valuetext', pct + '%, ' + formatBytes(e.loaded) + ' of ' + formatBytes(e.total) + (extra ? extra.replace(/^ · /, ', ') : ''));
             uploadLastLoaded = e.loaded;
             uploadLastTick = now;
           }
@@ -2474,10 +2679,25 @@ const dashboardHTML = `<!DOCTYPE html>
     }
 
     function renderRecentDrops(items) {
-      receivedActionValues = Object.create(null);
       const list = document.getElementById('receivedDropsList');
+      if (!list) return;
+      // The inbox is re-rendered wholesale whenever a DROP event arrives.
+      // Capture what the user was on so an arriving file does not throw a
+      // keyboard or screen-reader user back to the top of the tab.
+      const active = document.activeElement;
+      // Match the control by action, label and ordinal position. The
+      // data-value is a per-render sequence number (receivedActionValues is
+      // reset on every render), so it cannot identify the control across
+      // renders; the label and position can.
+      const controls = Array.prototype.slice.call(list.querySelectorAll('[data-action]'));
+      const activeIndex = (active && list.contains(active)) ? controls.indexOf(active) : -1;
+      const restoreAction = activeIndex >= 0 ? active.getAttribute('data-action') : null;
+      const restoreLabel = activeIndex >= 0 ? (active.textContent || '').trim() : null;
+      const previousCount = list.querySelectorAll('.received-item').length;
+      receivedActionValues = Object.create(null);
       if (!items || items.length === 0) {
         list.innerHTML = '<p style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 2rem 0;">No received items yet.<br>Snippets and files sent by your peer appear here in real-time.<br>Session items — cleared when the Hub restarts. Sent transfers live under Transfers.</p>';
+        announceInboxArrival(0, previousCount);
         return;
       }
       const reversed = items.slice().reverse();
@@ -2532,6 +2752,30 @@ const dashboardHTML = `<!DOCTYPE html>
           actionsHTML +
         '</div>';
       }).join('');
+      // Put the user back on the control they were using, matched by action and
+      // value rather than node identity, then announce genuine arrivals.
+      if (restoreAction) {
+        const candidates = Array.prototype.slice.call(list.querySelectorAll('[data-action]'));
+        const sameLabel = candidates.filter(function(el) {
+          return el.getAttribute('data-action') === restoreAction && (el.textContent || '').trim() === restoreLabel;
+        });
+        const match = sameLabel[activeIndex] || candidates[activeIndex] || sameLabel[0];
+        if (match) {
+          try { match.focus(); } catch (_) {}
+        }
+      }
+      announceInboxArrival(list.querySelectorAll('.received-item').length, previousCount);
+    }
+
+    // Arrivals are a status change, so they are announced once, politely, and
+    // only when the inbox actually grew.
+    function announceInboxArrival(newCount, previousCount) {
+      const status = document.getElementById('inboxStatus');
+      if (!status) return;
+      const added = newCount - previousCount;
+      status.textContent = added > 0
+        ? (added === 1 ? '1 new item received.' : added + ' new items received.')
+        : '';
     }
 
     function formatBytes(bytes) {
@@ -2568,6 +2812,8 @@ const dashboardHTML = `<!DOCTYPE html>
         '"': '&quot;'
       }[tag] || tag));
     }
+
+    measureChrome();
 
     dashboardReady.then((ready) => {
       if (!ready) {

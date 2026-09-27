@@ -188,6 +188,105 @@ func TestWebDashboard_SendPreviewImageSchemeIsAuthorized(t *testing.T) {
 	}
 }
 
+// Accessibility mechanics: headings, landmarks, a bypass block, keyboard
+// reachability, and live regions that do not over-announce. These are the
+// structural fixes from the frontend audit; each one was verified in a real
+// browser first, and the marker keeps a later edit from silently undoing it.
+func TestWebDashboard_AccessibilityMechanicsMarkers(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+
+	resp, err := http.Get("http://" + h.WebAddr() + "/")
+	if err != nil {
+		t.Fatalf("GET / failed: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read body: %v", err)
+	}
+	content := string(body)
+
+	for _, s := range []string{
+		// Bypass block and landmarks.
+		`class="skip-link" href="#main"`,
+		`<main class="tab-content" id="main" tabindex="-1">`,
+		`role="tablist" aria-label="Dashboard sections"`,
+		`<nav class="tabs-nav" aria-label="Dashboard sections">`,
+		// Exactly one page-level heading, and real headings for the cards.
+		`<h1 class="sr-only">Tantu Hub dashboard</h1>`,
+		`<h2 class="card-title">`,
+		`<h3 class="card-title" id="filePreviewTitle">`,
+		// Tablist: one tab stop, arrow-key navigation.
+		`data-tab="tab-drop" tabindex="0"`,
+		`data-tab="tab-logs" tabindex="-1"`,
+		`event.key === 'ArrowRight'`,
+		`event.key === 'Home'`,
+		`b.setAttribute('tabindex', '-1')`,
+		// Keyboard-reachable, named log region that does not announce 500 lines.
+		`id="logConsole" tabindex="0" role="log" aria-live="off" aria-label="Live diagnostic log"`,
+		`class="log-time"`,
+		// Progress: the live region is gone, detail rides on the progressbar.
+		`aria-describedby="progressFile"`,
+		`bar.setAttribute('aria-valuetext'`,
+		// Pairing approval: announced, not rebuilt, real targets, themed.
+		`id="pendingPairingsBanner" class="pairing-banner" role="status" aria-live="polite"`,
+		`lastPendingPairingsSignature`,
+		`class="pairing-sas"`,
+		`class="btn-approve"`,
+		`class="btn-reject"`,
+		`.btn-approve, .btn-reject {`,
+		`min-height: 46px;`,
+		`min-width: 46px; min-height: 46px;`,
+		// Inbox: focus survives a live update, arrivals are announced once.
+		`announceInboxArrival`,
+		`id="inboxStatus" class="sr-only" role="status" aria-live="polite"`,
+		// Selectable state is programmatically determinable.
+		`aria-pressed`,
+		// Modal focus restoration never lands on <body>.
+		`pairModalOpener`,
+		`el.isConnected`,
+		// Sticky chrome is measured, not guessed.
+		`--chrome-h`,
+		`function measureChrome()`,
+		`scroll-margin-top: calc(var(--chrome-h`,
+	} {
+		if !strings.Contains(content, s) {
+			t.Errorf("dashboard HTML missing accessibility mechanic %q", s)
+		}
+	}
+
+	// The next-action banner is a live region, so it must not be rewritten
+	// with identical markup on every poll.
+	if !strings.Contains(content, "let lastNextActionHTML = ''") {
+		t.Error("next-action banner lacks the change guard that stops re-announcing on every poll")
+	}
+	// Hardcoded inline colours on the pairing banner broke the light theme.
+	for _, s := range []string{
+		"color:#fff;\"><span style=\"font-size: 0.8rem; color: #94a3b8",
+		"style=\"color: #38bdf8; font-family: monospace",
+		"background: #10b981; color: white",
+		"background: #ef4444; color: white",
+	} {
+		if strings.Contains(content, s) {
+			t.Errorf("pairing banner regressed to a hardcoded inline colour %q", s)
+		}
+	}
+	// The progress percentage must not be a live region again: it announced
+	// twice a second for the whole transfer on top of the progressbar value.
+	if strings.Contains(content, `id="progressPercent" aria-live`) {
+		t.Error("progress percentage is a live region again; it duplicates role=progressbar")
+	}
+	// Card titles must not regress to divs.
+	if strings.Contains(content, `<div class="card-title"`) {
+		t.Error("a card title regressed to a div and left the page without headings")
+	}
+	// Exactly one h1: a second would restart the outline.
+	if got := strings.Count(content, "<h1"); got != 1 {
+		t.Errorf("dashboard has %d h1 elements, want exactly 1", got)
+	}
+}
+
 func TestWebDashboard_ProtectedReadsRequireCapability(t *testing.T) {
 	h, _, cleanup := startTestHub(t)
 	defer cleanup()
