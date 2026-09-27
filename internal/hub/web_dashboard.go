@@ -97,7 +97,10 @@ const dashboardHTML = `<!DOCTYPE html>
       --success-text: #065f46;
       --warning: #b45309;
       --warning-bg: rgba(180, 83, 9, 0.1);
-      --warning-text: #b45309;
+      /* Deepened from #b45309, which measured 3.9:1 on the warning tint at
+         12px. Warning chips are a real state (retryable, duplicate risk), not
+         decoration, so they have to be readable. */
+      --warning-text: #7c3d06;
       --error: #dc2626;
       --error-bg: rgba(220, 38, 38, 0.08);
       --error-text: #b91c1c;
@@ -125,6 +128,8 @@ const dashboardHTML = `<!DOCTYPE html>
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 0.75rem;
+    min-width: 0;
     position: sticky;
     top: 0;
     z-index: 50;
@@ -133,6 +138,8 @@ const dashboardHTML = `<!DOCTYPE html>
     display: flex;
     align-items: center;
     gap: 0.75rem;
+    min-width: 0;
+    flex-shrink: 1;
   }
   .logo-title {
     font-size: 1.25rem;
@@ -436,6 +443,13 @@ const dashboardHTML = `<!DOCTYPE html>
     grid-template-columns: 1fr 1fr;
     gap: 1.5rem;
   }
+  /* Grid and flex items default to min-width:auto, so a single wide descendant
+     (a long path, a long peer name, an unbreakable string) forces the track
+     past its container and pushes the whole page into horizontal scroll. These
+     are the two-column layouts and their column wrappers. */
+  .grid-2 > * { min-width: 0; }
+  .grid-2 .card,
+  .grid-2 .card > * { min-width: 0; }
   @media (max-width: 768px) {
     .grid-2 { grid-template-columns: 1fr; }
     .tabs-list { overflow-x: auto; }
@@ -478,13 +492,30 @@ const dashboardHTML = `<!DOCTYPE html>
     font-weight: 700;
     margin-right: 0.5rem;
   }
-  .tag-oauth { background: rgba(59, 130, 246, 0.2); color: #60a5fa; }
-  .tag-drop { background: var(--success-bg); color: #34d399; }
-  .tag-peer { background: rgba(168, 85, 247, 0.2); color: #c084fc; }
-  .tag-net { background: var(--warning-bg); color: #fbbf24; }
-  .tag-sys { background: rgba(6, 182, 212, 0.2); color: #22d3ee; }
-  .tag-debug { background: rgba(255, 255, 255, 0.08); color: #94a3b8; }
-  .tag-error { background: var(--error-bg); color: #f87171; }
+  /* Domain tags serve two surfaces. Inside the log console they are terminal
+     chips on a deliberately dark background, so they keep their fixed
+     console palette in both themes. As standalone badges (the Default and
+     Active markers on a peer row) they sit on an ordinary themed card, where
+     the console palette measured 1.67:1 in the light theme. The two cases are
+     therefore scoped separately. */
+  .tag-oauth { background: rgba(59, 130, 246, 0.2); color: var(--accent); }
+  .tag-drop { background: var(--success-bg); color: var(--success-text); }
+  .tag-peer { background: rgba(168, 85, 247, 0.2); color: #7e22ce; }
+  .tag-net { background: var(--warning-bg); color: var(--warning-text); }
+  .tag-sys { background: rgba(6, 182, 212, 0.2); color: #0e7490; }
+  .tag-debug { background: rgba(127, 140, 160, 0.16); color: var(--text-muted); }
+  .tag-error { background: var(--error-bg); color: var(--error-text); }
+  .log-console .tag-oauth { color: #60a5fa; }
+  .log-console .tag-drop { color: #34d399; }
+  .log-console .tag-peer { color: #c084fc; }
+  .log-console .tag-net { color: #fbbf24; }
+  .log-console .tag-sys { color: #22d3ee; }
+  .log-console .tag-debug { background: rgba(255, 255, 255, 0.08); color: #94a3b8; }
+  .log-console .tag-error { color: #f87171; }
+  @media (prefers-color-scheme: dark) {
+    .tag-peer { color: #c084fc; }
+    .tag-sys { color: #22d3ee; }
+  }
   .pill {
     background: rgba(255, 255, 255, 0.05);
     border: 1px solid var(--border);
@@ -590,9 +621,26 @@ const dashboardHTML = `<!DOCTYPE html>
     box-shadow: var(--shadow-sm);
     border-radius: var(--radius-pill);
   }
+  /* The peer select is sized by its longest option. A long peer name therefore
+     used to widen the whole header and push the page into horizontal scroll at
+     narrow widths, on every tab. It is capped, allowed to shrink, and given an
+     explicit ellipsis so a long name truncates visually while the accessible
+     name keeps the full value. */
+  .peer-status-pill {
+    min-width: 0;
+    flex-shrink: 1;
+  }
+  /* The <select> is nested inside the label span, so the span is the flex item
+     that has to be allowed to shrink; without min-width:0 it kept the width of
+     its longest option and pushed the header past the viewport. */
+  .peer-status-pill #peerLabel {
+    min-width: 0;
+    overflow: hidden;
+  }
   .peer-status-pill select {
     font: inherit;
     max-width: 16rem;
+    min-width: 0;
     text-overflow: ellipsis;
   }
   .tab-btn {

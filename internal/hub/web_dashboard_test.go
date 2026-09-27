@@ -188,6 +188,74 @@ func TestWebDashboard_SendPreviewImageSchemeIsAuthorized(t *testing.T) {
 	}
 }
 
+// The multi-peer dashboard renders a different layout from the peerless one:
+// a header peer <select>, destination pills, peer rows with Default/Active
+// badges, and long names. None of that was exercised at runtime until a seeded
+// multi-peer run, which found a light-theme badge at 1.67:1 and a page that
+// overflowed horizontally at 360px on every tab.
+func TestWebDashboard_MultiPeerSurfaceMarkers(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+
+	resp, err := http.Get("http://" + h.WebAddr() + "/")
+	if err != nil {
+		t.Fatalf("GET / failed: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read body: %v", err)
+	}
+	content := string(body)
+
+	for _, s := range []string{
+		// Badges must follow the theme; the console keeps its own palette.
+		`.tag-drop { background: var(--success-bg); color: var(--success-text); }`,
+		`.log-console .tag-drop { color: #34d399; }`,
+		`.log-console .tag-oauth { color: #60a5fa; }`,
+		// Warning chips are a real state and have to be readable.
+		"--warning-text: #7c3d06;",
+		// Two-column layouts and their wrappers must be allowed to shrink.
+		".grid-2 > * { min-width: 0; }",
+		".grid-2 .card,",
+		// The header peer select is sized by its longest option; both the pill
+		// and the label span wrapping it have to be allowed to shrink.
+		".peer-status-pill #peerLabel {",
+		"min-width: 0;\n    overflow: hidden;",
+		"max-width: 16rem;",
+	} {
+		if !strings.Contains(content, s) {
+			t.Errorf("dashboard missing multi-peer layout marker %q", s)
+		}
+	}
+
+	// The select cap must not be shadowed by a later max-width:100%, which is
+	// what made the control stretch across the whole header.
+	selectStart := strings.Index(content, ".peer-status-pill select {")
+	if selectStart < 0 {
+		t.Fatal("no .peer-status-pill select rule found")
+	}
+	selectRule := content[selectStart:]
+	if end := strings.Index(selectRule, "}"); end > 0 {
+		selectRule = selectRule[:end]
+	}
+	if strings.Contains(selectRule, "max-width: 100%") {
+		t.Errorf("peer select rule re-declares max-width, overriding its cap: %q", selectRule)
+	}
+	// The unscoped dark-console palette must not come back: it measured 1.67:1
+	// as a Default/Active badge on a light card.
+	if strings.Contains(content, ".tag-drop { background: var(--success-bg); color: #34d399; }") {
+		t.Error("tag badges regressed to the fixed console palette on themed cards")
+	}
+	if strings.Contains(content, "--warning-text: #b45309;") {
+		t.Error("warning text regressed to the sub-4.5:1 light-theme value")
+	}
+	if strings.Contains(content, ".grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }") &&
+		!strings.Contains(content, ".grid-2 > * { min-width: 0; }") {
+		t.Error("the two-column grid can no longer shrink below its content")
+	}
+}
+
 // The text composer is a primary journey and used to report nothing at all on
 // the tab the user clicked from: a successful send and an over-limit rejection
 // were both visible only in the Live Logs tab. It now uses the same inline
