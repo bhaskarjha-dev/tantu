@@ -173,6 +173,14 @@ rollback procedures.
   back to the dashboard.
 - The downloads path is no longer clipped at narrow widths, and a focused
   control is no longer parked underneath the sticky header and tab bar.
+- Multi-peer dashboard layout. The Default and Active badges on a peer row
+  carried the log console's fixed dark palette, which measured 1.67:1 as text
+  on a light card, and warning chips measured 3.9:1; both now follow the theme,
+  while the console keeps its own palette. The header peer selector no longer
+  stretches across the header or widens the page when a peer has a long name,
+  and the two-column layouts no longer force horizontal scrolling on a narrow
+  window. A single peer, a long peer name, and a one-character fingerprint are
+  all now covered by the browser acceptance run.
 - Concurrent QuickDrop attempts with a reused DropID can no longer make one
   attempt clean up or cancel another attempt's receiver state.
 - Transfer failures after the final byte no longer read as ordinary errors:

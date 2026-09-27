@@ -76,6 +76,20 @@ the `alert()` dialogs on peer actions; empty states without a next action; the
 bookmarklet's drag-only affordance. `E4`/`E5` accessibility evidence cannot be
 produced in this environment and is claimed nowhere.
 
+## Z16 — multi-peer evidence, and what it does not prove
+
+Every browser run in Z15 used a **peerless** Hub, so the multi-peer layout had
+no runtime evidence. Seeding trusted peers into the real store and re-running
+found four defects the empty state cannot reach: peer badges at 1.67:1 on a
+light card, warning chips at 3.9:1, horizontal overflow at 360px on every tab
+from two independent causes, and a duplicate `max-width` that stretched the
+header peer select. Details in `docs/DEV-RECORD.md` (Batch Z16).
+
+**Evidence level is unchanged and deliberately so.** Seeding proves the layout
+renders and behaves; it does not prove a pairing handshake, a cross-machine
+transfer, or reachable/unreachable transitions, because no second machine was
+ever dialed. Claiming more would repeat exactly the error this batch corrected.
+
 ## Explicit "not now" adherence
 
 Cloud telemetry, hosted accounts, auto-send, silent retry, hidden default

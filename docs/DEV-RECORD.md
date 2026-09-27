@@ -1393,3 +1393,83 @@ a dead end.
 - linux/amd64 and darwin/arm64 cross-compile clean; `git diff --check` clean.
 - Each slice verified in an isolated git worktree before its commit. Committed
   as `d4767a6`, `6e568cd`, `1b6735b`, `6e36010`. Not pushed.
+
+## Batch Z16 - multi-peer runtime evidence (2026-09-27)
+
+Follow-up to Z15, and an admission about it: every browser run in Z15 used a
+**peerless** loopback Hub. The audit inspected the multi-peer layout
+statically and the acceptance pass exercised the empty state, so both agreed
+with each other and both were looking at the same one code path. The header
+peer select, the destination pills, the peers list, and the Default/Active
+badges had no runtime evidence at all.
+
+### Method
+
+Seeded three trusted peers directly into an isolated store's `peers.json`, the
+same JSON the store itself writes, so `/api/status` returns genuine peer data
+and the real render path runs. SAS values are derived server-side from the
+fingerprint, so they are real rather than invented. The set deliberately
+includes a default peer, a peer with a 62-character hostname, and a
+**one-character fingerprint**, which is the shape most likely to produce a
+broken display string. Peers are trusted but unreachable, so sends fail
+honestly.
+
+### Defects found (all invisible to the peerless run)
+
+- The Default and Active badges reused the log console's fixed dark palette.
+  As text on a light card that measured **1.67:1**. The console palette is
+  now scoped to `.log-console`, where the surface is deliberately dark in both
+  themes, and standalone badges follow the theme.
+- Warning chips, which carry retryable and duplicate-risk state, measured
+  **3.9:1** in the light theme. Deepened to the same hue, readable value.
+- The page overflowed horizontally at 360px on **every** tab, from two
+  independent causes: the header `<select>` is sized by its longest option and
+  neither the pill nor the label span wrapping it could shrink; and `.grid-2`
+  items default to `min-width: auto`, so one wide descendant forced the track
+  past its container.
+- A duplicate `max-width: 100%` in the peer select rule silently overrode its
+  16rem cap, stretching the control across the whole header. A marker now
+  fails if the cap is shadowed again.
+
+### Two of my own test assumptions were wrong, not the product
+
+- The text-send assertion assumed success. A seeded peer is trusted but
+  unreachable, so the send fails - and the product reports it inline with the
+  next action, which is exactly the defect Z15 fixed. The assertion was
+  corrected to require that the outcome is reported **either way**, and that
+  the draft is cleared only on success.
+- The narrow-viewport check ran against whatever tab happened to be active, so
+  a zero-width measurement passed **vacuously** while a different tab was in
+  fact overflowing. It now sweeps every tab. Content inside a deliberately
+  scrollable or clipping container is excluded, since that cannot widen the
+  page; the document-level scroll width remains the authoritative assertion.
+
+### Harness hardening
+
+- The version guard compared against an empty HEAD without noticing, so a
+  stale Hub was measured and its result reported as a layout failure. This is
+  the second time a stale process or a silent-guard produced a plausible wrong
+  answer; it now fails loudly when HEAD cannot be resolved, and cleanup matches
+  the Hub by command line rather than a pid file that had gone stale and let an
+  old process hold the port.
+- A multi-peer run now records its peer count and mode in the report, and
+  reports skipped multi-peer assertions as a note, so a peerless pass can
+  never be read as multi-peer coverage.
+
+### Validation
+
+- 83/83 assertions with three peers, 68/68 peerless, both OS themes, zero
+  unexpected console errors. Screenshots reviewed for the Peers tab, the
+  multi-peer composer, and 360px.
+- New `TestWebDashboard_MultiPeerSurfaceMarkers` pins the scoped tag palette,
+  the warning value, the shrink allowances, and the select cap, and fails on
+  each regression.
+- Full suite, vet, JS check, cross-compile green in an isolated worktree.
+  Committed as `6e12faa`. Not pushed.
+
+### Still unevidenced
+
+A second *live* machine. Seeding proves the multi-peer layout renders and
+behaves; it does not prove a real pairing handshake, a real cross-machine
+transfer, or the reachable/unreachable state transitions, because nothing was
+ever actually dialed. That remains a physical-two-machine task.
