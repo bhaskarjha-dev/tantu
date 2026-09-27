@@ -40,6 +40,10 @@ rollback procedures.
   restart; the CLI falls back to last-saved history when the Hub is stopped.
 - `tantu doctor` diagnostics with plain-language checks and a safe next
   action (human and `--json`); `tantu status --json` shares the contract.
+- A dependency-free browser acceptance harness for the dashboard
+  (`node tools/uxtest/run.mjs`, optional `--peers`). It needs Node and a
+  Chrome/Edge binary, adds nothing to the product's runtime, and is not
+  required to build, test, or run Tantu.
 - Dashboard safe-send composer: file/image preview with destination,
   size, and type before Send, explicit expert immediate-send opt-in,
   always-visible destination, next-action banner, and a Transfers tab backed
@@ -185,6 +189,12 @@ rollback procedures.
   and the two-column layouts no longer force horizontal scrolling on a narrow
   window. A single peer, a long peer name, and a one-character fingerprint are
   all now covered by the browser acceptance run.
+- The dashboard now says when it is showing stale data. When the Hub stops
+  answering, a banner states that everything below is the last known state and
+  when it was last confirmed, the destination is labelled "last known" rather
+  than hidden, and a Retry action recovers without waiting for the next poll. A
+  Hub restart now also raises the session banner, so a mid-session restart no
+  longer leaves an unexplained dashboard.
 - Concurrent QuickDrop attempts with a reused DropID can no longer make one
   attempt clean up or cancel another attempt's receiver state.
 - Transfer failures after the final byte no longer read as ordinary errors:

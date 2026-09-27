@@ -1496,3 +1496,94 @@ worked; the TTL was simply harsher than the threat model requires.
 - New time-driven tests (fresh/renew/expire/prune, TTL contract); existing
   bootstrap/rotation tests green.
 - Full suite, vet, cross-compile green (below). No commit or push yet.
+
+## Batch Z18 - staleness, a committed harness, and the plan-map artifacts (2026-09-27)
+
+Closed the last honesty gap from the audit, put the acceptance harness in the
+repository, and produced three of the plan's §21 artifacts.
+
+### Staleness: the last honesty gap
+
+When the Hub stopped answering, the dashboard kept showing the peer list, the
+destination, the SAS, and the identity as if they were current. A dead Hub left
+a "Trusted" pill and a destination that read as live, which is exactly the
+"never imply unprobed state" rule the product otherwise holds.
+
+- Two consecutive failed polls (not one, so a dropped request does not flash a
+  warning) raise a banner: the Hub is not reachable, everything below is the
+  last known state, and the time it was last confirmed.
+- The destination is **labelled** "last known", never hidden. Hiding it would be
+  a worse lie than showing a stale one.
+- A Retry action forces an immediate poll instead of waiting out the interval.
+- A 401 from the status endpoint now raises the session banner. A Hub restart
+  drops the in-memory session, which is a different problem from being
+  unreachable; previously the banner was only evaluated at page load, so a
+  mid-session restart produced no explanation at all.
+
+**Two bugs the browser pass caught in this change itself.** The retry handler
+cleared the failure count *before* polling, so the success path's transition
+check never fired and the banner stayed up after a successful recovery. And
+because the peer DOM is only re-rendered when the peer set changes, recovering
+from a disconnection left the header stuck on "Disconnected" even though the
+Hub was back and the peers were identical. Both are fixed and both are pinned
+by markers.
+
+Fifteen assertions, run against a real Hub: live state, an unreachable Hub
+(status endpoint blocked at the network layer rather than simulated), recovery
+through the in-page retry, and a real Hub process kill and restart. The
+unreachable case deliberately does **not** claim a lost session, because the
+session's state genuinely cannot be known while the Hub is down.
+
+### Incident: a bulk overwrite of the working tree
+
+Mid-implementation, four repository files were overwritten in a single bulk
+operation at one identical timestamp, reverting them toward a pre-work state
+and destroying the in-flight staleness edits. The reflog was clean, the stash
+was empty, and the content matched no git ref, so it was a file-level restore
+rather than a git operation. Committed work was never at risk; only uncommitted
+work was lost.
+
+Paused and asked rather than force-restoring, per the precedent recorded in an
+earlier batch where parallel sessions on one checkout nearly destroyed the
+other party's work. On approval, restored from HEAD, confirmed byte-identical
+blobs, and cleared a stale stat-cache that was reporting the files as modified.
+A second session (`dd71bde`/`5481dde`, sliding dashboard sessions) landed
+during the same window; the full suite was re-run green with both sets of
+changes before continuing.
+
+### The harness is now in the repository
+
+`tools/uxtest/run.mjs` is dependency-free Node over the DevTools Protocol. It
+is what found the blocked preview image, the pairing focus destruction, the
+chatty live region, the light-theme contrast failures, the multi-peer badge
+colours, and the sticky-header overlap. Leaving it in a temporary directory is
+the same mistake the first of those bugs was: the next change reaches for a
+marker test because that is all that is available.
+
+It adds nothing to the product runtime, needs no `npm install`, and is not
+required to build, test, or run Tantu. It refuses to trust a Hub it did not
+just build, because a stale process holding the port once produced a plausible
+but entirely wrong layout result. Twenty-nine assertions, green in both
+peerless and three-peer modes.
+
+### §21 artifacts
+
+- `docs/KNOWN-LIMITATIONS.md` - every admitted limitation in one register, with
+  severity, status, and where it is visible. This is what the stop rule's
+  condition 6 actually requires.
+- `docs/SURFACE-MATRIX.md` - the standalone migration matrix: audience,
+  canonical status, and Hub relationship for every retained surface, plus the
+  rules that keep them converged.
+- `docs/UX-PLAN-MAP.md` - the plan-to-state map: every P0/P1/P2 item, phase,
+  release gate, stop-rule condition, and §21 artifact, marked done, partial, or
+  not started. Four §21 artifacts remain genuinely absent and are named as
+  such rather than quietly skipped.
+
+### Validation
+
+- `go build ./...`, `go vet ./...`, `go test -count=1 ./...` green.
+- `node --check` clean on the harness; 29/29 harness assertions in both modes;
+  15/15 staleness assertions.
+- Cross-compile, gofmt on touched files, and `git diff --check` clean; each
+  commit verified in an isolated worktree.
+- Committed as `c4d1ecd`, `4103d38`, and the documentation commit. Not pushed.

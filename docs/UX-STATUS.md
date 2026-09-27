@@ -71,10 +71,21 @@ on it instead); a full 44px floor (targeted bumps plus spacing, per the plan);
 wholesale replacement of the remaining `prompt()` dialogs (the alias prompt is
 left native as an acceptable low-risk surface).
 
-**Still open, recorded not improvised:** visible staleness when the Hub dies;
-the `alert()` dialogs on peer actions; empty states without a next action; the
-bookmarklet's drag-only affordance. `E4`/`E5` accessibility evidence cannot be
-produced in this environment and is claimed nowhere.
+**Still open, recorded not improvised:** the `alert()` dialogs on peer
+actions; empty states without a next action; the bookmarklet's drag-only
+affordance. Staleness is now declared (Z18) — when the Hub stops answering the
+page says so and labels the destination as last known rather than presenting
+dead data as live. `E4`/`E5` accessibility evidence cannot be produced in this
+environment and is claimed nowhere.
+
+## Where the plan stands
+
+`docs/UX-PLAN-MAP.md` maps the v6.0 plan to shipped state item by item: P0
+13/14, P1 8 done / 4 partial / 1 not started, P2 untouched by design, release
+gates A/B/E/F green and C/D red, 8 of 10 stop-rule conditions met, and which of
+the nineteen §21 artifacts exist. `docs/KNOWN-LIMITATIONS.md` holds every
+admitted limitation with severity and where it is visible;
+`docs/SURFACE-MATRIX.md` holds the standalone migration matrix.
 
 ## Z16 — multi-peer evidence, and what it does not prove
 
