@@ -1008,7 +1008,7 @@ const dashboardHTML = `<!DOCTYPE html>
   <main class="tab-content" id="main" tabindex="-1">
     <div id="sessionBanner" role="alert" style="display: none; background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.4); color: #fbbf24; border-radius: 12px; padding: 0.85rem 1.25rem; margin-bottom: 1.25rem; font-size: 0.9rem;">
       ⚠️ <strong>Dashboard session not established.</strong>
-      <span>Actions on this page will fail until you reconnect. Reopen the dashboard from the Hub terminal (press <kbd>o</kbd>) or reload the page the Hub opened for you.</span>
+      <span id="sessionBannerDetail">Actions on this page will fail until you reconnect. Reopen the dashboard from the Hub terminal (press <kbd>o</kbd>) or reload the page the Hub opened for you.</span>
     </div>
     <!-- INBOUND PAIRING APPROVAL BANNER: the only action in the product that
          grants permanent mutual trust, so it is an announced status region
@@ -1306,6 +1306,10 @@ const dashboardHTML = `<!DOCTYPE html>
     // present. This lets an unauthenticated/stale bookmark render a clear
     // recovery state without firing a burst of doomed 401 API requests.
     const pageSessionReady = {{SESSION_READY}};
+    // Why the exchange failed matters: a spent one-time link needs a fresh
+    // press of o, while an unreachable Hub needs proxy/VPN triage. One generic
+    // banner sent users looping on the wrong remedy.
+    let dashboardBlockReason = '';
     async function bootstrapDashboard() {
       const params = new URLSearchParams(location.hash.slice(1));
       const token = params.get('tantu_bootstrap');
@@ -1316,13 +1320,21 @@ const dashboardHTML = `<!DOCTYPE html>
           headers: { 'X-Tantu-Dashboard-Bootstrap': token },
           credentials: 'same-origin'
         });
-        if (!response.ok) return false;
+        if (!response.ok) {
+          if (response.status === 403) {
+            dashboardBlockReason = 'This one-time link did not work — it may already have been used, or the Hub restarted since it was printed. Press o in the terminal for a fresh link, and do not reuse old links.';
+          } else if (response.status === 503) {
+            dashboardBlockReason = 'The Hub has too many dashboard sessions open. Close other dashboard tabs and press o for a fresh link.';
+          }
+          return false;
+        }
         history.replaceState(null, '', location.pathname + location.search);
         // Reload once so the server can render a relay bookmarklet only after
         // the HttpOnly session cookie has been established.
         window.location.reload();
         return true;
       } catch (_) {
+        dashboardBlockReason = 'This page cannot reach the Hub from this browser. Check for a proxy or VPN intercepting localhost, then reload the page the Hub opened for you.';
         return false;
       }
     }
@@ -3188,6 +3200,9 @@ const dashboardHTML = `<!DOCTYPE html>
     dashboardReady.then((ready) => {
       if (!ready) {
         document.getElementById('sessionBanner').style.display = 'block';
+        if (dashboardBlockReason) {
+          document.getElementById('sessionBannerDetail').textContent = dashboardBlockReason;
+        }
         return;
       }
       // SSE + polling start here; HttpOnly session cookies ride automatically.

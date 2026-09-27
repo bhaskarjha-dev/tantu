@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/bhaskarjha-dev/tantu/internal/browser"
@@ -29,6 +30,17 @@ type ASideConfig struct {
 
 type completionResult struct {
 	success bool
+}
+
+// bindListenErrorText distinguishes "port in use" from "OS forbids binding"
+// (notably Windows Hyper-V-excluded ranges surface as WSAEACCES, not
+// EADDRINUSE). Conflating them sends users hunting a process that holds
+// nothing. Split out for unit testing.
+func bindListenErrorText(port int, err error) string {
+	if errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM) {
+		return fmt.Sprintf("callback port %d cannot be bound on this machine (OS policy forbids it; on Windows see `netsh interface ipv4 show excludedportrange`). The login cannot proceed for an app pinned to this port", port)
+	}
+	return fmt.Sprintf("callback port %d is in use on this machine", port)
 }
 
 // ASide represents an A-side bridge session handler on Computer A.
@@ -295,7 +307,7 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 	bindAddr := net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", req.CallbackPort))
 	listener, err := net.Listen("tcp", bindAddr)
 	if err != nil {
-		ackErr := fmt.Sprintf("callback port %d is in use on this machine", req.CallbackPort)
+		ackErr := bindListenErrorText(req.CallbackPort, err)
 		a.logf("❌ Session error: %s", ackErr)
 		_ = a.conn.Send(protocol.TypeBridgeAck, protocol.BridgeAck{
 			RequestID:     req.RequestID,

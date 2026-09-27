@@ -71,7 +71,11 @@ func RunCockpit(ctx context.Context, h *hub.Hub, cancel context.CancelFunc, init
 			cmd := strings.ToLower(line)
 			switch cmd {
 			case "o", "open":
-				webURL := h.DashboardURL()
+				// Always mint a fresh link: the printed URL is one-use, so
+				// re-printing a spent link would send the user to a page
+				// that can only fail. The terminal shows the current valid
+				// link every time.
+				webURL := h.NewDashboardURL()
 				if webURL == "" {
 					webURL = "http://" + h.WebAddr()
 				}
