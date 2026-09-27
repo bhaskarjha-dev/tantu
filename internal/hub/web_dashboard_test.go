@@ -188,6 +188,62 @@ func TestWebDashboard_SendPreviewImageSchemeIsAuthorized(t *testing.T) {
 	}
 }
 
+// Staleness. When the Hub stops answering, every value still on screen - the
+// peer list, the destination, the SAS, the identity - is last-known rather than
+// current, and the page previously said nothing at all. A dead Hub left a
+// "Trusted" pill and a destination reading as if they were live.
+func TestWebDashboard_StalenessIsDeclared(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+
+	resp, err := http.Get("http://" + h.WebAddr() + "/")
+	if err != nil {
+		t.Fatalf("GET / failed: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read body: %v", err)
+	}
+	content := string(body)
+
+	for _, s := range []string{
+		`id="staleBanner" class="stale-banner" role="status" aria-live="polite"`,
+		"Everything shown below is the last known state",
+		`id="staleSince"`,
+		`data-action="retry-status"`,
+		`case 'retry-status':`,
+		"const STALE_AFTER_POLLS = 2;",
+		"function setStaleState(stale) {",
+		"last confirmed at ",
+		// The destination is labelled, never hidden: hiding it would be a
+		// worse lie than showing a stale one.
+		`#destinationSummary[data-stale="true"]`,
+		`content: " · last known";`,
+		"dest.setAttribute('data-stale', 'true');",
+		// A Hub restart drops the in-memory session, which is a different
+		// problem from being unreachable and needs its own message.
+		"if (res.status === 401) {",
+		"showSessionBanner();",
+	} {
+		if !strings.Contains(content, s) {
+			t.Errorf("dashboard missing staleness behaviour %q", s)
+		}
+	}
+
+	// Recovery must reconcile on every successful poll, not only on a
+	// transition: the manual retry clears the failure count first, so a
+	// transition-only reset would leave the banner up after recovery.
+	if strings.Contains(content, "if (consecutiveStatusFailures > 0) {\n          consecutiveStatusFailures = 0;\n          setStaleState(false);\n        }") {
+		t.Error("stale reset is still transition-only; recovery would leave the banner visible")
+	}
+	// The peer render is skipped when the peer set is unchanged, so recovery
+	// needs a forced re-render or the header stays stuck on "Disconnected".
+	if !strings.Contains(content, "lastPeerSignature = '';\n        }") {
+		t.Error("recovery does not force a peer re-render; the header would stay on Disconnected")
+	}
+}
+
 // The multi-peer dashboard renders a different layout from the peerless one:
 // a header peer <select>, destination pills, peer rows with Default/Active
 // badges, and long names. None of that was exercised at runtime until a seeded

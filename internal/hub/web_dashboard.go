@@ -939,6 +939,34 @@ const dashboardHTML = `<!DOCTYPE html>
      does not need. */
   .pill { min-height: 32px; }
   .log-filters { gap: 0.6rem; }
+  /* Stale state is a warning, not an error: the Hub may be perfectly healthy
+     and merely unreachable from here, and the copy says exactly that. */
+  .stale-banner {
+    background: var(--warning-bg);
+    border: 1px solid var(--warning);
+    border-radius: var(--radius-lg);
+    padding: 0.85rem 1.25rem;
+    margin-bottom: 1.25rem;
+    font-size: 0.9rem;
+    color: var(--warning-text);
+  }
+  .stale-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+  }
+  .stale-actions { display: none; gap: 0.5rem; }
+  #destinationSummary[data-stale="true"] {
+    border-left-color: var(--warning);
+    background: var(--warning-bg);
+  }
+  #destinationSummary[data-stale="true"]::after {
+    content: " · last known";
+    color: var(--warning-text);
+    font-weight: 600;
+  }
   /* Destructive actions are marked visually as well as confirmed, so the
      three Clear buttons do not read as neutral housekeeping. */
   .btn-destructive {
@@ -991,6 +1019,16 @@ const dashboardHTML = `<!DOCTYPE html>
         <span class="pairing-banner-badge">Action required</span>
       </div>
       <div id="pendingPairingsList" style="display: flex; flex-direction: column; gap: 0.75rem;"></div>
+    </div>
+    <!-- STALE BANNER: appears only when the Hub stops answering. Everything
+         below stays visible, but as last-known state rather than live state. -->
+    <div id="staleBanner" class="stale-banner" role="status" aria-live="polite" style="display: none;">
+      <div class="stale-row">
+        <span>Not reaching the Hub. Everything shown below is the last known state<span id="staleSince"></span>.</span>
+        <span class="stale-actions" id="staleActions">
+          <button type="button" class="btn-sm" data-action="retry-status">Retry now</button>
+        </span>
+      </div>
     </div>
     <div id="nextActionBanner" role="status" aria-live="polite" style="display: none;"></div>
 
@@ -1356,6 +1394,11 @@ const dashboardHTML = `<!DOCTYPE html>
         case 'load-recent':
           loadRecentDrops();
           break;
+        case 'retry-status':
+          // Force an immediate poll rather than waiting out the 3s interval.
+          consecutiveStatusFailures = 0;
+          updateStatus();
+          break;
         case 'open-pair-modal':
           openPairModal();
           break;
@@ -1662,11 +1705,73 @@ const dashboardHTML = `<!DOCTYPE html>
     // the header select holds focus — the render is deferred to a later poll).
     let lastPeerSignature = '';
 
+    // Staleness tracking. When the Hub stops answering, everything still on
+    // screen - the peer list, the destination, the SAS, the identity - is a
+    // last-known value, not a current one. Nothing on the page used to say so,
+    // so a dead Hub left a "Trusted" pill and a destination reading as if they
+    // were live. Two consecutive failures are required before declaring
+    // staleness, so one dropped poll does not flash a warning.
+    const STALE_AFTER_POLLS = 2;
+    let lastStatusOkAt = 0;
+    let consecutiveStatusFailures = 0;
+    let dashboardStale = false;
+
+    function formatClock(ts) {
+      if (!ts) return '';
+      const d = new Date(ts);
+      return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0') + ':' + String(d.getSeconds()).padStart(2, '0');
+    }
+
+    function showSessionBanner() {
+      const banner = document.getElementById('sessionBanner');
+      if (banner) banner.style.display = 'block';
+    }
+
+    function setStaleState(stale) {
+      const banner = document.getElementById('staleBanner');
+      if (!banner) return;
+      if (stale === dashboardStale) return;
+      dashboardStale = stale;
+      // The destination is never hidden - that would be a worse lie - but it
+      // is labelled as last-known so it can never be read as current.
+      const dest = document.getElementById('destinationSummary');
+      if (dest) {
+        if (stale) dest.setAttribute('data-stale', 'true');
+        else dest.removeAttribute('data-stale');
+      }
+      const since = document.getElementById('staleSince');
+      const actions = document.getElementById('staleActions');
+      if (since) since.textContent = stale && lastStatusOkAt ? ' (last confirmed at ' + formatClock(lastStatusOkAt) + ')' : '';
+      if (actions) actions.style.display = stale ? 'flex' : 'none';
+      banner.style.display = stale ? 'block' : 'none';
+    }
+
     async function updateStatus() {
       try {
         const res = await apiFetch('/api/status');
-        if (!res.ok) return;
+        if (res.status === 401) {
+          // The Hub is answering but this dashboard session is gone - a Hub
+          // restart drops it, because sessions live in Hub memory. The stale
+          // banner alone would be misleading ("merely unreachable") when the
+          // real problem is that the user must reopen the dashboard.
+          showSessionBanner();
+          throw new Error('dashboard session expired');
+        }
+        if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
+        lastStatusOkAt = Date.now();
+        if (dashboardStale) {
+          // The peer render is skipped when the peer set is unchanged, so
+          // recovering from a disconnection would leave the header reading
+          // "Disconnected" even though the Hub is back and the peers are
+          // identical. Force one re-render on the stale -> live transition.
+          lastPeerSignature = '';
+        }
+        if (consecutiveStatusFailures > 0) consecutiveStatusFailures = 0;
+        // Always reconcile, not only on a transition: the manual retry zeroes
+        // the failure count itself, so a transition-only call would leave the
+        // stale banner up after a successful recovery.
+        setStaleState(false);
         
         document.getElementById('idTransport').innerText = data.transport || 'loopback';
         document.getElementById('idP2P').innerText = data.p2p_addr || '127.0.0.1:9877';
@@ -1753,6 +1858,10 @@ const dashboardHTML = `<!DOCTYPE html>
       } catch (err) {
         document.getElementById('peerLabel').innerText = 'Disconnected';
         document.getElementById('peerDot').className = 'status-dot offline';
+        consecutiveStatusFailures++;
+        if (consecutiveStatusFailures >= STALE_AFTER_POLLS) {
+          setStaleState(true);
+        }
       }
 
       updateDestinationSummary();
