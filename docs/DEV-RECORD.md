@@ -1587,3 +1587,32 @@ peerless and three-peer modes.
 - Cross-compile, gofmt on touched files, and `git diff --check` clean; each
   commit verified in an isolated worktree.
 - Committed as `c4d1ecd`, `4103d38`, and the documentation commit. Not pushed.
+
+## Batch Z19 — spent-link guidance, rotating links, honest bind errors (2026-09-27)
+
+User report with logs: a dashboard opened from `o` showed the session
+banner with its bootstrap fragment still in the URL (proof the exchange
+never succeeded — a success clears it), both `o` presses printed the
+identical link (proof nothing was ever consumed), and a relay failed with
+a callback-port bind error mislabeled "in use".
+
+### What changed
+
+- The bootstrap exchange now reports WHY it failed: spent/rotated link
+  (press `o` for a fresh one, never reuse old links), unreachable Hub
+  (proxy/VPN triage), or full sessions. Previously one generic banner sent
+  users looping on the wrong remedy — including reloading a spent link,
+  which can never succeed.
+- Cockpit `o` mints via `NewDashboardURL` (rotating), matching its own doc
+  comment and the `tantu dashboard` command: the terminal always shows the
+  current valid link.
+- A-side bind failures distinguish EACCES/EPERM (OS policy forbids the
+  port — e.g. Windows Hyper-V exclusions, with the `netsh` check named)
+  from genuinely in-use ports. Extracted as a tested helper; the occupied-
+  port regression test still pins the old message for the true collision.
+
+### Validation
+
+- New unit tests (bind mapping across errno shapes; time-driven session
+  tests from Z17); full suite, vet, JS check, cross-compile green (below).
+  No commit or push yet.

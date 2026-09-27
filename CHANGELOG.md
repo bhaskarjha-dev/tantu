@@ -72,6 +72,11 @@ rollback procedures.
   authenticated call) instead of expiring absolutely after 30 minutes, so
   bookmark popups survive idle gaps under a day; Hub restarts still rotate
   all sessions.
+- Spent bootstrap links explain themselves: the dashboard names the failure
+  (used link vs unreachable Hub vs full sessions) instead of one generic
+  banner, and every `o` press prints a freshly minted link.
+- Callback-port bind failures distinguish OS-forbidden ports from in-use
+  ports (notably Windows Hyper-V exclusions), with an actionable message.
 - Premium visual refresh with zero dependencies: design-token system,
   OS-driven light/dark themes, purposeful motion with full reduced-motion
   support, upload speed and ETA, status chips, and a matching interstitial,
