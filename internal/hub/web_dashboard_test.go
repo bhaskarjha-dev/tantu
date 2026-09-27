@@ -749,10 +749,13 @@ func TestWebDashboard_RelayInterstitial(t *testing.T) {
 	if string(secretBody) != string(secretBody2) {
 		t.Error("interstitial shell is not static across secrets")
 	}
-	// The recovery path must promise auto-continuation (not a retry loop)
-	// and the page must watch for a session instead of checking once.
+	// The recovery path must promise auto-continuation (not a retry loop),
+	// say how it happens, and watch for a session instead of checking once.
+	// "keep checking" replaced "will continue automatically" when the copy was
+	// made specific about the mechanism; the promise itself is unchanged.
 	for _, want := range []string{
-		"will continue automatically",
+		"keep checking",
+		"enable Relay by itself",
 		"setInterval(refreshSessionState",
 		"Relay button enabled.",
 	} {

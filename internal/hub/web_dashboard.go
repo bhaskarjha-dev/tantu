@@ -3438,7 +3438,11 @@ type peerStatus struct {
 // the relay endpoint only through an explicit same-origin POST after a click.
 // Dynamic values enter via textContent or a JSON-encoded literal, never via
 // HTML interpolation of untrusted content.
-const relayInterstitialHTML = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Confirm OAuth Relay</title><style>body{background:#090b10;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;-webkit-font-smoothing:antialiased;}.box{background:#131722;border:1px solid #232a3b;border-radius:16px;padding:2rem;max-width:460px;width:92%;text-align:center;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);}.icon{font-size:2.5rem;margin-bottom:0.75rem;}h2{margin:0 0 0.5rem 0;letter-spacing:-0.01em;}h2.ok{color:#34d399;}p{color:#8b949e;font-size:0.9rem;margin:0 0 1rem 0;}p strong{color:#e6edf3;}.note{background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.4);color:#fbbf24;border-radius:8px;padding:0.6rem 0.8rem;font-size:0.85rem;}.hint{color:#64748b;font-size:0.8rem;}.btn{background:#3b82f6;border:none;color:#fff;padding:0.6rem 1.25rem;border-radius:8px;font-weight:600;font-size:0.9rem;cursor:pointer;box-shadow:0 4px 14px rgba(59,130,246,0.35);transition:transform 150ms ease-out,opacity 150ms ease-out;}.btn:hover:not(:disabled){transform:translateY(-1px);}.btn:disabled{opacity:0.5;cursor:not-allowed;}.btn-ghost{background:transparent;border:1px solid #323c52;color:#e6edf3;box-shadow:none;}button:focus-visible{outline:2px solid #3b82f6;outline-offset:2px;}@media (prefers-color-scheme: light){body{background:#f4f6fb;color:#16213a;}.box{background:#ffffff;border-color:#d9e0ec;box-shadow:0 25px 50px -12px rgba(22,33,58,0.25);}p{color:#5b6478;}p strong{color:#16213a;}.hint{color:#7b8499;}.btn-ghost{border-color:#b9c4d8;color:#16213a;}}@media (prefers-reduced-motion: reduce){.btn{transition:none;}}</style></head><body><div class="box"><div id="confirmView"><div class="icon">🔐</div><h2>Relay this authorization?</h2><p>From: <strong>{{ORIGIN}}</strong></p>{{NOTICE}}<p class="hint" id="peerLine">Checking destination…</p><div id="noSession" style="display:none" class="hint">Dashboard session not established. Open the dashboard from the Hub terminal (press o) — this popup will continue automatically.</div><div style="display:flex;gap:0.5rem;justify-content:center;margin-top:1rem;"><button id="btnRelayNow" class="btn" disabled>Relay now</button><button id="btnCancel" class="btn btn-ghost">Cancel</button></div><div class="hint" id="resultLine" role="status" aria-live="polite" style="margin-top:0.75rem;"></div></div><div id="okView" style="display:none"><div class="icon">✅</div><h2 class="ok">Authentication Relayed!</h2><p id="okText"></p><div class="hint">This window will close automatically in 3 seconds...</div></div></div><script>
+const relayInterstitialHTML = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Confirm OAuth Relay</title><style>body{background:#090b10;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;-webkit-font-smoothing:antialiased;}.box{background:#131722;border:1px solid #232a3b;border-radius:16px;padding:2rem;max-width:460px;width:92%;text-align:center;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);}.icon{font-size:2.5rem;margin-bottom:0.75rem;}h2{margin:0 0 0.5rem 0;letter-spacing:-0.01em;}h2.ok{color:#34d399;}p{color:#8b949e;font-size:0.9rem;margin:0 0 1rem 0;}p strong{color:#e6edf3;}.note{background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.4);color:#fbbf24;border-radius:8px;padding:0.6rem 0.8rem;font-size:0.85rem;}.hint{color:#94a3b8;font-size:0.8rem;}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;}.btn{background:#2563eb;border:none;color:#fff;min-height:44px;padding:0.6rem 1.25rem;border-radius:8px;font-weight:600;font-size:0.9rem;cursor:pointer;box-shadow:0 4px 14px rgba(37,99,235,0.35);transition:transform 150ms ease-out,opacity 150ms ease-out;}.btn:hover:not(:disabled){transform:translateY(-1px);}.btn:disabled{opacity:0.5;cursor:not-allowed;}.btn-ghost{background:transparent;border:1px solid #323c52;color:#e6edf3;box-shadow:none;}button:focus-visible{outline:2px solid #3b82f6;outline-offset:2px;}
+/* The Relay button is autofocused on load, and a programmatic focus does not
+   match :focus-visible, so the initial focused state had no visible ring at
+   all. :focus covers it without double-drawing on pointer interaction. */
+button:focus{outline:2px solid #60a5fa;outline-offset:2px;}@media (prefers-color-scheme: light){body{background:#f4f6fb;color:#16213a;}.box{background:#ffffff;border-color:#d9e0ec;box-shadow:0 25px 50px -12px rgba(22,33,58,0.25);}p{color:#5b6478;}p strong{color:#16213a;}.hint{color:#5b6478;}.btn-ghost{border-color:#b9c4d8;color:#16213a;}button:focus{outline-color:#1d4ed8;}}@media (prefers-reduced-motion: reduce){.btn{transition:none;}}</style></head><body><main class="box"><h1 class="sr-only">Confirm OAuth relay</h1><div id="confirmView"><div class="icon">🔐</div><h2>Relay this authorization?</h2><p>From: <strong>{{ORIGIN}}</strong></p>{{NOTICE}}<p class="hint" id="peerLine">Checking destination…</p><div id="noSession" style="display:none" class="hint">Dashboard session not established. Open the dashboard from the Hub terminal (press o) — this popup will keep checking, and enable Relay by itself once the session appears.</div><div style="display:flex;gap:0.5rem;justify-content:center;margin-top:1rem;"><button id="btnRelayNow" class="btn" disabled>Relay now</button><button id="btnCancel" class="btn btn-ghost">Cancel</button></div><div class="hint" id="resultLine" role="status" aria-live="polite" style="margin-top:0.75rem;"></div></div><div id="okView" style="display:none"><div class="icon">✅</div><h2 class="ok">Authentication Relayed!</h2><p id="okText"></p><div class="hint" id="okStatus" role="status" aria-live="polite" style="margin-top:0.5rem;">This window closes automatically in 3 seconds. The login continues on the other machine.</div><div style="display:flex;justify-content:center;margin-top:0.75rem;"><button id="okClose" class="btn btn-ghost">Close now</button></div></div></div></main><script>
 const relayURL = new URLSearchParams(window.location.search).get('url') || '';
 function show(el) { el.style.display = 'block'; }
 function hide(el) { el.style.display = 'none'; }
@@ -3502,7 +3506,19 @@ async function boot() {
   await refreshSessionState();
   statusTimer = setInterval(refreshSessionState, 3000);
 }
-document.getElementById('btnCancel').addEventListener('click', function() { window.close(); });
+function closeSelf() {
+  // window.close() is a no-op for a tab the script did not open, which left
+  // the user staring at a popup that refused to do anything. Say so instead.
+  window.close();
+  setTimeout(function() {
+    const hint = document.getElementById('resultLine');
+    if (hint) {
+      hint.textContent = 'This window cannot close itself. Close the tab to continue.';
+    }
+  }, 250);
+}
+document.getElementById('btnCancel').addEventListener('click', closeSelf);
+document.getElementById('okClose').addEventListener('click', closeSelf);
 document.getElementById('btnRelayNow').addEventListener('click', async function() {
   const btnRelay = document.getElementById('btnRelayNow');
   const resultLine = document.getElementById('resultLine');
@@ -3513,11 +3529,17 @@ document.getElementById('btnRelayNow').addEventListener('click', async function(
     let data = {};
     try { data = await res.json(); } catch (_) {}
     if (res.ok && data.status === 'success') {
+      // The success text lives outside the hidden confirm view, and the view
+      // carries its own live region: resultLine is inside confirmView, so a
+      // success was previously rendered into a display:none subtree and never
+      // announced at all.
       hide(document.getElementById('confirmView'));
       const okText = document.getElementById('okText');
-      okText.textContent = 'Authentication completed successfully' + (data.destination ? ' via ' + data.destination : '') + '.' + (data.operation_id ? ' (ID ' + data.operation_id + ')' : '');
+      okText.textContent = 'Authentication relayed' + (data.destination ? ' to the waiting terminal via ' + data.destination : '') + '. Return to that terminal to continue.' + (data.operation_id ? ' (ID ' + data.operation_id + ')' : '');
       show(document.getElementById('okView'));
       if (statusTimer != null) { clearInterval(statusTimer); statusTimer = null; }
+      const okBtn = document.getElementById('okClose');
+      if (okBtn) okBtn.focus();
       setTimeout(function() { window.close(); }, 3000);
     } else {
       if (res.status === 401) {
@@ -3525,6 +3547,12 @@ document.getElementById('btnRelayNow').addEventListener('click', async function(
         btnRelay.disabled = true;
         hide(document.getElementById('peerLine'));
         show(document.getElementById('noSession'));
+      } else if (res.status >= 500) {
+        // A server fault is not a missing session. Reporting it as one sent
+        // users off to re-mint a dashboard link for a problem a retry fixed.
+        resultLine.textContent = 'The Hub could not complete the relay (HTTP ' + res.status + '). Nothing was relayed. Try again in a moment.';
+        btnRelay.disabled = false;
+        return;
       }
       let msg = (data && data.message) || 'Relay failed';
       if (data && data.next_action) msg += ' Next: ' + data.next_action;
@@ -3551,9 +3579,12 @@ boot();
 func (h *Hub) renderRelayInterstitial(w http.ResponseWriter, rawURL string, expiredLink bool) {
 	sanitized := browser.SanitizeURL(strings.TrimSpace(rawURL))
 	renderErr := func() {
+		// A dead end is not an error message. This page is reached by a bad or
+		// non-relayable link, so it names the reason, the one safe next step,
+		// and a keyboard-reachable way back to the dashboard.
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Relay Error</title></head><body><p>This link cannot be relayed. Start from the OAuth login page and retry the bookmark.</p></body></html>`))
+		_, _ = w.Write([]byte(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Relay Error</title><style>body{background:#090b10;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:1rem;box-sizing:border-box;}.box{background:#131722;border:1px solid #232a3b;border-radius:16px;padding:2rem;max-width:460px;width:92%;text-align:center;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);}h1{margin:0 0 0.5rem 0;font-size:1.1rem;}p{color:#94a3b8;font-size:0.9rem;margin:0 0 1rem 0;line-height:1.5;}.btn{display:inline-block;background:#2563eb;color:#fff;min-height:44px;padding:0.6rem 1.25rem;border-radius:8px;font-weight:600;font-size:0.9rem;text-decoration:none;}.btn:focus{outline:2px solid #60a5fa;outline-offset:2px;}@media (prefers-color-scheme: light){body{background:#f4f6fb;color:#16213a;}.box{background:#fff;border-color:#d9e0ec;box-shadow:0 25px 50px -12px rgba(22,33,58,0.25);}p{color:#5b6478;}}@media (prefers-reduced-motion: reduce){*{transition:none!important;}}</style></head><body><div class="box"><h1>This link cannot be relayed</h1><p>Only an http or https authorization URL can be relayed, and this link did not contain one. Nothing was sent to any machine.</p><p>Go back to the OAuth login page and click the Tantu bookmark again, or open the dashboard and use the manual forwarder there.</p><a class="btn" href="/">Open the dashboard</a></div></body></html>`))
 	}
 	if err := browser.ValidateURL(sanitized); err != nil {
 		renderErr()
