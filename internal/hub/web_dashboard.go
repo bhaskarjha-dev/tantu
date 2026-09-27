@@ -1326,6 +1326,10 @@ const dashboardHTML = `<!DOCTYPE html>
           } else if (response.status === 503) {
             dashboardBlockReason = 'The Hub has too many dashboard sessions open. Close other dashboard tabs and press o for a fresh link.';
           }
+          // A failed exchange must not leave its token behind: the fragment
+          // would otherwise replay a doomed exchange on every reload or
+          // duplicated tab, making a spent link look like a stuck page.
+          history.replaceState(null, '', location.pathname + location.search);
           return false;
         }
         history.replaceState(null, '', location.pathname + location.search);

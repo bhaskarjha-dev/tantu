@@ -86,3 +86,46 @@ func TestWebDashboard_RelayInterstitialBrowser(t *testing.T) {
 		}
 	}
 }
+
+// A spent bootstrap fragment must explain itself instead of looping: the
+// page reports the link dead (and drops it from the URL) rather than
+// replaying the failure silently on every load.
+func TestWebDashboard_SpentLinkGuidance(t *testing.T) {
+	chrome := chromeBinary()
+	if chrome == "" {
+		t.Skip("no Chrome/Chromium binary found")
+	}
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+
+	pageURL := "http://" + h.WebAddr() + "/#tantu_bootstrap=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	profile := t.TempDir()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, chrome,
+		"--headless",
+		"--disable-gpu",
+		"--no-first-run",
+		"--no-default-browser-check",
+		"--user-data-dir="+filepath.Join(profile, "chrome-profile"),
+		"--virtual-time-budget=5000",
+		"--dump-dom",
+		pageURL,
+	)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	dom, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("headless chrome failed: %v\nstderr: %s", err, stderr.String())
+	}
+	page := string(dom)
+	if !strings.Contains(page, "already have been used") {
+		t.Error("spent link did not explain itself in the banner")
+	}
+	for _, bad := range []string{"Uncaught", "ERROR:CONSOLE"} {
+		if strings.Contains(stderr.String(), bad) {
+			t.Errorf("chrome console error %q in: %s", bad, stderr.String())
+		}
+	}
+}
