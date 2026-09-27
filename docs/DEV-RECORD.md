@@ -1615,4 +1615,28 @@ a callback-port bind error mislabeled "in use".
 
 - New unit tests (bind mapping across errno shapes; time-driven session
   tests from Z17); full suite, vet, JS check, cross-compile green (below).
-  No commit or push yet.
+  Committed as `53d0ed1 fix(oauth)` + `fc4e9fb docs(oauth)` and pushed.
+
+## Batch Z20 — spent fragments stop replaying failure (2026-09-27)
+
+User report, diagnosed from evidence: a dashboard tab showing the session
+banner with its `#tantu_bootstrap=` fragment still in the URL. A success
+clears the fragment, so its presence proves the exchange never succeeded —
+and since the exchange re-reads the fragment on every load, each reload
+(including Ctrl+Shift+R) deterministically replays the same failure. Not a
+cache problem; nothing cached is involved. The same mechanism explains an
+incognito/normal split: whichever tab loads a one-time link first consumes
+it, and every other tab holding that fragment fails forever.
+
+### What changed
+
+- Failed exchanges now strip the dead fragment, so reloads and duplicated
+  tabs cannot replay a doomed token. The targeted guidance (Z19) already
+  names the remedy.
+- Real-browser proof: a spent link renders the self-explanatory guidance
+  with zero console errors.
+
+### Validation
+
+- New headless-Chrome assertion on the spent-link guidance; full suite,
+  vet, JS check, cross-compile green (below). No commit or push yet.
