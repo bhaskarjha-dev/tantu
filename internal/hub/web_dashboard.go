@@ -3352,7 +3352,7 @@ func (h *Hub) securityMiddleware(next http.Handler) http.Handler {
 					Name:     "tantu_dashboard_session",
 					Value:    sessionID,
 					Path:     "/",
-					MaxAge:   1800,
+					MaxAge:   int(dashboardSessionTTL.Seconds()),
 					HttpOnly: true,
 					SameSite: http.SameSiteStrictMode,
 				})

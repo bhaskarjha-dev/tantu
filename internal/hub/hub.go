@@ -876,23 +876,38 @@ func (h *Hub) newDashboardSession() (string, error) {
 	if len(h.dashboardSessions) >= maxDashboardSessions {
 		return "", errors.New("too many dashboard sessions")
 	}
-	h.dashboardSessions[id] = now.Add(30 * time.Minute)
+	h.dashboardSessions[id] = now.Add(dashboardSessionTTL)
 	return id, nil
 }
 
+// dashboardSessionTTL bounds a dashboard session: 24 hours sliding from
+// last use. The previous 30-minute absolute expiry logged out even actively
+// used dashboards and made every idle gap over 30 minutes a dead bookmark
+// popup. Within the same-user loopback boundary, TTL length is a weak
+// control; the load-bearing ones — restart rotation, HttpOnly/Strict,
+// exact-authority checks — are untouched by this value.
+const dashboardSessionTTL = 24 * time.Hour
+
 func (h *Hub) dashboardSessionValid(id string) bool {
+	return h.touchDashboardSession(id, time.Now())
+}
+
+// touchDashboardSession reports validity at now, renewing live sessions and
+// pruning dead ones. Split out so tests can drive time without sleeping.
+func (h *Hub) touchDashboardSession(id string, now time.Time) bool {
 	if id == "" {
 		return false
 	}
 	h.dashboardMu.Lock()
 	defer h.dashboardMu.Unlock()
 	expires, ok := h.dashboardSessions[id]
-	if !ok || !expires.After(time.Now()) {
+	if !ok || !expires.After(now) {
 		if ok {
 			delete(h.dashboardSessions, id)
 		}
 		return false
 	}
+	h.dashboardSessions[id] = now.Add(dashboardSessionTTL)
 	return true
 }
 
