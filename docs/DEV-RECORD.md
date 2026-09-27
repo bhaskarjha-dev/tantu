@@ -1275,3 +1275,121 @@ failed the five user questions.
   dashboard in both themes against a port-pinned Hub (prior round probed
   the user's own Hub on the shared port — evidence hygiene noted).
 - Committed after verification; pushed with the batch.
+
+## Batch Z15 - full browser frontend audit and remediation (2026-09-27)
+
+Plan-driven audit of the entire browser frontend (header, all five tabs,
+banners, composer, preview, progress, empty/loading/error states, the
+interstitial, and the legacy relay pages), element by element, judged against
+the five user questions and the three honesty rules. Phase 1 produced a
+report plus a prioritized list; Phase 2 implemented the approved items in four
+verified slices. Evidence level moved from E1/E3 to E2/E3 across the board.
+
+### Phase 1 findings that mattered most
+
+- CSP authorized only `'self' data:` for images, but the send preview stages
+  the chosen file as a page-created `blob:` URL. The browser blocked it, so
+  the clipboard-image confirmation showed a permanently broken thumbnail
+  (`naturalWidth: 0`, `opacity: 0`) and every paste/drop/selection logged a CSP
+  violation. The product's flagship disclosure-safety feature was confirming a
+  picture the user could not see.
+- The text composer reported nothing on the tab the user clicked from. A
+  successful send and an over-limit rejection were both visible only in Live
+  Logs, making both indistinguishable from a dead button.
+- `loadPendingPairings` reassigned its container on every 3 s status poll,
+  replacing the Approve button and throwing focus to `<body>`. The one action
+  that grants permanent mutual trust was unusable by keyboard.
+- Three light-theme contrast failures (next-action banner 1.20:1, log console
+  1.26:1, downloads path 2.27:1) plus a 1.69:1 version tag.
+- The log console scrolled 2798 px of content in a 378 px viewport with no
+  `tabindex` and no role: unreachable and unscrollable by keyboard.
+- No headings at all in the SPA (11 `.card-title` divs, 0 `h1`/`h2`).
+- 21 blocking `alert`/`confirm`/`prompt` dialogs; all peer-management actions
+  were dialog-only.
+- Records showed a bare clock time despite a 30-day retention window.
+- `scroll-margin-top: 84px` against a measured 129 px of sticky chrome.
+
+### Maintainer rulings applied
+
+Dark header/tab chrome kept in light mode deliberately; contrast fixed on what
+sits on it instead of re-theming. Next-action banner demoted to P1. Tab
+arrow-keys P1-low. Dialog replacement sliced to approve-confirm,
+unpair-consequences, and logs-clear-confirm; the alias prompt deliberately
+left on a native dialog as an acceptable low-risk surface. 44px enforced
+targeted, spacing accepted elsewhere. Inbox delete, full AA, and density
+judgment remain recorded deferrals.
+
+### What changed
+
+Slice 1 (CSP + a11y mechanics): `blob:` authorized with a test that parses the
+served policy and matches it against the scheme the page actually assigns.
+Pairing banner guarded by a request-set signature, made an announced status
+region, rebuilt with theme-aware classes and 46px targets. Inbox preserves
+focus across live re-renders (matched by action, label, and ordinal, because
+`data-value` is a per-render sequence number) and announces arrivals once.
+Dialog focus restoration no longer accepts `<body>` as a target. Real heading
+outline, skip link, navigation landmark restored around the tablist, roving
+tabindex with Arrow/Home/End, log console given `tabindex=0` + `role="log"` +
+`aria-live="off"`, upload live region removed in favour of `aria-valuetext`,
+`--chrome-h` measured rather than guessed.
+
+Slice 2 (comprehension + contrast): text composer reports sending, success,
+and failure inline with the draft preserved and verification conditional on
+the server response; over-limit rejection visible and explicit that nothing
+was sent. Shared `OPERATION_STATE_LABELS` map replaces raw taxonomy, unknown
+states degrade to "Unrecognised state", `duplicate_risk` styled as a warning.
+Dated records (today/yesterday/date). Buttons name the resolved destination.
+Transport named instead of an unconditional mTLS claim. Loopback self-send no
+longer labelled "Unauthenticated Peer". Contrast corrected to >=4.5:1 for the
+banner, downloads path, SAS value, active pill, success chip, and version tag.
+Runnable pair command built from the already-polled listening address.
+Consequence-stating confirmations for approve, unpair, and log clear; all three
+Clear buttons marked destructive.
+
+Slice 4 (interstitial + legacy): language, viewport, main landmark, h1, 44px
+buttons, corrected contrast, visible initial focus (`:focus` added because
+programmatic autofocus does not match `:focus-visible`), success moved into a
+live region outside the hidden view, 5xx no longer misreported as a missing
+session, Cancel has a no-close fallback, and the legacy error page is no longer
+a dead end.
+
+### Evidence and method notes
+
+- Built a dependency-free CDP acceptance harness (63 assertions) covering both
+  OS themes, dashboard, interstitial, opened modal, 200% zoom, 360 px, reduced
+  motion, keyboard order, and computed contrast, with zero console errors.
+- The harness refused to trust itself three times and each time it was right:
+  a colour-string/array bug in the contrast compositor; a check that compared
+  the Relay label against the card instead of its own fill; and a
+  focus-visibility assertion that could not pass in headless Chrome because
+  the document is never focused. Fixed with `Emulation.setFocusEmulationEnabled`.
+- Two harness-authoring bugs worth recording: a PowerShell helper named `Git`
+  silently shadowed the `git` executable (names are case-insensitive), and
+  `git apply` into a CRLF checkout mixed line endings so `gofmt` flagged every
+  file. Verification now copies files byte-for-byte and scopes `gofmt` to
+  touched files.
+- Evidence hygiene: all probes ran against an isolated Hub on 127.0.0.1:18976
+  with a version tag asserted to contain HEAD. The maintainer's own Hub on
+  9876 was never probed or screenshotted. One self-inflicted incident is
+  recorded in Phase 1: two early `tantu dashboard` invocations without
+  `--print` opened localhost dashboard tabs in the system browser, one of
+  which reached the maintainer's own Hub. Harmless (localhost, one-time link,
+  never opened afterwards) but corrected to `--store-dir ... --print` for all
+  later runs.
+- A parallel session committed `1df03da` (interstitial session watch) into the
+  same checkout mid-batch. It touches only the interstitial script; the CSP
+  edit is elsewhere, so there was no conflict, and each slice was verified
+  against a worktree at current HEAD.
+
+### Validation
+
+- `go build ./...`, `go vet ./...`, `go test -count=1 ./...` green.
+- `gofmt` clean on both touched files (`internal/hub/operations_test.go` is
+  gofmt-dirty at HEAD and was not touched by this batch).
+- `node --check` clean on the extracted dashboard script with
+  `{{SESSION_READY}}` stubbed; exactly one `</script>`; no backticks inside the
+  Go raw string; the interstitial shell still embeds no user data and remains
+  byte-identical across secrets.
+- linux/amd64 and darwin/arm64 cross-compile clean; `git diff --check` clean.
+- Each slice verified in an isolated git worktree before its commit. Committed
+  as `d4767a6`, `6e568cd`, `1b6735b`, `6e36010`. Not pushed.

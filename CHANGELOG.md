@@ -99,6 +99,20 @@ rollback procedures.
 - The Hub dashboard now receives a per-response CSP nonce and uses delegated
   DOM events instead of inline JavaScript handlers; stale unauthenticated tabs
   show recovery guidance without firing a burst of 401 probes.
+- Dashboard transfer and authorization records now read in plain language
+  ("File saved on peer", "Not delivered", "File may already be saved") instead
+  of raw internal state names, carry a date as well as a time (they are kept
+  for 30 days), and render duplicate risk as a warning rather than a failure.
+  The send and relay buttons name the resolved destination, the drop zone
+  names the transport actually in use instead of claiming mTLS
+  unconditionally, and a local loopback self-send is no longer labelled
+  "Unauthenticated Peer" in the inbox.
+- Approving an inbound pairing request and unpairing a peer now confirm what
+  they change and whether it is reversible; clearing the log feed confirms
+  that the Hub's own log and the other ledgers are untouched.
+- The OAuth relay confirmation popup declares a language and viewport, gains a
+  main landmark and heading, meets 44px targets, and reports a server fault as
+  a server fault rather than as a missing dashboard session.
 - Peer status language now distinguishes paired/trusted state from live
   connectivity, and discovery SAS values are explicitly labeled unverified.
   The dashboard header no longer claims reachability it has not probed
@@ -123,6 +137,42 @@ rollback procedures.
   token remains as a legacy fallback.
 
 ### Fixed
+- The dashboard send preview renders again. The chosen file is staged as a
+  page-created object URL, which the Content Security Policy did not
+  authorize, so the browser blocked the image, the confirmation card showed a
+  permanently broken thumbnail, and every paste, drop, and file selection
+  logged a CSP violation. Blob URLs are same-origin and scoped to the page,
+  so no other guarantee changed.
+- Sending a text snippet now reports what happened on the tab you clicked
+  from. A successful send and an over-limit rejection were previously visible
+  only in the Live Logs tab, so both looked like a dead button; failures keep
+  the draft, and "verified" appears only when the receiver confirmed it.
+- An incoming pairing request is no longer rebuilt on every status poll, which
+  threw keyboard focus onto the page body every three seconds and made the
+  Approve button - the one action that grants permanent trust - impossible to
+  reach with a keyboard or screen reader. The banner is now announced, and its
+  buttons are theme-aware and full-size.
+- The dashboard has a real heading outline (one page heading, a heading per
+  card), a skip link, and a navigation landmark that the tablist previously
+  replaced. The tab bar is a single tab stop with arrow-key navigation, the
+  scrolling log console is reachable and named by keyboard, and closing the
+  pairing dialog returns focus to the control that opened it.
+- Upload progress is no longer announced continuously: the progress bar already
+  exposes its value, so the mirroring live region is gone and the byte and
+  remaining-time detail is available on demand instead of roughly 1.3 times a
+  second for the whole transfer.
+- Legibility in both OS themes: the always-on next-action guidance, the
+  downloads path, the SAS value, the active filter pill, and the success chip
+  now meet the 4.5:1 contrast minimum, and the version tag no longer inherits
+  a light-theme colour onto the dark header.
+- A completed OAuth relay is announced to screen readers (the success text was
+  written into a region that had just been hidden), the confirmation popup's
+  first focused control now shows a focus ring, and its Cancel button says so
+  when a window cannot close itself. The legacy relay error page is no longer a
+  dead end: it explains the reason, states that nothing was relayed, and links
+  back to the dashboard.
+- The downloads path is no longer clipped at narrow widths, and a focused
+  control is no longer parked underneath the sticky header and tab bar.
 - Concurrent QuickDrop attempts with a reused DropID can no longer make one
   attempt clean up or cancel another attempt's receiver state.
 - Transfer failures after the final byte no longer read as ordinary errors:
