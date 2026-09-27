@@ -1473,3 +1473,26 @@ A second *live* machine. Seeding proves the multi-peer layout renders and
 behaves; it does not prove a real pairing handshake, a real cross-machine
 transfer, or the reachable/unreachable state transitions, because nothing was
 ever actually dialed. That remains a physical-two-machine task.
+
+## Batch Z17 — 24-hour sliding dashboard sessions (2026-09-27)
+
+User-reported friction: bookmark popups died with "session not established"
+after any idle gap over 30 minutes, because sessions expired absolutely —
+even mid-use. The popup recovery loop (press `o`, poll enables Relay) already
+worked; the TTL was simply harsher than the threat model requires.
+
+### What changed
+
+- `dashboardSessionTTL = 24h`, renewed on every authenticated use
+  (`touchDashboardSession`, split out for time-driven tests). Active
+  dashboards never expire mid-use; idle gaps under a day just work.
+- Cookie `MaxAge` matched to the same TTL (was a hardcoded 1800).
+- Untouched on purpose: restart rotation, HttpOnly/Strict, exact-authority
+  checks, 32-session cap with expiry pruning. Within the same-user loopback
+  boundary, TTL length is the weak control; the strong ones are unchanged.
+
+### Validation
+
+- New time-driven tests (fresh/renew/expire/prune, TTL contract); existing
+  bootstrap/rotation tests green.
+- Full suite, vet, cross-compile green (below). No commit or push yet.

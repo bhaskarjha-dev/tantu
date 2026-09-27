@@ -64,6 +64,10 @@ rollback procedures.
   compatibility and point at the Hub.
 - Pairing dialog traps Tab focus while open; cockpit file/text sends print
   the resolved destination before transmitting.
+- Dashboard sessions last 24 hours sliding from last use (renewed on every
+  authenticated call) instead of expiring absolutely after 30 minutes, so
+  bookmark popups survive idle gaps under a day; Hub restarts still rotate
+  all sessions.
 - Premium visual refresh with zero dependencies: design-token system,
   OS-driven light/dark themes, purposeful motion with full reduced-motion
   support, upload speed and ETA, status chips, and a matching interstitial,
