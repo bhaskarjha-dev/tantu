@@ -23,6 +23,8 @@ Severity: **Blocker** (a claim is false or a journey is unsafe) ·
 | 1.2 | Windows is the only runtime-verified platform. | Limit | Open | `docs/RELEASE.md` |
 | 1.3 | `-race` runs on Linux/macOS in CI; local Windows race execution needs a full C toolchain, so local evidence is `-count=2` lifecycle reruns. | Limit | Accepted | `docs/RELEASE.md` |
 | 1.4 | Artifacts are **not signed**. No cosign configuration, and signing keys must never live in this repo. | Gap | Open | `docs/RELEASE.md`, `CHANGELOG.md` Security notes |
+| 1.5 | **No release has ever been published** (`git tag -l` is empty). The goreleaser pipeline, SBOM generation, cross-compilation for darwin/linux arm64, and ldflags version stamping have never executed end to end. `docs/RELEASE.md` describes install and upgrade procedures for artifacts that do not exist yet. | Blocker for "installable" | Open | `docs/RELEASE.md` |
+| 1.6 | **The quality gates added after the audit have never run on real CI.** The local Windows toolchain cannot run `-race`; `staticcheck`, `govulncheck`, the coverage floor, and the browser acceptance job are configured but unobserved. | Gap | Open | `.github/workflows/ci.yml` |
 
 ## 2. Evidence
 
@@ -46,6 +48,8 @@ Severity: **Blocker** (a claim is false or a journey is unsafe) ·
 | 3.5 | A Hub **restart drops the session**, so an open dashboard tab must be reopened; there is no silent re-establishment. | Limit | By design | Dashboard session banner |
 | 3.6 | **No browser availability fallback in the dashboard itself.** The recovery path is `tantu dashboard` from a terminal, not an in-page action. | Limit | Open | `docs/UX-STATUS.md` |
 | 3.7 | Mixed-version operation is **unsupported** by design; pairing assumes the same release on both machines. | Limit | By design | `docs/RELEASE.md` |
+| 3.8 | **A local process can still inject an OAuth callback.** The browser-CSRF defence reads `Sec-Fetch-Mode`, `Sec-Fetch-Dest`, and `Origin`, which a web page cannot forge — but a process on the same machine can simply omit them, and they are deliberately tolerated when absent so CLI OAuth flows keep working. Blocking that would mean requiring a header that non-browser clients do not send. This sits inside the documented same-user trust boundary (see THREAT-MODEL T10) and is not a remote attack path. | Limit | By design | `internal/bridge/aside.go` |
+| 3.9 | **An OAuth flow with no `redirect_uri` and no `state` has no redirect binding.** `callbackExpectation` reports it as `unbound`, and the browser checks still apply, but the flow is weaker than one that carries a `state` and is not separately surfaced to the user at the call site. | Limit | Open | `internal/bridge/aside.go` |
 
 ## 4. Interface
 
@@ -66,6 +70,7 @@ Severity: **Blocker** (a claim is false or a journey is unsafe) ·
 | 5.1 | **Received items are session-local and in memory only.** They are cleared on Hub restart and are not persisted. Inbound persistence was evaluated and rejected for privacy. | Limit | By design | Dashboard inbox note |
 | 5.2 | Transfer history is **metadata-only and bounded** (last 50, 30 days). No payload bytes, clipboard contents, text snippets, or full OAuth URLs are ever stored. | Limit | By design (D-14) | `docs/ARCHITECTURE.md` |
 | 5.3 | The client-side 10 MiB text limit **mirrors** the server default rather than querying it. A non-default server limit would make the early rejection wrong (the server still enforces the truth). | Limit | Accepted | `internal/hub/web_dashboard.go` |
+| 5.4 | The SAS word list has **no automated confusable-pair check.** Words are unique, 4-6 lowercase ASCII letters, and drawn from a 512-entry list, but a mechanical "these two words look alike" test is not implemented, so a future edit could introduce a visually similar pair and weaken a spoken comparison. | Limit | Open | `internal/pairing/cert.go` |
 
 ## 6. Resolved
 
@@ -73,12 +78,18 @@ Recorded so the register shows movement, not just accumulation.
 
 | Limitation | Resolved by | Evidence |
 |---|---|---|
-| Send preview never rendered (CSP blocked `blob:`) | Z15 | `TestWebDashboard_SendPreviewImageSchemeIsAuthorized`, harness decode check |
-| Text send reported nothing on the composer's own tab | Z15 | `TestWebDashboard_TextComposerReportsOutcomeInline` |
+| Send preview never rendered (CSP blocked `blob:`) | Z15 | `TestWebDashboard_SendPreviewImageSchemeIsAuthorized`, harness decode check || Text send reported nothing on the composer's own tab | Z15 | `TestWebDashboard_TextComposerReportsOutcomeInline` |
 | Pairing approval rebuilt every 3 s, destroying keyboard focus | Z15 | `TestWebDashboard_AccessibilityMechanicsMarkers`, harness focus-hold check |
 | Four sub-4.5:1 contrast elements, three below 1.4:1 | Z15 | Harness computed-contrast sweep, both themes |
 | Multi-peer badge colours and 360 px overflow | Z16 | `TestWebDashboard_MultiPeerSurfaceMarkers` |
 | Dead Hub left live-looking data on screen | Z18 | `TestWebDashboard_StalenessIsDeclared` |
+| `tantu send` shipped a mistyped path as a text snippet and reported success | audit 2026-09-28 | `TestSendPathHintClassification`, plus the four mistyped-path shapes rejected end to end |
+| A crash mid-publish left a truncated file under a delivered name | audit 2026-09-28 | `TestPublishStagedFileIsAtomicAndVisibleOnlyWhenComplete`, `TestSweepPublicationTempsReclaimsOnlyStaleTemporaries` |
+| The "verified" digest described a different byte stream than the file published | audit 2026-09-28 | `TestFinalizeIncomingPartRejectsDigestMismatch`, `TestFinalizeIncomingPartRejectsSizeMismatch` |
+| `tantu drop` served its own API credential in unauthenticated HTML | audit 2026-09-28 | `TestLocalSessionIsOneUseAndPageCarriesNoCredential` |
+| The pairing SAS was 24 bits, static, and broadcast in cleartext on the LAN | audit 2026-09-28 | `TestTranscriptSASIsBoundToTheSession`, `TestBeaconPayloadCarriesNoIdentity` |
+| A web page could inject an OAuth code into a local login | audit 2026-09-28 | `TestCallbackRejectsPageInjectedFetch`, `TestUnboundFlowStillRequiresNavigation` |
+| A suppressed duplicate was reported as a verified success | audit 2026-09-28 | `TestE2E_SuppressedDuplicateReachesTheSender` |
 
 ---
 

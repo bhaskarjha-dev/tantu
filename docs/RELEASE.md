@@ -10,10 +10,21 @@
   report it. A local `go build` without ldflags reports
   `1.0.0-dev+<short-sha>[.dirty]` (VCS fallback via `debug.ReadBuildInfo`) —
   that value means "unreleased dev build", not a real release.
-- Wire protocol has no version field: pairing assumes both machines run the
-  same release. Unknown message types fail closed (logged, connection
-  dropped), and beacons carry `v: 1` (mismatches ignored). Mixed-version
-  operation is unsupported — upgrade both machines.
+- Envelopes carry an additive `v` field, stamped with `protocol.ProtocolVersion`
+  (currently 1) at the encode choke point. Peers that predate versioning ignore
+  it, so emitting it is compatible in both directions; see
+  `docs/SPEC-WIRE-VERSIONING.md`. Unknown message types still fail closed
+  (logged, connection dropped), and a beacon from a release that predates the
+  identity-free beacon format is rejected outright rather than accepted with its
+  SAS in hand.
+- **Discovery beacons are not compatible with pre-`d7de281` releases.** Those
+  broadcasts carried a SAS and certificate fingerprint; a current release drops
+  any beacon that still sets those fields, so two machines on the same LAN will
+  not discover each other unless they run the same release. Pairing itself is
+  unaffected. This is a deliberate consequence of removing the cleartext SAS
+  broadcast, and it is the one place the release boundary is a hard break rather
+  than a graceful degradation.
+- Mixed-version operation is unsupported - upgrade both machines.
 
 ## Artifacts
 

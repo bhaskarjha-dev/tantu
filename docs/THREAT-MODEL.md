@@ -62,8 +62,8 @@
 |-------|--------|
 | **Threat** | Unpaired network entity attempts to connect to port 9877 |
 | **Impact** | High — potential reconnaissance or exploit attempt |
-| **Mitigation** | Strict defense-in-depth: non-TLS traffic is rejected at the transport layer. While TLS 1.3 handshake succeeds to allow zero-friction in-band pairing (`AllowPairing: true`), the application Dispatcher enforces a 30-second read deadline and strictly inspects the first envelope. Only `pair_hello` envelopes can enter pairing (requiring interactive visual SAS confirmation via Web UI / Cockpit before trust is recorded). On the LAN transport, any other operation (`drop_send`, `bridge_request`) requires peer certificate verification (`IsPeerTrusted`) against `peers.json`; unauthenticated requests are immediately rejected with 401/rejection frames and cannot trigger browser execution or file storage. Loopback and SSH transports use their own trust policies: loopback accepts any local connection (same-user boundary — any local process is already inside it) and SSH accepts any key-authenticated client; both still gate unauthenticated *remote* access because they never bind non-loopback interfaces (loopback) or skip key auth (SSH) |
-| **Residual Risk** | Negligible |
+| **Mitigation** | Defence in depth, in order:<br>1. Non-TLS traffic is rejected at the transport layer.<br>2. TLS 1.3 handshake completes for any client, so that zero-friction in-band pairing works (`AllowPairing: true`). The Dispatcher then applies a 30-second read deadline and inspects the first envelope.<br>3. Only `pair_hello` reaches pairing, and pairing requires interactive human approval with a session-bound SAS before any trust is written.<br>4. Every other operation — `drop_send`, `bridge_request` — is gated on `IsPeerTrusted` against `peers.json`. An unauthenticated request is rejected and cannot trigger a browser launch or a file write.<br>5. Loopback accepts any local connection (same-user boundary) and SSH requires key authentication; neither binds a non-loopback interface without a key check. |
+| **Residual Risk** | **Low, not negligible.** Step 2 means an unpaired host can complete a TLS handshake and open one connection. It cannot reach any operation beyond `pair_hello`, and it is still subject to handshake and session caps, but "reaches the pairing entry point" is a real, deliberate property of the design rather than a non-event. |
 
 ### T4: Port Collision / Hijacking on Callback Listener
 | Field | Detail |
@@ -79,7 +79,7 @@
 | **Threat** | Malicious peer sends phishing URL to browser node via `bridge_request` |
 | **Impact** | High — user tricked into entering credentials |
 | **Mitigation** | Cockpit and Web UI prominently display the target URL and origin peer; URL schema validation (HTTP/HTTPS only) |
-| **Residual Risk** | Low — only paired, authenticated peers can submit URL open requests |
+| **Residual Risk** | **Medium, and higher than "Low".** `file://`, `javascript:`, and `data:` are rejected, but there is **no allowlist of authorization endpoints**: a paired peer can make the A-side open any http(s) URL, including an internal address or a credential-harvesting lookalike, in a browser session already authenticated to every provider. The peer may also bind a loopback port of its choosing and receive any callback landing there. This is reachable by an already-paired peer, so it is not a network attack, but the blast radius is the user's whole browser session. Tracked as an open limitation, not a closed one. |
 
 ### T6: Denial of Service / Resource Exhaustion
 | Field | Detail |
@@ -94,8 +94,8 @@
 |-------|--------|
 | **Threat** | Active network attacker intercepts pairing handshake |
 | **Impact** | High — malicious peer certificate accepted |
-| **Mitigation** | Short Authentication String (SAS): SHA-256 certificate digest truncated to 6 characters, visually verified out-of-band on both screens before trust confirmation |
-| **Residual Risk** | Negligible when SAS is visually verified |
+| **Mitigation** | Short Authentication String (SAS): a 54-bit word code derived by `pairing.TranscriptSAS` from a hash over the live pairing transcript — both certificate fingerprints plus both freshly generated nonces. Because the code is session-bound it differs on every attempt, and because discovery no longer broadcasts any identity it cannot be pre-computed from the network. The user compares the code on both screens before trust is recorded. |
+| **Residual Risk** | **Low, and only if the user actually compares the code.** The value shown is 54 bits and unguessable, so an active MITM cannot match it without the user's participation — but a user who approves a prompt without reading it has accepted the peer. The code is not, and is not claimed to be, a defence against a user who does not verify. |
 
 ### T8: Stale Listener / Zombie Socket
 | Field | Detail |
@@ -159,7 +159,7 @@
 | **SR6** | URLs to be opened in browser must be validated (HTTP/HTTPS only) and displayed to user | T5 |
 | **SR7** | Maximum session duration enforced (5 minutes default) | T6, T8 |
 | **SR8** | Envelope payload size capped at 64KB for control messages; files chunked at 1MB | T6 |
-| **SR9** | Pairing requires out-of-band visual verification of the 6-character SAS code | T7 |
+| **SR9** | Pairing requires out-of-band visual verification of a session-bound SAS word code | T7 |
 | **SR10**| PKCE `code_verifier` must never leave the initiating node | T1, T2 |
 | **SR11**| Inbound sender identity must be cryptographically extracted from TLS client leaf cert | T9 |
 | **SR12**| Runtime state descriptor (`hub.json`), key material, peer state, transfer history (`transfers.json`), and active-peer selection must use private permissions and ownership-safe publication; peer/identity mutations are serialized across processes; OS ACL enforcement is a deployment requirement | T10 |
@@ -171,6 +171,10 @@
 | **SR18**| Long-lived receivers must bound aggregate transfer reservations, including unknown-size streams, and release reservations on every terminal path | T6 |
 | **SR19**| A resumable partial must have a valid private manifest bound to its transfer metadata and 64 KiB head hash; mismatched or malformed manifests must never be resumed. This is prefix identity, not a full-content or sender-identity proof | T11 |
 | **SR20**| Staging maintenance must use verified directory handles, must not remove active partials or unmarked user files, and direct legacy `.part` files without a valid Tantu manifest require manual review | T6, T11 |
+| **SR21**| An OAuth callback listener must accept a request only as a top-level browser navigation: `Sec-Fetch-Mode` must be `navigate` and `Sec-Fetch-Dest` must not name a subresource when those headers are present, and a supplied `Origin` must match the authorization server's origin. These headers are unforgeable from a web page and are tolerated when absent so non-browser clients keep working | T1, T2 |
+| **SR22**| Application `state` must be compared in constant time on both the A-side and the B-side, and a missing `state` must fail when the authorization request carried one | T1, T2 |
+| **SR23**| Discovery beacons must carry no SAS and no certificate fingerprint, and a beacon that still carries either must be rejected outright | T7 |
+| **SR24**| A verification code shown to a user must be derived from a session transcript and must not be persisted or broadcast | T7 |
 
 ---
 
@@ -188,9 +192,13 @@
 
 ## 5. Security Posture Conclusion
 
-`tantu` delivers a security posture that is **strictly superior to ad-hoc SSH port forwarding (`ssh -R`) and cloud relays**:
+`tantu` avoids the metadata exposure of a cloud relay and does not leave an
+open forward on the remote host the way an ad-hoc `ssh -R` does. Within that
+comparison the concrete protections are:
+
 - **Zero-Trust Sender Provenance:** Every byte received is cryptographically bound to a verified TLS leaf certificate.
 - **Defense in Depth via PKCE:** Intercepted authorization codes are mathematically useless without the local `code_verifier`.
 - **Loopback & Browser-Access Control:** External network interfaces cannot access the Web Dashboard, REST IPC, or local callback listeners; exact-authority checks and capability/session authorization block ordinary cross-origin and tokenless local-browser access, and the bookmarklet confirmation shell authorizes nothing without a click and a valid session. Inline dashboard scripts and OS ACLs remain tracked hardening work.
-- **Hardened Filesystem Defense:** Incoming files are sanitized against path traversal, NTFS ADS, Win32-invalid characters, and DOS reserved device conflicts; private staging operations are anchored to verified directory handles. Windows ACL enforcement and power-loss guarantees remain deployment/platform boundaries.
+- **Hardened Filesystem Defense:** Incoming files are sanitized against path traversal, NTFS ADS, Win32-invalid characters, and DOS reserved device conflicts; private staging operations are anchored to verified directory handles. Publication is atomic — the delivered name only ever appears complete — and the reported digest is computed over the bytes that were published. Windows ACL enforcement and power-loss guarantees remain deployment/platform boundaries.
+- **Browser-CSRF Defense on the OAuth callback:** a callback is accepted only as a top-level navigation with an `Origin` matching the authorization server, which a web page cannot forge. A local process can still inject one by omitting those headers; that is the same-user boundary recorded in T10 and in `docs/KNOWN-LIMITATIONS.md` §3.8.
 - **No Cloud Dependencies:** Traffic travels directly peer-to-peer across LAN or native SSH tunnels with zero third-party metadata leakage.
