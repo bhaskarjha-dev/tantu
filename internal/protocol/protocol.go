@@ -10,6 +10,7 @@ const (
 	TypeBridgeAck      = "bridge_ack"
 	TypeCallbackRelay  = "callback_relay"
 	TypeBridgeComplete = "bridge_complete"
+	TypeBridgeCancel   = "bridge_cancel"
 	TypeHeartbeat      = "heartbeat"
 )
 
@@ -53,7 +54,7 @@ func (e *Envelope) DecodePayload(dest any) error {
 	return json.Unmarshal(e.Payload, dest)
 }
 
-// BridgeRequest: B→A. "Open this URL, forward callback on this port."
+// BridgeRequest: BÔåÆA. "Open this URL, forward callback on this port."
 type BridgeRequest struct {
 	URL          string `json:"url"`               // OAuth authorization URL to open
 	CallbackPort int    `json:"callback_port"`     // Port where app's callback listener runs on B
@@ -61,7 +62,7 @@ type BridgeRequest struct {
 	FlowID       string `json:"flow_id,omitempty"` // Stable application flow/idempotency identity
 }
 
-// BridgeAck: A→B. "URL opened, I'm listening for the callback."
+// BridgeAck: AÔåÆB. "URL opened, I'm listening for the callback."
 type BridgeAck struct {
 	RequestID     string `json:"request_id"`
 	ListeningPort int    `json:"listening_port"`  // Port A-side bound for callback capture
@@ -72,7 +73,7 @@ type BridgeAck struct {
 	Replay bool `json:"replay,omitempty"`
 }
 
-// CallbackRelay: A→B. The captured HTTP callback request.
+// CallbackRelay: AÔåÆB. The captured HTTP callback request.
 type CallbackRelay struct {
 	RequestID  string            `json:"request_id"`
 	Method     string            `json:"method"`
@@ -82,10 +83,39 @@ type CallbackRelay struct {
 	StatusCode int               `json:"status_code"` // Not needed for relay but useful for error callbacks
 }
 
-// BridgeComplete: B→A. "Auth complete, tear down."
+// BridgeComplete: BÔåÆA. "Auth complete, tear down."
 type BridgeComplete struct {
 	RequestID string `json:"request_id"`
 	Success   bool   `json:"success"`
+	Error     string `json:"error,omitempty"`
+}
+
+// BridgeCancel: B→A. "Forget this sign-in; I am not going to finish it."
+//
+// Without this, a user who abandons a sign-in on the browser machine leaves the
+// peer holding a bound loopback callback port, an open browser tab, and a live
+// session until its timeout expires. The application's redirect port is usually
+// fixed, so the abandoned session also blocks the retry — which is what forces
+// a restart. The message travels on its own connection because the session's own
+// connection is busy waiting for the callback.
+type BridgeCancel struct {
+	RequestID string `json:"request_id,omitempty"`
+	// FlowID is the caller's flow identity. Either identifier may be used; the
+	// receiver matches whichever resolves to a live session.
+	FlowID string `json:"flow_id,omitempty"`
+	// Reason is free text for the local log only. It must never carry a URL, an
+	// authorization code, or a token.
+	Reason string `json:"reason,omitempty"`
+}
+
+// BridgeCancelAck: A→B. The outcome of a cancel request.
+type BridgeCancelAck struct {
+	RequestID string `json:"request_id,omitempty"`
+	FlowID    string `json:"flow_id,omitempty"`
+	// Cancelled is true when a live session was found and released. False is a
+	// normal outcome: the flow may have completed or timed out between the user
+	// deciding and this arriving.
+	Cancelled bool   `json:"cancelled"`
 	Error     string `json:"error,omitempty"`
 }
 

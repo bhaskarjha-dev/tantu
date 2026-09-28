@@ -24,6 +24,14 @@
   unaffected. This is a deliberate consequence of removing the cleartext SAS
   broadcast, and it is the one place the release boundary is a hard break rather
   than a graceful degradation.
+- **`bridge_cancel` is additive: a current machine can talk to an older one, but
+  a cancel will not be understood.** The sign-in path is unchanged, so a
+  pre-cancel release still relays logins normally. What a current release cannot
+  do is *stop* one: the older machine ignores the unknown type and holds its
+  callback listener until its own timeout. The UI reports this honestly as "not
+  confirmed" rather than as a failure, and says the other machine may release on
+  its own. Given that mixed-version operation is unsupported, this only matters
+  during the window where one machine has been upgraded and the other has not.
 - Mixed-version operation is unsupported - upgrade both machines.
 
 ## Artifacts

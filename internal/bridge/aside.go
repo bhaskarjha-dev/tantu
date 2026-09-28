@@ -27,6 +27,10 @@ type ASideConfig struct {
 	OpenBrowser func(string) error   // If nil, browser opening is skipped
 	Logger      *log.Logger          // Optional logger for session-scoped output
 	Sessions    *OAuthSessionManager // Shared retry/replay coordinator
+	// Registry tracks in-flight sign-ins so the operator can list and release
+	// them. Optional: a nil registry simply makes sessions unlistable, which is
+	// the pre-cancellation behaviour.
+	Registry *SessionRegistry
 }
 
 type completionResult struct {
@@ -223,7 +227,7 @@ func validateCallbackRequestState(r *http.Request, expected callbackExpectationS
 // redirect) or the Origin is the provider's own (a form_post response). An
 // attacker's page issues fetch(), XHR, or a subresource request, and the browser
 // labels it "cors", "no-cors", or "same-origin" and stamps the attacker's Origin
-// — neither of which can be forged from a page, which is the whole point.
+// ÔÇö neither of which can be forged from a page, which is the whole point.
 //
 // Both headers are enforced when present and tolerated when absent, so a client
 // that strips them falls back to the state check rather than being locked out.
@@ -274,8 +278,20 @@ func callbackHeaders(h http.Header) map[string]string {
 
 // Run executes the A-side session lifecycle.
 func (a *ASide) Run(parent context.Context) (runErr error) {
-	ctx, cancel := context.WithTimeout(parent, a.cfg.Timeout)
-	defer cancel()
+	// A cancellable context, not a bare timeout, so the session can be released
+	// on user intent. Releasing it is what closes the callback listener below and
+	// frees the loopback port, which is the resource an abandoned sign-in
+	// otherwise holds until the timeout expires.
+	ctx, cancel := context.WithCancelCause(parent)
+	timeoutCancel := context.AfterFunc(ctx, func() {})
+	defer func() {
+		timeoutCancel()
+		cancel(nil)
+	}()
+	// Apply the session timeout as a distinct cause so a timeout and a user
+	// cancellation are never reported as the same event.
+	timer := time.AfterFunc(a.cfg.Timeout, func() { cancel(context.DeadlineExceeded) })
+	defer timer.Stop()
 	stopContextClose := closeConnOnContext(ctx, a.conn)
 	defer stopContextClose()
 
@@ -321,13 +337,41 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 		return errors.New(ackErr)
 	}
 
-	a.logf("🔗 Session started: handling request %s (callback port %d)", req.RequestID, req.CallbackPort)
+	a.logf("­ƒöù Session started: handling request %s (callback port %d)", req.RequestID, req.CallbackPort)
+
+	// Track the session before binding anything, so an abandoned sign-in is
+	// always listable and always releasable from the moment it exists. The
+	// registry records the session's own cancel function, so releasing an entry
+	// unblocks the wait below and closes the listener via its defer.
+	sessionPeer := transport.GetPeerFingerprint(a.conn)
+	// listenerClosed is signalled after the loopback listener is closed, so a
+	// cancel can wait for the port to be genuinely free rather than merely
+	// requested to be released. Without it a retry races the teardown and fails
+	// with "port in use".
+	listenerClosed := make(chan struct{})
+	var signalListenerClosed sync.Once
+	defer signalListenerClosed.Do(func() { close(listenerClosed) })
+
+	unregister, regErr := a.cfg.Registry.Register(ctx, cancel, listenerClosed, SessionInfo{
+		RequestID:       req.RequestID,
+		FlowID:          strings.TrimSpace(req.FlowID),
+		CallbackPort:    req.CallbackPort,
+		PeerFingerprint: sessionPeer,
+		State:           SessionStateWaitingBrowser,
+	})
+	if regErr != nil {
+		a.logf("❌ Session error: %v", regErr)
+		ackErr := "too many sign-ins are already open on this machine; close one and retry"
+		_ = a.conn.Send(protocol.TypeBridgeAck, protocol.BridgeAck{RequestID: req.RequestID, Error: ackErr})
+		return regErr
+	}
+	defer unregister()
 
 	// 2. Validate URL before allocating a listener or touching the browser.
 	req.URL = browser.SanitizeURL(req.URL)
 	if err := browser.ValidateURL(req.URL); err != nil {
 		ackErr := fmt.Sprintf("invalid url: %v", err)
-		a.logf("❌ Session error: %s", ackErr)
+		a.logf("ÔØî Session error: %s", ackErr)
 		_ = a.conn.Send(protocol.TypeBridgeAck, protocol.BridgeAck{
 			RequestID:     req.RequestID,
 			ListeningPort: 0,
@@ -356,7 +400,7 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 		return errors.New(ackErr)
 	}
 	if !lease.owner {
-		a.logf("♻️ Duplicate OAuth request suppressed for callback port %d", req.CallbackPort)
+		a.logf("ÔÖ╗´©Å Duplicate OAuth request suppressed for callback port %d", req.CallbackPort)
 		waitCtx, waitCancel := context.WithTimeout(ctx, a.cfg.Timeout)
 		waitErr := lease.wait(waitCtx)
 		waitCancel()
@@ -378,12 +422,22 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 	}
 	defer func() { lease.finish(runErr) }()
 
+	// A sign-in that wants a port an older in-flight session is still holding is
+	// the retry-after-abandon case. The application's redirect port is normally
+	// fixed, so the stale session owns a resource the user has already given up
+	// on, and without this the new attempt would fail to bind with "port is in
+	// use" and the only recovery would be restarting the process. Releasing the
+	// stale session here is scoped to the same peer and excludes this session.
+	for _, stale := range a.cfg.Registry.CancelOnPort(req.CallbackPort, sessionPeer, req.RequestID) {
+		a.logf("Releasing an earlier abandoned sign-in on callback port %d (request %s) so this attempt can proceed", req.CallbackPort, stale.RequestID)
+	}
+
 	// 3. Bind HTTP listener on 127.0.0.1:req.CallbackPort (exact port, no fallback).
 	bindAddr := net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", req.CallbackPort))
 	listener, err := net.Listen("tcp", bindAddr)
 	if err != nil {
 		ackErr := bindListenErrorText(req.CallbackPort, err)
-		a.logf("❌ Session error: %s", ackErr)
+		a.logf("ÔØî Session error: %s", ackErr)
 		_ = a.conn.Send(protocol.TypeBridgeAck, protocol.BridgeAck{
 			RequestID:     req.RequestID,
 			ListeningPort: 0,
@@ -391,6 +445,13 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 		})
 		return fmt.Errorf("bind callback listener: %w", err)
 	}
+	// Two defers, and their order is the point. Defers run last-in-first-out, so
+	// listener.Close() runs before listenerClosed is signalled. A canceller
+	// waiting on that channel is about to bind this same port, and signalling
+	// first would let it proceed while the port was still held - which is the
+	// "port is in use" dead end this path exists to remove. The sync.Once covers
+	// the outer defer, for sessions that end before any listener exists.
+	defer signalListenerClosed.Do(func() { close(listenerClosed) })
 	defer listener.Close()
 
 	actualPort := 0
@@ -415,9 +476,10 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 	// Open browser if configured.  Never put the query string in logs: it can
 	// contain state, PKCE challenges, and (in callback requests) auth codes.
 	if a.cfg.OpenBrowser != nil {
-		a.logf("🌐 Opening browser for URL: %s", browser.RedactURL(req.URL))
+		a.cfg.Registry.SetState(req.RequestID, SessionStateWaitingCallback)
+		a.logf("­ƒîÉ Opening browser for URL: %s", browser.RedactURL(req.URL))
 		if err := a.cfg.OpenBrowser(req.URL); err != nil {
-			a.logf("❌ failed to open browser: %s", safeBridgeError(err))
+			a.logf("ÔØî failed to open browser: %s", safeBridgeError(err))
 		}
 	}
 
@@ -432,21 +494,21 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if err := validateCallbackRequest(r, callbackExpectationSpec{}); err != nil {
-			a.logf("⚠️ Rejected callback request: %v", err)
+			a.logf("ÔÜá´©Å Rejected callback request: %v", err)
 			http.Error(w, "invalid OAuth callback", http.StatusBadRequest)
 			return
 		}
 
 		body, readErr := io.ReadAll(io.LimitReader(r.Body, (1<<20)+1))
 		if readErr != nil {
-			a.logf("⚠️ Failed to read callback body: %v", readErr)
+			a.logf("ÔÜá´©Å Failed to read callback body: %v", readErr)
 			callbackErrCh <- fmt.Errorf("read callback body: %w", readErr)
 			http.Error(w, "invalid OAuth callback", http.StatusBadRequest)
 			return
 		}
 		if len(body) > 1<<20 {
 			err := errors.New("callback body exceeds 1 MiB limit")
-			a.logf("⚠️ %v", err)
+			a.logf("ÔÜá´©Å %v", err)
 			callbackErrCh <- err
 			http.Error(w, "invalid OAuth callback", http.StatusRequestEntityTooLarge)
 			return
@@ -458,7 +520,7 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 			}
 		}
 		if err := validateCallbackRequestState(r, expected, formState); err != nil {
-			a.logf("⚠️ Rejected callback request: %v", err)
+			a.logf("ÔÜá´©Å Rejected callback request: %v", err)
 			http.Error(w, "invalid OAuth callback", http.StatusBadRequest)
 			return
 		}
@@ -468,7 +530,7 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 			captured = true
 		}
 		captureMu.Unlock()
-		a.logf("📥 Callback received: %s %s", r.Method, r.URL.Path)
+		a.logf("­ƒôÑ Callback received: %s %s", r.Method, r.URL.Path)
 		if alreadyCaptured {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusConflict)
@@ -497,14 +559,14 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 					`<style>body{font-family:system-ui,sans-serif;display:flex;align-items:center;` +
 					`justify-content:center;min-height:100vh;margin:0;background:#111;color:#eee}` +
 					`.card{text-align:center;padding:40px}</style></head>` +
-					`<body><div class="card"><h1>✅ Authentication complete</h1>` +
+					`<body><div class="card"><h1>Ô£à Authentication complete</h1>` +
 					`<p>You can close this tab.</p></div></body></html>`))
 			} else {
 				_, _ = w.Write([]byte(`<html><head><meta charset="utf-8"><title>tantu</title>` +
 					`<style>body{font-family:system-ui,sans-serif;display:flex;align-items:center;` +
 					`justify-content:center;min-height:100vh;margin:0;background:#111;color:#eee}` +
 					`.card{text-align:center;padding:40px}</style></head>` +
-					`<body><div class="card"><h1>⚠️ Callback captured</h1>` +
+					`<body><div class="card"><h1>ÔÜá´©Å Callback captured</h1>` +
 					`<p>Delivery to the application may have failed.</p></div></body></html>`))
 			}
 		case <-r.Context().Done():
@@ -516,7 +578,7 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 				`<style>body{font-family:system-ui,sans-serif;display:flex;align-items:center;` +
 				`justify-content:center;min-height:100vh;margin:0;background:#111;color:#eee}` +
 				`.card{text-align:center;padding:40px}</style></head>` +
-				`<body><div class="card"><h1>✅ Callback captured</h1>` +
+				`<body><div class="card"><h1>ÔÜá´©Å Callback captured</h1>` +
 				`<p>Delivery status unknown. You can close this tab.</p></div></body></html>`))
 		}
 	})
@@ -553,11 +615,18 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 	select {
 	case <-ctx.Done():
 		signalCompletion(completionCh, false)
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			a.logf("❌ Session error: timeout waiting for authentication callback")
+		// A user-cancelled session is not a failure and must not read like one:
+		// the operator chose to walk away, and the resources are being released
+		// right now rather than at a timeout.
+		if cause := context.Cause(ctx); errors.Is(cause, ErrSessionCancelled) {
+			a.logf("🚪 Sign-in released: you cancelled it. The callback port is free again.")
+			return ErrSessionCancelled
+		}
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(context.Cause(ctx), context.DeadlineExceeded) {
+			a.logf("ÔØî Session error: timeout waiting for authentication callback")
 			return errors.New("timeout waiting for authentication callback")
 		}
-		a.logf("❌ Session error: %v", ctx.Err())
+		a.logf("ÔØî Session error: %v", ctx.Err())
 		return ctx.Err()
 	case serveErr := <-serveErrCh:
 		signalCompletion(completionCh, false)
@@ -571,16 +640,17 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 	// 6. Send CallbackRelay over bridge connection.
 	if err := a.conn.Send(protocol.TypeCallbackRelay, relay); err != nil {
 		signalCompletion(completionCh, false)
-		a.logf("❌ Session error: %v", err)
+		a.logf("ÔØî Session error: %v", err)
 		return fmt.Errorf("send callback_relay: %w", err)
 	}
-	a.logf("📦 Callback relayed to B-side, awaiting completion")
+	a.cfg.Registry.SetState(req.RequestID, SessionStateCompleting)
+	a.logf("­ƒôª Callback relayed to B-side, awaiting completion")
 
 	// 7. Wait for the correlated BridgeComplete from B-side.
 	for {
 		env, err := receiveEnvelope(ctx, a.conn)
 		if err != nil {
-			a.logf("❌ Session error: %v", err)
+			a.logf("ÔØî Session error: %v", err)
 			signalCompletion(completionCh, false)
 			return err
 		}
@@ -617,7 +687,7 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 			return errors.New("bridge completion reported failure")
 		}
 		signalCompletion(completionCh, true)
-		a.logf("✅ Session completed successfully")
+		a.logf("Ô£à Session completed successfully")
 		return nil
 	}
 }

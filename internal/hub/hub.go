@@ -231,6 +231,10 @@ type Hub struct {
 	relayHistory     *RelayLedger
 	storeDir         string
 	relayCoordinator *relayCoordinator
+	// oauthSessions tracks the sign-ins this Hub is holding open on behalf of a
+	// peer. Each entry is a bound loopback callback port, so leaving them
+	// invisible made an abandoned login unrecoverable without a restart.
+	oauthSessions *bridge.SessionRegistry
 	// relayToken, ipcToken, and dashboardBootstrapToken are guarded by
 	// dashboardMu so listener-generation rotation cannot race HTTP handlers.
 	relayToken              string
@@ -1523,12 +1527,21 @@ func (h *Hub) Start(parent context.Context) (err error) {
 	tombstones := drop.NewTombstones(filepath.Join(storeDir, drop.TombstoneFilename))
 	h.tombstones = tombstones
 
+	// One registry per Hub, shared with the A-side handler the dispatcher runs,
+	// so an in-flight sign-in registered by the handler is the same entry a
+	// dashboard cancel resolves. Without this the sign-ins that hold loopback
+	// callback ports are invisible and unreleasable, and the only recovery from
+	// an abandoned login is restarting the process.
+	h.oauthSessions = bridge.NewSessionRegistry()
+
 	dispatcherCfg := bridge.DispatcherConfig{
 		ASideConfig: bridge.ASideConfig{
 			Timeout:     h.cfg.Timeout,
 			OpenBrowser: h.openBrowser,
 			Logger:      asideLogger,
+			Registry:    h.oauthSessions,
 		},
+		Registry: h.oauthSessions,
 		DropConfig: drop.ReceiveDropConfig{
 			Timeout:     h.cfg.Timeout,
 			MaxSize:     drop.DefaultMaxDropSize,

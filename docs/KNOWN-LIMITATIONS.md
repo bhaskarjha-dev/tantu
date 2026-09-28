@@ -50,6 +50,9 @@ Severity: **Blocker** (a claim is false or a journey is unsafe) ·
 | 3.7 | Mixed-version operation is **unsupported** by design; pairing assumes the same release on both machines. | Limit | By design | `docs/RELEASE.md` |
 | 3.8 | **A local process can still inject an OAuth callback.** The browser-CSRF defence reads `Sec-Fetch-Mode`, `Sec-Fetch-Dest`, and `Origin`, which a web page cannot forge — but a process on the same machine can simply omit them, and they are deliberately tolerated when absent so CLI OAuth flows keep working. Blocking that would mean requiring a header that non-browser clients do not send. This sits inside the documented same-user trust boundary (see THREAT-MODEL T10) and is not a remote attack path. | Limit | By design | `internal/bridge/aside.go` |
 | 3.9 | **An OAuth flow with no `redirect_uri` and no `state` has no redirect binding.** `callbackExpectation` reports it as `unbound`, and the browser checks still apply, but the flow is weaker than one that carries a `state` and is not separately surfaced to the user at the call site. | Limit | Open | `internal/bridge/aside.go` |
+| 3.10 | **Abandoning a sign-in closes the listener, not the browser tab.** `bridge_cancel` releases the session, its bound loopback callback port, and the wire wait immediately, and a new attempt supersedes a stale session on the same port. The authorization page already open in the browser is not closed: no supported signal distinguishes a tab the user still wants from one they abandoned, and closing tabs a script did not open is unreliable across browsers. The user closes that tab themselves. | Limit | Open, by design | `internal/bridge/session_registry.go` |
+| 3.11 | **A cancel against a peer running a release without `bridge_cancel` cannot be confirmed.** The send is attempted and the reply is treated as "not released" rather than as an error, so the UI says the other machine may still release on its own timeout. Given 3.7, this only arises across a mixed-version pair. | Limit | Open, by design | `internal/bridge/cancel_client.go` |
+| 3.12 | **The cockpit has no sign-in count or cancel key.** Cancellation is available from the dashboard (`/api/relay/active`) and the relay popup's Cancel button, but the terminal cockpit shows neither a count of in-flight sign-ins nor a way to stop one. | Gap | Open | `cmd/tantu/cockpit.go` |
 
 ## 4. Interface
 
@@ -90,6 +93,8 @@ Recorded so the register shows movement, not just accumulation.
 | The pairing SAS was 24 bits, static, and broadcast in cleartext on the LAN | audit 2026-09-28 | `TestTranscriptSASIsBoundToTheSession`, `TestBeaconPayloadCarriesNoIdentity` |
 | A web page could inject an OAuth code into a local login | audit 2026-09-28 | `TestCallbackRejectsPageInjectedFetch`, `TestUnboundFlowStillRequiresNavigation` |
 | A suppressed duplicate was reported as a verified success | audit 2026-09-28 | `TestE2E_SuppressedDuplicateReachesTheSender` |
+| The relay popup's Cancel only closed the window, and the abandoned sign-in kept its loopback callback port — so a retry failed with "port in use" and only a process restart recovered | audit 2026-09-28 | `TestE2E_CancelReleasesCallbackPortImmediately`, `TestE2E_RetryOnSamePortSupersedesAbandonedSession`, `TestSessionRegistry_CancelOnPortReleasesStaleSession` |
+| An in-flight sign-in was invisible on every surface, so "why is my login stuck" had no answer | audit 2026-09-28 | `TestWebDashboard_RelayActiveListsInFlightRelay`, `TestHub_SharesSessionRegistryWithDispatcher` |
 
 ---
 

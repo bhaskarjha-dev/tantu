@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -207,6 +208,7 @@ const relayPageHTML = `<!DOCTYPE html>
       <form id="relayForm" class="form-group">
         <input type="text" id="urlInput" placeholder="Paste OAuth URL (https://accounts.google.com/...)" required>
         <button type="submit" id="submitBtn" class="submit-btn">Relay</button>
+        <button type="button" id="cancelBtn" class="submit-btn" style="display:none;">Cancel</button>
       </form>
       <div id="status"></div>
     </div>
@@ -216,7 +218,36 @@ const relayPageHTML = `<!DOCTYPE html>
     const form = document.getElementById('relayForm');
     const input = document.getElementById('urlInput');
     const btn = document.getElementById('submitBtn');
+    const cancelBtn = document.getElementById('cancelBtn');
     const status = document.getElementById('status');
+    // The relay POST blocks for the whole sign-in. Aborting it stops this page
+    // waiting; the server-side cancel is what actually releases the peer.
+    let relayAbort = null;
+    let relayInFlight = false;
+
+    cancelBtn.addEventListener('click', async () => {
+      cancelBtn.disabled = true;
+      if (relayAbort) relayAbort.abort();
+      try {
+        const resp = await fetch('/relay/cancel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Tantu-Relay-Ticket': '{{RELAY_TOKEN}}' },
+          body: JSON.stringify({})
+        });
+        const data = await resp.json();
+        status.className = 'success';
+        status.innerHTML = '🚪 ' + (data.message || 'Sign-in cancelled. You can start again.');
+      } catch (err) {
+        status.className = 'error';
+        status.innerHTML = '❌ <strong>Could not cancel:</strong> ' + err.message +
+          ' The sign-in will end on its own timeout.';
+      } finally {
+        cancelBtn.disabled = false;
+        cancelBtn.style.display = 'none';
+        btn.disabled = false;
+        relayInFlight = false;
+      }
+    });
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -224,6 +255,10 @@ const relayPageHTML = `<!DOCTYPE html>
       if (!url) return;
 
       btn.disabled = true;
+      cancelBtn.style.display = 'inline-block';
+      cancelBtn.disabled = false;
+      relayInFlight = true;
+      relayAbort = new AbortController();
       status.className = 'relaying';
       status.innerHTML = '⏳ Relaying OAuth URL through bridge...';
 
@@ -231,8 +266,10 @@ const relayPageHTML = `<!DOCTYPE html>
         const resp = await fetch('/relay', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Tantu-Relay-Ticket': '{{RELAY_TOKEN}}' },
-          body: JSON.stringify({ url: url })
+          body: JSON.stringify({ url: url }),
+          signal: relayAbort.signal
         });
+        relayInFlight = false;
         const data = await resp.json();
         if (resp.ok && data.status === 'success') {
           status.className = 'success';
@@ -243,10 +280,13 @@ const relayPageHTML = `<!DOCTYPE html>
           status.innerHTML = '❌ <strong>Relay failed:</strong> ' + (data.message || 'Unknown error');
         }
       } catch (err) {
+        relayInFlight = false;
+        if (err.name === 'AbortError') return;
         status.className = 'error';
         status.innerHTML = '❌ <strong>Connection error:</strong> ' + err.message;
       } finally {
         btn.disabled = false;
+        cancelBtn.style.display = 'none';
       }
     });
   </script>
@@ -416,6 +456,29 @@ func runRelay(args []string) {
 		_ = json.NewEncoder(w).Encode(resp)
 	}
 
+	// The URL of the relay currently in flight, so /relay/cancel can name the
+	// flow. Guarded because the cancel endpoint is a separate request on its own
+	// goroutine. Holding the raw URL here is no worse than the request that is
+	// already using it; the flow identity derived from it is what goes on the
+	// wire, and the value is cleared when the flow ends.
+	var lastRelayURLMu sync.Mutex
+	var lastRelayURL string
+	setLastRelayURL := func(u string) {
+		lastRelayURLMu.Lock()
+		lastRelayURL = u
+		lastRelayURLMu.Unlock()
+	}
+	clearLastRelayURL := func() {
+		lastRelayURLMu.Lock()
+		lastRelayURL = ""
+		lastRelayURLMu.Unlock()
+	}
+	readLastRelayURL := func() string {
+		lastRelayURLMu.Lock()
+		defer lastRelayURLMu.Unlock()
+		return lastRelayURL
+	}
+
 	mux.HandleFunc("/api/local/session", handleLocalSessionExchange(pageSession))
 	mux.HandleFunc("/api/local/bootstrap", func(w http.ResponseWriter, r *http.Request) {
 		if !pageSession.Authorize(r) {
@@ -446,6 +509,79 @@ func runRelay(args []string) {
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(renderRelayPage(relayTickets.Issue(), relayTickets.Issue())))
+	})
+
+	// /relay/cancel releases the sign-in this relay opened.
+	//
+	// The Cancel button in the served page used to be a window close, which
+	// cancelled nothing: the peer kept its sign-in and its bound loopback
+	// callback port until the timeout, and because that port is normally the
+	// application's fixed redirect port, the next attempt was refused. This
+	// endpoint is what makes the button mean what it says.
+	mux.HandleFunc("/relay/cancel", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, relayResponse{
+				Status:  "error",
+				Message: "method not allowed, use POST",
+			})
+			return
+		}
+		// Same single-use capability as /relay. A cancel is a privileged
+		// operation, so it must not be reachable by a bare POST from any local
+		// process.
+		if !relayTickets.Consume(r.Header.Get("X-Tantu-Relay-Ticket")) {
+			writeJSON(w, http.StatusForbidden, relayResponse{
+				Status:  "error",
+				Message: "invalid or missing local relay token",
+			})
+			return
+		}
+
+		flowID := bridge.DeriveOAuthFlowID(readLastRelayURL())
+		if flowID == "" {
+			// No relay in progress, or the URL is gone. Not a failure: the flow
+			// may have already finished.
+			writeJSON(w, http.StatusOK, relayResponse{
+				Status:  "success",
+				Message: "No sign-in is in progress. It may have already finished or timed out.",
+			})
+			return
+		}
+		conn, dialErr := transport.DialPinned(tr, dialTarget, expectedFingerprint)
+		if dialErr != nil {
+			writeJSON(w, http.StatusBadGateway, relayResponse{
+				Status:  "error",
+				Message: "Could not reach the other machine to release its sign-in. It will end on its own timeout.",
+			})
+			return
+		}
+		defer conn.Close()
+		released, cancelErr := bridge.CancelRemoteSession(r.Context(), conn, "", flowID, "cancelled from the relay page")
+		if cancelErr != nil {
+			writeJSON(w, http.StatusBadGateway, relayResponse{
+				Status:  "error",
+				Message: "The cancel could not be delivered. The sign-in will end on its own timeout.",
+			})
+			return
+		}
+		if !released {
+			writeJSON(w, http.StatusOK, relayResponse{
+				Status:  "success",
+				Message: "No matching sign-in was open on the other machine. Nothing is being held.",
+			})
+			return
+		}
+		if *verbose {
+			fmt.Println("🚪 [relay] Released the sign-in on the peer at the user's request")
+		}
+		writeJSON(w, http.StatusOK, relayResponse{
+			Status:  "success",
+			Message: "Sign-in cancelled. The other machine released it; you can start again.",
+		})
 	})
 
 	mux.HandleFunc("/relay", func(w http.ResponseWriter, r *http.Request) {
@@ -534,6 +670,11 @@ func runRelay(args []string) {
 			flowKey = hex.EncodeToString(digest[:])
 		}
 		relayKey := dialTarget + "\x00" + flowKey
+		// Published so /relay/cancel can identify the flow. The URL is already
+		// in memory for the duration of the request; this keeps a pointer, not
+		// a copy, and it is cleared when the flow ends.
+		setLastRelayURL(oauthURL)
+		defer clearLastRelayURL()
 		relayErr := relayGroup.Do(r.Context(), relayKey, func() error {
 			conn, err := transport.DialPinned(tr, dialTarget, expectedFingerprint)
 			if err != nil {

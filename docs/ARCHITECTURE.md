@@ -108,6 +108,7 @@ All communications over a `transport.Conn` utilize length-prefixed JSON envelope
 | **OAuth** | `bridge_ack` | Server â†’ Client | Confirms browser launch and active callback listener |
 | **OAuth** | `callback_relay`| Server â†’ Client | Relays intercepted HTTP request (headers, query, auth code) |
 | **OAuth** | `bridge_complete`| Client â†’ Server | Confirms token exchange complete; authorizes browser success render |
+| **OAuth** | `bridge_cancel` | Client â†’ Server | Abandons a sign-in: releases the server's callback listener and de-registers the session. Carries a `request_id` or `flow_id`; the reply uses the same type so a cancelling client always gets an answer it can read. Sent on its own connection, because the session's own connection is busy waiting for the callback |
 | **QuickDrop** | `drop_send` | Sender â†’ Receiver| Announces drop session (kind, name, size, MIME type, chunk size) |
 | **QuickDrop** | `drop_ack` | Receiver â†’ Sender| Approves or rejects drop (e.g. quota, file permission) |
 | **QuickDrop** | `drop_data` | Sender â†’ Receiver| Binary payload chunk (1MB default chunking, base64-encoded in JSON) |

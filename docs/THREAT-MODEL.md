@@ -100,10 +100,10 @@
 ### T8: Stale Listener / Zombie Socket
 | Field | Detail |
 |-------|--------|
-| **Threat** | Ephemeral callback listener remains open after auth completion |
-| **Impact** | Low — bound to loopback only |
-| **Mitigation** | Automatic teardown immediately following `bridge_complete` or 5-minute timeout watchdog |
-| **Residual Risk** | Negligible |
+| **Threat** | Ephemeral callback listener remains open after auth completion, or after a user abandons a sign-in without completing it |
+| **Impact** | **Medium, not Low.** Bound to loopback, so it is not remotely reachable — but a held port is not idle. An application's `redirect_uri` port is normally fixed, so an abandoned listener does not merely waste a socket: it **blocks the user's next attempt** with "port is in use", for the full session timeout. The only previous recovery was restarting the process, which on a headless node can mean losing the login session too |
+| **Mitigation** | Four paths, in order of immediacy:<br>1. Automatic teardown immediately following `bridge_complete`.<br>2. A 5-minute timeout watchdog, distinguished from a user cancellation by cause so an abandoned sign-in is never reported as a failed login.<br>3. **`bridge_cancel`**: the peer sends it when the user cancels, and the session is released at once — listener closed, session de-registered, wire wait ended. It travels on its own connection, because the session's connection is busy waiting for the callback.<br>4. **Port supersession**: a new sign-in for a port an older in-flight session still holds releases the stale one first, so a retry always proceeds instead of failing to bind.<br>Cancellation is gated exactly like the operation it undoes: `IsPeerTrusted` rejects an unpaired peer before the handler runs, and the registry additionally refuses a peer that does not own the session. Release waits for the listener to be **closed**, not merely for cancellation to be requested, so a retry cannot race the teardown |
+| **Residual Risk** | **Low.** The authorization page already open in the browser is not closed — no supported signal distinguishes a tab the user still wants from one they abandoned, so the user closes it themselves (KNOWN-LIMITATIONS 3.10). This is a cosmetic leftover, not a held port |
 
 ### T9: Cross-Peer Impersonation in Multi-Peer Mesh
 | Field | Detail |
@@ -155,7 +155,7 @@
 | **SR2** | Mutual authentication required: client and server certificates pinned in `peers.json` for operational flows; in-band pairing isolated to `pair_hello` with mandatory SAS verification | T2, T3 |
 | **SR3** | Ephemeral callback payloads must never be stored, logged, or inspected | T1, T2 |
 | **SR4** | Web Dashboard, REST IPC, and OAuth callback listeners must bind strictly to `127.0.0.1` | T4, T12 |
-| **SR5** | Callback listeners must be torn down immediately after `bridge_complete` or timeout | T8 |
+| **SR5** | Callback listeners must be torn down immediately after `bridge_complete`, after a user cancellation, or on timeout. A new sign-in that needs a callback port an older in-flight session still holds must release the stale session rather than fail to bind | T8 |
 | **SR6** | URLs to be opened in browser must be validated (HTTP/HTTPS only) and displayed to user | T5 |
 | **SR7** | Maximum session duration enforced (5 minutes default) | T6, T8 |
 | **SR8** | Envelope payload size capped at 64KB for control messages; files chunked at 1MB | T6 |
@@ -175,6 +175,8 @@
 | **SR22**| Application `state` must be compared in constant time on both the A-side and the B-side, and a missing `state` must fail when the authorization request carried one | T1, T2 |
 | **SR23**| Discovery beacons must carry no SAS and no certificate fingerprint, and a beacon that still carries either must be rejected outright | T7 |
 | **SR24**| A verification code shown to a user must be derived from a session transcript and must not be persisted or broadcast | T7 |
+| **SR25**| Releasing an in-flight sign-in must be authorized exactly like starting one: a `bridge_cancel` is refused from an unpaired peer, and refused from a paired peer that does not own the session. A cancel must not become a peer-wide teardown, and an unconfirmed cancel must be reported as unconfirmed rather than as a failure | T8 |
+| **SR26**| An in-flight sign-in must be listable and releasable from a local surface. A sign-in nobody can see is a sign-in nobody can abandon except by restarting the process | T8 |
 
 ---
 

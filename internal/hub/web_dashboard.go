@@ -1137,8 +1137,13 @@ const dashboardHTML = `<!DOCTYPE html>
         <form data-action="relay-oauth" class="form-group">
           <input type="text" id="oauthUrlInput" aria-label="OAuth authorization URL" placeholder="Paste OAuth URL (https://accounts.google.com/o/oauth2/...)" required>
           <button type="submit" class="btn-primary" id="btnRelay">Relay to Peer</button>
+          <!-- Shown only while a sign-in is open. Without it the only way to
+               abandon a relay was to reload, and the abandoned sign-in kept
+               holding its callback port until the timeout. -->
+          <button type="button" class="btn-sm" id="btnCancelRelay" data-action="cancel-relay" style="display: none;">Cancel</button>
         </form>
         <div class="status-banner" id="relayStatus" role="status" aria-live="polite"></div>
+        <div id="activeRelaysList" aria-live="polite"></div>
       </div>
 
       <div class="card">
@@ -1391,6 +1396,12 @@ const dashboardHTML = `<!DOCTYPE html>
           break;
         case 'cancel-preview':
           cancelPendingSend();
+          break;
+        case 'cancel-relay':
+          cancelRelay();
+          break;
+        case 'cancel-active-relay':
+          cancelActiveRelay(this.getAttribute('data-operation-id') || '');
           break;
         case 'load-transfers':
           loadTransfers();
@@ -2636,6 +2647,63 @@ const dashboardHTML = `<!DOCTYPE html>
         const items = await res.json();
         renderAuthorizations(items);
       } catch (_) {}
+      loadActiveRelays();
+    }
+
+    // A sign-in in flight is invisible in the history list, because its outcome
+    // is not known until it ends. Listing it separately is what lets a user see
+    // "there is a login open" and stop it, rather than concluding the Hub is
+    // stuck and restarting it.
+    async function loadActiveRelays() {
+      const list = document.getElementById('activeRelaysList');
+      if (!list) return;
+      try {
+        const res = await apiFetch('/api/relay/active');
+        if (!res.ok) return;
+        const data = await res.json();
+        const active = Array.isArray(data.active) ? data.active : [];
+        if (active.length === 0) {
+          list.innerHTML = '';
+          return;
+        }
+        const rows = active.map(function(relay) {
+          const id = relay.operation_id || '';
+          const peer = relay.peer || 'peer';
+          const seconds = typeof relay.age_seconds === 'number' ? relay.age_seconds : 0;
+          const state = relay.state === 'starting' ? 'starting up' : 'waiting for the sign-in';
+          return '<div class="received-item">' +
+            '<div class="received-item-header"><span><strong>Sign-in in progress</strong> via ' + escapeHTML(peer) + '</span>' +
+            '<span>' + seconds + 's</span></div>' +
+            '<div class="record-state"><span class="status-chip pending">' + escapeHTML(state) + '</span></div>' +
+            '<div class="record-next">Holding a callback port on the other machine. Cancel to free it so you can retry.</div>' +
+            '<div style="margin-top:0.5rem;"><button class="btn-sm" data-action="cancel-active-relay" data-operation-id="' + escapeHTML(id) + '">Cancel sign-in</button></div>' +
+          '</div>';
+        }).join('');
+        list.innerHTML = '<div class="stack" style="margin-top:0.75rem;">' + rows + '</div>';
+      } catch (_) {}
+    }
+
+    async function cancelActiveRelay(operationId) {
+      const status = document.getElementById('relayStatus');
+      try {
+        const res = await apiFetch('/api/relay/active', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ operation_id: operationId })
+        });
+        const data = await res.json();
+        const msg = (data && data.message) || 'Sign-in cancelled.';
+        if (status) {
+          status.className = 'status-banner';
+          status.textContent = msg;
+        }
+        addLog('OAUTH', msg);
+      } catch (err) {
+        addLog('ERROR', 'Cancel failed: ' + err.message);
+      } finally {
+        loadActiveRelays();
+        loadAuthorizations();
+      }
     }
 
     async function clearAuthorizations() {
@@ -2901,6 +2969,13 @@ const dashboardHTML = `<!DOCTYPE html>
       }
     }
 
+    // Shared by the manual forwarder and the in-flight list. currentOperationID is
+    // filled in from the relay response; before that a cancel goes out without one
+    // and the Hub resolves the open relay itself.
+    let relayInFlight = false;
+    let currentOperationID = '';
+    let relayAbort = null;
+
     async function relayOAuth(e) {
       e.preventDefault();
       const input = document.getElementById('oauthUrlInput');
@@ -2919,12 +2994,24 @@ const dashboardHTML = `<!DOCTYPE html>
         payload.peer = selectedPeerTarget;
       }
 
+      // Show a real Cancel while the relay is open. A sign-in left in flight
+      // holds a loopback callback port on the other machine until its timeout,
+      // and because that port is normally the application's fixed redirect port,
+      // the abandoned session blocks the next attempt. The only previous escape
+      // was restarting the Hub.
+      const cancelBtn = document.getElementById('btnCancelRelay');
+      if (cancelBtn) cancelBtn.style.display = 'inline-block';
+      relayInFlight = true;
+      relayAbort = new AbortController();
+
       try {
         const res = await apiFetch('/api/relay/open', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
+          body: JSON.stringify(payload),
+          signal: relayAbort.signal
         });
+        relayInFlight = false;
         const data = await res.json();
         if (res.ok && data.status === 'success') {
           status.className = 'status-banner success';
@@ -2942,12 +3029,49 @@ const dashboardHTML = `<!DOCTYPE html>
         }
         loadAuthorizations();
       } catch (err) {
+        relayInFlight = false;
+        if (err.name === 'AbortError') {
+          // The user cancelled, and the cancel request reports the real outcome.
+          // Saying "connection error" here would contradict the banner.
+          return;
+        }
         status.className = 'status-banner error';
         status.textContent = '❌ Connection error: ' + err.message;
         addLog('ERROR', 'Relay error: ' + err.message);
         loadAuthorizations();
       } finally {
+        if (cancelBtn) cancelBtn.style.display = 'none';
         btn.disabled = false;
+      }
+    }
+
+    async function cancelRelay() {
+      const btn = document.getElementById('btnCancelRelay');
+      const status = document.getElementById('relayStatus');
+      btn.disabled = true;
+      // Stop waiting on the relay response first: the POST blocks for the whole
+      // sign-in, so leaving it pending would strand this handler.
+      if (relayAbort) relayAbort.abort();
+      try {
+        const res = await apiFetch('/api/relay/active', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ operation_id: currentOperationID })
+        });
+        const data = await res.json();
+        const msg = (data && data.message) || 'Sign-in cancelled. You can start again.';
+        status.className = 'status-banner';
+        status.textContent = msg;
+        addLog('OAUTH', msg);
+        loadAuthorizations();
+      } catch (err) {
+        status.className = 'status-banner error';
+        status.textContent = 'Could not reach the Hub to cancel. The sign-in will end on its own timeout; retry, or cancel from the other machine.';
+        addLog('ERROR', 'Cancel failed: ' + err.message);
+      } finally {
+        btn.disabled = false;
+        btn.style.display = 'none';
+        document.getElementById('btnRelay').disabled = false;
       }
     }
 
@@ -3238,11 +3362,16 @@ const dashboardHTML = `<!DOCTYPE html>
       }
 
       setInterval(updateStatus, 3000);
+      // Poll the in-flight list alongside the status: a sign-in the user cannot
+      // see is a sign-in they cannot cancel, and a cancel they cannot reach is
+      // the same as no cancel at all.
+      setInterval(loadActiveRelays, 5000);
       updateStatus();
       loadConfig();
       loadRecentDrops();
       loadTransfers();
       loadAuthorizations();
+      loadActiveRelays();
       loadInitialLogs();
     });
   </script>
@@ -3703,17 +3832,58 @@ function closeSelf() {
     }
   }, 250);
 }
-document.getElementById('btnCancel').addEventListener('click', closeSelf);
+// A cancel that is only a window close is a lie: the relay keeps running on the
+// Hub, the peer keeps its sign-in open and its callback port bound, and the next
+// attempt can fail with "port in use" - so the user has to restart the Hub.
+// Once a relay has been started from this window, Cancel means cancel.
+let relayInFlight = false;
+let relayStarted = false;
+// The attempt id is only known once the Hub replies, so a Cancel that lands
+// before then is sent with an empty id and targets the oldest open relay from
+// this window's own request. The Hub resolves it server-side.
+let currentOperationID = '';
+let relayAbort = null;
+document.getElementById('btnCancel').addEventListener('click', async function() {
+  if (!relayStarted) {
+    closeSelf();
+    return;
+  }
+  const btn = document.getElementById('btnCancel');
+  const resultLine = document.getElementById('resultLine');
+  btn.disabled = true;
+  resultLine.textContent = 'Cancelling…';
+  try {
+    const res = await fetch('/api/relay/active', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ operation_id: currentOperationID }) });
+    let data = {};
+    try { data = await res.json(); } catch (_) {}
+    const msg = (data && data.message) || 'Sign-in cancelled. You can start again.';
+    // Say plainly what was and was not released: a cancel that only ended this
+    // window's wait leaves the peer holding its port until it times out, and the
+    // user needs to know that before retrying.
+    resultLine.textContent = msg + (relayInFlight ? ' This window can now be closed.' : '');
+    if (!relayInFlight) { closeSelf(); }
+  } catch (_) {
+    resultLine.textContent = 'Could not reach the Hub to cancel. The sign-in will end on its own timeout; retry, or cancel from the dashboard.';
+    btn.disabled = false;
+  }
+});
 document.getElementById('okClose').addEventListener('click', closeSelf);
 document.getElementById('btnRelayNow').addEventListener('click', async function() {
   const btnRelay = document.getElementById('btnRelayNow');
   const resultLine = document.getElementById('resultLine');
   btnRelay.disabled = true;
+  relayStarted = true;
   resultLine.textContent = 'Relaying…';
+  // Abort the relay request itself on Cancel, so this window stops waiting
+  // immediately. The server-side cancel is what releases the peer.
+  relayAbort = new AbortController();
+  relayInFlight = true;
   try {
-    const res = await fetch('/api/relay/open', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ url: relayURL }) });
+    const res = await fetch('/api/relay/open', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ url: relayURL }), signal: relayAbort.signal });
+    relayInFlight = false;
     let data = {};
     try { data = await res.json(); } catch (_) {}
+    currentOperationID = (data && data.operation_id) || currentOperationID;
     if (res.ok && data.status === 'success') {
       // The success text lives outside the hidden confirm view, and the view
       // carries its own live region: resultLine is inside confirmView, so a
@@ -4096,6 +4266,61 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			OperationID: attemptID,
 			Destination: dest,
 		})
+	})
+
+	// 5a. GET/POST /api/relay/active — list in-flight sign-ins, and cancel one.
+	//
+	// This is the endpoint that makes an abandoned sign-in recoverable. Without
+	// it, walking away from a relay left the peer holding a bound loopback
+	// callback port (normally the application's fixed redirect port) for the
+	// full timeout, which blocked the retry - so restarting the Hub was the only
+	// recovery. GET exists so the dashboard can show what is open rather than
+	// leaving the user to guess.
+	mux.HandleFunc("/api/relay/active", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Tantu-IPC-Token")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			active := h.ActiveRelays()
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status": "success",
+				"active": active,
+				"count":  len(active),
+			})
+		case http.MethodPost:
+			var req struct {
+				OperationID string `json:"operation_id"`
+			}
+			releaseBody := boundControlBody(w, r, 8*1024)
+			defer releaseBody()
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeJSON(w, http.StatusBadRequest, relayResponse{Status: "error", Message: "invalid json body"})
+				return
+			}
+			result, err := h.CancelRelay(r.Context(), req.OperationID)
+			if err != nil {
+				writeJSON(w, http.StatusBadGateway, relayResponse{
+					Status:      "error",
+					Message:     publicRelayError(err),
+					OperationID: req.OperationID,
+				})
+				return
+			}
+			result.OperationID = req.OperationID
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status":  "success",
+				"message": result.Message,
+				"result":  result,
+			})
+		default:
+			writeJSON(w, http.StatusMethodNotAllowed, relayResponse{
+				Status: "error", Message: "method not allowed, use GET or POST",
+			})
+		}
 	})
 
 	// 5b. GET/DELETE /api/relay/recent — Sender-side authorization truth

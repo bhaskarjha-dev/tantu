@@ -86,6 +86,33 @@ framework, changing the same-release supported topology.
    no payload to resend) but now teaches duplicate-safe key-reuse with
    `--idempotency-key` instead of only refusing.
 
+### 3a. A new message type, and the one place it is not merely additive
+   **Added 2026-09-28:** `bridge_cancel` is a new message type, not a new
+   field, and it is the first case where "old peers ignore it" is not
+   sufficient. The sign-in path is untouched, so a pre-cancel peer still
+   relays logins; what it cannot do is *stop* one. Because the type is
+   unknown to it, it fails closed and keeps its callback listener until its
+   own timeout, and the cancelling side cannot distinguish that from a slow
+   peer.
+
+   Two decisions follow, and both are deliberate:
+
+   - The reply reuses `bridge_cancel` rather than introducing an ack type.
+     A cancelling client always gets a frame it can parse; a peer that does
+     not know the type times out on a small bound instead of mis-reading an
+     unrelated payload.
+   - An unconfirmed cancel is reported as **unconfirmed**, not as a failure.
+     The sign-in may well have completed or timed out between the user
+     deciding and the message arriving, and a hard error would tell the user
+     their cancel failed when the thing they wanted stopped has already
+     stopped. The UI names the residual honestly: the other machine may
+     release on its own.
+
+   This is the same-release-only topology (5.3) showing through an additive
+   change. It is documented in `KNOWN-LIMITATIONS.md` 3.11 rather than papered
+   over, because the alternative - silently reporting success - is the failure
+   this whole mechanism was added to remove.
+
 ## 7. Risks
 
 Replay within the trust boundary (paired peers only; tombstone re-ack

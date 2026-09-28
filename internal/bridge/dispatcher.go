@@ -96,8 +96,12 @@ type DispatcherConfig struct {
 	OnASideDone       func(err error)
 	OnPairing         func(conn transport.Conn, firstEnv *protocol.Envelope)
 	IsPeerTrusted     func(fingerprint string) bool // Optional authorization callback to verify peer identity
-	Logger            *log.Logger
-	HandshakeTimeout  time.Duration
+	// Registry tracks in-flight OAuth sign-ins so they can be listed and, on
+	// the owning peer's request, released. NewDispatcher creates one when this
+	// is nil, so the field only needs setting to share one across dispatchers.
+	Registry         *SessionRegistry
+	Logger           *log.Logger
+	HandshakeTimeout time.Duration
 }
 
 // Dispatcher multiplexes incoming connections on a single transport.Listener,
@@ -119,6 +123,14 @@ func NewDispatcher(listener transport.Listener, cfg DispatcherConfig) *Dispatche
 	}
 	if cfg.ASideConfig.Sessions == nil {
 		cfg.ASideConfig.Sessions = NewOAuthSessionManager()
+	}
+	// One registry per dispatcher, shared with the A-side handler it runs, so a
+	// sign-in registered by the handler is the same entry a cancel can find.
+	if cfg.Registry == nil {
+		cfg.Registry = NewSessionRegistry()
+	}
+	if cfg.ASideConfig.Registry == nil {
+		cfg.ASideConfig.Registry = cfg.Registry
 	}
 	return &Dispatcher{
 		listener: listener,
@@ -177,7 +189,7 @@ func (d *Dispatcher) Serve(ctx context.Context) error {
 		}
 
 		if d.activeSessions.Load() >= 100 {
-			d.logf("⚠️ Connection rejected from %s: max active sessions (100) reached", conn.RemoteAddr())
+			d.logf("ÔÜá´©Å Connection rejected from %s: max active sessions (100) reached", conn.RemoteAddr())
 			_ = conn.Close()
 			continue
 		}
@@ -237,7 +249,7 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn transport.Conn) {
 		env, err := receiveEnvelope(ctx, conn)
 		if err != nil {
 			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
-				d.logf("⚠️ Error receiving initial envelope from %s: %v", conn.RemoteAddr(), err)
+				d.logf("ÔÜá´©Å Error receiving initial envelope from %s: %v", conn.RemoteAddr(), err)
 			}
 			return
 		}
@@ -264,7 +276,7 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn transport.Conn) {
 	switch {
 	case firstEnv.Type == protocol.TypeBridgeRequest:
 		if d.cfg.IsPeerTrusted != nil && !d.cfg.IsPeerTrusted(peerFP) {
-			d.logf("⚠️ Unauthorized OAuth bridge attempt from untrusted peer %s (fp: %s)", conn.RemoteAddr(), peerFP)
+			d.logf("ÔÜá´©Å Unauthorized OAuth bridge attempt from untrusted peer %s (fp: %s)", conn.RemoteAddr(), peerFP)
 			var req protocol.BridgeRequest
 			_ = firstEnv.DecodePayload(&req)
 			_ = conn.Send(protocol.TypeBridgeAck, protocol.BridgeAck{
@@ -273,18 +285,18 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn transport.Conn) {
 			})
 			return
 		}
-		d.logf("[DEBUG] 🔀 Multiplexer: routing connection from %s to OAuth ASide", conn.RemoteAddr())
+		d.logf("[DEBUG] ðŸ”€ Multiplexer: routing connection from %s to OAuth ASide", conn.RemoteAddr())
 		err := HandleASide(ctx, prefetched, d.cfg.ASideConfig)
 		if d.cfg.OnASideDone != nil {
 			d.cfg.OnASideDone(err)
 		}
 		if err != nil && !errors.Is(err, context.Canceled) {
-			d.logf("❌ OAuth ASide error from %s: %v", conn.RemoteAddr(), err)
+			d.logf("ÔØî OAuth ASide error from %s: %v", conn.RemoteAddr(), err)
 		}
 
 	case firstEnv.Type == drop.TypeDropSend:
 		if d.cfg.IsPeerTrusted != nil && !d.cfg.IsPeerTrusted(peerFP) {
-			d.logf("⚠️ Unauthorized QuickDrop transfer attempt from untrusted peer %s (fp: %s)", conn.RemoteAddr(), peerFP)
+			d.logf("ÔÜá´©Å Unauthorized QuickDrop transfer attempt from untrusted peer %s (fp: %s)", conn.RemoteAddr(), peerFP)
 			var meta drop.DropSend
 			_ = firstEnv.DecodePayload(&meta)
 			_ = conn.Send(drop.TypeDropAck, drop.DropAck{
@@ -294,7 +306,7 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn transport.Conn) {
 			})
 			return
 		}
-		d.logf("[DEBUG] 🔀 Multiplexer: routing connection from %s to QuickDrop receiver", conn.RemoteAddr())
+		d.logf("[DEBUG] ðŸ”€ Multiplexer: routing connection from %s to QuickDrop receiver", conn.RemoteAddr())
 		var meta drop.DropSend
 		_ = firstEnv.DecodePayload(&meta)
 		attemptID := d.nextDropAttemptID()
@@ -305,7 +317,7 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn transport.Conn) {
 		res, err := drop.ReceiveDrop(ctx, prefetched, d.cfg.DropWriter, dropConfig)
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
-				d.logf("❌ QuickDrop receive error from %s: %v", conn.RemoteAddr(), err)
+				d.logf("ÔØî QuickDrop receive error from %s: %v", conn.RemoteAddr(), err)
 			}
 		} else if d.cfg.OnDropReceived != nil {
 			d.cfg.OnDropReceived(res)
@@ -316,15 +328,35 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn transport.Conn) {
 			d.cfg.OnDropDone(meta.DropID, res, err)
 		}
 
+	case firstEnv.Type == protocol.TypeBridgeCancel:
+		// A cancel arrives on its own connection because the session's connection
+		// is busy waiting for the callback. It acts on another session, so it is
+		// gated exactly like the operation that created it: only a paired peer may
+		// cancel, and the registry additionally refuses a peer that does not own
+		// the session. Without the first check, any host that can reach the wire
+		// port could abort other machines' sign-ins.
+		if d.cfg.IsPeerTrusted != nil && !d.cfg.IsPeerTrusted(peerFP) {
+			d.logf("⚠️ Unauthorized OAuth cancel attempt from untrusted peer %s (fp: %s)", conn.RemoteAddr(), peerFP)
+			var cancelMsg protocol.BridgeCancel
+			_ = firstEnv.DecodePayload(&cancelMsg)
+			_ = conn.Send(protocol.TypeBridgeCancel, protocol.BridgeCancelAck{
+				RequestID: cancelMsg.RequestID,
+				FlowID:    cancelMsg.FlowID,
+				Error:     "unauthorized: peer certificate not paired or trusted",
+			})
+			return
+		}
+		d.handleBridgeCancel(ctx, conn, prefetched, peerFP, firstEnv)
+
 	case strings.HasPrefix(firstEnv.Type, "pair_"):
-		d.logf("[DEBUG] 🔀 Multiplexer: routing connection from %s to In-Band Pairing", conn.RemoteAddr())
+		d.logf("[DEBUG] ðŸ”€ Multiplexer: routing connection from %s to In-Band Pairing", conn.RemoteAddr())
 		if d.cfg.OnPairing != nil {
 			d.cfg.OnPairing(conn, firstEnv)
 		} else {
-			d.logf("⚠️ Multiplexer: no in-band pairing handler configured for %s", conn.RemoteAddr())
+			d.logf("ÔÜá´©Å Multiplexer: no in-band pairing handler configured for %s", conn.RemoteAddr())
 		}
 
 	default:
-		d.logf("⚠️ Multiplexer: unknown initial message type %q from %s", firstEnv.Type, conn.RemoteAddr())
+		d.logf("ÔÜá´©Å Multiplexer: unknown initial message type %q from %s", firstEnv.Type, conn.RemoteAddr())
 	}
 }

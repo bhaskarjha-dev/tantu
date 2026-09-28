@@ -152,6 +152,11 @@ func runServe(args []string) {
 	const maxServeSessions = 100
 	sessionSlots := make(chan struct{}, maxServeSessions)
 	sessions := bridge.NewOAuthSessionManager()
+	// Tracked so a sign-in this server is holding open can be listed and
+	// released. Without it an abandoned sign-in keeps its loopback callback port
+	// bound until the timeout, and because that port is normally the
+	// application's fixed redirect port, the retry that follows is refused.
+	signIns := bridge.NewSessionRegistry()
 
 	for {
 		conn, err := listener.Accept()
@@ -207,10 +212,21 @@ func runServe(args []string) {
 				OpenBrowser: openBrowser,
 				Logger:      sessionLogger,
 				Sessions:    sessions,
+				Registry:    signIns,
 			}
-			if err := bridge.HandleASide(ctx, conn, cfg); err != nil && !errors.Is(err, context.Canceled) {
-				sessionLogger.Printf("❌ Session error: %s", bridge.RedactError(err))
-				return
+			// An abandoned sign-in is not a failure. Reporting it through the
+			// error path would print "session error" for something the operator
+			// chose, and would make a deliberate cancel indistinguishable from a
+			// real one in the log.
+			if err := bridge.HandleASide(ctx, conn, cfg); err != nil {
+				if errors.Is(err, bridge.ErrSessionCancelled) {
+					sessionLogger.Printf("🚪 Sign-in released at the caller's request. The callback port is free again.")
+					return
+				}
+				if !errors.Is(err, context.Canceled) {
+					sessionLogger.Printf("❌ Session error: %s", bridge.RedactError(err))
+					return
+				}
 			}
 			sessionLogger.Printf("✅ Session complete")
 		}()

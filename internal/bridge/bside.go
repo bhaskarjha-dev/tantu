@@ -300,8 +300,15 @@ func (b *BSide) Run(parent context.Context, oauthURL string) error {
 	if err := redirectCallbackHostIsLoopback(oauthURL); err != nil {
 		return fmt.Errorf("validate OAuth redirect: %w", err)
 	}
-	ctx, cancel := context.WithTimeout(parent, b.cfg.Timeout)
-	defer cancel()
+	// A cancellable context, not a bare timeout, so the caller's own surface
+	// (a dashboard Cancel button, the relay popup) can abort this wait. Aborting
+	// alone is not enough: the A-side is holding a bound callback port and a
+	// browser tab, so the caller is expected to follow up with CancelRemoteSession
+	// to tell the peer to release them.
+	ctx, cancel := context.WithCancelCause(parent)
+	timer := time.AfterFunc(b.cfg.Timeout, func() { cancel(context.DeadlineExceeded) })
+	defer timer.Stop()
+	defer cancel(nil)
 	stopContextClose := closeConnOnContext(ctx, b.conn)
 	defer stopContextClose()
 
