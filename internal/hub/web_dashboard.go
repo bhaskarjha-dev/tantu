@@ -1443,7 +1443,7 @@ const dashboardHTML = `<!DOCTYPE html>
           decidePairing(target.getAttribute('data-value') || '', target.getAttribute('data-accept') === 'true');
           break;
         case 'prefill-pair':
-          prefillPairModal(target.getAttribute('data-address') || '', target.getAttribute('data-sas') || '');
+          prefillPairModal(target.getAttribute('data-address') || '', '');
           break;
         case 'set-default-peer':
           setDefaultPeer(target.getAttribute('data-value') || '');
@@ -1994,25 +1994,31 @@ const dashboardHTML = `<!DOCTYPE html>
         return '<div style="display: flex; justify-content: space-between; align-items: center; background: var(--surface); padding: 0.6rem 0.85rem; border-radius: 6px; border: 1px solid var(--border);">' +
           '<div>' +
             '<div style="font-weight: 600; font-size: 0.9rem; color: var(--text);">💻 ' + escapeHTML(d.name) + '</div>' +
-            '<div style="font-size: 0.75rem; color: var(--text-muted); font-family: monospace;">' + escapeHTML(d.address) + ' · unverified SAS: <span style="color: var(--accent); font-weight: 600;">' + escapeHTML(d.sas) + '</span></div>' +
+            // Discovery carries no identity: the beacon is an unauthenticated
+            // hint, so there is nothing to show and nothing that could be
+            // mistaken for a verified code. The real code appears in the
+            // approval prompt once the handshake transcript exists.
+            '<div style="font-size: 0.75rem; color: var(--text-muted); font-family: monospace;">' + escapeHTML(d.address) + ' · <span style="opacity: 0.75;">not yet verified — pair to compare a code</span></div>' +
           '</div>' +
-          '<button class="btn btn-primary" style="padding: 0.3rem 0.75rem; font-size: 0.8rem;" data-action="prefill-pair" data-address="' + escapeHTML(d.address) + '" data-sas="' + escapeHTML(d.sas) + '">⚡ Pair</button>' +
+          '<button class="btn btn-primary" style="padding: 0.3rem 0.75rem; font-size: 0.8rem;" data-action="prefill-pair" data-address="' + escapeHTML(d.address) + '">⚡ Pair</button>' +
         '</div>';
       }).join('');
     }
 
-    function prefillPairModal(addr, sas) {
+    function prefillPairModal(addr) {
       openPairModal();
       const input = document.getElementById('pairRemoteAddrInput') || document.getElementById('pairPeerAddress');
       if (input) {
         input.value = addr;
         input.focus();
       }
-      if (sas) {
-        const statusMsg = document.getElementById('pairStatusMsg');
-        if (statusMsg) {
-          statusMsg.innerHTML = '<span style="color:var(--accent);">Peer SAS: <strong>' + escapeHTML(sas) + '</strong></span>';
-        }
+      // No code is shown here on purpose. A verification code is only
+      // meaningful once it covers this session's handshake transcript, and
+      // discovery deliberately advertises no identity to prefill from. The real
+      // code appears in the approval prompt, where it can be compared.
+      const statusMsg = document.getElementById('pairStatusMsg');
+      if (statusMsg) {
+        statusMsg.innerHTML = '<span style="color:var(--text-muted);">Start pairing to get a verification code to compare on both screens.</span>';
       }
     }
 

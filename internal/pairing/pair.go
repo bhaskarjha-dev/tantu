@@ -52,21 +52,26 @@ type PairResult struct {
 }
 
 type pairHello struct {
-	CertPEM    []byte          `json:"cert_pem"`
-	Name       string          `json:"name,omitempty"`
-	ListenPort int             `json:"listen_port,omitempty"`
-	Type       string          `json:"type,omitempty"`
-	Payload    json.RawMessage `json:"payload,omitempty"`
+	CertPEM    []byte `json:"cert_pem"`
+	Name       string `json:"name,omitempty"`
+	ListenPort int    `json:"listen_port,omitempty"`
+	// Nonce is this side's contribution to the pairing transcript, so the SAS
+	// both machines display is specific to this attempt.
+	Nonce   []byte          `json:"nonce,omitempty"`
+	Type    string          `json:"type,omitempty"`
+	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
-func newPairHello(certPEM []byte, name string) pairHello {
+func newPairHello(certPEM []byte, name string, nonce []byte) pairHello {
 	inner, _ := json.Marshal(map[string]any{
 		"cert_pem": certPEM,
 		"name":     name,
+		"nonce":    nonce,
 	})
 	return pairHello{
 		CertPEM: certPEM,
 		Name:    name,
+		Nonce:   nonce,
 		Type:    "pair_hello",
 		Payload: inner,
 	}
@@ -77,6 +82,7 @@ func (p *pairHello) UnmarshalJSON(data []byte) error {
 		CertPEM    []byte          `json:"cert_pem"`
 		Name       string          `json:"name,omitempty"`
 		ListenPort int             `json:"listen_port,omitempty"`
+		Nonce      []byte          `json:"nonce,omitempty"`
 		Type       string          `json:"type,omitempty"`
 		Payload    json.RawMessage `json:"payload,omitempty"`
 	}
@@ -87,6 +93,7 @@ func (p *pairHello) UnmarshalJSON(data []byte) error {
 		p.CertPEM = raw.CertPEM
 		p.Name = raw.Name
 		p.ListenPort = raw.ListenPort
+		p.Nonce = raw.Nonce
 		p.Type = raw.Type
 		p.Payload = raw.Payload
 		return nil
@@ -95,10 +102,15 @@ func (p *pairHello) UnmarshalJSON(data []byte) error {
 		var inner struct {
 			CertPEM []byte `json:"cert_pem"`
 			Name    string `json:"name,omitempty"`
+			Nonce   []byte `json:"nonce,omitempty"`
 		}
 		if err := json.Unmarshal(raw.Payload, &inner); err == nil && len(inner.CertPEM) > 0 {
 			p.CertPEM = inner.CertPEM
 			p.Name = inner.Name
+			// The transcript nonce must survive the envelope-nested form too,
+			// or the two sides would derive different SAS values for the very
+			// same session and the human check could never succeed.
+			p.Nonce = inner.Nonce
 			return nil
 		}
 	}
@@ -205,7 +217,7 @@ func verifyTLSClaim(conn net.Conn, claimedCertPEM []byte) error {
 	return nil
 }
 
-const maxPairMessageSize = 64 * 1024 // 64KB — pairing messages are small JSON
+const maxPairMessageSize = 64 * 1024 // 64KB â€” pairing messages are small JSON
 
 func readJSON(conn net.Conn, dest any) error {
 	var lenBuf [4]byte
@@ -262,7 +274,7 @@ func getOrGenerateIdentity(store *PeerStore) (*Identity, error) {
 
 // PairInitiator listens for an incoming pairing connection on listenAddr.
 // It returns the PairResult after certificate exchange.
-// confirmFn is called with the peer's SAS code and local SAS code — return true to accept, false to reject.
+// confirmFn is called with the peer's SAS code and local SAS code â€” return true to accept, false to reject.
 func PairInitiator(store *PeerStore, listenAddr string, confirmFn func(peerSAS, localSAS string) bool) (*PairResult, error) {
 	if listenAddr == "" {
 		listenAddr = net.JoinHostPort("0.0.0.0", DefaultPairingPort)
@@ -338,8 +350,12 @@ func PairInitiatorWithListener(store *PeerStore, l net.Listener, confirmFn func(
 		hostname = "initiator"
 	}
 
-	// 1. Send PairHello
-	hello := newPairHello(id.CertPEM, hostname)
+	// 1. Send PairHello, contributing this side's transcript nonce.
+	localNonce, err := newPairNonce()
+	if err != nil {
+		return nil, err
+	}
+	hello := newPairHello(id.CertPEM, hostname, localNonce)
 	hello.ListenPort = localListenPort(l.Addr())
 	if err := sendJSON(conn, hello); err != nil {
 		return nil, fmt.Errorf("send pair hello: %w", err)
@@ -362,8 +378,12 @@ func PairInitiatorWithListener(store *PeerStore, l net.Listener, confirmFn func(
 		return nil, err
 	}
 
-	localSAS := SASCode(id.Fingerprint)
-	peerSAS := SASCode(peerFP)
+	// The displayed SAS covers the whole pairing transcript: both certificate
+	// fingerprints and both nonces. It is therefore specific to this attempt, and
+	// an attacker who has observed a previous SAS for this peer learns nothing
+	// about this one.
+	sas := TranscriptSAS(id.Fingerprint, peerFP, localNonce, peerHello.Nonce)
+	localSAS, peerSAS := sas, sas // Both machines display the same code.
 
 	// 3. User confirmation. Do not keep the network deadline running while a
 	// human compares SAS values; re-arm it for the decision exchange below.
@@ -413,7 +433,7 @@ func PairInitiatorWithListener(store *PeerStore, l net.Listener, confirmFn func(
 }
 
 // PairResponder connects to an initiator at peerAddr for pairing.
-// confirmFn is called with the peer's SAS code and local SAS code — return true to accept, false to reject.
+// confirmFn is called with the peer's SAS code and local SAS code â€” return true to accept, false to reject.
 func PairResponder(store *PeerStore, peerAddr string, confirmFn func(peerSAS, localSAS string) bool) (*PairResult, error) {
 	return PairResponderWithContext(context.Background(), store, peerAddr, confirmFn)
 }
@@ -476,8 +496,12 @@ func pairResponderWithContext(parent context.Context, store *PeerStore, peerAddr
 		hostname = "responder"
 	}
 
-	// 1. Send PairHello
-	hello := newPairHello(id.CertPEM, hostname)
+	// 1. Send PairHello, contributing this side's transcript nonce.
+	localNonce, err := newPairNonce()
+	if err != nil {
+		return nil, err
+	}
+	hello := newPairHello(id.CertPEM, hostname, localNonce)
 	hello.ListenPort = options.listenPort()
 	if err := sendJSON(conn, hello); err != nil {
 		return nil, fmt.Errorf("send responder hello: %w", err)
@@ -500,8 +524,12 @@ func pairResponderWithContext(parent context.Context, store *PeerStore, peerAddr
 		return nil, err
 	}
 
-	localSAS := SASCode(id.Fingerprint)
-	peerSAS := SASCode(peerFP)
+	// The displayed SAS covers the whole pairing transcript: both certificate
+	// fingerprints and both nonces. It is therefore specific to this attempt, and
+	// an attacker who has observed a previous SAS for this peer learns nothing
+	// about this one.
+	sas := TranscriptSAS(id.Fingerprint, peerFP, localNonce, peerHello.Nonce)
+	localSAS, peerSAS := sas, sas // Both machines display the same code.
 
 	// 3. User confirmation. Do not keep the network deadline running while a
 	// human compares SAS values; re-arm it for the decision exchange below.

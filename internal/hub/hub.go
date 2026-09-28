@@ -2056,11 +2056,13 @@ func (h *Hub) Start(parent context.Context) (err error) {
 			}
 		}
 
+		// Discovery advertises only a name and a port. The local SAS and
+		// certificate fingerprint are deliberately not broadcast: they are the
+		// pre-computation material for an active pairing man-in-the-middle, and
+		// a discovered node has no verified identity until the user pairs.
 		discCfg := discovery.DiscoveryConfig{
-			NodeName:    nodeName,
-			WirePort:    p2pPort,
-			SAS:         pairing.SASCode(id.Fingerprint),
-			Fingerprint: id.Fingerprint,
+			NodeName: nodeName,
+			WirePort: p2pPort,
 		}
 		discEngine, dErr := discovery.NewEngine(discCfg)
 		if dErr != nil {

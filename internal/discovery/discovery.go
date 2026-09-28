@@ -2,6 +2,8 @@ package discovery
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,12 +35,23 @@ const (
 )
 
 // DiscoveredNode represents an active tantu peer found on the local network.
+// DiscoveredNode describes a hub seen on the LAN.
+//
+// SAS and Fingerprint are deliberately NOT part of this struct's wire form.
+// They used to be broadcast in cleartext every few seconds, which handed any
+// host on the network the exact value a user is asked to verify by eye during
+// pairing. An attacker who learns it can grind a certificate whose fingerprint
+// shares that prefix, then present that certificate during pairing and defeat
+// the human check entirely. The handshake SAS is derived from the pairing
+// transcript and only ever travels inside an authenticated, mTLS-protected
+// flow, so a discovered node carries no verifiable identity at all until the
+// user chooses to pair with it.
 type DiscoveredNode struct {
 	InstanceName string    `json:"name"`
 	Address      string    `json:"addr"` // IP address or host:port
 	Port         int       `json:"port"` // Wire port (e.g. 9877)
-	SAS          string    `json:"sas"`  // 6-character SAS code
-	Fingerprint  string    `json:"fp"`   // SHA-256 certificate fingerprint
+	SAS          string    `json:"-"`    // Never broadcast; always empty on a discovered node
+	Fingerprint  string    `json:"-"`    // Never broadcast; always empty on a discovered node
 	LastSeen     time.Time `json:"last_seen"`
 }
 
@@ -46,24 +59,32 @@ type DiscoveredNode struct {
 type DiscoveryConfig struct {
 	NodeName      string        `json:"name"`
 	WirePort      int           `json:"port"`
-	SAS           string        `json:"sas"`
-	Fingerprint   string        `json:"fp"`
 	Interval      time.Duration // Default: 3s
 	TTL           time.Duration // Default: 15s
 	BroadcastPort int           // Fallback UDP broadcast port (default: 9879)
 }
 
+// beaconPayload is the unauthenticated advertisement. It deliberately carries
+// no SAS and no certificate fingerprint: both are pre-computation material for
+// an active pairing man-in-the-middle, and neither is needed to render "a hub
+// is nearby". BeaconNonce is random per engine start and identifies only our
+// own broadcast echo; it is never identity.
 type beaconPayload struct {
-	Version int    `json:"v"`
-	Name    string `json:"name"`
-	Port    int    `json:"port"`
-	SAS     string `json:"sas"`
-	FP      string `json:"fp"`
+	Version     int    `json:"v"`
+	Name        string `json:"name"`
+	Port        int    `json:"port"`
+	BeaconNonce string `json:"nonce,omitempty"`
+	// SAS and FP are accepted by the decoder only so a beacon from an older
+	// peer can be recognised and rejected. validBeacon drops any beacon that
+	// sets them, so nothing is ever read from these fields.
+	SAS string `json:"sas,omitempty"`
+	FP  string `json:"fp,omitempty"`
 }
 
 // Engine advertises node coordinates and maintains an active subnet registry.
 type Engine struct {
-	cfg DiscoveryConfig
+	cfg         DiscoveryConfig
+	beaconNonce string
 
 	startMu     sync.Mutex
 	started     bool
@@ -106,12 +127,17 @@ func NewEngine(cfg DiscoveryConfig) (*Engine, error) {
 	if len(cfg.NodeName) > 128 || containsControl(cfg.NodeName) {
 		return nil, errors.New("node name is too long or contains control characters")
 	}
-	if len(cfg.SAS) > 32 || len(cfg.Fingerprint) > 128 || containsControl(cfg.SAS) || containsControl(cfg.Fingerprint) {
-		return nil, errors.New("discovery identity metadata is invalid")
+
+	// A per-start nonce identifies our own broadcast echo without carrying any
+	// identity. It is not a secret and is not used for authentication.
+	nonceBytes := make([]byte, 12)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		return nil, fmt.Errorf("generate beacon nonce: %w", err)
 	}
 
 	return &Engine{
 		cfg:         cfg,
+		beaconNonce: hex.EncodeToString(nonceBytes),
 		nodes:       make(map[string]*DiscoveredNode),
 		lastBeacons: make(map[string]time.Time),
 	}, nil
@@ -279,7 +305,7 @@ func (e *Engine) listenLoop(conn *net.UDPConn) {
 		}
 		// Self-filtering: ignore beacons from our own node (see
 		// isSelfBeacon for the exact rules).
-		if isSelfBeacon(e.cfg.Fingerprint, e.cfg.SAS, beacon) {
+		if isSelfBeacon(e.beaconNonce, beacon) {
 			continue
 		}
 		if !e.allowBeaconSource(remoteAddr.IP.String()) {
@@ -291,25 +317,23 @@ func (e *Engine) listenLoop(conn *net.UDPConn) {
 			InstanceName: beacon.Name,
 			Address:      net.JoinHostPort(nodeAddr, fmt.Sprintf("%d", beacon.Port)),
 			Port:         beacon.Port,
-			SAS:          beacon.SAS,
-			Fingerprint:  beacon.FP,
-			LastSeen:     time.Now(),
+			// A beacon carries no identity. Anything a previous version leaked
+			// is dropped here rather than retained.
+			SAS:         "",
+			Fingerprint: "",
+			LastSeen:    time.Now(),
 		}
 
 		e.recordNode(node)
 	}
 }
 
-// isSelfBeacon reports whether a beacon originates from our own node.
-// Fingerprint comparison is case-insensitive (hex) and therefore can never
-// hide a legitimate peer. The 24-bit SAS clause applies only to ephemeral
-// engines with no fingerprint of their own (e.g. pair-scan initiators);
-// otherwise a SAS collision would hide a real peer's beacons.
-func isSelfBeacon(ownFP, ownSAS string, beacon beaconPayload) bool {
-	if ownFP != "" {
-		return strings.EqualFold(beacon.FP, ownFP)
-	}
-	return ownSAS != "" && strings.EqualFold(beacon.SAS, ownSAS)
+// isSelfBeacon reports whether a beacon is our own broadcast coming back to us.
+// Beacons no longer carry a fingerprint or SAS, so recognition is by the random
+// per-start nonce. A node that does not advertise identity is therefore still
+// recognized, and no identity comparison can hide a legitimate peer.
+func isSelfBeacon(ownNonce string, beacon beaconPayload) bool {
+	return ownNonce != "" && beacon.BeaconNonce != "" && beacon.BeaconNonce == ownNonce
 }
 
 func validBeacon(beacon beaconPayload) bool {
@@ -319,11 +343,14 @@ func validBeacon(beacon beaconPayload) bool {
 	if len(beacon.Name) > 128 || containsControl(beacon.Name) {
 		return false
 	}
-	// Beacons are plaintext and trivially spoofable, so the identity fields
-	// must at least be well-formed: the fingerprint is hex SHA-256 and the
-	// SAS is the 6-hex short form. Malformed beacons are dropped before they
-	// can pollute the pairing-selection list.
-	if !isHexFingerprint(beacon.FP) || !isSASCode(beacon.SAS) {
+	// Reject any beacon that still carries identity fields. A peer running an
+	// older release will send them; accepting them would reintroduce the
+	// cleartext SAS leak this change exists to close, so such beacons are
+	// dropped and the peer simply does not appear in discovery.
+	if beacon.SAS != "" || beacon.FP != "" {
+		return false
+	}
+	if beacon.BeaconNonce != "" && len(beacon.BeaconNonce) > 64 {
 		return false
 	}
 	return true
@@ -395,14 +422,18 @@ func (e *Engine) allowBeaconSource(source string) bool {
 }
 
 func (e *Engine) recordNode(node DiscoveredNode) {
+	// A discovered node is an unauthenticated hint and must never carry a
+	// verifiable identity: no SAS and no certificate fingerprint reaches or
+	// leaves this map. Clearing here rather than at the call site means a future
+	// caller cannot reintroduce the leak.
+	node.SAS = ""
+	node.Fingerprint = ""
+
 	e.mu.Lock()
-	key := node.Fingerprint
-	if key == "" {
-		key = node.Address
-	}
+	key := node.Address
 	existing, isNew := e.nodes[key]
 	if !isNew && len(e.nodes) >= maxDiscoveredNodes {
-		// Evict the least recently seen hint before accepting a new identity.
+		// Evict the least recently seen hint before accepting a new one.
 		// Discovery is unauthenticated, so this bound is a security boundary.
 		var oldestKey string
 		var oldest time.Time
@@ -422,7 +453,6 @@ func (e *Engine) recordNode(node DiscoveredNode) {
 		existing.Address = node.Address
 		existing.Port = node.Port
 		existing.InstanceName = node.InstanceName
-		existing.SAS = node.SAS
 	}
 	cbs := make([]func(DiscoveredNode), len(e.callbacks))
 	copy(cbs, e.callbacks)
@@ -469,11 +499,10 @@ func (e *Engine) advertiseLoop(ctx context.Context) {
 
 func (e *Engine) broadcastBeacon() {
 	beacon := beaconPayload{
-		Version: 1,
-		Name:    e.cfg.NodeName,
-		Port:    e.cfg.WirePort,
-		SAS:     e.cfg.SAS,
-		FP:      e.cfg.Fingerprint,
+		Version:     1,
+		Name:        e.cfg.NodeName,
+		Port:        e.cfg.WirePort,
+		BeaconNonce: e.beaconNonce,
 	}
 	data, err := json.Marshal(beacon)
 	if err != nil {

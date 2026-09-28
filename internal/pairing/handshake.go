@@ -2,6 +2,7 @@ package pairing
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
@@ -79,6 +80,26 @@ type PairHelloPayload struct {
 	CertPEM    []byte `json:"cert_pem"`
 	Name       string `json:"name,omitempty"`
 	ListenPort int    `json:"listen_port,omitempty"`
+	// Nonce is this side's contribution to the pairing transcript. Both sides
+	// feed their own and their peer's nonce into TranscriptSAS, which is what
+	// makes the displayed code specific to this session. A peer that omits it
+	// (older release) still pairs, but the resulting code carries no nonce
+	// entropy, so the handshake surfaces that.
+	Nonce []byte `json:"nonce,omitempty"`
+}
+
+// pairNonceBytes is the length of each side's transcript nonce. 16 bytes is far
+// more than needed to make a SAS unguessable within a pairing and keeps the
+// control frame small.
+const pairNonceBytes = 16
+
+// newPairNonce returns a fresh transcript nonce for one pairing attempt.
+func newPairNonce() ([]byte, error) {
+	raw := make([]byte, pairNonceBytes)
+	if _, err := rand.Read(raw); err != nil {
+		return nil, fmt.Errorf("generate pairing nonce: %w", err)
+	}
+	return raw, nil
 }
 
 // PairDecisionPayload represents the payload of a pair_decision protocol message.
@@ -312,8 +333,16 @@ func HandleInboundPairingWithOptions(ctx context.Context, conn Conn, firstEnv *p
 		return nil, fmt.Errorf("load identity: %w", err)
 	}
 
-	localSAS := SASCode(id.Fingerprint)
-	peerSAS := SASCode(peerFP)
+	// The displayed SAS covers the whole pairing transcript: both certificate
+	// fingerprints and both nonces. It is therefore specific to this attempt,
+	// and an attacker who has observed a previous SAS for this peer learns
+	// nothing about this one.
+	localNonce, err := newPairNonce()
+	if err != nil {
+		return nil, err
+	}
+	localSAS := TranscriptSAS(id.Fingerprint, peerFP, localNonce, peerHello.Nonce)
+	peerSAS := localSAS // Both machines display the same code by construction.
 
 	hostname, _ := os.Hostname()
 	if hostname == "" {
@@ -325,6 +354,7 @@ func HandleInboundPairingWithOptions(ctx context.Context, conn Conn, firstEnv *p
 		CertPEM:    id.CertPEM,
 		Name:       hostname,
 		ListenPort: pairingListenPort(conn, options),
+		Nonce:      localNonce,
 	}); err != nil {
 		return nil, fmt.Errorf("send pair hello: %w", err)
 	}
@@ -403,11 +433,16 @@ func PairResponderInBandWithOptions(ctx context.Context, conn Conn, store *PeerS
 		hostname = "responder"
 	}
 
-	// 1. Send our PairHello
+	// 1. Send our PairHello, contributing this side's transcript nonce.
+	localNonce, err := newPairNonce()
+	if err != nil {
+		return nil, err
+	}
 	if err := conn.Send(TypePairHello, PairHelloPayload{
 		CertPEM:    id.CertPEM,
 		Name:       hostname,
 		ListenPort: pairingListenPort(conn, options),
+		Nonce:      localNonce,
 	}); err != nil {
 		return nil, fmt.Errorf("send responder hello: %w", err)
 	}
@@ -440,8 +475,11 @@ func PairResponderInBandWithOptions(ctx context.Context, conn Conn, store *PeerS
 		return nil, err
 	}
 
-	localSAS := SASCode(id.Fingerprint)
-	peerSAS := SASCode(peerFP)
+	// The displayed SAS covers the whole pairing transcript: both certificate
+	// fingerprints and both nonces. It is specific to this attempt, so an
+	// attacker who observed a previous SAS for this peer learns nothing here.
+	sas := TranscriptSAS(id.Fingerprint, peerFP, localNonce, peerHello.Nonce)
+	localSAS, peerSAS := sas, sas // Both machines display the same code.
 
 	// 3. User SAS verification, bounded by the session context.
 	localAccepted, err := confirmWithContext(ctx, confirmFn, peerSAS, localSAS)

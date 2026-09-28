@@ -2,6 +2,7 @@ package pairing
 
 import (
 	"net"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -34,6 +35,27 @@ func TestGetOrGenerateIdentityConcurrent(t *testing.T) {
 	}
 	if ids[0] == nil || ids[1] == nil || ids[0].Fingerprint != ids[1].Fingerprint {
 		t.Fatalf("concurrent pairing callers produced different identities: %+v / %+v", ids[0], ids[1])
+	}
+}
+
+// assertTranscriptSASShape checks a rendered SAS is a word code rather than the
+// old 6-hex-character prefix, and that both machines were shown the same value.
+func assertTranscriptSASShape(t *testing.T, peerSAS, localSAS string) {
+	t.Helper()
+	for name, code := range map[string]string{"peer": peerSAS, "local": localSAS} {
+		parts := strings.Split(code, "-")
+		if len(parts) != SASWordTotal {
+			t.Errorf("%s SAS %q should have %d words, got %d", name, code, SASWordTotal, len(parts))
+			continue
+		}
+		for _, p := range parts {
+			if !strings.Contains(" "+strings.Join(SASWords[:], " ")+" ", " "+strings.ToLower(p)+" ") {
+				t.Errorf("%s SAS %q contains %q, which is not in the word list", name, code, p)
+			}
+		}
+	}
+	if peerSAS != localSAS {
+		t.Errorf("both machines must be shown the same transcript SAS: peer=%s local=%s", peerSAS, localSAS)
 	}
 }
 
@@ -70,9 +92,7 @@ func TestPairing_Success(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		initResult, initErr = PairInitiatorWithListener(storeA, l, func(peerSAS, localSAS string) bool {
-			if len(peerSAS) != 6 || len(localSAS) != 6 {
-				t.Errorf("expected 6-char SAS codes: peer=%s, local=%s", peerSAS, localSAS)
-			}
+			assertTranscriptSASShape(t, peerSAS, localSAS)
 			return true
 		})
 	}()
@@ -80,9 +100,7 @@ func TestPairing_Success(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		respResult, respErr = PairResponder(storeB, addr, func(peerSAS, localSAS string) bool {
-			if len(peerSAS) != 6 || len(localSAS) != 6 {
-				t.Errorf("expected 6-char SAS codes: peer=%s, local=%s", peerSAS, localSAS)
-			}
+			assertTranscriptSASShape(t, peerSAS, localSAS)
 			return true
 		})
 	}()
