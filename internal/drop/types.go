@@ -73,4 +73,10 @@ type DropComplete struct {
 	BytesRecv int64  `json:"bytes_received"`   // Total bytes received (for verification)
 	SHA256    string `json:"sha256,omitempty"` // Receiver's verified SHA-256 hex digest
 	Error     string `json:"error,omitempty"`
+	// Duplicate is set when the payload matched a completion tombstone and
+	// nothing was staged or published. The wire reply is still a success —
+	// the transfer is not a failure — but a sender that cannot see this bit
+	// would tell the user a second copy exists when it does not, so it is
+	// additive: peers that predate it ignore the field.
+	Duplicate bool `json:"duplicate,omitempty"`
 }

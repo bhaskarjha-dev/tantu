@@ -1,6 +1,8 @@
 package drop
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -177,6 +179,135 @@ func (d *StagingDirectory) ReadDir() ([]os.DirEntry, error) {
 	}
 	defer dir.Close()
 	return dir.ReadDir(-1)
+}
+
+// publicationTempPrefix marks an in-progress publication inside the destination
+// directory. A reclaimable temporary must match the full shape
+// prefix + 24 hex characters + ".tmp", so a delivered file is never mistaken
+// for one and a sweep can only ever remove something this code created.
+const publicationTempPrefix = ".tantu-publish-"
+
+const publicationTempSuffix = ".tmp"
+
+// isPublicationTempName reports whether name is a publication temporary this
+// package generated. The hex segment is required so no user-supplied filename,
+// however it was sanitized, can be reclaimed by a sweep.
+func isPublicationTempName(name string) bool {
+	if !strings.HasPrefix(name, publicationTempPrefix) || !strings.HasSuffix(name, publicationTempSuffix) {
+		return false
+	}
+	hexPart := strings.TrimSuffix(strings.TrimPrefix(name, publicationTempPrefix), publicationTempSuffix)
+	if len(hexPart) != 24 {
+		return false
+	}
+	for _, r := range hexPart {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+// NewPublicationTempName returns a unique hidden temporary name in the same
+// directory used for atomic publication. The caller renames it to the final
+// name once the bytes are durable; until then the partial content is never
+// visible under a name the user would open.
+func (d *StagingDirectory) NewPublicationTempName() (string, error) {
+	for i := 0; i < 64; i++ {
+		raw := make([]byte, 12)
+		if _, err := rand.Read(raw); err != nil {
+			return "", fmt.Errorf("generate publication temp name: %w", err)
+		}
+		name := publicationTempPrefix + hex.EncodeToString(raw) + publicationTempSuffix
+		if _, err := d.Lstat(name); err == nil {
+			continue // collision, try again
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+		return name, nil
+	}
+	return "", errors.New("could not allocate a unique publication temp name")
+}
+
+// PublishStagedFile atomically moves a fully-written publication temporary into
+// its final name. Renaming within one directory is atomic on every supported
+// platform, so a reader sees either the previous state or the complete file,
+// never a partially written one.
+func (d *StagingDirectory) PublishStagedFile(tempName, finalName string) error {
+	if !isPublicationTempName(tempName) {
+		return errors.New("publication temp name is not recognized")
+	}
+	return d.Rename(tempName, finalName)
+}
+
+// PublishFromStaging renames an existing staging partial directly to its final
+// name. Because the private staging area lives inside the output directory, this
+// is a same-filesystem rename: it is atomic, costs no I/O proportional to the
+// payload, and keeps peak disk at N rather than 2N. The published bytes are the
+// very bytes that were hashed during the transfer, so no second copy can
+// diverge from the digest the receiver verified.
+//
+// It reports ok=false when partPath lies on a different filesystem (or outside
+// this root), in which case the caller falls back to a verified copy.
+func (d *StagingDirectory) PublishFromStaging(partPath, finalName string) (ok bool, err error) {
+	rel, relErr := filepath.Rel(d.path, partPath)
+	if relErr != nil || rel == "" || rel == "." || strings.HasPrefix(rel, "..") {
+		return false, nil
+	}
+	// The final name must not already exist: publication never overwrites.
+	if _, statErr := d.Lstat(finalName); statErr == nil {
+		return false, os.ErrExist
+	} else if !os.IsNotExist(statErr) {
+		return false, statErr
+	}
+	if err := d.Rename(rel, finalName); err != nil {
+		if os.IsExist(err) {
+			return false, os.ErrExist
+		}
+		// A cross-device or otherwise unsupported rename falls back to a copy.
+		return false, nil
+	}
+	return true, nil
+}
+
+// SweepPublicationTempsIn reclaims publication temporaries left in an output
+// directory by an interrupted publication.
+func SweepPublicationTempsIn(outDir string, maxAge time.Duration) (int, error) {
+	if !isRealStagingOutputDir(outDir) {
+		return 0, nil
+	}
+	dir, err := OpenStagingDirectory(outDir)
+	if err != nil {
+		return 0, err
+	}
+	defer dir.Close()
+	return dir.SweepPublicationTemps(maxAge)
+}
+
+// SweepPublicationTemps removes publication temporaries left behind by a crash
+// mid-copy. They are never user-visible under a final name, so reclaiming them
+// cannot destroy a delivered file.
+func (d *StagingDirectory) SweepPublicationTemps(maxAge time.Duration) (int, error) {
+	entries, err := d.ReadDir()
+	if err != nil {
+		return 0, err
+	}
+	cutoff := time.Now().Add(-maxAge)
+	removed := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if !isPublicationTempName(name) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		if err := d.Remove(name); err == nil {
+			removed++
+		}
+	}
+	return removed, nil
 }
 
 // OpenStagingFile opens a file relative to a verified private staging root.

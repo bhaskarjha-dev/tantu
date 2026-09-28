@@ -2498,6 +2498,9 @@ const dashboardHTML = `<!DOCTYPE html>
       // duplicate_risk is a warning, not a failure: the file may already be
       // saved and a blind retry is what causes the duplicate.
       if (state === 'duplicate_risk') return 'warn';
+      // A suppressed duplicate is a confirmed outcome, not a risk: the receiver
+      // told us it already has these exact bytes and wrote nothing new.
+      if (state === 'duplicate_suppressed') return 'info';
       if (state === 'terminal_failure' || state === 'failed') return 'err';
       if (state === 'retryable_failure') return 'warn';
       if (state === 'cancelled') return 'neutral';
@@ -2511,6 +2514,7 @@ const dashboardHTML = `<!DOCTYPE html>
     const OPERATION_STATE_LABELS = {
       completed: 'File saved on peer',
       completed_with_warning: 'Saved on peer, with a warning',
+      duplicate_suppressed: 'Already saved on peer',
       duplicate_risk: 'File may already be saved',
       retryable_failure: 'Not delivered',
       terminal_failure: 'Not delivered',
@@ -4194,8 +4198,10 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			defer cancel()
 
 			negotiated := false
+			suppressedDuplicate := false
 			sendCfg := drop.SendDropConfig{Timeout: h.cfg.Timeout}
 			sendCfg.OnAck = func(drop.DropAck) { negotiated = true }
+			sendCfg.OnComplete = func(c drop.DropComplete) { suppressedDuplicate = c.Duplicate }
 			if err = drop.SendDrop(sendCtx, conn, meta, strings.NewReader(textReq.Text), sendCfg); err != nil {
 				bytesForClassify := int64(0)
 				if negotiated {
@@ -4207,6 +4213,21 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 				opState := operationStateForFailure(retrySafe, duplicateRisk, cancelled)
 				h.recordOutboundOperation(OperationRecord{OperationID: opID, DropID: dropID, Kind: opKind, Name: opName, Size: opSize, Destination: destName, DestinationFingerprint: destFP, DestinationAddress: destAddr, State: opState, CreatedAt: opCreated, UpdatedAt: time.Now(), RetrySafe: retrySafe, DuplicateRisk: duplicateRisk, DataSafe: dataSafe, ErrorCode: code, ErrorMessage: plain, NextAction: nextAction, DiagnosticID: opID})
 				writeTransferError(w, http.StatusInternalServerError, fmt.Sprintf("send drop failed: %v", err), code, plain, err.Error(), retrySafe, duplicateRisk, dataSafe, nextAction, opID, destName, destFP, destAddr)
+				return
+			}
+
+			if suppressedDuplicate {
+				h.logger.Warn(DomainDrop, fmt.Sprintf("Duplicate text drop suppressed on peer for %s: already delivered by this idempotency key", opName))
+				h.recordOutboundOperation(OperationRecord{OperationID: opID, DropID: dropID, Kind: opKind, Name: opName, Size: opSize, Destination: destName, DestinationFingerprint: destFP, DestinationAddress: destAddr, State: OperationStateDuplicateSuppressed, CreatedAt: opCreated, UpdatedAt: time.Now(), BytesSent: opSize, Verified: true, RetrySafe: false, DuplicateRisk: true, DataSafe: true, NextAction: "Already saved on this peer from an earlier send. Nothing new was written.", DiagnosticID: opID})
+				writeJSON(w, http.StatusOK, map[string]any{
+					"status":       "success",
+					"message":      "Already saved on this peer; duplicate delivery suppressed",
+					"duplicate":    true,
+					"size":         len(textReq.Text),
+					"operation_id": opID,
+					"destination":  destName,
+					"verified":     true,
+				})
 				return
 			}
 
@@ -4299,8 +4320,10 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 		defer cancel()
 
 		negotiated := false
+		suppressedDuplicate := false
 		sendCfg := drop.SendDropConfig{Timeout: h.cfg.Timeout}
 		sendCfg.OnAck = func(drop.DropAck) { negotiated = true }
+		sendCfg.OnComplete = func(c drop.DropComplete) { suppressedDuplicate = c.Duplicate }
 		if err = drop.SendDrop(sendCtx, conn, meta, file, sendCfg); err != nil {
 			bytesForClassify := int64(0)
 			if negotiated {
@@ -4312,6 +4335,25 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			opState := operationStateForFailure(retrySafe, duplicateRisk, cancelled)
 			h.recordOutboundOperation(OperationRecord{OperationID: opID, DropID: dropID, Kind: opKind, Name: opName, Size: opSize, MIMEType: mimeType, Destination: destName, DestinationFingerprint: destFP, DestinationAddress: destAddr, State: opState, CreatedAt: opCreated, UpdatedAt: time.Now(), RetrySafe: retrySafe, DuplicateRisk: duplicateRisk, DataSafe: dataSafe, ErrorCode: code, ErrorMessage: plain, NextAction: nextAction, DiagnosticID: opID})
 			writeTransferError(w, http.StatusInternalServerError, fmt.Sprintf("drop file transfer failed: %v", err), code, plain, err.Error(), retrySafe, duplicateRisk, dataSafe, nextAction, opID, destName, destFP, destAddr)
+			return
+		}
+
+		if suppressedDuplicate {
+			// The receiver recognised this idempotency key from a previous
+			// completion and wrote nothing. Saying "completed" would tell the
+			// user a second copy exists on the peer.
+			h.logger.Warn(DomainDrop, fmt.Sprintf("Duplicate suppressed on peer for %s: already delivered by this idempotency key", opName))
+			h.recordOutboundOperation(OperationRecord{OperationID: opID, DropID: dropID, Kind: opKind, Name: opName, Size: opSize, MIMEType: mimeType, Destination: destName, DestinationFingerprint: destFP, DestinationAddress: destAddr, State: OperationStateDuplicateSuppressed, CreatedAt: opCreated, UpdatedAt: time.Now(), BytesSent: opSize, Verified: true, RetrySafe: false, DuplicateRisk: true, DataSafe: true, NextAction: "Already saved on this peer from an earlier send of the same file. Nothing new was written.", DiagnosticID: opID})
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status":       "success",
+				"message":      "Already saved on this peer; duplicate delivery suppressed",
+				"duplicate":    true,
+				"name":         fileName,
+				"size":         header.Size,
+				"operation_id": opID,
+				"destination":  destName,
+				"verified":     true,
+			})
 			return
 		}
 

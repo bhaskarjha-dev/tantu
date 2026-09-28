@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -298,7 +299,7 @@ func openStandaloneStagingPart(partPath string, meta drop.DropSend) (*os.File, e
 // finalizeIncomingPart flushes and closes a completed staging file before the
 // result is reported. Keeping this operation in the receiver's completion hook
 // ensures a sender is not told "success" while the final file is still absent.
-func finalizeIncomingPart(f *os.File, partPath, desiredPath string, releaseActivity ...func()) (string, error) {
+func finalizeIncomingPart(f *os.File, partPath, desiredPath, expectedSHA string, expectedSize int64, releaseActivity ...func()) (string, error) {
 	if f == nil || strings.TrimSpace(partPath) == "" || strings.TrimSpace(desiredPath) == "" {
 		return "", errors.New("missing open staging file or destination path")
 	}
@@ -326,7 +327,7 @@ func finalizeIncomingPart(f *os.File, partPath, desiredPath string, releaseActiv
 		_ = f.Close()
 		return "", fmt.Errorf("rewind staging file: %w", err)
 	}
-	published, err := publishIncomingFile(f, desiredPath)
+	published, publishedFromRename, err := publishIncomingFile(f, partPath, desiredPath, expectedSHA, expectedSize)
 	closeErr := f.Close()
 	if err != nil {
 		return published, err
@@ -334,8 +335,12 @@ func finalizeIncomingPart(f *os.File, partPath, desiredPath string, releaseActiv
 	if closeErr != nil {
 		return published, fmt.Errorf("close received file: %w", closeErr)
 	}
-	if err := drop.RemoveStagingFileIfSame(partPath, openedInfo); err != nil {
-		return published, fmt.Errorf("published file but could not remove staging partial: %w", err)
+	if !publishedFromRename {
+		if err := drop.RemoveStagingFileIfSame(partPath, openedInfo); err != nil {
+			// The bytes are on disk and verified; only cleanup failed. Report it
+			// as a distinct state rather than telling the sender nothing arrived.
+			return published, fmt.Errorf("%w: %v", hub.ErrPublishedCleanupIncomplete, err)
+		}
 	}
 	if len(releaseActivity) > 0 && releaseActivity[0] != nil {
 		releaseActivity[0]()
@@ -346,12 +351,27 @@ func finalizeIncomingPart(f *os.File, partPath, desiredPath string, releaseActiv
 	return published, nil
 }
 
-func publishIncomingFile(source *os.File, desiredPath string) (string, error) {
+// publishIncomingFile publishes a verified staging partial under its final
+// name. It uses the same staged publication as the Hub: a same-filesystem
+// rename of the verified partial when possible, otherwise a copy into a hidden
+// temporary that is hashed and length-checked before an atomic rename. A crash
+// mid-publication therefore leaves a hidden .tantu-publish-* temporary, never a
+// truncated file under a name the user would open.
+func publishIncomingFile(source *os.File, partPath, desiredPath, expectedSHA string, expectedSize int64) (string, bool, error) {
 	outputDir, err := drop.OpenStagingDirectory(filepath.Dir(desiredPath))
 	if err != nil {
-		return "", fmt.Errorf("open output directory: %w", err)
+		return "", false, fmt.Errorf("open output directory: %w", err)
 	}
 	defer outputDir.Close()
+
+	sourceInfo, err := source.Stat()
+	if err != nil {
+		return "", false, fmt.Errorf("inspect staging file: %w", err)
+	}
+	if expectedSize > 0 && sourceInfo.Size() != expectedSize {
+		return "", false, fmt.Errorf("staged %d bytes, expected %d", sourceInfo.Size(), expectedSize)
+	}
+
 	ext := filepath.Ext(desiredPath)
 	stem := strings.TrimSuffix(desiredPath, ext)
 	for i := 0; ; i++ {
@@ -359,32 +379,65 @@ func publishIncomingFile(source *os.File, desiredPath string) (string, error) {
 		if i > 0 {
 			candidate = fmt.Sprintf("%s-%d%s", stem, i, ext)
 		}
-		out, err := outputDir.OpenFile(filepath.Base(candidate), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-		if os.IsExist(err) {
-			continue
+		finalName := filepath.Base(candidate)
+
+		if _, err := outputDir.Lstat(finalName); err == nil {
+			continue // never overwrite an existing name
+		} else if !os.IsNotExist(err) {
+			return "", false, err
 		}
-		if err != nil {
-			return "", err
+
+		if ok, linkErr := outputDir.PublishFromStaging(partPath, finalName); linkErr != nil {
+			if errors.Is(linkErr, os.ErrExist) {
+				continue
+			}
+			return "", false, linkErr
+		} else if ok {
+			return finalName, true, nil
 		}
+
 		if _, err := source.Seek(0, io.SeekStart); err != nil {
-			_ = out.Close()
-			_ = outputDir.Remove(filepath.Base(candidate))
-			return "", err
+			return "", false, err
 		}
-		_, copyErr := io.Copy(out, source)
-		syncErr := out.Sync()
+		tempName, err := outputDir.NewPublicationTempName()
+		if err != nil {
+			return "", false, err
+		}
+		out, err := outputDir.OpenFile(tempName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if err != nil {
+			return "", false, err
+		}
+		hasher := sha256.New()
+		written, copyErr := io.Copy(io.MultiWriter(out, hasher), source)
+		if copyErr == nil {
+			copyErr = out.Sync()
+		}
 		closeOutErr := out.Close()
-		if copyErr != nil || syncErr != nil || closeOutErr != nil {
-			_ = outputDir.Remove(filepath.Base(candidate))
+		if copyErr != nil || closeOutErr != nil {
+			_ = outputDir.Remove(tempName)
 			if copyErr != nil {
-				return "", copyErr
+				return "", false, copyErr
 			}
-			if syncErr != nil {
-				return "", syncErr
-			}
-			return "", closeOutErr
+			return "", false, closeOutErr
 		}
-		return candidate, nil
+		if expectedSize > 0 && written != expectedSize {
+			_ = outputDir.Remove(tempName)
+			return "", false, fmt.Errorf("published %d bytes, expected %d", written, expectedSize)
+		}
+		if expectedSHA != "" {
+			if got := hex.EncodeToString(hasher.Sum(nil)); !strings.EqualFold(got, expectedSHA) {
+				_ = outputDir.Remove(tempName)
+				return "", false, fmt.Errorf("published content digest %s does not match verified digest %s", got, expectedSHA)
+			}
+		}
+		if err := outputDir.PublishStagedFile(tempName, finalName); err != nil {
+			_ = outputDir.Remove(tempName)
+			if os.IsExist(err) {
+				continue
+			}
+			return "", false, err
+		}
+		return candidate, false, nil
 	}
 }
 
@@ -573,6 +626,110 @@ func requestRemoteIsLoopback(r *http.Request) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// LocalSession is a one-time-bootstrap session for the standalone legacy UIs.
+//
+// The previous design served the long-lived per-process API token inside the
+// page HTML on an unauthenticated listener, which made the token gate
+// decorative: any local caller could GET / and read the credential that guards
+// /api/*. This mirrors the Hub instead — the long-lived token is never served,
+// and the page must exchange a one-time bootstrap value (printed on the
+// terminal, delivered out of band) for a short-lived session cookie.
+type LocalSession struct {
+	mu        sync.Mutex
+	bootstrap string
+	sessions  map[string]time.Time
+	ttl       time.Duration
+}
+
+// LocalSessionCookie is the HttpOnly cookie holding an exchanged session id.
+const LocalSessionCookie = "tantu_local_session"
+
+// LocalBootstrapHeader carries the one-time bootstrap value to the exchange
+// endpoint. A custom header cannot be set by a cross-origin form or simple
+// fetch, so this route is not CSRF-reachable.
+const LocalBootstrapHeader = "X-Tantu-Local-Bootstrap"
+
+const defaultLocalSessionTTL = 12 * time.Hour
+
+// NewLocalSession mints a one-time bootstrap value for a standalone UI.
+func NewLocalSession(ttl time.Duration) (*LocalSession, error) {
+	raw, err := newLocalRequestToken()
+	if err != nil {
+		return nil, err
+	}
+	if ttl <= 0 {
+		ttl = defaultLocalSessionTTL
+	}
+	return &LocalSession{
+		bootstrap: raw,
+		sessions:  map[string]time.Time{},
+		ttl:       ttl,
+	}, nil
+}
+
+// Bootstrap returns the one-time value the operator must deliver to the page.
+// It is printed on the terminal and never written into served HTML.
+func (s *LocalSession) Bootstrap() string {
+	if s == nil {
+		return ""
+	}
+	return s.bootstrap
+}
+
+// Consume validates and burns a bootstrap value, returning a new session id.
+// The value is cleared under the lock before the session is stored, so two
+// concurrent exchanges cannot both succeed.
+func (s *LocalSession) Consume(provided string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	provided = strings.TrimSpace(provided)
+	if provided == "" {
+		return "", false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.bootstrap == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(s.bootstrap)) != 1 {
+		return "", false
+	}
+	s.bootstrap = ""
+	id, err := newLocalRequestToken()
+	if err != nil {
+		return "", false
+	}
+	now := time.Now()
+	for k, exp := range s.sessions {
+		if !exp.After(now) {
+			delete(s.sessions, k)
+		}
+	}
+	s.sessions[id] = now.Add(s.ttl)
+	return id, true
+}
+
+// Valid reports whether id names a live session.
+func (s *LocalSession) Valid(id string) bool {
+	if s == nil || id == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	exp, ok := s.sessions[id]
+	return ok && exp.After(time.Now())
+}
+
+// Authorize reports whether a request carries a valid local session cookie.
+func (s *LocalSession) Authorize(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	cookie, err := r.Cookie(LocalSessionCookie)
+	if err != nil {
+		return false
+	}
+	return s.Valid(cookie.Value)
+}
+
 // localRequestMiddleware keeps standalone servers usable by their loopback UI
 // while rejecting browser-originated requests from arbitrary web pages.
 // /relay is intentionally exempt from Referer checking because its bookmarklet
@@ -605,21 +762,28 @@ func localRequestMiddleware(next http.Handler) http.Handler {
 			// Never use wildcard CORS. Echo only a validated local origin.
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Tantu-IPC-Token")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, "+LocalBootstrapHeader)
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
 // localRequestTokenMiddleware protects every standalone API route, including
-// GETs that can disclose received file content. The embedded UI supplies the
-// per-process token; CORS preflights remain exempt so an allowed local origin
-// can negotiate the custom header.
-func localRequestTokenMiddleware(next http.Handler, token string) http.Handler {
+// GETs that can disclose received file content. Authorization is a
+// short-lived, one-time-bootstrapped session cookie rather than a long-lived
+// token: a token embedded in the page would be readable by any local caller
+// from the unauthenticated GET / response, which makes the gate decorative.
+func localRequestTokenMiddleware(next http.Handler, sess *LocalSession) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") && r.Method != http.MethodOptions {
-			if token == "" || !localRequestTokenMatches(r.Header.Get("X-Tantu-IPC-Token"), token) {
-				http.Error(w, "local request capability required", http.StatusForbidden)
+			// The exchange endpoint is the one unauthenticated /api route; it
+			// requires the one-time bootstrap header.
+			if r.URL.Path == "/api/local/session" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if !sess.Authorize(r) {
+				http.Error(w, "local session required", http.StatusForbidden)
 				return
 			}
 		}
@@ -627,11 +791,43 @@ func localRequestTokenMiddleware(next http.Handler, token string) http.Handler {
 	})
 }
 
-func newLocalHTTPServer(addr string, handler http.Handler, operationTimeout time.Duration) *http.Server {
-	return newLocalHTTPServerWithToken(addr, handler, "", operationTimeout)
+// handleLocalSessionExchange implements POST /api/local/session. It exchanges
+// the one-time bootstrap value for an HttpOnly session cookie.
+func handleLocalSessionExchange(sess *LocalSession) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		id, ok := sess.Consume(r.Header.Get(LocalBootstrapHeader))
+		if !ok {
+			http.Error(w, "invalid or already-used bootstrap value", http.StatusForbidden)
+			return
+		}
+		http.SetCookie(w, &http.Cookie{
+			Name:     LocalSessionCookie,
+			Value:    id,
+			Path:     "/",
+			HttpOnly: true,
+			// Loopback HTTP, so Secure is intentionally absent; SameSite=Strict
+			// is the load-bearing control that keeps a cross-site page from
+			// attaching the cookie to a subresource request.
+			SameSite: http.SameSiteStrictMode,
+			MaxAge:   int(sess.ttl.Seconds()),
+		})
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "success"})
+	}
 }
 
-func newLocalHTTPServerWithToken(addr string, handler http.Handler, token string, operationTimeout time.Duration) *http.Server {
+func newLocalHTTPServer(addr string, handler http.Handler, operationTimeout time.Duration) *http.Server {
+	return newLocalHTTPServerWithSession(addr, handler, nil, operationTimeout)
+}
+
+// newLocalHTTPServerWithSession wraps a standalone UI handler with the loopback
+// anti-CSRF middleware and, when a session is supplied, session-gates every
+// /api/* route.
+func newLocalHTTPServerWithSession(addr string, handler http.Handler, sess *LocalSession, operationTimeout time.Duration) *http.Server {
 	if operationTimeout <= 0 {
 		operationTimeout = 5 * time.Minute
 	}
@@ -641,8 +837,8 @@ func newLocalHTTPServerWithToken(addr string, handler http.Handler, token string
 		readTimeout = writeTimeout
 	}
 
-	if token != "" {
-		handler = localRequestTokenMiddleware(handler, token)
+	if sess != nil {
+		handler = localRequestTokenMiddleware(handler, sess)
 	}
 	return &http.Server{
 		Addr:              addr,

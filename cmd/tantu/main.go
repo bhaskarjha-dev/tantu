@@ -76,9 +76,17 @@ func openPeerStore(storeDir string) (*pairing.PeerStore, error) {
 	return pairing.NewPeerStore(sDir)
 }
 
+// joinHostPortPreservingIPv6 appends the default port without double-bracketing
+// an IPv6 literal. net.JoinHostPort("[::1]", "9877") yields "[[::1]]:9877",
+// which no dialer can parse, so an already-bracketed host is unwrapped first.
+func joinHostPortPreservingIPv6(host, port string) string {
+	unwrapped := strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
+	return net.JoinHostPort(unwrapped, port)
+}
+
 func ensurePort(addr string) string {
 	if _, _, err := net.SplitHostPort(addr); err != nil {
-		return net.JoinHostPort(addr, transport.DefaultLANPort)
+		return joinHostPortPreservingIPv6(addr, transport.DefaultLANPort)
 	}
 	return addr
 }
@@ -87,7 +95,7 @@ func ensurePeerLANPort(addr string) string {
 	if _, _, err := net.SplitHostPort(addr); err == nil {
 		return addr
 	}
-	return net.JoinHostPort(addr, transport.DefaultLANPort)
+	return joinHostPortPreservingIPv6(addr, transport.DefaultLANPort)
 }
 
 // noteHubVersionSkew warns when the running Hub reports a different version

@@ -1535,8 +1535,18 @@ func (h *Hub) Start(parent context.Context) (err error) {
 				if partPath == "" || desiredPath == "" {
 					return errors.New("completed file has no staging path")
 				}
-				published, err := finalizePartFile(f, partPath, desiredPath, releaseActivity)
+				published, err := finalizePartFile(f, partPath, desiredPath, res.SHA256, res.Meta.Size, releaseActivity)
 				if err != nil {
+					// The bytes are on disk and verified; only the staging
+					// cleanup failed. Treat it as a completed transfer with a
+					// warning so the sender is not told the file never arrived.
+					if errors.Is(err, ErrPublishedCleanupIncomplete) {
+						dropMu.Lock()
+						publishedPaths[res.Meta.DropID] = published
+						dropMu.Unlock()
+						h.logger.Warn(DomainDrop, fmt.Sprintf("drop published but staging partial not removed: %v", err))
+						return nil
+					}
 					return fmt.Errorf("publish completed drop: %w", err)
 				}
 				dropMu.Lock()
@@ -2176,6 +2186,11 @@ func (h *Hub) Start(parent context.Context) (err error) {
 	if removed, freed := drop.EnforcePartialBudget(h.OutputDir(), drop.DefaultRetainedPartialBudget); removed > 0 {
 		h.logger.Warn(DomainDrop, fmt.Sprintf("Trimmed %d retained partial file(s) to enforce the %s disk budget (%s reclaimed)", removed, formatBytes(drop.DefaultRetainedPartialBudget), formatBytes(freed)))
 	}
+	// A publication interrupted by a crash or kill leaves a hidden temporary,
+	// never a truncated file under a delivered name. Reclaim those too.
+	if n, sweepErr := drop.SweepPublicationTempsIn(h.OutputDir(), drop.DefaultStagingMaxAge); sweepErr == nil && n > 0 {
+		h.logger.Warn(DomainDrop, fmt.Sprintf("Reclaimed %d interrupted publication temporary file(s)", n))
+	}
 
 	// Both serving loops are now accepting requests and runtime metadata is
 	// published, so callers may safely use the Hub.
@@ -2353,7 +2368,7 @@ func (b *boundedBuffer) String() string {
 // open descriptor without reopening the source pathname. This prevents a
 // local path replacement from substituting different bytes between the final
 // checksum and publication.
-func finalizePartFile(source *os.File, partPath, desiredPath string, releaseActivity ...func()) (string, error) {
+func finalizePartFile(source *os.File, partPath, desiredPath, expectedSHA string, expectedSize int64, releaseActivity ...func()) (string, error) {
 	if source == nil || strings.TrimSpace(partPath) == "" || strings.TrimSpace(desiredPath) == "" {
 		return "", errors.New("missing open staging file or destination path")
 	}
@@ -2381,7 +2396,7 @@ func finalizePartFile(source *os.File, partPath, desiredPath string, releaseActi
 		_ = source.Close()
 		return "", fmt.Errorf("rewind staging file: %w", err)
 	}
-	published, err := publishPartFile(source, desiredPath)
+	published, renamedInPlace, err := publishPartFile(source, partPath, desiredPath, expectedSHA, expectedSize)
 	closeErr := source.Close()
 	if err != nil {
 		return published, err
@@ -2389,8 +2404,13 @@ func finalizePartFile(source *os.File, partPath, desiredPath string, releaseActi
 	if closeErr != nil {
 		return published, fmt.Errorf("close completed drop: %w", closeErr)
 	}
-	if err := drop.RemoveStagingFileIfSame(partPath, sourceInfo); err != nil {
-		return published, fmt.Errorf("published file but could not remove staging partial: %w", err)
+	if !renamedInPlace {
+		if err := drop.RemoveStagingFileIfSame(partPath, sourceInfo); err != nil {
+			// The file is already published and verified. Reporting this as a
+			// transfer failure would tell the sender nothing arrived while the
+			// bytes sit on disk, so return a distinct, inspectable state.
+			return published, fmt.Errorf("%w: %v", ErrPublishedCleanupIncomplete, err)
+		}
 	}
 	if len(releaseActivity) > 0 && releaseActivity[0] != nil {
 		releaseActivity[0]()
@@ -2401,12 +2421,40 @@ func finalizePartFile(source *os.File, partPath, desiredPath string, releaseActi
 	return published, nil
 }
 
-func publishPartFile(source *os.File, desiredPath string) (string, error) {
+// ErrPublishedCleanupIncomplete reports that a file was published and verified
+// but its staging partial could not be removed (a Windows sharing violation, for
+// example). The transfer succeeded; only cleanup is outstanding, so callers
+// must not report it to the sender as a failure.
+var ErrPublishedCleanupIncomplete = errors.New("published file but could not remove staging partial")
+
+// publishPartFile publishes a verified staging file to its final name.
+//
+// The preferred path is a same-filesystem rename of the staging partial into
+// place. It is atomic, costs no I/O proportional to the payload, and keeps peak
+// disk at N rather than 2N, and the published bytes are exactly the bytes that
+// were hashed during the transfer so no second pass can diverge from the digest
+// the receiver verified. When a rename is not possible (a staging area on a
+// different filesystem) it falls back to copying through a hidden temporary,
+// hashing and length-checking the copy before an atomic rename.
+//
+// Either way a crash mid-publication leaves a hidden .tantu-publish-*
+// temporary that SweepPublicationTemps reclaims, never a truncated file under
+// the name the user would open.
+func publishPartFile(source *os.File, partPath, desiredPath, expectedSHA string, expectedSize int64) (string, bool, error) {
 	outputDir, err := drop.OpenStagingDirectory(filepath.Dir(desiredPath))
 	if err != nil {
-		return "", fmt.Errorf("open output directory: %w", err)
+		return "", false, fmt.Errorf("open output directory: %w", err)
 	}
 	defer outputDir.Close()
+
+	sourceInfo, err := source.Stat()
+	if err != nil {
+		return "", false, fmt.Errorf("inspect staging file: %w", err)
+	}
+	if expectedSize > 0 && sourceInfo.Size() != expectedSize {
+		return "", false, fmt.Errorf("staged %d bytes, expected %d", sourceInfo.Size(), expectedSize)
+	}
+
 	ext := filepath.Ext(desiredPath)
 	base := strings.TrimSuffix(desiredPath, ext)
 	for i := 0; i < 10000; i++ {
@@ -2414,34 +2462,87 @@ func publishPartFile(source *os.File, desiredPath string) (string, error) {
 		if i > 0 {
 			candidate = fmt.Sprintf("%s (%d)%s", base, i, ext)
 		}
-		out, err := outputDir.OpenFile(filepath.Base(candidate), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-		if os.IsExist(err) {
-			continue
+		finalName := filepath.Base(candidate)
+
+		if _, err := outputDir.Lstat(finalName); err == nil {
+			continue // a name is already taken; never overwrite
+		} else if !os.IsNotExist(err) {
+			return "", false, err
 		}
-		if err != nil {
-			return "", err
+
+		// Fast path: rename the verified partial into place.
+		if ok, linkErr := outputDir.PublishFromStaging(partPath, finalName); linkErr != nil {
+			if errors.Is(linkErr, os.ErrExist) {
+				continue
+			}
+			return "", false, linkErr
+		} else if ok {
+			// The staging name is now the published name, so there is no
+			// separate partial left to remove.
+			return finalName, true, nil
 		}
+
+		// Fallback: verified copy through a hidden temporary.
 		if _, err := source.Seek(0, io.SeekStart); err != nil {
-			_ = out.Close()
-			_ = outputDir.Remove(filepath.Base(candidate))
-			return "", err
+			return "", false, fmt.Errorf("rewind staging file: %w", err)
 		}
-		_, copyErr := io.Copy(out, source)
-		syncErr := out.Sync()
-		closeOutErr := out.Close()
-		if copyErr != nil || syncErr != nil || closeOutErr != nil {
-			_ = outputDir.Remove(filepath.Base(candidate))
-			if copyErr != nil {
-				return "", copyErr
+		published, err := publishViaTemp(outputDir, source, finalName, expectedSHA, expectedSize)
+		if err != nil {
+			if os.IsExist(err) {
+				continue // lost the race for this name; try the next suffix
 			}
-			if syncErr != nil {
-				return "", syncErr
-			}
-			return "", closeOutErr
+			return "", false, err
 		}
-		return candidate, nil
+		return published, false, nil
 	}
-	return "", errors.New("too many existing file candidates")
+	return "", false, errors.New("too many existing file candidates")
+}
+
+// publishViaTemp writes source into a hidden temporary inside the destination
+// directory, verifying the byte count and digest of what is actually written,
+// and only then renames it into place. The rename is atomic, so a reader never
+// observes a partially written file under the final name.
+func publishViaTemp(outputDir *drop.StagingDirectory, source *os.File, finalName, expectedSHA string, expectedSize int64) (string, error) {
+	tempName, err := outputDir.NewPublicationTempName()
+	if err != nil {
+		return "", err
+	}
+	out, err := outputDir.OpenFile(tempName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return "", err
+	}
+
+	// Hash while streaming so the reported digest describes the published
+	// bytes, and count them so a short copy cannot pass as complete.
+	hasher := sha256.New()
+	written, copyErr := io.Copy(io.MultiWriter(out, hasher), source)
+	if copyErr == nil {
+		copyErr = out.Sync()
+	}
+	closeErr := out.Close()
+	if copyErr != nil || closeErr != nil {
+		_ = outputDir.Remove(tempName)
+		if copyErr != nil {
+			return "", copyErr
+		}
+		return "", closeErr
+	}
+	if expectedSize > 0 && written != expectedSize {
+		_ = outputDir.Remove(tempName)
+		return "", fmt.Errorf("published %d bytes, expected %d", written, expectedSize)
+	}
+	if expectedSHA != "" {
+		got := hex.EncodeToString(hasher.Sum(nil))
+		if !strings.EqualFold(got, expectedSHA) {
+			_ = outputDir.Remove(tempName)
+			return "", fmt.Errorf("published content digest %s does not match verified digest %s", got, expectedSHA)
+		}
+	}
+	if err := outputDir.PublishStagedFile(tempName, finalName); err != nil {
+		_ = outputDir.Remove(tempName)
+		return "", err
+	}
+	return finalName, nil
 }
 
 func formatBytes(b int64) string {

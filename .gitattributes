@@ -1,0 +1,26 @@
+# Normalize line endings in the repository so a file's content is identical
+# on every platform. Without this, Windows checkouts (core.autocrlf=true)
+# rewrite LF to CRLF, which makes `gofmt -l` report false positives on local
+# clones while CI sees clean files — destroying the signal of any format gate.
+* text=auto eol=lf
+
+# Binary assets must never be touched.
+*.exe   binary
+*.dll   binary
+*.so    binary
+*.dylib binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.zip   binary
+*.gz    binary
+*.tar   binary
+
+# Keep generated documentation and shell scripts LF-explicit.
+*.md    text eol=lf
+*.sh    text eol=lf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf

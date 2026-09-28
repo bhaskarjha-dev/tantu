@@ -53,8 +53,21 @@ type sendJSONResult struct {
 	Message            string `json:"message,omitempty"`
 	RetrySafe          bool   `json:"retry_safe,omitempty"`
 	DuplicateRisk      bool   `json:"duplicate_risk,omitempty"`
-	DataSafe           bool   `json:"data_safe,omitempty"`
-	NextAction         string `json:"next_action,omitempty"`
+	// DuplicateSuppressed is set when the receiver recognised this
+	// idempotency key from an earlier completion and wrote nothing new. The
+	// status is still success: the file is on the peer, just not twice.
+	DuplicateSuppressed bool   `json:"duplicate_suppressed,omitempty"`
+	DataSafe            bool   `json:"data_safe,omitempty"`
+	NextAction          string `json:"next_action,omitempty"`
+}
+
+// duplicateNextAction names the safe next step after a receiver suppressed a
+// duplicate. An empty string means the ordinary success path applies.
+func duplicateNextAction(suppressed bool) string {
+	if suppressed {
+		return "Already saved on this peer from an earlier send of the same content. No new file was written."
+	}
+	return ""
 }
 
 func emitSendJSON(res sendJSONResult, exitCode int) {
@@ -125,6 +138,7 @@ func runSend(args []string) {
 	nameFlag := fs.String("name", "", "Override filename or text label")
 	jsonOut := fs.Bool("json", false, "Print machine-readable JSON result (never includes payload content)")
 	keyFlag := fs.String("idempotency-key", "", "Caller-supplied idempotency key for duplicate-safe retry (1-128 identifier chars); default: per-attempt ID")
+	textFlag := fs.Bool("text", false, "Send the argument as a text snippet even if it looks like a path")
 	_ = fs.Parse(args)
 
 	transportExplicit := false
@@ -203,12 +217,24 @@ func runSend(args []string) {
 			}
 		}
 
-		hasPathHint := strings.HasPrefix(firstArg, "./") || strings.HasPrefix(firstArg, ".\\") ||
-			strings.HasPrefix(firstArg, "/") || strings.HasPrefix(firstArg, "\\") ||
-			strings.HasPrefix(firstArg, "~") || strings.Contains(firstArg, "/") ||
-			strings.Contains(firstArg, "\\")
+		hasPathHint := sendHasPathHint(firstArg, *textFlag)
 
 		stat, err := os.Stat(cleanPath)
+		if err != nil && hasPathHint {
+			// A path-shaped argument that does not resolve is a user error, never
+			// text. Falling through here would transmit the mistyped path itself
+			// as a snippet and report a verified success, so refuse instead.
+			if *jsonOut {
+				emitSendJSON(sendJSONResult{Status: "error", Code: "input_error",
+					Message:    fmt.Sprintf("cannot read %s: %v", cleanPath, err),
+					NextAction: "Check the path, or pass --text to send the string itself."}, sendExitUsage)
+			}
+			fmt.Fprintf(os.Stderr, "Error: cannot read %s: %v\n", cleanPath, err)
+			if *verbose {
+				fmt.Fprintln(os.Stderr, "Hint: use --text to send this string as a snippet.")
+			}
+			os.Exit(sendExitUsage)
+		}
 		if err == nil && stat.IsDir() && (hasPathHint || len(rest) == 1) {
 			if *jsonOut {
 				emitSendJSON(sendJSONResult{Status: "error", Code: "invalid_input", Message: fmt.Sprintf("%s is a directory", cleanPath), NextAction: "Archive it before sending."}, sendExitUsage)
@@ -550,7 +576,9 @@ func runSend(args []string) {
 
 	sendCfg := drop.SendDropConfig{Timeout: *timeout}
 	negotiated := false
+	suppressedDuplicate := false
 	sendCfg.OnAck = func(drop.DropAck) { negotiated = true }
+	sendCfg.OnComplete = func(c drop.DropComplete) { suppressedDuplicate = c.Duplicate }
 	if sendErr := drop.SendDrop(ctx, conn, meta, payload, sendCfg); sendErr != nil {
 		bytesForClassify := int64(0)
 		if negotiated {
@@ -577,9 +605,17 @@ func runSend(args []string) {
 	}
 
 	if *jsonOut {
-		emitSendJSON(sendJSONResult{Status: "success", OperationID: meta.DropID, Kind: string(meta.Kind), Name: meta.Name, Size: meta.Size, Destination: destDisplay, DestinationAddress: dialTarget, Verified: true}, sendExitOK)
+		emitSendJSON(sendJSONResult{Status: "success", OperationID: meta.DropID, Kind: string(meta.Kind), Name: meta.Name, Size: meta.Size, Destination: destDisplay, DestinationAddress: dialTarget, Verified: true, DuplicateSuppressed: suppressedDuplicate, DuplicateRisk: suppressedDuplicate, NextAction: duplicateNextAction(suppressedDuplicate)}, sendExitOK)
 	}
 	fmt.Printf("Destination: %s\n", destDisplay)
+
+	if suppressedDuplicate {
+		// The receiver already holds these exact bytes from an earlier
+		// delivery of this operation. Claiming a fresh verified copy here
+		// would tell the user a second file exists on the peer.
+		fmt.Printf("ℹ️  Already saved on %s; duplicate delivery suppressed (nothing new was written)\n", destDisplay)
+		return
+	}
 
 	if meta.Kind == drop.DropKindFile {
 		if hasher != nil {

@@ -1,4 +1,3 @@
-
 package main
 
 import (
@@ -20,7 +19,7 @@ func TestParsePeerSelection(t *testing.T) {
 		{"2", "fp-bbb"},
 		{" 2 ", "fp-bbb"},
 		{"+1", "+1"}, // leading sign is not a plain index: falls to resolver
-		{"0", "0"},       // out of range -> raw query for the resolver
+		{"0", "0"},   // out of range -> raw query for the resolver
 		{"3", "3"},
 		{"1abc", "1abc"}, // trailing junk must NOT select peer 1
 		{"abc", "abc"},

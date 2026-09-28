@@ -230,7 +230,7 @@ const relayPageHTML = `<!DOCTYPE html>
       try {
         const resp = await fetch('/relay', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Tantu-IPC-Token': '{{RELAY_TOKEN}}' },
+          headers: { 'Content-Type': 'application/json', 'X-Tantu-Relay-Ticket': '{{RELAY_TOKEN}}' },
           body: JSON.stringify({ url: url })
         });
         const data = await resp.json();
@@ -370,16 +370,22 @@ func runRelay(args []string) {
 	mux := http.NewServeMux()
 	relayGroup := newLocalSingleFlight()
 
-	relayToken, err := newLocalRequestToken()
+	// The page is gated behind a one-time bootstrap session. Previously GET /
+	// was an unauthenticated ticket dispenser, so any local caller could obtain
+	// a usable relay capability and drive the peer's browser to a hostile page.
+	pageSession, err := NewLocalSession(0)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	// One-time tickets are the preferred capability: unlike the per-process
-	// token they are single-use with a short TTL, so a ticket captured from
-	// browser history, a synced bookmark, or a log entry cannot be replayed.
-	// The per-process token remains as a legacy fallback for pages and
-	// bookmarklets rendered before this change.
+	// One-time tickets are the capability the /relay endpoint checks. A
+	// bookmarklet is a cross-site top-level navigation that cannot set headers
+	// and cannot rely on a SameSite=Strict cookie, so it must carry its ticket
+	// in the query string — but the ticket is only ever minted for an operator
+	// who has already authenticated to this page.
+	//
+	// The long-lived per-process token fallback is deliberately removed: it
+	// makes a single captured value replayable forever.
 	relayTickets := newLocalTicketPool()
 	peerInfo := fmt.Sprintf("%s (%s)", dialTarget, *transportType)
 	renderRelayPage := func(bookmarkletTicket, formTicket string) string {
@@ -387,10 +393,10 @@ func runRelay(args []string) {
 		// using one capability for both would burn the saved bookmarklet
 		// the first time the form is submitted (and vice versa).
 		if bookmarkletTicket == "" {
-			bookmarkletTicket = relayToken
+			bookmarkletTicket = relayTickets.Issue()
 		}
 		if formTicket == "" {
-			formTicket = relayToken
+			formTicket = relayTickets.Issue()
 		}
 		bookmarkletJS := fmt.Sprintf("javascript:void(window.open('http://127.0.0.1:%d/relay?ticket=%s&url='+encodeURIComponent(location.href),'_blank','width=550,height=380'))", *port, bookmarkletTicket)
 		pageContent := strings.ReplaceAll(relayPageHTML, "{{PORT}}", strconv.Itoa(*port))
@@ -410,9 +416,32 @@ func runRelay(args []string) {
 		_ = json.NewEncoder(w).Encode(resp)
 	}
 
+	mux.HandleFunc("/api/local/session", handleLocalSessionExchange(pageSession))
+	mux.HandleFunc("/api/local/bootstrap", func(w http.ResponseWriter, r *http.Request) {
+		if !pageSession.Authorize(r) {
+			http.Error(w, "local session required", http.StatusForbidden)
+			return
+		}
+		// Issue a fresh single-use ticket pair for the authenticated operator.
+		// A caller that must present a session cannot drive this by accident.
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"form":        relayTickets.Issue(),
+			"bookmarklet": relayTickets.Issue(),
+		})
+	})
+
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
+			return
+		}
+		// The page requires a session; without one it explains how to get one
+		// and mints no capability at all.
+		if !pageSession.Authorize(r) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>tantu relay — authorization required</title></head><body style="font-family:system-ui;background:#090b10;color:#e6edf3;padding:2rem"><h1>Authorization required</h1><p>Open the one-time link printed in the terminal that started <code>tantu relay</code>. That link carries a single-use bootstrap value that exchanges for a session; this page will then show the bookmarklet and the manual forwarder.</p><p style="color:#8b949e">No relay capability is issued to an unauthenticated caller.</p></body></html>`))
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -477,17 +506,13 @@ func runRelay(args []string) {
 			return
 		}
 
-		// Capability check: prefer single-use tickets (header for the manual
-		// form, query for bookmarklet navigations which cannot set headers).
-		// The per-process token remains accepted for pages and bookmarklets
-		// rendered before one-time tickets existed.
-		headerCap := r.Header.Get("X-Tantu-IPC-Token")
+		// Capability check: single-use tickets only — in a header for the
+		// manual form, in the query for bookmarklet navigations which cannot
+		// set headers. No long-lived token is accepted, so one captured value
+		// cannot be replayed indefinitely.
+		headerCap := r.Header.Get("X-Tantu-Relay-Ticket")
 		queryTicket := r.URL.Query().Get("ticket")
-		queryToken := r.URL.Query().Get("token")
-		authorized := relayTickets.Consume(headerCap) || relayTickets.Consume(queryTicket) ||
-			localRequestTokenMatches(headerCap, relayToken) ||
-			localRequestTokenMatches(queryTicket, relayToken) ||
-			localRequestTokenMatches(queryToken, relayToken)
+		authorized := relayTickets.Consume(headerCap) || relayTickets.Consume(queryTicket)
 		if !authorized {
 			respond(http.StatusForbidden, relayResponse{
 				Status:  "error",
@@ -554,7 +579,7 @@ func runRelay(args []string) {
 	})
 
 	httpAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(*port))
-	server := newLocalHTTPServer(httpAddr, mux, *timeout)
+	server := newLocalHTTPServerWithSession(httpAddr, mux, pageSession, *timeout)
 
 	go func() {
 		<-ctx.Done()
@@ -563,7 +588,9 @@ func runRelay(args []string) {
 		_ = server.Shutdown(shutdownCtx)
 	}()
 
-	fmt.Printf("Relay server listening on http://%s (forwarding to %s via %s)...\n", httpAddr, dialTarget, *transportType)
+	// The one-time bootstrap lives in the URL fragment so it never reaches the
+	// server, a proxy log, or browser history.
+	fmt.Printf("Relay server ready at http://%s/#bootstrap=%s (forwarding to %s via %s)...\n", httpAddr, pageSession.Bootstrap(), dialTarget, *transportType)
 	fmt.Println("Tip: 'tantu' (or 'tantu hub') now runs the unified Web Dashboard with Relay & QuickDrop.")
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		fmt.Fprintf(os.Stderr, "Relay server error: %v\n", err)

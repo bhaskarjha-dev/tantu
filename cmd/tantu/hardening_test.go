@@ -19,26 +19,113 @@ import (
 )
 
 func TestLocalRequestTokenMiddlewareProtectsMutations(t *testing.T) {
-	const token = "local-token"
+	sess, err := NewLocalSession(0)
+	if err != nil {
+		t.Fatalf("NewLocalSession: %v", err)
+	}
 	called := false
 	handler := localRequestTokenMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusNoContent)
-	}), token)
+	}), sess)
 
 	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:9875/api/send-text", nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusForbidden || called {
-		t.Fatalf("token-less mutation was not rejected: status=%d called=%t", recorder.Code, called)
+		t.Fatalf("session-less mutation was not rejected: status=%d called=%t", recorder.Code, called)
 	}
 
+	// The legacy long-lived token header must no longer authorize anything: a
+	// value captured from a page is replayable forever, and a caller that never
+	// exchanged a bootstrap must get nothing.
 	req = httptest.NewRequest(http.MethodPost, "http://127.0.0.1:9875/api/send-text", nil)
-	req.Header.Set("X-Tantu-IPC-Token", token)
+	req.Header.Set("X-Tantu-IPC-Token", "local-token")
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusForbidden || called {
+		t.Fatalf("a bare token header must not authorize a mutation: status=%d called=%t", recorder.Code, called)
+	}
+
+	// Exchange the one-time bootstrap, then reuse the session cookie.
+	id, ok := sess.Consume(sess.Bootstrap())
+	if !ok {
+		t.Fatal("bootstrap exchange failed")
+	}
+	req = httptest.NewRequest(http.MethodPost, "http://127.0.0.1:9875/api/send-text", nil)
+	req.AddCookie(&http.Cookie{Name: LocalSessionCookie, Value: id})
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusNoContent || !called {
-		t.Fatalf("authorized mutation was rejected: status=%d called=%t", recorder.Code, called)
+		t.Fatalf("session-authorized mutation was rejected: status=%d called=%t", recorder.Code, called)
+	}
+}
+
+// The served page must never carry the credential that guards /api/*, and the
+// bootstrap exchange must be single-use.
+func TestLocalSessionIsOneUseAndPageCarriesNoCredential(t *testing.T) {
+	sess, err := NewLocalSession(0)
+	if err != nil {
+		t.Fatalf("NewLocalSession: %v", err)
+	}
+	bootstrap := sess.Bootstrap()
+	if bootstrap == "" {
+		t.Fatal("a session must have a bootstrap value")
+	}
+	if _, ok := sess.Consume("wrong-value"); ok {
+		t.Fatal("an invalid bootstrap must be rejected")
+	}
+	id, ok := sess.Consume(bootstrap)
+	if !ok {
+		t.Fatal("a valid bootstrap must be accepted")
+	}
+	if _, ok := sess.Consume(bootstrap); ok {
+		t.Fatal("a bootstrap must be single-use")
+	}
+	if !sess.Valid(id) {
+		t.Fatal("a freshly issued session must be valid")
+	}
+
+	// The session exchange handler must set an HttpOnly, SameSite=Strict cookie
+	// and reject a replayed bootstrap.
+	rec := httptest.NewRecorder()
+	handleLocalSessionExchange(sess)(rec, httptest.NewRequest(http.MethodPost, "http://127.0.0.1:9875/api/local/session", nil))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("a replayed bootstrap must be refused, got %d", rec.Code)
+	}
+
+	sess2, _ := NewLocalSession(0)
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:9875/api/local/session", nil)
+	req2.Header.Set(LocalBootstrapHeader, sess2.Bootstrap())
+	handleLocalSessionExchange(sess2)(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("a first exchange must succeed, got %d", rec2.Code)
+	}
+	var found bool
+	for _, c := range rec2.Result().Cookies() {
+		if c.Name == LocalSessionCookie {
+			found = true
+			if !c.HttpOnly {
+				t.Error("the session cookie must be HttpOnly")
+			}
+			if c.SameSite != http.SameSiteStrictMode {
+				t.Errorf("the session cookie must be SameSite=Strict, got %v", c.SameSite)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no session cookie was set")
+	}
+
+	// The standalone page templates must not embed a credential.
+	for name, page := range map[string]string{"drop": dropPageHTML, "relay": relayPageHTML} {
+		if strings.Contains(page, "TANTU_LOCAL_TOKEN") || strings.Contains(page, "{{IPC_TOKEN}}") {
+			t.Errorf("the %s page still references an embedded API credential", name)
+		}
+		if strings.Contains(page, "X-Tantu-IPC-Token") {
+			t.Errorf("the %s page still sends the long-lived token header", name)
+		}
 	}
 }
 
@@ -183,10 +270,12 @@ func TestFinalizeIncomingPartDoesNotOverwriteExistingFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.Write([]byte("received")); err != nil {
+	payload := []byte("received")
+	if _, err := f.Write(payload); err != nil {
 		t.Fatal(err)
 	}
-	published, err := finalizeIncomingPart(f, part, desired)
+	sum := sha256.Sum256(payload)
+	published, err := finalizeIncomingPart(f, part, desired, hex.EncodeToString(sum[:]), int64(len(payload)))
 	if err != nil {
 		t.Fatalf("finalizeIncomingPart failed: %v", err)
 	}

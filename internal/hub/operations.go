@@ -28,6 +28,11 @@ const (
 	OperationStateNegotiating      = "negotiating"
 	OperationStateSending          = "sending"
 	OperationStateVerifying        = "verifying"
+	// OperationStateDuplicateSuppressed means the receiver recognised this
+	// logical operation from its completion tombstone and wrote nothing new.
+	// It is distinct from completed: the user's file is already on the peer,
+	// and reporting "completed" would tell them a second copy exists.
+	OperationStateDuplicateSuppressed = "duplicate_suppressed"
 )
 
 // maxOutboundOperations bounds sender-side transfer truth (in memory and on

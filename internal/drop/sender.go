@@ -24,6 +24,11 @@ type SendDropConfig struct {
 	// local test/diagnostic instrumentation and is not sent on the wire.
 	OnAck   func(DropAck)
 	Timeout time.Duration // Max time for the entire operation (default: 5 min)
+	// OnComplete optionally observes the receiver's final receipt, including
+	// its Duplicate bit. A suppressed duplicate still reports success, so this
+	// is the only way a sender can tell the user that nothing new was written
+	// rather than claiming a second verified copy exists.
+	OnComplete func(DropComplete)
 }
 
 func generateDropID() string {
@@ -296,6 +301,9 @@ func SendDrop(ctx context.Context, conn transport.Conn, meta DropSend, payload i
 		}
 		if comp.SHA256 == "" || !strings.EqualFold(comp.SHA256, sentSHA) {
 			return fmt.Errorf("drop_complete checksum mismatch: got %q, want %s", comp.SHA256, sentSHA)
+		}
+		if cfg.OnComplete != nil {
+			cfg.OnComplete(comp)
 		}
 		break
 	}

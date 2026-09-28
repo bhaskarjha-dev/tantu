@@ -155,8 +155,15 @@ func RunCockpit(ctx context.Context, h *hub.Hub, cancel context.CancelFunc, init
 						sendCtx, sendCancel := context.WithTimeout(ctx, h.Timeout())
 						defer sendCancel()
 
-						if err := drop.SendDrop(sendCtx, conn, meta, f, drop.SendDropConfig{Timeout: h.Timeout()}); err != nil {
+						fileSuppressed := false
+						fileCfg := drop.SendDropConfig{Timeout: h.Timeout()}
+						fileCfg.OnComplete = func(c drop.DropComplete) { fileSuppressed = c.Duplicate }
+						if err := drop.SendDrop(sendCtx, conn, meta, f, fileCfg); err != nil {
 							fmt.Printf("❌ Transfer failed: %v\n", err)
+							return
+						}
+						if fileSuppressed {
+							fmt.Printf("ℹ️  Already saved on %s; duplicate delivery suppressed\n", filepath.Base(path))
 							return
 						}
 						fmt.Printf("✅ Transferred %s successfully!\n", filepath.Base(path))
@@ -381,8 +388,15 @@ func promptSendText(ctx context.Context, scanner *bufio.Scanner, h *hub.Hub, tar
 		sendCtx, sendCancel := context.WithTimeout(ctx, h.Timeout())
 		defer sendCancel()
 
-		if err := drop.SendDrop(sendCtx, conn, meta, strings.NewReader(snippet), drop.SendDropConfig{Timeout: h.Timeout()}); err != nil {
+		snippetSuppressed := false
+		snippetCfg := drop.SendDropConfig{Timeout: h.Timeout()}
+		snippetCfg.OnComplete = func(c drop.DropComplete) { snippetSuppressed = c.Duplicate }
+		if err := drop.SendDrop(sendCtx, conn, meta, strings.NewReader(snippet), snippetCfg); err != nil {
 			fmt.Printf("❌ Text transfer failed: %v\n", err)
+			return
+		}
+		if snippetSuppressed {
+			fmt.Printf("ℹ️  Already saved on the peer; duplicate delivery suppressed\n")
 			return
 		}
 		fmt.Printf("✅ Transferred text snippet successfully! (\"%s\")\n", preview)

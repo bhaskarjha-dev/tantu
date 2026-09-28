@@ -12,6 +12,55 @@ on:
       - '**'
 
 jobs:
+  quality:
+    name: Quality gates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.3'
+          cache: true
+
+      - name: gofmt
+        # A format gate is only trustworthy because .gitattributes pins LF for
+        # every text file, so a Windows checkout cannot report false positives.
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::These files are not gofmt-formatted:"
+            echo "$unformatted"
+            echo "Run: gofmt -w <files>"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: staticcheck
+        # Catches unreachable code, unused results, and error-handling mistakes
+        # that the compiler and vet do not.
+        run: |
+          go run honnef.co/go/tools/cmd/staticcheck@2025.1.1 ./...
+
+      - name: govulncheck
+        # Reports vulnerabilities reachable from this module's own code, which
+        # is far more actionable than an unscanned dependency list.
+        run: |
+          go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+      - name: Line endings
+        # .gitattributes normalizes text to LF; a CRLF committed into the
+        # repository produces noisy diffs and false gofmt failures.
+        run: |
+          if git grep -Il $'\r' -- '*.go' '*.md' '*.yml' '*.yaml'; then
+            echo "::error::CRLF line endings committed; run 'git add --renormalize .'"
+            exit 1
+          fi
+
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -45,3 +94,48 @@ jobs:
       - name: Test (Windows)
         if: matrix.os == 'windows-latest'
         run: go test -count=2 ./...
+
+      - name: Coverage floor
+        if: matrix.os == 'ubuntu-latest'
+        # The CLI is the surface every user touches and was the thinnest covered
+        # package, so it carries an explicit floor. A regression below this line
+        # means user-facing behaviour lost its tests.
+        #
+        # The floor is deliberately just below the current value so it is a
+        # genuine regression guard rather than an aspirational number. Ratchet it
+        # up as command runners become testable (they call os.Exit today, which
+        # is the main reason this package sits near 19%).
+        run: |
+          go test -count=1 -coverprofile=coverage.out -coverpkg=./cmd/tantu/... ./cmd/tantu/... >/dev/null
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}')
+          echo "cmd/tantu coverage: ${total}"
+          floor=18
+          actual=$(echo "$total" | tr -d '%' | awk '{print int($1)}')
+          if [ "$actual" -lt "$floor" ]; then
+            echo "::error::cmd/tantu coverage ${actual}% is below the ${floor}% floor"
+            exit 1
+          fi
+
+  dashboard-acceptance:
+    name: Dashboard acceptance (browser)
+    # The Go suite cannot catch a blocked image, a focus-destroying poll, or
+    # sub-AA contrast; tools/uxtest drives a real browser for those. It is
+    # allowed to fail while it is being stabilized, so it does not block a PR,
+    # but it reports on every run instead of being a manual local ritual.
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.3'
+          cache: true
+      - name: Install Chrome for Testing
+        run: npx --yes @puppeteer/browsers install chrome@stable --path /tmp/browsers
+      - name: Run acceptance harness
+        env:
+          TANTU_TEST_CHROME: /tmp/browsers/chrome/linux-*/chrome-linux64/chrome
+        run: node tools/uxtest/run.mjs

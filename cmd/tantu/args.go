@@ -50,10 +50,39 @@ var valueFlags = map[string]bool{
 	"-name":                true,
 	"--name":               true,
 	"-n":                   true,
+
+	// Kept adjacent to the rest of the map deliberately: this list is a
+	// reordering aid, so a value-taking flag that is missing here silently
+	// loses its argument when it appears after a positional. TestSendValueFlagMapIsComplete
+	// derives the real set from the flag sets and fails when they diverge.
+	"-bundle-path":      true,
+	"--bundle-path":     true,
+	"-idempotency-key":  true,
+	"--idempotency-key": true,
+	"-ssh-fingerprint":  true,
+	"--ssh-fingerprint": true,
+	"-ssh-known-hosts":  true,
+	"--ssh-known-hosts": true,
 }
 
 func isValueFlag(f string) bool {
 	return valueFlags[f]
+}
+
+// sendHasPathHint reports whether a bare send argument looks like a filesystem
+// path rather than text the user wants transmitted. A hint means a failed
+// os.Stat is a user error that must be reported, not text to send silently.
+//
+// The decision is factored out so the classification is directly testable and
+// so the `--text` override is honoured in exactly one place.
+func sendHasPathHint(arg string, forceText bool) bool {
+	if forceText {
+		return false
+	}
+	return strings.HasPrefix(arg, "./") || strings.HasPrefix(arg, ".\\") ||
+		strings.HasPrefix(arg, "/") || strings.HasPrefix(arg, "\\") ||
+		strings.HasPrefix(arg, "~") || strings.Contains(arg, "/") ||
+		strings.Contains(arg, "\\")
 }
 
 // NormalizeArgs reorders interleaved flags so flags appear before positional arguments.

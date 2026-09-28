@@ -141,9 +141,9 @@ func runNode(args []string) {
 	}
 	defer listener.Close()
 
-	fmt.Printf("🚀 tantu node active on %s (transport: %s)\n", listener.Addr().String(), *transportType)
-	fmt.Printf("   ├─ OAuth: ready to handle authorization callbacks\n")
-	fmt.Printf("   └─ QuickDrop: ready to receive files and text (saving to %s)\n", *outputDir)
+	fmt.Printf("ðŸš€ tantu node active on %s (transport: %s)\n", listener.Addr().String(), *transportType)
+	fmt.Printf("   â”œâ”€ OAuth: ready to handle authorization callbacks\n")
+	fmt.Printf("   â””â”€ QuickDrop: ready to receive files and text (saving to %s)\n", *outputDir)
 	fmt.Println("   Note: advanced standalone node. For the dashboard, history, and doctor, run `tantu` (or `tantu hub`) instead.")
 	if removed, _ := drop.SweepStalePartials(*outputDir, drop.DefaultStagingMaxAge); removed > 0 && *verbose {
 		fmt.Printf("Cleaned %d stale partial file(s)\n", removed)
@@ -157,10 +157,10 @@ func runNode(args []string) {
 
 	openBrowser := func(targetURL string) error {
 		if *verbose {
-			fmt.Printf("🌐 Opening browser for URL: %s\n", browser.RedactURL(targetURL))
+			fmt.Printf("ðŸŒ Opening browser for URL: %s\n", browser.RedactURL(targetURL))
 		}
 		if err := browser.OpenURL(targetURL); err != nil {
-			fmt.Fprintf(os.Stderr, "❌ Warning: failed to open browser: %v\n", err)
+			fmt.Fprintf(os.Stderr, "âŒ Warning: failed to open browser: %v\n", err)
 			fmt.Fprintln(os.Stderr, "Please reopen the original authorization URL manually; Tantu will not print its sensitive query values.")
 			return err
 		}
@@ -283,7 +283,7 @@ func runNode(args []string) {
 				if partPath == "" || desiredPath == "" {
 					return errors.New("completed file has no staging path")
 				}
-				published, err := finalizeIncomingPart(f, partPath, desiredPath, releaseActivity)
+				published, err := finalizeIncomingPart(f, partPath, desiredPath, res.SHA256, res.Meta.Size, releaseActivity)
 				if err != nil {
 					return fmt.Errorf("publish received file: %w", err)
 				}
@@ -314,12 +314,12 @@ func runNode(args []string) {
 				}
 				fileMu.Unlock()
 				if finalPath != "" {
-					fmt.Fprintf(os.Stderr, "📥 QuickDrop received file %q (%s) → %s\n", res.Meta.Name, formatSize(res.BytesWritten), finalPath)
+					fmt.Fprintf(os.Stderr, "ðŸ“¥ QuickDrop received file %q (%s) â†’ %s\n", res.Meta.Name, formatSize(res.BytesWritten), finalPath)
 				} else {
-					fmt.Fprintf(os.Stderr, "📥 QuickDrop received file %q (%s)\n", res.Meta.Name, formatSize(res.BytesWritten))
+					fmt.Fprintf(os.Stderr, "ðŸ“¥ QuickDrop received file %q (%s)\n", res.Meta.Name, formatSize(res.BytesWritten))
 				}
 			} else {
-				fmt.Fprintf(os.Stderr, "\n📥 QuickDrop received text (%d bytes)\n", res.BytesWritten)
+				fmt.Fprintf(os.Stderr, "\nðŸ“¥ QuickDrop received text (%d bytes)\n", res.BytesWritten)
 			}
 		},
 		OnDropDoneAttempt: func(dropID, attemptID string, res *drop.ReceiveDropResult, err error) {
@@ -364,16 +364,16 @@ func runNode(args []string) {
 				_ = drop.ReleaseStagingActivity(partPath)
 			}
 			if err != nil && !errors.Is(err, context.Canceled) {
-				fmt.Fprintf(os.Stderr, "❌ QuickDrop transfer error (%s): %v\n", dropID, err)
+				fmt.Fprintf(os.Stderr, "âŒ QuickDrop transfer error (%s): %v\n", dropID, err)
 			}
 		},
 		OnASideDone: func(err error) {
 			if err != nil {
 				if !errors.Is(err, context.Canceled) {
-					fmt.Fprintf(os.Stderr, "❌ OAuth session error: %s\n", bridge.RedactError(err))
+					fmt.Fprintf(os.Stderr, "âŒ OAuth session error: %s\n", bridge.RedactError(err))
 				}
 			} else {
-				fmt.Fprintf(os.Stderr, "✅ OAuth session completed successfully\n")
+				fmt.Fprintf(os.Stderr, "âœ… OAuth session completed successfully\n")
 			}
 		},
 		Logger: nodeLogger,

@@ -33,7 +33,7 @@ const dropPageHTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>📦 QuickDrop</title>
+<title>ðŸ“¦ QuickDrop</title>
 <style>
   :root {
     --bg: #0f1117;
@@ -250,9 +250,11 @@ const dropPageHTML = `<!DOCTYPE html>
 <body>
 <div class="card">
   <header>
-    <h1>📦 QuickDrop</h1>
+    <h1>ðŸ“¦ QuickDrop</h1>
     <div class="peer-badge">Connected to {{PEER}}</div>
   </header>
+
+  <div class="status-msg" id="sessionBanner">Authorizing this page...</div>
 
   <!-- Section 1: Send Text -->
   <div class="section">
@@ -269,7 +271,7 @@ const dropPageHTML = `<!DOCTYPE html>
   <div class="section">
     <div class="section-title">Send File</div>
     <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
-      <div class="drop-zone-icon">📁</div>
+      <div class="drop-zone-icon">ðŸ“</div>
       <div class="drop-zone-text">Click or drag-and-drop a file here</div>
       <div class="drop-zone-file" id="selectedFileName"></div>
       <input type="file" id="fileInput" onchange="onFileSelected(this.files)">
@@ -282,7 +284,7 @@ const dropPageHTML = `<!DOCTYPE html>
 
   <!-- Section 3: Received Drops -->
   <div class="section">
-    <div class="section-title">Received Drops <span style="font-size: 0.8rem; text-transform: none; color: var(--success); margin-left: 0.5rem;" id="listenBadge">🟢 Listening</span></div>
+    <div class="section-title">Received Drops <span style="font-size: 0.8rem; text-transform: none; color: var(--success); margin-left: 0.5rem;" id="listenBadge">ðŸŸ¢ Listening</span></div>
     <div class="received-list" id="receivedList">
       <div class="empty-state" id="emptyState">No drops received yet. Waiting for incoming transfers...</div>
     </div>
@@ -290,13 +292,46 @@ const dropPageHTML = `<!DOCTYPE html>
 </div>
 
 <script>
-  const TANTU_LOCAL_TOKEN = '{{IPC_TOKEN}}';
+  // The long-lived API credential is deliberately NOT in this page. A token
+  // served here on an unauthenticated listener is readable by any local
+  // caller, which makes the API gate decorative. The page instead exchanges a
+  // one-time bootstrap value — printed on the terminal that started tantu and
+  // delivered out of band — for a short-lived HttpOnly session cookie.
+  async function establishSession() {
+    const supplied = new URLSearchParams(location.hash.slice(1)).get('bootstrap');
+    if (!supplied) {
+      document.getElementById('sessionBanner').textContent =
+        'Open the one-time link printed by "tantu drop" in the terminal to authorize this page.';
+      document.getElementById('sessionBanner').classList.add('error');
+      return false;
+    }
+    const res = await fetch('/api/local/session', {
+      method: 'POST',
+      headers: { 'X-Tantu-Local-Bootstrap': supplied }
+    });
+    if (!res.ok) {
+      document.getElementById('sessionBanner').textContent =
+        'That bootstrap value is invalid or was already used. Run "tantu drop" again for a fresh link.';
+      document.getElementById('sessionBanner').classList.add('error');
+      return false;
+    }
+    // Drop the credential from the address bar and history.
+    history.replaceState(null, '', location.pathname);
+    document.getElementById('sessionBanner').remove();
+    return true;
+  }
+
   function apiFetch(path, options) {
     options = options || {};
     const headers = new Headers(options.headers || {});
-    headers.set('X-Tantu-IPC-Token', TANTU_LOCAL_TOKEN);
-    return fetch(path, Object.assign({}, options, { headers: headers }));
+    return fetch(path, Object.assign({}, options, { headers: headers, credentials: 'same-origin' }));
   }
+  // All /api/* calls are session-gated; make the page inert until the
+  // exchange succeeds rather than firing doomed requests.
+  establishSession().then(function (ok) {
+    if (!ok) return;
+    pollIncomingDrops();
+  });
 
   let selectedFile = null;
 
@@ -310,12 +345,12 @@ const dropPageHTML = `<!DOCTYPE html>
     const text = document.getElementById('textContent').value;
     const label = document.getElementById('textLabel').value.trim();
     if (!text) {
-      setStatus('textStatus', '❌ Please enter text to send', 'error');
+      setStatus('textStatus', 'âŒ Please enter text to send', 'error');
       return;
     }
     const btn = document.getElementById('btnSendText');
     btn.disabled = true;
-    setStatus('textStatus', '⏳ Sending text...', 'sending');
+    setStatus('textStatus', 'â³ Sending text...', 'sending');
 
     apiFetch('/api/send-text', {
       method: 'POST',
@@ -325,15 +360,15 @@ const dropPageHTML = `<!DOCTYPE html>
     .then(r => r.json())
     .then(data => {
       if (data.status === 'success') {
-        setStatus('textStatus', '✅ Sent successfully!', 'success');
+        setStatus('textStatus', 'âœ… Sent successfully!', 'success');
         document.getElementById('textContent').value = '';
         document.getElementById('textLabel').value = '';
       } else {
-        setStatus('textStatus', '❌ ' + (data.message || 'Send failed'), 'error');
+        setStatus('textStatus', 'âŒ ' + (data.message || 'Send failed'), 'error');
       }
     })
     .catch(err => {
-      setStatus('textStatus', '❌ ' + err.message, 'error');
+      setStatus('textStatus', 'âŒ ' + err.message, 'error');
     })
     .finally(() => {
       btn.disabled = false;
@@ -354,8 +389,8 @@ const dropPageHTML = `<!DOCTYPE html>
     btn.disabled = true;
     const isLarge = selectedFile.size > 50 * 1024 * 1024;
     const msg = isLarge 
-      ? '⏳ Uploading large file (' + formatBytes(selectedFile.size) + ') — streaming to peer...' 
-      : '⏳ Sending file (' + formatBytes(selectedFile.size) + ')...';
+      ? 'â³ Uploading large file (' + formatBytes(selectedFile.size) + ') â€” streaming to peer...' 
+      : 'â³ Sending file (' + formatBytes(selectedFile.size) + ')...';
     setStatus('fileStatus', msg, 'sending');
 
     const formData = new FormData();
@@ -368,17 +403,17 @@ const dropPageHTML = `<!DOCTYPE html>
     .then(r => r.json())
     .then(data => {
       if (data.status === 'success') {
-        setStatus('fileStatus', '✅ File sent: ' + data.name + ' (' + formatBytes(data.size) + ')', 'success');
+        setStatus('fileStatus', 'âœ… File sent: ' + data.name + ' (' + formatBytes(data.size) + ')', 'success');
         selectedFile = null;
         document.getElementById('selectedFileName').textContent = '';
         document.getElementById('fileInput').value = '';
       } else {
-        setStatus('fileStatus', '❌ ' + (data.message || 'Send failed'), 'error');
+        setStatus('fileStatus', 'âŒ ' + (data.message || 'Send failed'), 'error');
         btn.disabled = false;
       }
     })
     .catch(err => {
-      setStatus('fileStatus', '❌ ' + err.message, 'error');
+      setStatus('fileStatus', 'âŒ ' + err.message, 'error');
       btn.disabled = false;
     });
   }
@@ -442,8 +477,8 @@ const dropPageHTML = `<!DOCTYPE html>
     const title = document.createElement('span');
     title.className = 'received-item-title';
     title.textContent = drop.kind === 'file'
-      ? '📁 File: ' + (drop.name || 'file')
-      : '📝 Text' + (drop.name ? ' (' + drop.name + ')' : '');
+      ? 'ðŸ“ File: ' + (drop.name || 'file')
+      : 'ðŸ“ Text' + (drop.name ? ' (' + drop.name + ')' : '');
     const time = document.createElement('span');
     time.textContent = new Date().toLocaleTimeString();
     header.appendChild(title);
@@ -461,7 +496,7 @@ const dropPageHTML = `<!DOCTYPE html>
         link.href = drop.url;
         link.download = '';
         link.className = 'small-btn';
-        link.textContent = '⬇️ Download';
+        link.textContent = 'â¬‡ï¸ Download';
         actions.appendChild(link);
       }
     } else {
@@ -471,13 +506,13 @@ const dropPageHTML = `<!DOCTYPE html>
       item.appendChild(content);
       const copy = document.createElement('button');
       copy.className = 'small-btn';
-      copy.textContent = '📋 Copy';
+      copy.textContent = 'ðŸ“‹ Copy';
       copy.addEventListener('click', () => {
         const text = String(drop.data || '');
         if (navigator.clipboard && navigator.clipboard.writeText) {
           navigator.clipboard.writeText(text).then(() => {
             const original = copy.textContent;
-            copy.textContent = '✅ Copied!';
+            copy.textContent = 'âœ… Copied!';
             setTimeout(() => { copy.textContent = original; }, 2000);
           }).catch(() => {});
         }
@@ -705,11 +740,11 @@ func runDrop(args []string) {
 		bgListener, err := tr.Listen(*listenAddr)
 		if err != nil {
 			if *verbose {
-				fmt.Fprintf(os.Stderr, "⚠️ Background receive listener failed to bind %s: %v\n", *listenAddr, err)
+				fmt.Fprintf(os.Stderr, "âš ï¸ Background receive listener failed to bind %s: %v\n", *listenAddr, err)
 			}
 		} else {
 			if *verbose {
-				fmt.Printf("📥 QuickDrop background listener active on %s\n", bgListener.Addr().String())
+				fmt.Printf("ðŸ“¥ QuickDrop background listener active on %s\n", bgListener.Addr().String())
 			}
 			go func() {
 				<-ctx.Done()
@@ -730,7 +765,7 @@ func runDrop(args []string) {
 					default:
 						_ = conn.Close()
 						if *verbose {
-							fmt.Fprintf(os.Stderr, "⚠️ QuickDrop receive connection rejected: max active sessions (%d) reached\n", maxStandaloneDropSessions)
+							fmt.Fprintf(os.Stderr, "âš ï¸ QuickDrop receive connection rejected: max active sessions (%d) reached\n", maxStandaloneDropSessions)
 						}
 						continue
 					}
@@ -817,7 +852,7 @@ func runDrop(args []string) {
 								if partPath == "" || savedPath == "" {
 									return errors.New("completed file has no staging path")
 								}
-								published, err := finalizeIncomingPart(fileObj, partPath, savedPath, releaseActivity)
+								published, err := finalizeIncomingPart(fileObj, partPath, savedPath, res.SHA256, res.Meta.Size, releaseActivity)
 								if err != nil {
 									return fmt.Errorf("publish received file: %w", err)
 								}
@@ -858,7 +893,7 @@ func runDrop(args []string) {
 								}
 							}
 							if *verbose {
-								fmt.Fprintf(os.Stderr, "❌ Error receiving drop: %v\n", err)
+								fmt.Fprintf(os.Stderr, "âŒ Error receiving drop: %v\n", err)
 							}
 							return
 						}
@@ -926,14 +961,23 @@ func runDrop(args []string) {
 	mux := http.NewServeMux()
 
 	peerInfo := fmt.Sprintf("%s (%s)", dialTarget, *transportType)
-	localToken, tokenErr := newLocalRequestToken()
+	// The API credential never enters the served page. The page must exchange
+	// this one-time bootstrap value, which is printed here on the operator's
+	// terminal, for a short-lived session cookie.
+	localSession, tokenErr := NewLocalSession(0)
 	if tokenErr != nil {
-		fmt.Fprintf(os.Stderr, "Error: failed to generate local request token: %v\n", tokenErr)
+		fmt.Fprintf(os.Stderr, "Error: failed to generate local session: %v\n", tokenErr)
 		os.Exit(1)
 	}
+	// The one unauthenticated /api route: exchanges the one-time bootstrap
+	// value for a session cookie.
+	mux.HandleFunc("/api/local/session", handleLocalSessionExchange(localSession))
 	pageContent := strings.ReplaceAll(dropPageHTML, "{{PORT}}", strconv.Itoa(*port))
 	pageContent = strings.ReplaceAll(pageContent, "{{PEER}}", escapeHTML(peerInfo))
-	pageContent = strings.ReplaceAll(pageContent, "{{IPC_TOKEN}}", localToken)
+	if strings.Contains(pageContent, "IPC_TOKEN") {
+		fmt.Fprintln(os.Stderr, "Error: refusing to serve a page that embeds an API credential")
+		os.Exit(1)
+	}
 
 	writeJSON := func(w http.ResponseWriter, status int, data any) {
 		w.Header().Set("Content-Type", "application/json")
@@ -952,7 +996,7 @@ func runDrop(args []string) {
 		})
 	}
 
-	// 1. GET / — serve HTML
+	// 1. GET / â€” serve HTML
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -962,7 +1006,7 @@ func runDrop(args []string) {
 		_, _ = w.Write([]byte(pageContent))
 	})
 
-	// 2. POST /api/send-text — send text drop
+	// 2. POST /api/send-text â€” send text drop
 	mux.HandleFunc("/api/send-text", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -994,7 +1038,7 @@ func runDrop(args []string) {
 		conn, err := dialConfiguredPeer()
 		if err != nil {
 			if *verbose {
-				fmt.Fprintf(os.Stderr, "❌ Dial to %s failed: %v\n", dialTarget, err)
+				fmt.Fprintf(os.Stderr, "âŒ Dial to %s failed: %v\n", dialTarget, err)
 			}
 			writeJSON(w, http.StatusBadGateway, map[string]string{"status": "error", "message": fmt.Sprintf("Failed to connect to peer at %s: %v", dialTarget, err)})
 			return
@@ -1010,16 +1054,29 @@ func runDrop(args []string) {
 		sendCtx, cancel := context.WithTimeout(r.Context(), *timeout)
 		defer cancel()
 
-		if err := drop.SendDrop(sendCtx, conn, meta, strings.NewReader(req.Text), drop.SendDropConfig{Timeout: *timeout}); err != nil {
+		textSuppressed := false
+		textCfg := drop.SendDropConfig{Timeout: *timeout}
+		textCfg.OnComplete = func(c drop.DropComplete) { textSuppressed = c.Duplicate }
+		if err := drop.SendDrop(sendCtx, conn, meta, strings.NewReader(req.Text), textCfg); err != nil {
 			if *verbose {
-				fmt.Fprintf(os.Stderr, "❌ SendDrop error: %v\n", err)
+				fmt.Fprintf(os.Stderr, "âŒ SendDrop error: %v\n", err)
 			}
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"status": "error", "message": fmt.Sprintf("Drop send failed: %v", err)})
 			return
 		}
 
+		if textSuppressed {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status":    "success",
+				"message":   "Already saved on this peer; duplicate delivery suppressed",
+				"duplicate": true,
+				"size":      len(req.Text),
+			})
+			return
+		}
+
 		if *verbose {
-			fmt.Printf("✅ Web UI sent text (%d bytes) to %s\n", len(req.Text), dialTarget)
+			fmt.Printf("âœ… Web UI sent text (%d bytes) to %s\n", len(req.Text), dialTarget)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":  "success",
@@ -1028,7 +1085,7 @@ func runDrop(args []string) {
 		})
 	})
 
-	// 3. POST /api/send-file — send file upload
+	// 3. POST /api/send-file â€” send file upload
 	mux.HandleFunc("/api/send-file", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -1061,7 +1118,7 @@ func runDrop(args []string) {
 		conn, err := dialConfiguredPeer()
 		if err != nil {
 			if *verbose {
-				fmt.Fprintf(os.Stderr, "❌ Dial to %s failed: %v\n", dialTarget, err)
+				fmt.Fprintf(os.Stderr, "âŒ Dial to %s failed: %v\n", dialTarget, err)
 			}
 			writeJSON(w, http.StatusBadGateway, map[string]string{"status": "error", "message": fmt.Sprintf("Failed to connect to peer at %s: %v", dialTarget, err)})
 			return
@@ -1091,7 +1148,7 @@ func runDrop(args []string) {
 			filePayload = &trackingFilePayload{
 				seeker: seeker,
 				onResume: func(offset int64) {
-					fmt.Printf("➜ Resuming transfer of %s from %s (offset %d)...\n", fileName, formatBytes(offset), offset)
+					fmt.Printf("âžœ Resuming transfer of %s from %s (offset %d)...\n", fileName, formatBytes(offset), offset)
 				},
 			}
 		}
@@ -1099,16 +1156,30 @@ func runDrop(args []string) {
 		sendCtx, cancel := context.WithTimeout(r.Context(), *timeout)
 		defer cancel()
 
-		if err := drop.SendDrop(sendCtx, conn, meta, filePayload, drop.SendDropConfig{Timeout: *timeout}); err != nil {
+		fileSuppressed := false
+		fileCfg := drop.SendDropConfig{Timeout: *timeout}
+		fileCfg.OnComplete = func(c drop.DropComplete) { fileSuppressed = c.Duplicate }
+		if err := drop.SendDrop(sendCtx, conn, meta, filePayload, fileCfg); err != nil {
 			if *verbose {
-				fmt.Fprintf(os.Stderr, "❌ SendDrop file error: %v\n", err)
+				fmt.Fprintf(os.Stderr, "âŒ SendDrop file error: %v\n", err)
 			}
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"status": "error", "message": fmt.Sprintf("Drop file send failed: %v", err)})
 			return
 		}
 
+		if fileSuppressed {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status":    "success",
+				"message":   "Already saved on this peer; duplicate delivery suppressed",
+				"duplicate": true,
+				"name":      fileName,
+				"size":      header.Size,
+			})
+			return
+		}
+
 		if *verbose {
-			fmt.Printf("✅ Web UI sent file %q (%d bytes) to %s\n", fileName, header.Size, dialTarget)
+			fmt.Printf("âœ… Web UI sent file %q (%d bytes) to %s\n", fileName, header.Size, dialTarget)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":  "success",
@@ -1118,7 +1189,7 @@ func runDrop(args []string) {
 		})
 	})
 
-	// 4. GET /api/receive — long poll for incoming drops
+	// 4. GET /api/receive â€” long poll for incoming drops
 	mux.HandleFunc("/api/receive", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -1161,7 +1232,7 @@ func runDrop(args []string) {
 		}
 	})
 
-	// 5. GET /api/download — download a received file
+	// 5. GET /api/download â€” download a received file
 	mux.HandleFunc("/api/download", func(w http.ResponseWriter, r *http.Request) {
 		id := r.URL.Query().Get("id")
 		dropMu.Lock()
@@ -1178,7 +1249,7 @@ func runDrop(args []string) {
 	})
 
 	httpAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(*port))
-	server := newLocalHTTPServerWithToken(httpAddr, mux, localToken, *timeout)
+	server := newLocalHTTPServerWithSession(httpAddr, mux, localSession, *timeout)
 
 	go func() {
 		<-ctx.Done()
@@ -1187,7 +1258,10 @@ func runDrop(args []string) {
 		_ = server.Shutdown(shutdownCtx)
 	}()
 
-	fmt.Printf("QuickDrop Web UI listening on http://%s (forwarding to %s via %s)...\n", httpAddr, dialTarget, *transportType)
+	// The one-time bootstrap lives in the URL fragment so it never reaches the
+	// server, a proxy log, or browser history.
+	dashboardLink := fmt.Sprintf("http://%s/#bootstrap=%s", httpAddr, localSession.Bootstrap())
+	fmt.Printf("QuickDrop Web UI listening on %s (forwarding to %s via %s)...\n", dashboardLink, dialTarget, *transportType)
 	fmt.Println("Tip: 'tantu' (or 'tantu hub') now runs the unified Web Dashboard with Relay & QuickDrop.")
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		fmt.Fprintf(os.Stderr, "QuickDrop server error: %v\n", err)

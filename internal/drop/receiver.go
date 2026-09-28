@@ -638,12 +638,15 @@ func ReceiveDrop(ctx context.Context, conn transport.Conn, w io.Writer, cfg Rece
 		})
 	}
 
-	// 6. Send TypeDropComplete
+	// 6. Send TypeDropComplete. A suppressed duplicate is still a success — the
+	// operation is not a failure — but the bit tells the sender nothing was
+	// published, so it can say so instead of claiming a fresh verified copy.
 	if err := conn.Send(TypeDropComplete, DropComplete{
 		DropID:    meta.DropID,
 		Success:   true,
 		BytesRecv: totalBytes,
 		SHA256:    computedSHA,
+		Duplicate: duplicate,
 	}); err != nil {
 		return nil, fmt.Errorf("send drop_complete: %w", err)
 	}

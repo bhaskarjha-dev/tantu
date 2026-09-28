@@ -228,4 +228,3 @@ func TestDialInBandPairing_ToPairInitiator(t *testing.T) {
 			initRes.PeerSAS, initRes.LocalSAS, respRes.PeerSAS, respRes.LocalSAS)
 	}
 }
-
