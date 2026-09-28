@@ -14,7 +14,7 @@ It delivers two primary capabilities over a single unified transport:
 2. **QuickDrop Cross-Machine Sharing:** Securely streams text snippets, tokens, and files/images of arbitrary size (up to 5GB) between paired machines with zero cloud dependencies.
 
 `tantu` operates as a **Multi-Peer Mesh with Dynamic Port Resilience and Zero-Trust Identity Attribution**:
-* **Dynamic Port Resilience:** Eliminates port collision crashes with an auto-decrement fallback loop (`9876 â†’ 9875 â†’ 9874 â†’ 9873`) and dynamic wire port binding.
+* **Dynamic Port Resilience:** Eliminates port collision crashes with an auto-decrement fallback loop (`9876 → 9875 → 9874 → 9873`) and dynamic wire port binding.
 * **Daemon State Discovery (`hub.json`):** An atomic runtime descriptor enables port-agnostic CLI IPC delegation and stale process recovery.
 * **Cryptographic Identity Attribution:** Extracts verified TLS 1.3 client leaf certificates to guarantee 100% cryptographic provenance on all inbound drops and OAuth sessions.
 * **Multi-Peer Mesh & 5-Tier Fuzzy Resolver:** Supports multiple paired nodes with custom aliases, default routing, and dynamic IP self-healing upon roaming.
@@ -22,11 +22,11 @@ It delivers two primary capabilities over a single unified transport:
 
 ### 1.1 The Invariant: The Tantu Metaphor
 
-The system derives its name from Sanskrit **à¤¤à¤¨à¥à¤¤à¥** (*tantu*, from verbal root **âˆštan** â€” *to stretch, to extend, to spin*), designating the **warp thread** of a loom. A warp thread is:
+The system derives its name from Sanskrit **तन्तु** (*tantu*, from verbal root **√tan** — *to stretch, to extend, to spin*), designating the **warp thread** of a loom. A warp thread is:
 1. **Stretched taut** between fixed anchor points (the persistent mTLS channel on port `9877`).
 2. **Ambient & persistent** while transient flows pass through (OAuth redirects, QuickDrop streams).
 3. **The invisible foundation** enabling complex patterns to be woven across machine boundaries.
-4. **Naturally scalable** from a single thread to an interconnected fabric (*tantujÄla*, à¤¤à¤¨à¥à¤¤à¥à¤œà¤¾à¤² mesh).
+4. **Naturally scalable** from a single thread to an interconnected fabric (*tantujāla*, तन्तुजाल mesh).
 
 ---
 
@@ -36,46 +36,46 @@ The system derives its name from Sanskrit **à¤¤à¤¨à¥à¤¤à¥** (*t
 
 ```
                NODE 1 (Workstation)                          NODE 2 (Dev Server / Cloud VM)
-      â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”        â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
-      â”‚             tantu hub              â”‚        â”‚             tantu hub              â”‚
-      â”‚  â€¢ Identity: Keypair / Cert / SAS  â”‚        â”‚  â€¢ Identity: Keypair / Cert / SAS  â”‚
-      â”‚  â€¢ Cockpit ([o,s,t,c,p,v,q])       â”‚        â”‚  â€¢ Cockpit ([o,s,t,c,p,v,q])       â”‚
-      â”‚  â€¢ Multi-Peer Mesh State Machine   â”‚        â”‚  â€¢ Multi-Peer Mesh State Machine   â”‚
-      â”‚                                    â”‚        â”‚                                    â”‚
-      â”‚  â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—  â”‚        â”‚  â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—  â”‚
-      â”‚  â•‘   LOOPBACK SOCKET (:9876*)   â•‘  â”‚        â”‚  â•‘   LOOPBACK SOCKET (:9876*)   â•‘  â”‚
-      â”‚  â•‘  * Auto-decrement fallback   â•‘  â”‚        â”‚  â•‘  * Auto-decrement fallback   â•‘  â”‚
-      â”‚  â•‘  â€¢ Web Dashboard (5 tabs)    â•‘  â”‚        â”‚  â•‘  â€¢ Web Dashboard (5 tabs)    â•‘  â”‚
-      â”‚  â•‘  â€¢ 1-Click Bookmarklet Relay â•‘  â”‚        â”‚  â•‘  â€¢ 1-Click Bookmarklet Relay â•‘  â”‚
-      â”‚  â•‘  â€¢ Server-Sent Events (SSE)  â•‘  â”‚        â”‚  â•‘  â€¢ Server-Sent Events (SSE)  â•‘  â”‚
-      â”‚  â•‘  â€¢ Local REST IPC Delegation â•‘  â”‚        â”‚  â•‘  â€¢ Local REST IPC Delegation â•‘  â”‚
-      â”‚  â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•  â”‚        â”‚  â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•  â”‚
-      â”‚                                    â”‚        â”‚                                    â”‚
-      â”‚  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”  â”‚        â”‚  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”  â”‚
-      â”‚  â”‚ OAuth Svc    â”‚â”‚ QuickDrop    â”‚  â”‚        â”‚  â”‚ OAuth Svc    â”‚â”‚ QuickDrop    â”‚  â”‚
-      â”‚  â”‚ (Client/Svr) â”‚â”‚ (Send/Recv)  â”‚  â”‚        â”‚  â”‚ (Client/Svr) â”‚â”‚ (Send/Recv)  â”‚  â”‚
-      â”‚  â””â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”˜â””â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”˜  â”‚        â”‚  â””â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”˜â””â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”˜  â”‚
-      â”‚         â”‚               â”‚          â”‚        â”‚         â”‚               â”‚          â”‚
-      â”‚         â””â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”˜          â”‚        â”‚         â””â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”˜          â”‚
-      â”‚                 â–¼                  â”‚        â”‚                 â–¼                  â”‚
-      â”‚      Multiplexed Wire Dispatcher   â”‚        â”‚      Multiplexed Wire Dispatcher   â”‚
-      â”‚       â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—     â”‚        â”‚       â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—     â”‚
-      â”‚       â•‘  WIRE SOCKET (:9877) â•‘     â”‚        â”‚       â•‘  WIRE SOCKET (:9877) â•‘     â”‚
-      â”‚       â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•     â”‚        â”‚       â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•     â”‚
-      â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜        â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
-                        â”‚                                             â”‚
-                        â”‚    â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—    â”‚
-                        â”‚    â•‘     PLUGGABLE ENCRYPTED PIPE      â•‘    â”‚
-                        â””â•â•â•â–ºâ•‘                                   â•‘â—„â•â•â•â”˜
-                             â•‘  Direct LAN mTLS (:9877)          â•‘
-                             â•‘  Native SSH / TCP Loopback        â•‘
-                             â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+      ┌────────────────────────────────────┐        ┌────────────────────────────────────┐
+      │             tantu hub              │        │             tantu hub              │
+      │  • Identity: Keypair / Cert / SAS  │        │  • Identity: Keypair / Cert / SAS  │
+      │  • Cockpit ([o,s,t,c,p,v,q])       │        │  • Cockpit ([o,s,t,c,p,v,q])       │
+      │  • Multi-Peer Mesh State Machine   │        │  • Multi-Peer Mesh State Machine   │
+      │                                    │        │                                    │
+      │  ╔══════════════════════════════╗  │        │  ╔══════════════════════════════╗  │
+      │  ║   LOOPBACK SOCKET (:9876*)   ║  │        │  ║   LOOPBACK SOCKET (:9876*)   ║  │
+      │  ║  * Auto-decrement fallback   ║  │        │  ║  * Auto-decrement fallback   ║  │
+      │  ║  • Web Dashboard (5 tabs)    ║  │        │  ║  • Web Dashboard (5 tabs)    ║  │
+      │  ║  • 1-Click Bookmarklet Relay ║  │        │  ║  • 1-Click Bookmarklet Relay ║  │
+      │  ║  • Server-Sent Events (SSE)  ║  │        │  ║  • Server-Sent Events (SSE)  ║  │
+      │  ║  • Local REST IPC Delegation ║  │        │  ║  • Local REST IPC Delegation ║  │
+      │  ╚══════════════════════════════╝  │        │  ╚══════════════════════════════╝  │
+      │                                    │        │                                    │
+      │  ┌──────────────┐┌──────────────┐  │        │  ┌──────────────┐┌──────────────┐  │
+      │  │ OAuth Svc    ││ QuickDrop    │  │        │  │ OAuth Svc    ││ QuickDrop    │  │
+      │  │ (Client/Svr) ││ (Send/Recv)  │  │        │  │ (Client/Svr) ││ (Send/Recv)  │  │
+      │  └──────┬───────┘└──────┬───────┘  │        │  └──────┬───────┘└──────┬───────┘  │
+      │         │               │          │        │         │               │          │
+      │         └───────┬───────┘          │        │         └───────┬───────┘          │
+      │                 ▼                  │        │                 ▼                  │
+      │      Multiplexed Wire Dispatcher   │        │      Multiplexed Wire Dispatcher   │
+      │       ╔══════════════════════╗     │        │       ╔══════════════════════╗     │
+      │       ║  WIRE SOCKET (:9877) ║     │        │       ║  WIRE SOCKET (:9877) ║     │
+      │       ╚══════════════════════╝     │        │       ╚══════════════════════╝     │
+      └─────────────────┬──────────────────┘        └─────────────────┬──────────────────┘
+                        │                                             │
+                        │    ╔═══════════════════════════════════╗    │
+                        │    ║     PLUGGABLE ENCRYPTED PIPE      ║    │
+                        └═══►║                                   ║◄═══┘
+                             ║  Direct LAN mTLS (:9877)          ║
+                             ║  Native SSH / TCP Loopback        ║
+                             ╚═══════════════════════════════════╝
 ```
 
 ### Invariants of the Symmetric Hub:
 * **Role Symmetry:** Every node is both a client and a server. No specialized coordinator node is required.
 * **Dual-Socket Network Isolation:**
-  - **Loopback Socket (`127.0.0.1:9876*`):** Exclusively binds to localhost with automatic fallback (`9876 â†’ 9875 â†’ 9874 â†’ 9873`). Hosts the Single-Page Web Dashboard, Bookmarklet HTTP Relay, Server-Sent Events (SSE) bus, and Local REST IPC server. Never exposed to external network interfaces.
+  - **Loopback Socket (`127.0.0.1:9876*`):** Exclusively binds to localhost with automatic fallback (`9876 → 9875 → 9874 → 9873`). Hosts the Single-Page Web Dashboard, Bookmarklet HTTP Relay, Server-Sent Events (SSE) bus, and Local REST IPC server. Never exposed to external network interfaces.
   - **Wire Socket (`0.0.0.0:9877`):** Listens on the network interface for mTLS / SSH / Loopback traffic. Handled by a multiplexed protocol dispatcher that routes incoming connections dynamically.
 * **Dynamic State Discovery (`hub.json`):** Written atomically through a cross-process lock after the HTTP listener is ready. The descriptor records the PID, start time, actual Web/Wire endpoints, transport, and a per-listener-generation IPC capability; CLI subcommands use an authenticated PID/start-time probe rather than trusting the file or a status-shaped local response.
 * **Smart Default Routing:** Outbound drops automatically resolve to the designated `Default` or `Active` peer when unspecified, eliminating flag fatigue.
@@ -104,17 +104,17 @@ All communications over a `transport.Conn` utilize length-prefixed JSON envelope
 | Category | Type Constant | Direction | Description |
 |---|---|---|---|
 | **Control** | `heartbeat` | Bi-directional | Keepalive signal to maintain stateful NAT/firewall bindings |
-| **OAuth** | `bridge_request` | Client â†’ Server | Requests remote browser to open URL and listen on `callback_port` |
-| **OAuth** | `bridge_ack` | Server â†’ Client | Confirms browser launch and active callback listener |
-| **OAuth** | `callback_relay`| Server â†’ Client | Relays intercepted HTTP request (headers, query, auth code) |
-| **OAuth** | `bridge_complete`| Client â†’ Server | Confirms token exchange complete; authorizes browser success render |
-| **OAuth** | `bridge_cancel` | Client â†’ Server | Abandons a sign-in: releases the server's callback listener and de-registers the session. Carries a `request_id` or `flow_id`; the reply uses the same type so a cancelling client always gets an answer it can read. Sent on its own connection, because the session's own connection is busy waiting for the callback |
-| **QuickDrop** | `drop_send` | Sender â†’ Receiver| Announces drop session (kind, name, size, MIME type, chunk size) |
-| **QuickDrop** | `drop_ack` | Receiver â†’ Sender| Approves or rejects drop (e.g. quota, file permission) |
-| **QuickDrop** | `drop_data` | Sender â†’ Receiver| Binary payload chunk (1MB default chunking, base64-encoded in JSON) |
-| **QuickDrop** | `drop_complete`| Receiver â†’ Sender| Confirms byte-for-byte receipt and file integrity |
-| **Pairing** | `pair_hello` | Initiator â†” Responder| In-band pairing invitation/response with ephemeral SAS, cert, and listen_port |
-| **Pairing** | `pair_decision` | Either â†’ Other | In-band confirmation of SAS visual verification (`accepted: true/false`) |
+| **OAuth** | `bridge_request` | Client → Server | Requests remote browser to open URL and listen on `callback_port` |
+| **OAuth** | `bridge_ack` | Server → Client | Confirms browser launch and active callback listener |
+| **OAuth** | `callback_relay`| Server → Client | Relays intercepted HTTP request (headers, query, auth code) |
+| **OAuth** | `bridge_complete`| Client → Server | Confirms token exchange complete; authorizes browser success render |
+| **OAuth** | `bridge_cancel` | Client → Server | Abandons a sign-in: releases the server's callback listener and de-registers the session. Carries a `request_id` or `flow_id`; the reply uses the same type so a cancelling client always gets an answer it can read. Sent on its own connection, because the session's own connection is busy waiting for the callback |
+| **QuickDrop** | `drop_send` | Sender → Receiver| Announces drop session (kind, name, size, MIME type, chunk size) |
+| **QuickDrop** | `drop_ack` | Receiver → Sender| Approves or rejects drop (e.g. quota, file permission) |
+| **QuickDrop** | `drop_data` | Sender → Receiver| Binary payload chunk (1MB default chunking, base64-encoded in JSON) |
+| **QuickDrop** | `drop_complete`| Receiver → Sender| Confirms byte-for-byte receipt and file integrity |
+| **Pairing** | `pair_hello` | Initiator ↔ Responder| In-band pairing invitation/response with ephemeral SAS, cert, and listen_port |
+| **Pairing** | `pair_decision` | Either → Other | In-band confirmation of SAS visual verification (`accepted: true/false`) |
 
 > **Wire Framing & Compatibility:** All protocol communication uses standard 4-byte big-endian length-prefixed frames. The pairing subsystem transparently unmarshals both flat JSON (`{"cert_pem": ...}`) and envelope-nested JSON (`{"type": "pair_hello", "payload": ...}`), ensuring cross-version client compatibility.
 
@@ -209,19 +209,19 @@ Nodes establish mutual trust without an external Certificate Authority (CA):
 Incoming TCP connections on port `9877` undergo protocol negotiation at the application level:
 ```
 Connection Accepted on 0.0.0.0:9877 (mTLS Handshake Verified)
-                     â”‚
+                     │
              conn.PeerIdentity()
         (Extract Leaf Cert Fingerprint)
-                     â”‚
+                     │
              30s Handshake Deadline
-                     â”‚
+                     │
               Read 1st Envelope
-                     â”‚
-       â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¼â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
-       â–¼             â–¼             â–¼
+                     │
+       ┌─────────────┼─────────────┐
+       ▼             ▼             ▼
  [bridge_req]   [drop_send]   [pair_hello]
-       â”‚             â”‚             â”‚
-       â–¼             â–¼             â–¼
+       │             │             │
+       ▼             ▼             ▼
   HandleASide    ReceiveDrop   HandleInboundPairing
 ```
 * **Infallible Zero-Trust Sender Attribution:** In `ReceiveDrop`, the incoming connection's leaf certificate fingerprint (`conn.PeerIdentity()`) is extracted directly and matched against `peers.json`. If matched, `PeerName` is assigned to the peer's verified alias/display name. If unauthenticated, it is marked `(unauthenticated)`. Handlers never trust unauthenticated envelope fields for sender identity, eliminating heuristic spoofing.
