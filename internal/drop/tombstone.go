@@ -82,6 +82,10 @@ type Tombstones struct {
 	maxEntries int
 	maxAge     time.Duration
 	entries    map[string]TombstoneEntry
+	// lastPersistErr records why the durable ledger could not be written. A
+	// non-nil value means duplicate suppression is memory-only and will be
+	// lost on restart; without it that fact is invisible in every log.
+	lastPersistErr error
 }
 
 // NewTombstones creates a store. An empty path means memory-only (useful for
@@ -112,8 +116,11 @@ func (s *Tombstones) Lookup(key string) (TombstoneEntry, bool) {
 }
 
 // Record publishes a completion for future duplicate suppression. It is
-// best-effort durable: a persist failure never fails the transfer the
-// record describes (memory stays authoritative for the process lifetime).
+// best-effort durable: a persist failure never fails the transfer the record
+// describes (memory stays authoritative for the process lifetime). The failure
+// is still recorded and reported through LastPersistError, because a silently
+// unwritable ledger means at-most-once stops working at the next restart and
+// nothing else in the process would say so.
 func (s *Tombstones) Record(e TombstoneEntry) {
 	if s == nil || strings.TrimSpace(e.Key) == "" {
 		return
@@ -134,8 +141,24 @@ func (s *Tombstones) Record(e TombstoneEntry) {
 	path := s.path
 	s.mu.Unlock()
 	if path != "" {
-		_ = writeTombstoneFile(path, snapshot)
+		if err := writeTombstoneFile(path, snapshot); err != nil {
+			s.mu.Lock()
+			s.lastPersistErr = err
+			s.mu.Unlock()
+		}
 	}
+}
+
+// LastPersistError returns the most recent failure to persist the completion
+// ledger, or nil. A non-nil result means duplicate suppression is currently
+// memory-only and would be lost on restart.
+func (s *Tombstones) LastPersistError() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastPersistErr
 }
 
 // Count returns the number of retained records (for diagnostics and tests).

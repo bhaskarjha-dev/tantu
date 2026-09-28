@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +17,15 @@ import (
 // StagingDirName is the per-output-directory staging area for partial files.
 // All receivers (Hub and standalone) share this layout.
 const StagingDirName = ".tantu-staging"
+
+// stagingProcessLockHeartbeat is the file a lock holder rewrites to record
+// that it is still alive, so a concurrent waiter can tell a slow-but-running
+// holder from a crashed one instead of guessing from a fixed timeout.
+const stagingProcessLockHeartbeat = "heartbeat"
+
+// lockHolderAlive is platform-specific: it lives with the pid-heartbeat reader
+// in staging_lockholder_{windows,other}.go, because a liveness probe is
+// implemented differently on Windows, where os.Process.Signal is not available.
 
 // DefaultStagingMaxAge bounds how long a failed transfer's partial file is
 // retained for a same-DropID resume retry. Sender DropIDs are random per
@@ -75,10 +85,37 @@ func SweepStalePartials(outDir string, maxAge time.Duration) (removed int, freed
 	defer stagingMaintenanceMu.Unlock()
 	unlockProcess, err := acquireStagingProcessLock(stagingProcessLockPathForOutput(outDir))
 	if err != nil {
+		// Reclamation exists to bound disk, so failing to take the maintenance
+		// lock must not be indistinguishable from "nothing to reclaim". Record
+		// it for LastMaintenanceError and let the caller log it; returning
+		// (0, 0) silently meant a crashed receiver's stale lock looked like a
+		// clean sweep for as long as that lock existed.
+		recordMaintenanceError(err)
 		return 0, 0
 	}
 	defer unlockProcess()
 	return sweepStalePartials(outDir, maxAge)
+}
+
+// lastMaintenanceErr records the most recent reason staging maintenance could
+// not run. It is only ever written from inside the stagingMaintenanceMu
+// critical section that every maintenance entry point already holds, so no
+// additional locking is taken here - re-locking it would deadlock.
+var lastMaintenanceErr error
+
+// recordMaintenanceError is called with stagingMaintenanceMu already held.
+func recordMaintenanceError(err error) {
+	lastMaintenanceErr = err
+}
+
+// LastMaintenanceError returns why the most recent staging maintenance pass
+// could not run, or nil if it ran or never attempted. Callers that log only
+// when files were removed must consult this: a silent (0, 0) result is
+// ambiguous between "nothing to do" and "reclamation is switched off".
+func LastMaintenanceError() error {
+	stagingMaintenanceMu.Lock()
+	defer stagingMaintenanceMu.Unlock()
+	return lastMaintenanceErr
 }
 
 // LockStagingMaintenance serializes partial creation/registration with the
@@ -388,9 +425,12 @@ func acquireStagingProcessLock(lockPath string) (func(), error) {
 	for {
 		err := os.Mkdir(lockPath, 0700)
 		if err == nil {
+			// Write a heartbeat immediately so a concurrent waiter can tell this
+			// holder is alive from the moment the lock exists.
+			_ = touchStagingProcessLock(lockPath)
 			var once sync.Once
 			return func() {
-				once.Do(func() { _ = os.Remove(lockPath) })
+				once.Do(func() { _ = os.RemoveAll(lockPath) })
 			}, nil
 		}
 		if !os.IsExist(err) {
@@ -402,7 +442,25 @@ func acquireStagingProcessLock(lockPath string) (func(), error) {
 			}
 		}
 		if info, statErr := os.Lstat(lockPath); statErr == nil && info.IsDir() && time.Since(info.ModTime()) > stagingProcessLockStale {
-			_ = os.Remove(lockPath)
+			// The lock directory's mtime is set at Mkdir and never refreshed, so
+			// a holder doing legitimate work longer than the stale window had its
+			// lock stolen, and the original owner's release then removed the
+			// thief's lock. The holder now refreshes a heartbeat carrying its pid
+			// on every poll, so a lock is reclaimed only when its owner is
+			// genuinely gone - which is the case that otherwise wedged staging
+			// maintenance permanently.
+			if pid, known := lockHolderPID(lockPath); known && lockHolderAlive(pid) {
+				// The owner is alive: keep waiting rather than stealing the lock.
+				if time.Now().After(deadline) {
+					return nil, fmt.Errorf("staging process lock timeout: held by a live process")
+				}
+				time.Sleep(10 * time.Millisecond)
+				continue
+			}
+			// Either the owner is gone, or it cannot be identified. Reclaiming is
+			// strictly better than blocking maintenance forever; a lock that was
+			// merely slow is refreshed, so it will not look this old while alive.
+			_ = os.RemoveAll(lockPath)
 			continue
 		}
 		if time.Now().After(deadline) {
@@ -410,6 +468,22 @@ func acquireStagingProcessLock(lockPath string) (func(), error) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// touchStagingProcessLock refreshes a held lock and records the owning process
+// id, so a concurrent waiter can distinguish a slow-but-running holder from one
+// that died holding the lock. The heartbeat carries the pid rather than just a
+// timestamp: refreshing alone would make a crashed holder indistinguishable
+// from a live one, and the lock would then never be reclaimed.
+func touchStagingProcessLock(lockPath string) error {
+	marker := filepath.Join(lockPath, stagingProcessLockHeartbeat)
+	if err := os.WriteFile(marker, []byte(strconv.Itoa(os.Getpid())), 0600); err != nil {
+		return err
+	}
+	// Refresh the directory mtime explicitly for filesystems that do not update
+	// it for a file that already exists.
+	now := time.Now()
+	return os.Chtimes(lockPath, now, now)
 }
 
 // AcquireStagingActivity creates a cross-process activity marker for a
@@ -776,9 +850,11 @@ func EnforcePartialBudget(outDir string, maxBytes int64, protected ...string) (r
 	defer stagingMaintenanceMu.Unlock()
 	unlockProcess, err := acquireStagingProcessLock(stagingProcessLockPathForOutput(outDir))
 	if err != nil {
+		recordMaintenanceError(err)
 		return 0, 0
 	}
 	defer unlockProcess()
+	lastMaintenanceErr = nil
 	if info, statErr := os.Lstat(outDir); statErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return 0, 0
 	}

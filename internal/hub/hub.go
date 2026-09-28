@@ -247,8 +247,11 @@ type Hub struct {
 	uploadSlots chan struct{}
 	// textSlots bounds concurrent JSON text uploads; pairSlots bounds
 	// concurrent outbound pairing attempts. Same rationale, smaller units.
-	textSlots         chan struct{}
-	pairSlots         chan struct{}
+	textSlots chan struct{}
+	pairSlots chan struct{}
+	// tombstones is the receiver's completion ledger, retained so its persist
+	// health can be surfaced. Access through this field only.
+	tombstones        *drop.Tombstones
 	onSnippetReceived func(ReceivedDropItem)
 	openBrowser       func(string) error
 	readyCh           chan struct{}
@@ -379,8 +382,44 @@ func SanitizeDropFilename(name string) string {
 		name = "drop_" + name
 	}
 
+	// Bound the name against the filesystem's own limit. MaxDropNameLength is
+	// 4096, which was sized to stop metadata becoming a memory sink; every
+	// filesystem this ships on caps a single name at 255 bytes. Without a
+	// bound here, a long name passes ack, the whole payload is staged, and the
+	// collision suffix applied at publication pushes the result past NAME_MAX
+	// and fails only after the transfer has consumed the disk it was going to
+	// write. The reservation leaves room for the " (n)" disambiguator.
+	if len(name) > maxSanitizedDropNameBytes {
+		ext := filepath.Ext(name)
+		keep := maxSanitizedDropNameBytes - len(ext)
+		if keep < 8 {
+			keep = 8
+		}
+		if len(ext) > maxSanitizedDropNameBytes-8 {
+			ext = ext[:maxSanitizedDropNameBytes-8]
+			keep = 8
+		}
+		// Trim runes, not bytes, so a multi-byte character is never cut in half
+		// into a replacement sequence.
+		trimmed := []rune(name[:keep])
+		for len(string(trimmed)) > keep {
+			trimmed = trimmed[:len(trimmed)-1]
+		}
+		name = strings.TrimRight(string(trimmed), " .") + ext
+		if name == "" || name == ext {
+			name = "drop.bin"
+		}
+	}
+
 	return name
 }
+
+// maxSanitizedDropNameBytes is the longest filename this receiver will
+// publish. It is below the 255-byte limit shared by ext4, APFS, and NTFS so
+// that the " (n)" disambiguator appended for a name collision still fits, and
+// so the failure happens at acknowledgement rather than after the payload has
+// already consumed the disk it was going to write.
+const maxSanitizedDropNameBytes = 200
 
 // ensureOutputDir creates the QuickDrop output directory when missing and
 // rejects paths that cannot hold received files (existing non-directories,
@@ -881,8 +920,8 @@ func (h *Hub) newDashboardSession() (string, error) {
 // last use. The previous 30-minute absolute expiry logged out even actively
 // used dashboards and made every idle gap over 30 minutes a dead bookmark
 // popup. Within the same-user loopback boundary, TTL length is a weak
-// control; the load-bearing ones ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â restart rotation, HttpOnly/Strict,
-// exact-authority checks ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â are untouched by this value.
+// control; the load-bearing ones ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â restart rotation, HttpOnly/Strict,
+// exact-authority checks ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â are untouched by this value.
 const dashboardSessionTTL = 24 * time.Hour
 
 func (h *Hub) dashboardSessionValid(id string) bool {
@@ -1478,6 +1517,12 @@ func (h *Hub) Start(parent context.Context) (err error) {
 		}
 	}
 
+	// Held on the Hub so the ledger's persist health can be reported. A
+	// silently unwritable ledger would make duplicate suppression memory-only
+	// and nothing else would say so.
+	tombstones := drop.NewTombstones(filepath.Join(storeDir, drop.TombstoneFilename))
+	h.tombstones = tombstones
+
 	dispatcherCfg := bridge.DispatcherConfig{
 		ASideConfig: bridge.ASideConfig{
 			Timeout:     h.cfg.Timeout,
@@ -1489,7 +1534,7 @@ func (h *Hub) Start(parent context.Context) (err error) {
 			MaxSize:     drop.DefaultMaxDropSize,
 			MaxTextSize: drop.DefaultMaxTextSize,
 			Quota:       drop.DefaultTransferQuota(),
-			Tombstones:  drop.NewTombstones(filepath.Join(storeDir, drop.TombstoneFilename)),
+			Tombstones:  tombstones,
 			TouchActivity: func(meta drop.DropSend) error {
 				dropMu.Lock()
 				owner := attemptOwners[meta.DropID]
@@ -1776,7 +1821,7 @@ func (h *Hub) Start(parent context.Context) (err error) {
 				if len(shaShort) > 12 {
 					shaShort = shaShort[:12] + "..."
 				}
-				h.logger.Action(DomainDrop, fmt.Sprintf("ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ SHA-256 verified (%s)", shaShort))
+				h.logger.Action(DomainDrop, fmt.Sprintf("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ SHA-256 verified (%s)", shaShort))
 			}
 
 			isURL := false
@@ -1834,9 +1879,9 @@ func (h *Hub) Start(parent context.Context) (err error) {
 			}
 			if h.cfg.Verbose {
 				if res.Meta.Kind == drop.DropKindFile {
-					log.Printf("ÃƒÂ°Ã…Â¸Ã¢â‚¬Å“Ã‚Â¥ QuickDrop received file %q (%d bytes) from %q", res.Meta.Name, res.BytesWritten, peerName)
+					log.Printf("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¥ QuickDrop received file %q (%d bytes) from %q", res.Meta.Name, res.BytesWritten, peerName)
 				} else {
-					log.Printf("ÃƒÂ°Ã…Â¸Ã¢â‚¬Å“Ã‚Â¥ QuickDrop received text (%d bytes) from %q", res.BytesWritten, peerName)
+					log.Printf("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¥ QuickDrop received text (%d bytes) from %q", res.BytesWritten, peerName)
 				}
 			}
 
@@ -1896,6 +1941,11 @@ func (h *Hub) Start(parent context.Context) (err error) {
 				if outputDir != "" {
 					if removed, freed := drop.EnforcePartialBudget(outputDir, drop.DefaultRetainedPartialBudget, protectedParts...); removed > 0 {
 						h.logger.Warn(DomainDrop, fmt.Sprintf("Trimmed %d retained partial file(s) after failed transfer (%s reclaimed)", removed, formatBytes(freed)))
+					}
+					// A repeated failure here is what silently fills a user's
+					// disk, so say so instead of reporting nothing at all.
+					if mErr := drop.LastMaintenanceError(); mErr != nil {
+						h.logger.Warn(DomainDrop, fmt.Sprintf("Retained partials are not being reclaimed after a failed transfer: %v", mErr))
 					}
 				}
 			}
@@ -1963,7 +2013,7 @@ func (h *Hub) Start(parent context.Context) (err error) {
 				h.pendingPairingsMu.Lock()
 				if len(h.pendingPairings) >= 10 {
 					h.pendingPairingsMu.Unlock()
-					h.logger.Action(DomainPeer, fmt.Sprintf("ÃƒÂ¢Ã…Â¡Ã‚Â ÃƒÂ¯Ã‚Â¸Ã‚Â Inbound pairing from %s rejected: too many pending pairing requests (max 10)", conn.RemoteAddr()))
+					h.logger.Action(DomainPeer, fmt.Sprintf("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â Inbound pairing from %s rejected: too many pending pairing requests (max 10)", conn.RemoteAddr()))
 					return false
 				}
 				h.pendingPairings[pairID] = pending
@@ -1975,7 +2025,7 @@ func (h *Hub) Start(parent context.Context) (err error) {
 					h.pendingPairingsMu.Unlock()
 				}()
 
-				h.logger.Action(DomainPeer, fmt.Sprintf("ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â Inbound pairing approval required: %s (SAS: %s, ID: %s)", peerName, peerSAS, pairID))
+				h.logger.Action(DomainPeer, fmt.Sprintf("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â Inbound pairing approval required: %s (SAS: %s, ID: %s)", peerName, peerSAS, pairID))
 
 				select {
 				case <-decisionCh:
@@ -1983,13 +2033,13 @@ func (h *Hub) Start(parent context.Context) (err error) {
 					accepted := pending.decision
 					h.pendingPairingsMu.Unlock()
 					if accepted {
-						h.logger.Action(DomainPeer, fmt.Sprintf("ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Pairing approved for %s (SAS: %s)", peerName, peerSAS))
+						h.logger.Action(DomainPeer, fmt.Sprintf("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ Pairing approved for %s (SAS: %s)", peerName, peerSAS))
 					} else {
-						h.logger.Action(DomainPeer, fmt.Sprintf("ÃƒÂ¢Ã‚ÂÃ…â€™ Pairing rejected for %s (SAS: %s)", peerName, peerSAS))
+						h.logger.Action(DomainPeer, fmt.Sprintf("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ Pairing rejected for %s (SAS: %s)", peerName, peerSAS))
 					}
 					return accepted
 				case <-time.After(60 * time.Second):
-					h.logger.Action(DomainPeer, fmt.Sprintf("ÃƒÂ¢Ã‚ÂÃ‚Â±ÃƒÂ¯Ã‚Â¸Ã‚Â Pairing request from %s timed out after 60s (rejected)", peerName))
+					h.logger.Action(DomainPeer, fmt.Sprintf("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â Pairing request from %s timed out after 60s (rejected)", peerName))
 					return h.terminatePendingPairing(pending, false)
 				case <-ctx.Done():
 					return h.terminatePendingPairing(pending, false)
@@ -2004,7 +2054,7 @@ func (h *Hub) Start(parent context.Context) (err error) {
 				if len(peerDesc) > 16 {
 					peerDesc = peerDesc[:16] + "..."
 				}
-				h.logger.Action(DomainPeer, fmt.Sprintf("ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Successfully paired with peer %s (SAS: %s)", peerDesc, res.PeerSAS))
+				h.logger.Action(DomainPeer, fmt.Sprintf("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ Successfully paired with peer %s (SAS: %s)", peerDesc, res.PeerSAS))
 			}
 		},
 		Logger: dispatcherLogger,
@@ -2194,6 +2244,15 @@ func (h *Hub) Start(parent context.Context) (err error) {
 	if removed, freed := drop.EnforcePartialBudget(h.OutputDir(), drop.DefaultRetainedPartialBudget); removed > 0 {
 		h.logger.Warn(DomainDrop, fmt.Sprintf("Trimmed %d retained partial file(s) to enforce the %s disk budget (%s reclaimed)", removed, formatBytes(drop.DefaultRetainedPartialBudget), formatBytes(freed)))
 	}
+	// A silent (0, 0) is ambiguous: it means either "nothing to reclaim" or
+	// "reclamation could not run". Only the second case leaves disk
+	// unbounded, so it has to be visible in the log.
+	if mErr := drop.LastMaintenanceError(); mErr != nil {
+		h.logger.Warn(DomainDrop, fmt.Sprintf("Staging maintenance could not run; retained partials are not being reclaimed: %v", mErr))
+	}
+	if tErr := h.tombstones.LastPersistError(); tErr != nil {
+		h.logger.Warn(DomainDrop, fmt.Sprintf("Duplicate-suppression ledger is not being persisted; at-most-once delivery is memory-only until the next restart: %v", tErr))
+	}
 	// A publication interrupted by a crash or kill leaves a hidden temporary,
 	// never a truncated file under a delivered name. Reclaim those too.
 	if n, sweepErr := drop.SweepPublicationTempsIn(h.OutputDir(), drop.DefaultStagingMaxAge); sweepErr == nil && n > 0 {
@@ -2344,11 +2403,11 @@ func (w *eventLogWriter) Write(p []byte) (n int, err error) {
 	case strings.Contains(rawMsg, "[DEBUG]") || strings.Contains(rawMsg, "routing connection"):
 		level = LevelDebug
 		domain = DomainNet
-	case strings.Contains(rawMsg, "ÃƒÂ¢Ã‚ÂÃ…â€™") || strings.Contains(rawMsg, "Error") || strings.Contains(rawMsg, "error") || strings.Contains(rawMsg, "failed"):
+	case strings.Contains(rawMsg, "ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢") || strings.Contains(rawMsg, "Error") || strings.Contains(rawMsg, "error") || strings.Contains(rawMsg, "failed"):
 		level = LevelError
-	case strings.Contains(rawMsg, "ÃƒÂ¢Ã…Â¡Ã‚Â ÃƒÂ¯Ã‚Â¸Ã‚Â"):
+	case strings.Contains(rawMsg, "ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â"):
 		level = LevelWarn
-	case strings.Contains(rawMsg, "ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦") || strings.Contains(rawMsg, "completed successfully") || strings.Contains(rawMsg, "Session started"):
+	case strings.Contains(rawMsg, "ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦") || strings.Contains(rawMsg, "completed successfully") || strings.Contains(rawMsg, "Session started"):
 		level = LevelAction
 	}
 
@@ -2609,8 +2668,8 @@ func (h *Hub) verifyAndApplyPeerRoaming(ctx context.Context, expectedFP, candida
 	}
 	if strings.EqualFold(remoteFP, expectedFP) {
 		_ = store.UpdatePeerAddress(expectedFP, candidateAddr)
-		h.logger.Action(DomainPeer, fmt.Sprintf("ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Authenticated roaming update: peer '%s' verified at %s via mTLS", peerName, candidateAddr))
+		h.logger.Action(DomainPeer, fmt.Sprintf("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ Authenticated roaming update: peer '%s' verified at %s via mTLS", peerName, candidateAddr))
 	} else {
-		h.logger.Action(DomainNet, fmt.Sprintf("ÃƒÂ¢Ã…Â¡Ã‚Â ÃƒÂ¯Ã‚Â¸Ã‚Â Roaming probe to %s presented fingerprint %s (expected %s) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â update rejected", candidateAddr, remoteFP, expectedFP))
+		h.logger.Action(DomainNet, fmt.Sprintf("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â Roaming probe to %s presented fingerprint %s (expected %s) ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â update rejected", candidateAddr, remoteFP, expectedFP))
 	}
 }
