@@ -33,7 +33,7 @@ const dropPageHTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ðŸ“¦ QuickDrop</title>
+<title>📦 QuickDrop</title>
 <style>
   :root {
     --bg: #0f1117;
@@ -250,7 +250,7 @@ const dropPageHTML = `<!DOCTYPE html>
 <body>
 <div class="card">
   <header>
-    <h1>ðŸ“¦ QuickDrop</h1>
+    <h1>📦 QuickDrop</h1>
     <div class="peer-badge">Connected to {{PEER}}</div>
   </header>
 
@@ -271,7 +271,7 @@ const dropPageHTML = `<!DOCTYPE html>
   <div class="section">
     <div class="section-title">Send File</div>
     <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
-      <div class="drop-zone-icon">ðŸ“</div>
+      <div class="drop-zone-icon">📁</div>
       <div class="drop-zone-text">Click or drag-and-drop a file here</div>
       <div class="drop-zone-file" id="selectedFileName"></div>
       <input type="file" id="fileInput" onchange="onFileSelected(this.files)">
@@ -284,7 +284,7 @@ const dropPageHTML = `<!DOCTYPE html>
 
   <!-- Section 3: Received Drops -->
   <div class="section">
-    <div class="section-title">Received Drops <span style="font-size: 0.8rem; text-transform: none; color: var(--success); margin-left: 0.5rem;" id="listenBadge">ðŸŸ¢ Listening</span></div>
+    <div class="section-title">Received Drops <span style="font-size: 0.8rem; text-transform: none; color: var(--success); margin-left: 0.5rem;" id="listenBadge">🟢 Listening</span></div>
     <div class="received-list" id="receivedList">
       <div class="empty-state" id="emptyState">No drops received yet. Waiting for incoming transfers...</div>
     </div>
@@ -345,12 +345,12 @@ const dropPageHTML = `<!DOCTYPE html>
     const text = document.getElementById('textContent').value;
     const label = document.getElementById('textLabel').value.trim();
     if (!text) {
-      setStatus('textStatus', 'âŒ Please enter text to send', 'error');
+      setStatus('textStatus', '❌ Please enter text to send', 'error');
       return;
     }
     const btn = document.getElementById('btnSendText');
     btn.disabled = true;
-    setStatus('textStatus', 'â³ Sending text...', 'sending');
+    setStatus('textStatus', '⏳ Sending text...', 'sending');
 
     apiFetch('/api/send-text', {
       method: 'POST',
@@ -360,15 +360,15 @@ const dropPageHTML = `<!DOCTYPE html>
     .then(r => r.json())
     .then(data => {
       if (data.status === 'success') {
-        setStatus('textStatus', 'âœ… Sent successfully!', 'success');
+        setStatus('textStatus', '✅ Sent successfully!', 'success');
         document.getElementById('textContent').value = '';
         document.getElementById('textLabel').value = '';
       } else {
-        setStatus('textStatus', 'âŒ ' + (data.message || 'Send failed'), 'error');
+        setStatus('textStatus', '❌ ' + (data.message || 'Send failed'), 'error');
       }
     })
     .catch(err => {
-      setStatus('textStatus', 'âŒ ' + err.message, 'error');
+      setStatus('textStatus', '❌ ' + err.message, 'error');
     })
     .finally(() => {
       btn.disabled = false;
@@ -389,8 +389,8 @@ const dropPageHTML = `<!DOCTYPE html>
     btn.disabled = true;
     const isLarge = selectedFile.size > 50 * 1024 * 1024;
     const msg = isLarge 
-      ? 'â³ Uploading large file (' + formatBytes(selectedFile.size) + ') â€” streaming to peer...' 
-      : 'â³ Sending file (' + formatBytes(selectedFile.size) + ')...';
+      ? '⏳ Uploading large file (' + formatBytes(selectedFile.size) + ') — streaming to peer...' 
+      : '⏳ Sending file (' + formatBytes(selectedFile.size) + ')...';
     setStatus('fileStatus', msg, 'sending');
 
     const formData = new FormData();
@@ -403,17 +403,17 @@ const dropPageHTML = `<!DOCTYPE html>
     .then(r => r.json())
     .then(data => {
       if (data.status === 'success') {
-        setStatus('fileStatus', 'âœ… File sent: ' + data.name + ' (' + formatBytes(data.size) + ')', 'success');
+        setStatus('fileStatus', '✅ File sent: ' + data.name + ' (' + formatBytes(data.size) + ')', 'success');
         selectedFile = null;
         document.getElementById('selectedFileName').textContent = '';
         document.getElementById('fileInput').value = '';
       } else {
-        setStatus('fileStatus', 'âŒ ' + (data.message || 'Send failed'), 'error');
+        setStatus('fileStatus', '❌ ' + (data.message || 'Send failed'), 'error');
         btn.disabled = false;
       }
     })
     .catch(err => {
-      setStatus('fileStatus', 'âŒ ' + err.message, 'error');
+      setStatus('fileStatus', '❌ ' + err.message, 'error');
       btn.disabled = false;
     });
   }
@@ -477,8 +477,8 @@ const dropPageHTML = `<!DOCTYPE html>
     const title = document.createElement('span');
     title.className = 'received-item-title';
     title.textContent = drop.kind === 'file'
-      ? 'ðŸ“ File: ' + (drop.name || 'file')
-      : 'ðŸ“ Text' + (drop.name ? ' (' + drop.name + ')' : '');
+      ? '📁 File: ' + (drop.name || 'file')
+      : '📝 Text' + (drop.name ? ' (' + drop.name + ')' : '');
     const time = document.createElement('span');
     time.textContent = new Date().toLocaleTimeString();
     header.appendChild(title);
@@ -496,7 +496,7 @@ const dropPageHTML = `<!DOCTYPE html>
         link.href = drop.url;
         link.download = '';
         link.className = 'small-btn';
-        link.textContent = 'â¬‡ï¸ Download';
+        link.textContent = '⬇️ Download';
         actions.appendChild(link);
       }
     } else {
@@ -506,13 +506,13 @@ const dropPageHTML = `<!DOCTYPE html>
       item.appendChild(content);
       const copy = document.createElement('button');
       copy.className = 'small-btn';
-      copy.textContent = 'ðŸ“‹ Copy';
+      copy.textContent = '📋 Copy';
       copy.addEventListener('click', () => {
         const text = String(drop.data || '');
         if (navigator.clipboard && navigator.clipboard.writeText) {
           navigator.clipboard.writeText(text).then(() => {
             const original = copy.textContent;
-            copy.textContent = 'âœ… Copied!';
+            copy.textContent = '✅ Copied!';
             setTimeout(() => { copy.textContent = original; }, 2000);
           }).catch(() => {});
         }
@@ -740,11 +740,11 @@ func runDrop(args []string) {
 		bgListener, err := tr.Listen(*listenAddr)
 		if err != nil {
 			if *verbose {
-				fmt.Fprintf(os.Stderr, "âš ï¸ Background receive listener failed to bind %s: %v\n", *listenAddr, err)
+				fmt.Fprintf(os.Stderr, "⚠️ Background receive listener failed to bind %s: %v\n", *listenAddr, err)
 			}
 		} else {
 			if *verbose {
-				fmt.Printf("ðŸ“¥ QuickDrop background listener active on %s\n", bgListener.Addr().String())
+				fmt.Printf("📥 QuickDrop background listener active on %s\n", bgListener.Addr().String())
 			}
 			go func() {
 				<-ctx.Done()
@@ -765,7 +765,7 @@ func runDrop(args []string) {
 					default:
 						_ = conn.Close()
 						if *verbose {
-							fmt.Fprintf(os.Stderr, "âš ï¸ QuickDrop receive connection rejected: max active sessions (%d) reached\n", maxStandaloneDropSessions)
+							fmt.Fprintf(os.Stderr, "⚠️ QuickDrop receive connection rejected: max active sessions (%d) reached\n", maxStandaloneDropSessions)
 						}
 						continue
 					}
@@ -893,7 +893,7 @@ func runDrop(args []string) {
 								}
 							}
 							if *verbose {
-								fmt.Fprintf(os.Stderr, "âŒ Error receiving drop: %v\n", err)
+								fmt.Fprintf(os.Stderr, "❌ Error receiving drop: %v\n", err)
 							}
 							return
 						}
@@ -1038,7 +1038,7 @@ func runDrop(args []string) {
 		conn, err := dialConfiguredPeer()
 		if err != nil {
 			if *verbose {
-				fmt.Fprintf(os.Stderr, "âŒ Dial to %s failed: %v\n", dialTarget, err)
+				fmt.Fprintf(os.Stderr, "❌ Dial to %s failed: %v\n", dialTarget, err)
 			}
 			writeJSON(w, http.StatusBadGateway, map[string]string{"status": "error", "message": fmt.Sprintf("Failed to connect to peer at %s: %v", dialTarget, err)})
 			return
@@ -1059,7 +1059,7 @@ func runDrop(args []string) {
 		textCfg.OnComplete = func(c drop.DropComplete) { textSuppressed = c.Duplicate }
 		if err := drop.SendDrop(sendCtx, conn, meta, strings.NewReader(req.Text), textCfg); err != nil {
 			if *verbose {
-				fmt.Fprintf(os.Stderr, "âŒ SendDrop error: %v\n", err)
+				fmt.Fprintf(os.Stderr, "❌ SendDrop error: %v\n", err)
 			}
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"status": "error", "message": fmt.Sprintf("Drop send failed: %v", err)})
 			return
@@ -1076,7 +1076,7 @@ func runDrop(args []string) {
 		}
 
 		if *verbose {
-			fmt.Printf("âœ… Web UI sent text (%d bytes) to %s\n", len(req.Text), dialTarget)
+			fmt.Printf("✅ Web UI sent text (%d bytes) to %s\n", len(req.Text), dialTarget)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":  "success",
@@ -1118,7 +1118,7 @@ func runDrop(args []string) {
 		conn, err := dialConfiguredPeer()
 		if err != nil {
 			if *verbose {
-				fmt.Fprintf(os.Stderr, "âŒ Dial to %s failed: %v\n", dialTarget, err)
+				fmt.Fprintf(os.Stderr, "❌ Dial to %s failed: %v\n", dialTarget, err)
 			}
 			writeJSON(w, http.StatusBadGateway, map[string]string{"status": "error", "message": fmt.Sprintf("Failed to connect to peer at %s: %v", dialTarget, err)})
 			return
@@ -1148,7 +1148,7 @@ func runDrop(args []string) {
 			filePayload = &trackingFilePayload{
 				seeker: seeker,
 				onResume: func(offset int64) {
-					fmt.Printf("âžœ Resuming transfer of %s from %s (offset %d)...\n", fileName, formatBytes(offset), offset)
+					fmt.Printf("➜ Resuming transfer of %s from %s (offset %d)...\n", fileName, formatBytes(offset), offset)
 				},
 			}
 		}
@@ -1161,7 +1161,7 @@ func runDrop(args []string) {
 		fileCfg.OnComplete = func(c drop.DropComplete) { fileSuppressed = c.Duplicate }
 		if err := drop.SendDrop(sendCtx, conn, meta, filePayload, fileCfg); err != nil {
 			if *verbose {
-				fmt.Fprintf(os.Stderr, "âŒ SendDrop file error: %v\n", err)
+				fmt.Fprintf(os.Stderr, "❌ SendDrop file error: %v\n", err)
 			}
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"status": "error", "message": fmt.Sprintf("Drop file send failed: %v", err)})
 			return
@@ -1179,7 +1179,7 @@ func runDrop(args []string) {
 		}
 
 		if *verbose {
-			fmt.Printf("âœ… Web UI sent file %q (%d bytes) to %s\n", fileName, header.Size, dialTarget)
+			fmt.Printf("✅ Web UI sent file %q (%d bytes) to %s\n", fileName, header.Size, dialTarget)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":  "success",

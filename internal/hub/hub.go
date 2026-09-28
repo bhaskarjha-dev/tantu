@@ -924,8 +924,8 @@ func (h *Hub) newDashboardSession() (string, error) {
 // last use. The previous 30-minute absolute expiry logged out even actively
 // used dashboards and made every idle gap over 30 minutes a dead bookmark
 // popup. Within the same-user loopback boundary, TTL length is a weak
-// control; the load-bearing ones ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â restart rotation, HttpOnly/Strict,
-// exact-authority checks ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â are untouched by this value.
+// control; the load-bearing ones — restart rotation, HttpOnly/Strict,
+// exact-authority checks — are untouched by this value.
 const dashboardSessionTTL = 24 * time.Hour
 
 func (h *Hub) dashboardSessionValid(id string) bool {
@@ -1834,7 +1834,7 @@ func (h *Hub) Start(parent context.Context) (err error) {
 				if len(shaShort) > 12 {
 					shaShort = shaShort[:12] + "..."
 				}
-				h.logger.Action(DomainDrop, fmt.Sprintf("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ SHA-256 verified (%s)", shaShort))
+				h.logger.Action(DomainDrop, fmt.Sprintf("✓ SHA-256 verified (%s)", shaShort))
 			}
 
 			isURL := false
@@ -1892,9 +1892,9 @@ func (h *Hub) Start(parent context.Context) (err error) {
 			}
 			if h.cfg.Verbose {
 				if res.Meta.Kind == drop.DropKindFile {
-					log.Printf("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¥ QuickDrop received file %q (%d bytes) from %q", res.Meta.Name, res.BytesWritten, peerName)
+					log.Printf("📥 QuickDrop received file %q (%d bytes) from %q", res.Meta.Name, res.BytesWritten, peerName)
 				} else {
-					log.Printf("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¥ QuickDrop received text (%d bytes) from %q", res.BytesWritten, peerName)
+					log.Printf("📥 QuickDrop received text (%d bytes) from %q", res.BytesWritten, peerName)
 				}
 			}
 
@@ -2026,7 +2026,7 @@ func (h *Hub) Start(parent context.Context) (err error) {
 				h.pendingPairingsMu.Lock()
 				if len(h.pendingPairings) >= 10 {
 					h.pendingPairingsMu.Unlock()
-					h.logger.Action(DomainPeer, fmt.Sprintf("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â Inbound pairing from %s rejected: too many pending pairing requests (max 10)", conn.RemoteAddr()))
+					h.logger.Action(DomainPeer, fmt.Sprintf("⚠️ Inbound pairing from %s rejected: too many pending pairing requests (max 10)", conn.RemoteAddr()))
 					return false
 				}
 				h.pendingPairings[pairID] = pending
@@ -2038,7 +2038,7 @@ func (h *Hub) Start(parent context.Context) (err error) {
 					h.pendingPairingsMu.Unlock()
 				}()
 
-				h.logger.Action(DomainPeer, fmt.Sprintf("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â Inbound pairing approval required: %s (SAS: %s, ID: %s)", peerName, peerSAS, pairID))
+				h.logger.Action(DomainPeer, fmt.Sprintf("🔐 Inbound pairing approval required: %s (SAS: %s, ID: %s)", peerName, peerSAS, pairID))
 
 				select {
 				case <-decisionCh:
@@ -2046,13 +2046,13 @@ func (h *Hub) Start(parent context.Context) (err error) {
 					accepted := pending.decision
 					h.pendingPairingsMu.Unlock()
 					if accepted {
-						h.logger.Action(DomainPeer, fmt.Sprintf("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ Pairing approved for %s (SAS: %s)", peerName, peerSAS))
+						h.logger.Action(DomainPeer, fmt.Sprintf("✅ Pairing approved for %s (SAS: %s)", peerName, peerSAS))
 					} else {
-						h.logger.Action(DomainPeer, fmt.Sprintf("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ Pairing rejected for %s (SAS: %s)", peerName, peerSAS))
+						h.logger.Action(DomainPeer, fmt.Sprintf("❌ Pairing rejected for %s (SAS: %s)", peerName, peerSAS))
 					}
 					return accepted
 				case <-time.After(60 * time.Second):
-					h.logger.Action(DomainPeer, fmt.Sprintf("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â Pairing request from %s timed out after 60s (rejected)", peerName))
+					h.logger.Action(DomainPeer, fmt.Sprintf("⏱️ Pairing request from %s timed out after 60s (rejected)", peerName))
 					return h.terminatePendingPairing(pending, false)
 				case <-ctx.Done():
 					return h.terminatePendingPairing(pending, false)
@@ -2067,7 +2067,7 @@ func (h *Hub) Start(parent context.Context) (err error) {
 				if len(peerDesc) > 16 {
 					peerDesc = peerDesc[:16] + "..."
 				}
-				h.logger.Action(DomainPeer, fmt.Sprintf("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ Successfully paired with peer %s (SAS: %s)", peerDesc, res.PeerSAS))
+				h.logger.Action(DomainPeer, fmt.Sprintf("✅ Successfully paired with peer %s (SAS: %s)", peerDesc, res.PeerSAS))
 			}
 		},
 		Logger: dispatcherLogger,
@@ -2416,11 +2416,11 @@ func (w *eventLogWriter) Write(p []byte) (n int, err error) {
 	case strings.Contains(rawMsg, "[DEBUG]") || strings.Contains(rawMsg, "routing connection"):
 		level = LevelDebug
 		domain = DomainNet
-	case strings.Contains(rawMsg, "ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢") || strings.Contains(rawMsg, "Error") || strings.Contains(rawMsg, "error") || strings.Contains(rawMsg, "failed"):
+	case strings.Contains(rawMsg, "❌") || strings.Contains(rawMsg, "Error") || strings.Contains(rawMsg, "error") || strings.Contains(rawMsg, "failed"):
 		level = LevelError
-	case strings.Contains(rawMsg, "ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â"):
+	case strings.Contains(rawMsg, "⚠️"):
 		level = LevelWarn
-	case strings.Contains(rawMsg, "ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦") || strings.Contains(rawMsg, "completed successfully") || strings.Contains(rawMsg, "Session started"):
+	case strings.Contains(rawMsg, "✅") || strings.Contains(rawMsg, "completed successfully") || strings.Contains(rawMsg, "Session started"):
 		level = LevelAction
 	}
 
@@ -2681,8 +2681,8 @@ func (h *Hub) verifyAndApplyPeerRoaming(ctx context.Context, expectedFP, candida
 	}
 	if strings.EqualFold(remoteFP, expectedFP) {
 		_ = store.UpdatePeerAddress(expectedFP, candidateAddr)
-		h.logger.Action(DomainPeer, fmt.Sprintf("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ Authenticated roaming update: peer '%s' verified at %s via mTLS", peerName, candidateAddr))
+		h.logger.Action(DomainPeer, fmt.Sprintf("✅ Authenticated roaming update: peer '%s' verified at %s via mTLS", peerName, candidateAddr))
 	} else {
-		h.logger.Action(DomainNet, fmt.Sprintf("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â Roaming probe to %s presented fingerprint %s (expected %s) ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â update rejected", candidateAddr, remoteFP, expectedFP))
+		h.logger.Action(DomainNet, fmt.Sprintf("⚠️ Roaming probe to %s presented fingerprint %s (expected %s) — update rejected", candidateAddr, remoteFP, expectedFP))
 	}
 }

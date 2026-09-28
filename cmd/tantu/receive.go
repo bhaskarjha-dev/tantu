@@ -262,15 +262,15 @@ func runReceive(args []string) {
 			if result.Duplicate {
 				fmt.Fprintf(os.Stderr, "Duplicate delivery suppressed, no new file (idempotency key %q)\n", result.Meta.IdempotencyKey)
 			} else if result.Meta.Kind == drop.DropKindFile {
-				fmt.Fprintf(os.Stderr, "ðŸ“¥ Received file %q (%s) â†’ %s\n", result.Meta.Name, formatSize(result.BytesWritten), targetPath)
+				fmt.Fprintf(os.Stderr, "📥 Received file %q (%s) → %s\n", result.Meta.Name, formatSize(result.BytesWritten), targetPath)
 			} else {
-				fmt.Fprintf(os.Stderr, "ðŸ“¥ Received text (%d bytes)\n", result.BytesWritten)
+				fmt.Fprintf(os.Stderr, "📥 Received text (%d bytes)\n", result.BytesWritten)
 			}
 			return nil
 		}
 
 		if err := handleConnection(conn); err != nil {
-			fmt.Fprintf(os.Stderr, "âŒ Receive error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "❌ Receive error: %v\n", err)
 		}
 
 		if !*loopFlag {
