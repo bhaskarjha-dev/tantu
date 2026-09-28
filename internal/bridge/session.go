@@ -228,6 +228,21 @@ func allowedCallbackRelayHeader(name string) bool {
 	}
 }
 
+// inspectableCallbackRelayHeader marks headers the A-side may relay purely so
+// the B-side can re-verify that the callback really was a top-level browser
+// navigation (the browser-CSRF defence). They are captured but never delivered
+// to the local application: filterCallbackRelayHeaders applies only
+// allowedCallbackRelayHeader, so adding a name here does not widen what the
+// application sees.
+func inspectableCallbackRelayHeader(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "sec-fetch-mode", "sec-fetch-dest", "sec-fetch-site", "origin":
+		return true
+	default:
+		return false
+	}
+}
+
 // filterCallbackRelayHeaders returns the allowlisted subset of a relayed
 // header map with canonicalized keys. It is the B-side enforcement point: a
 // compromised or buggy peer must not be able to smuggle Authorization, Cookie,

@@ -3,6 +3,7 @@ package bridge
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -82,6 +83,16 @@ type callbackExpectationSpec struct {
 	path        string
 	state       string
 	constrained bool
+	// authOrigin is the origin of the authorization server, taken from the URL
+	// the A-side was asked to open. It is what a legitimate callback's Origin
+	// header must match, and it is empty for a synthetic caller that supplied
+	// no parseable URL.
+	authOrigin string
+	// unbound is true when the authorization URL carried neither a loopback
+	// redirect_uri nor a loopback state. Such a flow has no redirect binding of
+	// its own, so it leans entirely on the navigation and Origin checks below
+	// and must be reported as weaker to the user.
+	unbound bool
 }
 
 // callbackExpectation extracts the callback path/state from a normal OAuth
@@ -91,13 +102,21 @@ type callbackExpectationSpec struct {
 func callbackExpectation(rawURL string) callbackExpectationSpec {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return callbackExpectationSpec{}
+		// Nothing can be derived from an unparseable URL, so the flow has no
+		// binding at all. Report it as unbound so the browser checks apply and
+		// the caller can see the flow is weaker.
+		return callbackExpectationSpec{unbound: true}
 	}
 	q := parsed.Query()
 	state := q.Get("state")
 	redirect := q.Get("redirect_uri")
 	path := ""
 	constrained := false
+
+	authOrigin := ""
+	if parsed.Scheme != "" && parsed.Host != "" {
+		authOrigin = strings.ToLower(parsed.Scheme) + "://" + strings.ToLower(parsed.Host)
+	}
 
 	if redirect != "" {
 		if redirectURL, parseErr := url.Parse(redirect); parseErr == nil && redirectURL.Hostname() != "" {
@@ -118,12 +137,16 @@ func callbackExpectation(rawURL string) callbackExpectationSpec {
 		constrained = true
 	}
 	if !constrained {
-		return callbackExpectationSpec{state: state}
+		// No loopback redirect binding: the application supplied neither a
+		// redirect_uri nor a loopback state. Nothing about such a flow ties a
+		// callback to the authorization request except the browser checks in
+		// validateCallbackRequestState, so it is reported as unbound.
+		return callbackExpectationSpec{state: state, authOrigin: authOrigin, unbound: true}
 	}
 	if path == "" {
 		path = "/"
 	}
-	return callbackExpectationSpec{path: path, state: state, constrained: true}
+	return callbackExpectationSpec{path: path, state: state, constrained: true, authOrigin: authOrigin}
 }
 
 func isLoopbackHost(host string) bool {
@@ -164,16 +187,68 @@ func validateCallbackRequestState(r *http.Request, expected callbackExpectationS
 	if !requestHostIsLoopback(r.Host) {
 		return errors.New("callback host is not loopback")
 	}
+	// A loopback Host only defeats DNS rebinding, where the attacker controls
+	// the hostname. A page that simply addresses 127.0.0.1 with an IP literal
+	// sends a perfectly valid loopback Host, so these two browser-controlled
+	// headers are the actual browser-CSRF defence: a real authorization
+	// response always arrives as a top-level navigation from the provider's
+	// page, and a page-injected fetch() cannot present itself as one.
+	if err := validateCallbackFetchMetadata(r, expected); err != nil {
+		return err
+	}
 	if expected.constrained {
 		if expected.path != "" && r.URL.Path != expected.path {
 			return fmt.Errorf("callback path %q does not match redirect URI", r.URL.Path)
 		}
-		state := r.URL.Query().Get("state")
-		if state == "" {
-			state = formState
-		}
-		if expected.state != "" && state != expected.state {
+	}
+	state := r.URL.Query().Get("state")
+	if state == "" {
+		state = formState
+	}
+	if expected.state != "" {
+		// state is the application's own CSRF token when it supplies one.
+		// Compare in constant time; it is a secret until the flow completes.
+		if state == "" || subtle.ConstantTimeCompare([]byte(state), []byte(expected.state)) != 1 {
 			return errors.New("callback state does not match authorization request")
+		}
+	}
+	return nil
+}
+
+// validateCallbackFetchMetadata rejects a callback that a web page injected
+// rather than one the user's browser navigated to.
+//
+// A genuine OAuth response is a top-level navigation: the provider redirects
+// the tab, so Sec-Fetch-Mode is "navigate" and either no Origin is sent (a GET
+// redirect) or the Origin is the provider's own (a form_post response). An
+// attacker's page issues fetch(), XHR, or a subresource request, and the browser
+// labels it "cors", "no-cors", or "same-origin" and stamps the attacker's Origin
+// — neither of which can be forged from a page, which is the whole point.
+//
+// Both headers are enforced when present and tolerated when absent, so a client
+// that strips them falls back to the state check rather than being locked out.
+func validateCallbackFetchMetadata(r *http.Request, expected callbackExpectationSpec) error {
+	if mode := strings.TrimSpace(r.Header.Get("Sec-Fetch-Mode")); mode != "" {
+		if !strings.EqualFold(mode, "navigate") && !strings.EqualFold(mode, "websocket") {
+			return fmt.Errorf("callback was not a top-level navigation (Sec-Fetch-Mode: %s)", mode)
+		}
+	}
+	// A subresource destination (image, script, style, ...) is never an OAuth
+	// response. A document, iframe, or frame is a legitimate navigation target.
+	switch dest := strings.TrimSpace(r.Header.Get("Sec-Fetch-Dest")); dest {
+	case "", "document", "iframe", "frame", "object", "embed", "empty":
+	default:
+		return fmt.Errorf("callback destination %q is a subresource, not a navigation", dest)
+	}
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin != "" && !strings.EqualFold(origin, "null") {
+		if expected.authOrigin == "" {
+			// No authorization origin is known, so a browser-supplied Origin
+			// cannot be checked against anything. Refuse rather than guess.
+			return fmt.Errorf("callback carried Origin %s but the authorization origin is unknown", origin)
+		}
+		if !strings.EqualFold(strings.TrimRight(origin, "/"), expected.authOrigin) {
+			return fmt.Errorf("callback Origin %s does not match the authorization origin", origin)
 		}
 	}
 	return nil
@@ -190,7 +265,7 @@ func callbackHeaders(h http.Header) map[string]string {
 		if len(values) == 0 || values[0] == "" {
 			continue
 		}
-		if allowedCallbackRelayHeader(name) {
+		if allowedCallbackRelayHeader(name) || inspectableCallbackRelayHeader(name) {
 			headers[http.CanonicalHeaderKey(name)] = values[0]
 		}
 	}

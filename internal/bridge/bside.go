@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -235,8 +236,43 @@ func validateCallbackRelay(expected callbackExpectationSpec, relay protocol.Call
 			}
 		}
 	}
-	if expected.state != "" && state != expected.state {
-		return errors.New("callback relay state does not match authorization request")
+	// Re-check the browser-navigation evidence on this side too. The A-side is
+	// the machine that owns the browser, so it is the only place these headers
+	// can be observed, but a compromised or buggy A-side must not be able to
+	// convince the B-side to inject a code into the application.
+	if err := validateRelayFetchMetadata(relay, expected); err != nil {
+		return err
+	}
+	// The application's state is its own CSRF token until the flow completes,
+	// so compare it in constant time rather than with ==.
+	if expected.state != "" {
+		if state == "" || subtle.ConstantTimeCompare([]byte(state), []byte(expected.state)) != 1 {
+			return errors.New("callback relay state does not match authorization request")
+		}
+	}
+	return nil
+}
+
+// validateRelayFetchMetadata re-applies the browser-CSRF checks to the relayed
+// callback, using the fetch metadata the A-side captured. It is deliberately
+// tolerant of absent metadata so a legitimate relay is never blocked, and
+// strict when the metadata contradicts the authorization request.
+func validateRelayFetchMetadata(relay protocol.CallbackRelay, expected callbackExpectationSpec) error {
+	// The A-side relays only allowlisted headers, and the fetch metadata it
+	// needs is not among them, so it is inspected here from the header map it
+	// does carry when present.
+	if mode := strings.TrimSpace(canonicalRelayHeader(relay.Headers, "Sec-Fetch-Mode")); mode != "" {
+		if !strings.EqualFold(mode, "navigate") && !strings.EqualFold(mode, "websocket") {
+			return fmt.Errorf("relayed callback was not a top-level navigation (Sec-Fetch-Mode: %s)", mode)
+		}
+	}
+	if origin := strings.TrimSpace(canonicalRelayHeader(relay.Headers, "Origin")); origin != "" && !strings.EqualFold(origin, "null") {
+		if expected.authOrigin == "" {
+			return fmt.Errorf("relayed callback carried Origin %s but the authorization origin is unknown", origin)
+		}
+		if !strings.EqualFold(strings.TrimRight(origin, "/"), expected.authOrigin) {
+			return fmt.Errorf("relayed callback Origin %s does not match the authorization origin", origin)
+		}
 	}
 	return nil
 }
