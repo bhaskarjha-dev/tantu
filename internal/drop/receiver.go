@@ -76,6 +76,14 @@ func receiveDropEnvelope(ctx context.Context, conn transport.Conn) (*protocol.En
 	}
 	resultCh := make(chan dropEnvelopeResult, 1)
 	go func() {
+		// The receive path decodes bytes a peer chose. A panic here must not
+		// escape into the caller's goroutine, where it would abort the whole
+		// process and strand the staging handle this transfer opened.
+		defer func() {
+			if rec := recover(); rec != nil {
+				resultCh <- dropEnvelopeResult{err: fmt.Errorf("recovered from panic while reading a drop frame: %v", rec)}
+			}
+		}()
 		env, err := conn.Receive()
 		resultCh <- dropEnvelopeResult{env: env, err: err}
 	}()

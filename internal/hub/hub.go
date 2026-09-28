@@ -734,16 +734,13 @@ func (h *Hub) NormalizePeers() {
 // Ready returns a channel that is closed when the Hub listeners are fully bound and ready.
 func (h *Hub) Ready() <-chan struct{} {
 	h.mu.Lock()
-	// If a previous generation has completed, reserve the next generation's
-	// channel before returning. This closes the race where a caller invokes
-	// Ready immediately after Stop and before the next Start goroutine has
-	// installed its state.
-	if h.started && !h.running && h.runDone != nil {
-		select {
-		case <-h.runDone:
-			h.readyCh = make(chan struct{})
-		default:
-		}
+	// Ready never creates a generation channel. The previous generation's
+	// deferred cleanup installs the next one while still holding h.mu, so a
+	// caller arriving after Stop and before the next Start always gets the
+	// channel that generation will actually close. The nil case only covers a
+	// Hub that has never been started.
+	if h.readyCh == nil {
+		h.readyCh = make(chan struct{})
 	}
 	ch := h.readyCh
 	h.mu.Unlock()
@@ -884,8 +881,8 @@ func (h *Hub) newDashboardSession() (string, error) {
 // last use. The previous 30-minute absolute expiry logged out even actively
 // used dashboards and made every idle gap over 30 minutes a dead bookmark
 // popup. Within the same-user loopback boundary, TTL length is a weak
-// control; the load-bearing ones — restart rotation, HttpOnly/Strict,
-// exact-authority checks — are untouched by this value.
+// control; the load-bearing ones ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â restart rotation, HttpOnly/Strict,
+// exact-authority checks ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â are untouched by this value.
 const dashboardSessionTTL = 24 * time.Hour
 
 func (h *Hub) dashboardSessionValid(id string) bool {
@@ -1179,13 +1176,6 @@ func (h *Hub) Start(parent context.Context) (err error) {
 			select {
 			case <-h.runDone:
 				h.runDone = nil
-				if h.started {
-					select {
-					case <-h.readyCh:
-						h.readyCh = make(chan struct{})
-					default:
-					}
-				}
 				h.mu.Unlock()
 				continue
 			default:
@@ -1195,20 +1185,14 @@ func (h *Hub) Start(parent context.Context) (err error) {
 			}
 		}
 
-		if h.started {
-			// Reuse the channel reserved by Ready, or create it if Start is
-			// the first observer after the previous generation completed.
-			select {
-			case <-h.readyCh:
-				h.readyCh = make(chan struct{})
-			default:
-			}
-			readyCh = h.readyCh
-		} else {
-			// Preserve the channel returned by Ready before the first Start so
-			// callers cannot race with startup and wait on an orphaned channel.
-			readyCh = h.readyCh
+		// Reuse the channel the previous generation's cleanup installed, or
+		// create one on first use. Start is the only writer of this field
+		// during a generation, so a caller already waiting in Ready is never
+		// orphaned.
+		if h.readyCh == nil {
+			h.readyCh = make(chan struct{})
 		}
+		readyCh = h.readyCh
 		readyClosed = false
 		markReady = func() {
 			if !readyClosed {
@@ -1269,6 +1253,13 @@ func (h *Hub) Start(parent context.Context) (err error) {
 			if !readyClosed && err != nil {
 				h.startErr = err
 			}
+			// Install the next generation's channel here, under the lock and
+			// before the current one is closed. Doing it in this order means a
+			// caller that calls Ready the instant Stop returns always receives
+			// a channel the next Start will close, rather than the one closed
+			// below. The previous select-on-closed-channel approach raced close()
+			// and could hand out either a stale closed channel or an orphan.
+			h.readyCh = make(chan struct{})
 		} else {
 			// A defensive branch for future lifecycle changes: never cancel or
 			// clear resources owned by a newer generation.
@@ -1785,7 +1776,7 @@ func (h *Hub) Start(parent context.Context) (err error) {
 				if len(shaShort) > 12 {
 					shaShort = shaShort[:12] + "..."
 				}
-				h.logger.Action(DomainDrop, fmt.Sprintf("✓ SHA-256 verified (%s)", shaShort))
+				h.logger.Action(DomainDrop, fmt.Sprintf("ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ SHA-256 verified (%s)", shaShort))
 			}
 
 			isURL := false
@@ -1843,9 +1834,9 @@ func (h *Hub) Start(parent context.Context) (err error) {
 			}
 			if h.cfg.Verbose {
 				if res.Meta.Kind == drop.DropKindFile {
-					log.Printf("📥 QuickDrop received file %q (%d bytes) from %q", res.Meta.Name, res.BytesWritten, peerName)
+					log.Printf("ÃƒÂ°Ã…Â¸Ã¢â‚¬Å“Ã‚Â¥ QuickDrop received file %q (%d bytes) from %q", res.Meta.Name, res.BytesWritten, peerName)
 				} else {
-					log.Printf("📥 QuickDrop received text (%d bytes) from %q", res.BytesWritten, peerName)
+					log.Printf("ÃƒÂ°Ã…Â¸Ã¢â‚¬Å“Ã‚Â¥ QuickDrop received text (%d bytes) from %q", res.BytesWritten, peerName)
 				}
 			}
 
@@ -1972,7 +1963,7 @@ func (h *Hub) Start(parent context.Context) (err error) {
 				h.pendingPairingsMu.Lock()
 				if len(h.pendingPairings) >= 10 {
 					h.pendingPairingsMu.Unlock()
-					h.logger.Action(DomainPeer, fmt.Sprintf("⚠️ Inbound pairing from %s rejected: too many pending pairing requests (max 10)", conn.RemoteAddr()))
+					h.logger.Action(DomainPeer, fmt.Sprintf("ÃƒÂ¢Ã…Â¡Ã‚Â ÃƒÂ¯Ã‚Â¸Ã‚Â Inbound pairing from %s rejected: too many pending pairing requests (max 10)", conn.RemoteAddr()))
 					return false
 				}
 				h.pendingPairings[pairID] = pending
@@ -1984,7 +1975,7 @@ func (h *Hub) Start(parent context.Context) (err error) {
 					h.pendingPairingsMu.Unlock()
 				}()
 
-				h.logger.Action(DomainPeer, fmt.Sprintf("🔐 Inbound pairing approval required: %s (SAS: %s, ID: %s)", peerName, peerSAS, pairID))
+				h.logger.Action(DomainPeer, fmt.Sprintf("ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â Inbound pairing approval required: %s (SAS: %s, ID: %s)", peerName, peerSAS, pairID))
 
 				select {
 				case <-decisionCh:
@@ -1992,13 +1983,13 @@ func (h *Hub) Start(parent context.Context) (err error) {
 					accepted := pending.decision
 					h.pendingPairingsMu.Unlock()
 					if accepted {
-						h.logger.Action(DomainPeer, fmt.Sprintf("✅ Pairing approved for %s (SAS: %s)", peerName, peerSAS))
+						h.logger.Action(DomainPeer, fmt.Sprintf("ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Pairing approved for %s (SAS: %s)", peerName, peerSAS))
 					} else {
-						h.logger.Action(DomainPeer, fmt.Sprintf("❌ Pairing rejected for %s (SAS: %s)", peerName, peerSAS))
+						h.logger.Action(DomainPeer, fmt.Sprintf("ÃƒÂ¢Ã‚ÂÃ…â€™ Pairing rejected for %s (SAS: %s)", peerName, peerSAS))
 					}
 					return accepted
 				case <-time.After(60 * time.Second):
-					h.logger.Action(DomainPeer, fmt.Sprintf("⏱️ Pairing request from %s timed out after 60s (rejected)", peerName))
+					h.logger.Action(DomainPeer, fmt.Sprintf("ÃƒÂ¢Ã‚ÂÃ‚Â±ÃƒÂ¯Ã‚Â¸Ã‚Â Pairing request from %s timed out after 60s (rejected)", peerName))
 					return h.terminatePendingPairing(pending, false)
 				case <-ctx.Done():
 					return h.terminatePendingPairing(pending, false)
@@ -2013,7 +2004,7 @@ func (h *Hub) Start(parent context.Context) (err error) {
 				if len(peerDesc) > 16 {
 					peerDesc = peerDesc[:16] + "..."
 				}
-				h.logger.Action(DomainPeer, fmt.Sprintf("✅ Successfully paired with peer %s (SAS: %s)", peerDesc, res.PeerSAS))
+				h.logger.Action(DomainPeer, fmt.Sprintf("ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Successfully paired with peer %s (SAS: %s)", peerDesc, res.PeerSAS))
 			}
 		},
 		Logger: dispatcherLogger,
@@ -2116,6 +2107,38 @@ func (h *Hub) Start(parent context.Context) (err error) {
 		}
 	}
 
+	// Claim the single-instance slot before either listener starts serving.
+	// WriteRuntimeInfo refuses to replace a descriptor whose owner still probes
+	// live, which is the only cross-process mutual exclusion this design has.
+	// Doing it after Serve meant a second Hub was already accepting peer
+	// connections and answering HTTP before it discovered an incumbent, and if
+	// the incumbent was momentarily slow the 200ms probe would miss it and this
+	// process would silently steal the routing descriptor.
+	runtimeInfo := RuntimeHubInfo{
+		PID:       os.Getpid(),
+		StartedAt: h.startTime,
+		WebAddr:   h.WebAddr(),
+		WebPort:   boundPort,
+		P2PAddr:   p2pAddrStr,
+		P2PPort:   p2pPort,
+		Transport: h.cfg.TransportType,
+		IPCToken:  h.currentIPCToken(),
+	}
+	if err := WriteRuntimeInfo(storeDir, runtimeInfo); err != nil {
+		_ = webLn.Close()
+		_ = p2pLn.Close()
+		return fmt.Errorf("claim single-instance slot: %w", err)
+	}
+	// Ownership is released on every exit path from here on, including the
+	// startup failures below, so a crashed or rejected start cannot leave a
+	// descriptor pointing at a process that is not serving.
+	claimedRuntime := true
+	defer func() {
+		if claimedRuntime {
+			_ = RemoveRuntimeInfoIfOwned(storeDir, runtimeInfo)
+		}
+	}()
+
 	errGroupCh := make(chan error, 2)
 	go func() {
 		if err := httpServer.Serve(webLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -2161,23 +2184,6 @@ func (h *Hub) Start(parent context.Context) (err error) {
 		_ = p2pLn.Close()
 		return errors.New("web listener did not become ready")
 	}
-
-	runtimeInfo := RuntimeHubInfo{
-		PID:       os.Getpid(),
-		StartedAt: h.startTime,
-		WebAddr:   h.WebAddr(),
-		WebPort:   boundPort,
-		P2PAddr:   p2pAddrStr,
-		P2PPort:   p2pPort,
-		Transport: h.cfg.TransportType,
-		IPCToken:  h.currentIPCToken(),
-	}
-	if err := WriteRuntimeInfo(storeDir, runtimeInfo); err != nil {
-		shutdownHTTPServer(httpServer)
-		_ = p2pLn.Close()
-		return fmt.Errorf("publish runtime info: %w", err)
-	}
-	defer func() { _ = RemoveRuntimeInfoIfOwned(storeDir, runtimeInfo) }()
 
 	// Reclaim staging orphans from aborted transfers. Sender DropIDs are
 	// random per attempt, so most leftover .part files can never be resumed
@@ -2338,11 +2344,11 @@ func (w *eventLogWriter) Write(p []byte) (n int, err error) {
 	case strings.Contains(rawMsg, "[DEBUG]") || strings.Contains(rawMsg, "routing connection"):
 		level = LevelDebug
 		domain = DomainNet
-	case strings.Contains(rawMsg, "❌") || strings.Contains(rawMsg, "Error") || strings.Contains(rawMsg, "error") || strings.Contains(rawMsg, "failed"):
+	case strings.Contains(rawMsg, "ÃƒÂ¢Ã‚ÂÃ…â€™") || strings.Contains(rawMsg, "Error") || strings.Contains(rawMsg, "error") || strings.Contains(rawMsg, "failed"):
 		level = LevelError
-	case strings.Contains(rawMsg, "⚠️"):
+	case strings.Contains(rawMsg, "ÃƒÂ¢Ã…Â¡Ã‚Â ÃƒÂ¯Ã‚Â¸Ã‚Â"):
 		level = LevelWarn
-	case strings.Contains(rawMsg, "✅") || strings.Contains(rawMsg, "completed successfully") || strings.Contains(rawMsg, "Session started"):
+	case strings.Contains(rawMsg, "ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦") || strings.Contains(rawMsg, "completed successfully") || strings.Contains(rawMsg, "Session started"):
 		level = LevelAction
 	}
 
@@ -2603,8 +2609,8 @@ func (h *Hub) verifyAndApplyPeerRoaming(ctx context.Context, expectedFP, candida
 	}
 	if strings.EqualFold(remoteFP, expectedFP) {
 		_ = store.UpdatePeerAddress(expectedFP, candidateAddr)
-		h.logger.Action(DomainPeer, fmt.Sprintf("✅ Authenticated roaming update: peer '%s' verified at %s via mTLS", peerName, candidateAddr))
+		h.logger.Action(DomainPeer, fmt.Sprintf("ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Authenticated roaming update: peer '%s' verified at %s via mTLS", peerName, candidateAddr))
 	} else {
-		h.logger.Action(DomainNet, fmt.Sprintf("⚠️ Roaming probe to %s presented fingerprint %s (expected %s) — update rejected", candidateAddr, remoteFP, expectedFP))
+		h.logger.Action(DomainNet, fmt.Sprintf("ÃƒÂ¢Ã…Â¡Ã‚Â ÃƒÂ¯Ã‚Â¸Ã‚Â Roaming probe to %s presented fingerprint %s (expected %s) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â update rejected", candidateAddr, remoteFP, expectedFP))
 	}
 }

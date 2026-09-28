@@ -196,6 +196,19 @@ func (d *Dispatcher) Serve(ctx context.Context) error {
 				delete(activeConns, c)
 				mu.Unlock()
 			}()
+			// handleConn runs the entire peer-fed receive path: envelope
+			// decoding, pairing, the OAuth bridge, and QuickDrop all execute
+			// with bytes a remote host chose. net/http recovers panics in its
+			// own handlers; this goroutine must not be the one that lacks it,
+			// because a single panic would otherwise take down the Hub, the
+			// dashboard, every in-flight transfer, and leave staging handles
+			// marked active for their full retention window.
+			defer func() {
+				if rec := recover(); rec != nil {
+					d.logf("recovered from panic handling a peer connection: %v", rec)
+					_ = c.Close()
+				}
+			}()
 			d.handleConn(ctx, c)
 		}(conn)
 	}
