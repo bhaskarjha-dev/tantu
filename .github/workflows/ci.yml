@@ -61,6 +61,16 @@ jobs:
             exit 1
           fi
 
+      - name: UTF-8 encoding
+        # A CP1252 round trip once re-encoded source and documentation into
+        # still-valid UTF-8 that compiled, tested green, and read as plausible
+        # mojibake across nine commits. Nothing in the toolchain notices: the
+        # damage lands in log-message emoji, comments and prose, where the
+        # compiler has no opinion. This gate checks for it, and the C1 control
+        # check inside it is what catches damage that has no mojibake signature
+        # at all - which is how docs/ARCHITECTURE.md was missed.
+        run: go run ./tools/encgate
+
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
