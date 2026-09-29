@@ -342,6 +342,7 @@ func (h *Hub) relayOAuth(ctx context.Context, peer, rawURL string) (string, erro
 		conn, err := h.DialPeer(dialPeer)
 		if err != nil {
 			h.updateRelayAttempt(attemptID, RelayStateFailed, "destination_unreachable", "Check the peer is online and paired, then retry.")
+			h.logger.Warn(DomainOAuth, fmt.Sprintf("Sign-in to %s failed: the destination could not be reached", destName))
 			return err
 		}
 		defer conn.Close()
@@ -353,9 +354,16 @@ func (h *Hub) relayOAuth(ctx context.Context, peer, rawURL string) (string, erro
 				code, next = "relay_timeout", "Retry; the authorization callback may have expired."
 			}
 			h.updateRelayAttempt(attemptID, state, code, next)
+			// Only the origin host is logged, never the URL: the callback it
+			// carries is a one-time credential.
+			h.logger.Warn(DomainOAuth, fmt.Sprintf("Sign-in to %s via %s failed (%s)", destName, origin, code))
 			return err
 		}
 		h.updateRelayAttempt(attemptID, RelayStateComplete, "", "")
+		// The primary journey is a sign-in completing. Logging only the
+		// failures left the successful path invisible in Live Logs, which is
+		// where a user goes to confirm what the Hub did.
+		h.logger.Action(DomainOAuth, fmt.Sprintf("Sign-in to %s via %s completed", destName, origin))
 		return nil
 	})
 	return attemptID, err

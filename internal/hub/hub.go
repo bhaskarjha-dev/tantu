@@ -2272,6 +2272,18 @@ func (h *Hub) Start(parent context.Context) (err error) {
 		h.logger.Warn(DomainDrop, fmt.Sprintf("Reclaimed %d interrupted publication temporary file(s)", n))
 	}
 
+	// Startup is the one moment where the whole configuration is knowable at
+	// once, and Live Logs is empty until something happens. Recording it means
+	// a user opening the tab first sees which machine this is, where files
+	// land, and which transport is in use — which is exactly the question the
+	// tab gets opened to answer.
+	p2pAddr := "none"
+	if addr := h.P2PAddr(); addr != nil {
+		p2pAddr = addr.String()
+	}
+	h.logger.Action(DomainSys, fmt.Sprintf("Tantu Hub v%s ready · transport %s · P2P %s · dashboard %s · downloads %s",
+		HubVersion, h.TransportType(), p2pAddr, h.WebAddr(), h.OutputDir()))
+
 	// Both serving loops are now accepting requests and runtime metadata is
 	// published, so callers may safely use the Hub.
 	markReady()

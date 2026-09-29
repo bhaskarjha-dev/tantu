@@ -3415,67 +3415,6 @@ func escapeHTMLText(s string) string {
 	).Replace(s)
 }
 
-func isAllowedOrigin(originHeader string) bool {
-	return isAllowedOriginForHost(originHeader, "")
-}
-
-func isAllowedOriginForHost(originHeader, requestHost string) bool {
-	if originHeader == "" || strings.EqualFold(originHeader, "null") {
-		return originHeader == ""
-	}
-	u, err := url.Parse(originHeader)
-	if err != nil || u.User != nil {
-		return false
-	}
-	if u.Scheme != "http" {
-		return false
-	}
-	host := strings.ToLower(u.Hostname())
-	if host != "127.0.0.1" && host != "localhost" && host != "::1" {
-		return false
-	}
-	if requestHost == "" {
-		return true
-	}
-	requestName, requestPort, splitErr := net.SplitHostPort(requestHost)
-	if splitErr != nil {
-		requestName = strings.Trim(requestHost, "[]")
-		requestPort = ""
-	}
-	if requestName != "" {
-		requestName = strings.ToLower(requestName)
-		if requestName != "127.0.0.1" && requestName != "localhost" && requestName != "::1" {
-			return false
-		}
-	}
-	originPort := u.Port()
-	if originPort == "" {
-		if u.Scheme == "https" {
-			originPort = "443"
-		} else {
-			originPort = "80"
-		}
-	}
-	if requestPort == "" {
-		return originPort == "80" || originPort == "443"
-	}
-	return originPort == requestPort
-}
-
-func requestHostIsLoopbackHeader(hostHeader string) bool {
-	host := strings.TrimSpace(hostHeader)
-	if host == "" {
-		return false
-	}
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	} else {
-		host = strings.Trim(host, "[]")
-	}
-	host = strings.ToLower(host)
-	return host == "127.0.0.1" || host == "localhost" || host == "::1"
-}
-
 func canonicalLoopbackHost(host string) string {
 	host = strings.ToLower(strings.Trim(strings.TrimSpace(host), "[]"))
 	if host == "localhost" {
@@ -4442,6 +4381,15 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 				code, plain, nextAction, retrySafe, duplicateRisk, dataSafe := ClassifyTransferError(err, bytesForClassify, opSize, preNegotiationCancel)
 				cancelled := preNegotiationCancel
 				opState := operationStateForFailure(retrySafe, duplicateRisk, cancelled)
+				// A failed send is exactly what a user opens Live Logs to
+				// diagnose. The classification is logged rather than the raw
+				// error, so the console shows the same plain language the
+				// dashboard and CLI show, and never a raw transport string.
+				level := LevelWarn
+				if !retrySafe || duplicateRisk {
+					level = LevelError
+				}
+				h.logger.Log(level, DomainDrop, fmt.Sprintf("Send to %s failed (%s): %s", destName, code, plain), nil)
 				h.recordOutboundOperation(OperationRecord{OperationID: opID, DropID: dropID, Kind: opKind, Name: opName, Size: opSize, Destination: destName, DestinationFingerprint: destFP, DestinationAddress: destAddr, State: opState, CreatedAt: opCreated, UpdatedAt: time.Now(), RetrySafe: retrySafe, DuplicateRisk: duplicateRisk, DataSafe: dataSafe, ErrorCode: code, ErrorMessage: plain, NextAction: nextAction, DiagnosticID: opID})
 				writeTransferError(w, http.StatusInternalServerError, fmt.Sprintf("send drop failed: %v", err), code, plain, err.Error(), retrySafe, duplicateRisk, dataSafe, nextAction, opID, destName, destFP, destAddr)
 				return
@@ -4462,6 +4410,10 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 				return
 			}
 
+			// Logged for the same reason as the file path below: the Live Logs tab
+			// is a user-facing surface, and a working send that leaves no trace
+			// makes that surface look broken.
+			h.logger.Action(DomainDrop, fmt.Sprintf("Sent text (%s) to %s · verified", formatBytes(opSize), destName))
 			h.recordOutboundOperation(OperationRecord{OperationID: opID, DropID: dropID, Kind: opKind, Name: opName, Size: opSize, Destination: destName, DestinationFingerprint: destFP, DestinationAddress: destAddr, State: OperationStateCompleted, CreatedAt: opCreated, UpdatedAt: time.Now(), BytesSent: opSize, Verified: true, RetrySafe: false, DuplicateRisk: false, DataSafe: true, NextAction: "", DiagnosticID: opID})
 			writeJSON(w, http.StatusOK, map[string]any{
 				"status":       "success",
@@ -4564,6 +4516,14 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			code, plain, nextAction, retrySafe, duplicateRisk, dataSafe := ClassifyTransferError(err, bytesForClassify, opSize, preNegotiationCancel)
 			cancelled := preNegotiationCancel
 			opState := operationStateForFailure(retrySafe, duplicateRisk, cancelled)
+			// See the text path above: the classification is logged rather
+			// than the raw error, so Live Logs speaks the same plain language
+			// as the dashboard and the CLI.
+			level := LevelWarn
+			if !retrySafe || duplicateRisk {
+				level = LevelError
+			}
+			h.logger.Log(level, DomainDrop, fmt.Sprintf("Send to %s failed (%s): %s", destName, code, plain), nil)
 			h.recordOutboundOperation(OperationRecord{OperationID: opID, DropID: dropID, Kind: opKind, Name: opName, Size: opSize, MIMEType: mimeType, Destination: destName, DestinationFingerprint: destFP, DestinationAddress: destAddr, State: opState, CreatedAt: opCreated, UpdatedAt: time.Now(), RetrySafe: retrySafe, DuplicateRisk: duplicateRisk, DataSafe: dataSafe, ErrorCode: code, ErrorMessage: plain, NextAction: nextAction, DiagnosticID: opID})
 			writeTransferError(w, http.StatusInternalServerError, fmt.Sprintf("drop file transfer failed: %v", err), code, plain, err.Error(), retrySafe, duplicateRisk, dataSafe, nextAction, opID, destName, destFP, destAddr)
 			return
@@ -4588,6 +4548,12 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			return
 		}
 
+		// The Live Logs tab is a user-facing surface, so the ordinary success
+		// has to appear in it. Without this the console stayed empty through a
+		// working send and the feature looked broken. Failures are logged for
+		// the same reason: the ring buffer is the only place a user can see
+		// what the Hub actually did after the fact.
+		h.logger.Action(DomainDrop, fmt.Sprintf("Sent file %q (%s) to %s · verified", fileName, formatBytes(opSize), destName))
 		h.recordOutboundOperation(OperationRecord{OperationID: opID, DropID: dropID, Kind: opKind, Name: opName, Size: opSize, MIMEType: mimeType, Destination: destName, DestinationFingerprint: destFP, DestinationAddress: destAddr, State: OperationStateCompleted, CreatedAt: opCreated, UpdatedAt: time.Now(), BytesSent: opSize, Verified: true, RetrySafe: false, DuplicateRisk: false, DataSafe: true, DiagnosticID: opID})
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":       "success",
