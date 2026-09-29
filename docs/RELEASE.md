@@ -42,6 +42,22 @@ SBOM per archive. There is currently **no artifact signing** (no cosign
 configuration — signing keys must never live in this repo). Until signing
 lands, verify downloads against `checksums.txt` from the GitHub release page.
 
+## Supply chain
+
+The full dependency inventory, the reasoning behind the `CGO_ENABLED=0`
+static-build invariant, and the conditions for adding a module are in
+`docs/DEPENDENCIES.md`. Summary: two pinned pure-Go `golang.org/x` modules
+(`crypto` for SSH, `sys` for Windows hardlink counting), no C libraries, no
+runtime install.
+
+An SBOM ships with every archive. `govulncheck` runs in CI; it has not yet
+been observed executing there (see `docs/KNOWN-LIMITATIONS.md` §1.6), so run
+it locally before a release:
+
+```sh
+go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+```
+
 ## Install
 
 1. Download the archive for your OS/arch and verify its checksum.

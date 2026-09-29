@@ -1,6 +1,6 @@
 # Surface Migration Matrix
 
-> **Status:** living matrix. **Last reviewed:** 2026-09-27.
+> **Status:** living matrix. **Last reviewed:** 2026-09-29.
 > **Purpose:** the plan (v6.0 §2.1, §9.7) requires that no retained surface
 > teaches a second, contradictory product model. This file is where each
 > surface's audience, canonical status, and relationship to the Hub is written
@@ -21,6 +21,7 @@ semantics.
 | `tantu hub` (dashboard) | Normal | **Primary** | Canonical | Canonical | Dashboard session / IPC | Retain; the reference implementation |
 | Cockpit | Power | First-class adapter | Canonical | Must match | Local IPC | Retain; print the resolved destination before transmitting |
 | `tantu send` | Power | First-class adapter | Canonical | Must match | Delegated to Hub | Retain; destination and operation ID always named |
+| `tantu send <dir>` | Power | First-class adapter | Canonical (batch) | Must match | Delegated to Hub | Retain; a directory is a **batch of independent transfers**, not an archive. Per-file operation IDs and outcomes; a partial batch exits non-zero and names the files that did not arrive. |
 | `tantu receive` | Normal/advanced | Advanced | Must converge | Must match | Wire | Retain; progress and recovery language is thinner than the dashboard's |
 | `tantu open` | Power | First-class adapter | Canonical | Must match | Delegated | Retain |
 | `tantu status` / `doctor` | Power + first-run | **First-class diagnostic** | Canonical | n/a | Local | Retain; `status` answers state, `doctor` diagnoses and proposes repair |
@@ -55,6 +56,16 @@ normal path and must not become one silently.
    machines should run the same release.
 5. **Every surface points at the Hub.** A user on any compatibility surface is
    told the primary path exists, so no surface becomes a dead end.
+6. **A batch reports as a batch.** A multi-file send is several logical
+   transfers, so no surface may collapse them into a single success flag. The
+   counts, the per-file outcomes, and the process exit code must all agree —
+   and the worst outcome in the batch wins, because "49 of 50, exit 0" is
+   indistinguishable from success to any caller. This is the batch form of
+   rule 3: partial is not success.
+7. **An explicit destination is never dropped.** A batch and a single send
+   must both carry `--peer` all the way to the peer. A batch that silently
+   routed to the active peer would deliver to a machine the user did not name
+   while reporting success — the worst outcome this product can produce.
 
 ## Known divergences still open
 

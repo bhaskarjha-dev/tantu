@@ -1,7 +1,10 @@
 # UX Plan Map
 
-> **Status:** living map. **Last reviewed:** 2026-09-27.
-> **Plan:** `temp/tantu-ultimate-ux-upgrade-plan.md` (v6.0).
+> **Status:** living map. **Last reviewed:** 2026-09-29.
+> **Plan:** v6.0. Decision IDs (D-01 … D-27) resolve in
+> [`docs/DECISIONS.md`](DECISIONS.md), which is the tracked, durable copy.
+> The original plan document lives under `temp/` and is gitignored, so it is
+> not available to anyone cloning this repository.
 > **Purpose:** one answer to "for each thing the plan asks for, is it done,
 > deferred, or not started?" — so the state is derivable rather than
 > remembered, and so an "UX-complete" claim can never outrun its evidence.
@@ -56,10 +59,19 @@ cannot produce, and is claimed nowhere in product copy.
 
 ### P2 — after the core is proven
 
-All **not started**, correctly: multi-file-as-separate transfers, forwarding,
-desktop notifications, QR pairing, browser extension, OS clipboard-image CLI,
-true pause/resume, advanced history search, WAN transport, directory transfer,
-signed artifacts. The plan's own stop rule (D-12) gates these.
+**One shipped:** multi-file-as-separate transfers (`tantu send <directory>`).
+It was the highest-value item on this list — the most common reason a
+developer points a file-send at a folder — and it is bounded, honest about
+partial delivery, and reuses the existing single-file wire path with no
+protocol change. Recording the exception matters more than the exception: the
+stop rule (D-12) gates P2 behind a proven core, and the core was proven before
+this was started.
+
+Still **not started**: forwarding, desktop notifications, QR pairing, browser
+extension, OS clipboard-image CLI, true pause/resume, advanced history search,
+WAN transport, signed artifacts, and directory *structure* preservation (the
+sender folds paths into filenames; it does not rebuild the tree on the
+receiver). Gated by D-12 as before.
 
 ### Explicit "not now" (§14)
 

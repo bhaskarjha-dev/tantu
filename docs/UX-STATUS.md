@@ -1,8 +1,15 @@
 # Tantu UX Status — v6.0 Plan Tracking
 
 > **Status:** Living implementation record (agent-maintained)
-> **Last Updated:** 2026-09-25
-> **Plan:** `temp/tantu-ultimate-ux-upgrade-plan.md` (v6.0)
+> **Last Updated:** 2026-09-29
+> **Plan:** v6.0. Decision IDs resolve in [`docs/DECISIONS.md`](DECISIONS.md);
+> the original plan document is under `temp/` and is gitignored.
+>
+> **Review note (2026-09-29):** the P0/P1 evidence ladder below is unchanged
+> and no E4/E5 evidence was produced. The P2 section was updated: multi-file
+> sends shipped, and the cockpit gained in-flight sign-in visibility. Claims in
+> this file that are not re-verified on each audit should be treated as
+> unconfirmed — see `docs/KNOWN-LIMITATIONS.md` §"How to use this register".
 
 This file maps every P0/P1 item to its implementation state and evidence
 level. It exists so a "UX-complete" claim can never outrun its evidence.
@@ -53,7 +60,17 @@ E5 cross-platform/accessibility/failure evidence.
 
 ## P2 — after the core is proven
 
-Not started, per the plan's own stop rule (D-12, D-20): multi-file-as-separate-transfers policy documented in send (directories rejected); forwarding, notifications, QR, extension, pause/resume, WAN transport untouched.
+**Shipped:** multi-file-as-separate transfers. `tantu send <directory>` sends
+each file as an independent transfer with its own operation ID, idempotency
+key, and outcome, bounded at 2,000 files / 5 GiB, with symlinks refused and
+per-file reporting. A partial batch exits non-zero and names the files that did
+not arrive; a batch that delivered nothing says so rather than claiming the
+rest arrived. Structure is not recreated on the receiver — paths are folded
+into filenames (`pkg/util/notes.txt` → `pkg-util-notes.txt`).
+
+Still not started, per the plan's own stop rule (D-12, D-20): forwarding,
+notifications, QR, extension, pause/resume, WAN transport, directory structure
+preservation, signed artifacts.
 
 ## Z15 — frontend audit: what changed and what did not
 
@@ -81,7 +98,8 @@ environment and is claimed nowhere.
 ## Where the plan stands
 
 `docs/UX-PLAN-MAP.md` maps the v6.0 plan to shipped state item by item: P0
-13/14, P1 8 done / 4 partial / 1 not started, P2 untouched by design, release
+13/14, P1 8 done / 4 partial / 1 not started, P2 now 1 shipped (multi-file
+sends) with the remainder still gated by the stop rule, release
 gates A/B/E/F green and C/D red, 8 of 10 stop-rule conditions met, and which of
 the nineteen §21 artifacts exist. `docs/KNOWN-LIMITATIONS.md` holds every
 admitted limitation with severity and where it is visible;

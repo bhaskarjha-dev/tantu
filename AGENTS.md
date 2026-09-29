@@ -13,7 +13,23 @@
 - **Symmetric Hub** — both machines run identical code; no server/client distinction
 - **Dual-Socket Isolation** — Web UI on `127.0.0.1:9876` (loopback only); wire traffic on `:9877` (encrypted only)
 - **Pluggable Transport** — all transport implementations conform to `transport.Transport` interface
-- **Zero External Dependencies** — no C libraries, no external runtime; pure Go + stdlib + `x/crypto`
+- **No C libraries, no runtime install** — `CGO_ENABLED=0`; a build is one
+  static binary that runs on a machine with no toolchain and no package
+  manager. This is a genuine invariant because it maps directly onto the
+  product promise: Tantu exists for machines where something else is already
+  broken, so every install step is a place the tool can fail.
+- **Pinned, enumerable dependency surface** — every non-stdlib import is
+  listed in `go.mod`, pinned, and justified in `docs/DEPENDENCIES.md`.
+
+  This replaces an earlier "Zero External Dependencies" invariant, which was
+  not accurate: the module requires `golang.org/x/crypto` (SSH) and
+  `golang.org/x/sys` (Windows hardlink counting). The old wording was worse
+  than the facts in one specific way — it invited a reader to treat a
+  *count* as a security property, in a product whose whole job is holding
+  someone's credentials. `x/crypto/ssh` is the largest and least-reviewed
+  code in the build; calling the surface "zero" did not reduce that, it only
+  made it harder to see. See `docs/DEPENDENCIES.md` for the current inventory,
+  the reasoning, and the conditions for adding one.
 
 ## Code Conventions
 

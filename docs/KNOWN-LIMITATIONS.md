@@ -1,6 +1,6 @@
 # Tantu — Known Limitations Register
 
-> **Status:** living register. **Last reviewed:** 2026-09-27.
+> **Status:** living register. **Last reviewed:** 2026-09-29.
 > **Purpose:** one place where every admitted limitation is written down, so a
 > release gate cannot quietly drift and so "we always knew" is checkable.
 
@@ -74,6 +74,7 @@ Severity: **Blocker** (a claim is false or a journey is unsafe) ·
 | 5.2 | Transfer history is **metadata-only and bounded** (last 50, 30 days). No payload bytes, clipboard contents, text snippets, or full OAuth URLs are ever stored. | Limit | By design (D-14) | `docs/ARCHITECTURE.md` |
 | 5.3 | The client-side 10 MiB text limit **mirrors** the server default rather than querying it. A non-default server limit would make the early rejection wrong (the server still enforces the truth). | Limit | Accepted | `internal/hub/web_dashboard.go` |
 | 5.4 | The SAS word list now has an **automated confusable-pair check, bounded by what the list can actually achieve.** Measured on the real 512-word list: **zero** prefix pairs where ~900,000 are expected by chance (a deliberate property, now asserted exactly), and 772 single-substitution pairs, which is ordinary for English words ("bear"/"beat") and bounded at 900 so the list cannot silently become uncomparable. The check is mechanically decidable only — rhyme and homophony still need a human. | Limit | Partly closed 2026-09-29 | `internal/pairing/sas_test.go` |
+| 5.5 | **Documentation claims are not systematically verified against code.** Three separate false claims were found in one session (the encoding gate that could not detect its own damage, the SAS comment describing a test that did not exist, "zero external dependencies"). Each was a *stated* property with nothing checking it. The encoding gate is now self-verifying and the dependency surface is enumerated in `docs/DEPENDENCIES.md`, but there is no general check that a doc claim matches the code it describes. | Gap | Open | this document, §6 |
 
 ## 6. Resolved
 
@@ -88,6 +89,7 @@ Recorded so the register shows movement, not just accumulation.
 | A test compared `relayRequestKey(...)` with itself and could never fail | audit 2026-09-29 | `TestRelayRequestKey_DistinguishesAttempts` |
 | The CI staticcheck pin could not read the toolchain's export data, so the step could never pass | audit 2026-09-29 | `staticcheck.conf`, `go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...` exits 0 |
 | The SAS word list's own comment claimed it excluded `i l o 0 1` and that a confusable test existed; neither was true (305 of 512 words contain those letters) | audit 2026-09-29 | `TestSASWordListHasNoMechanicalConfusables`, comment corrected in `cert.go` |
+| `AGENTS.md` claimed "Zero External Dependencies" while the module requires `x/crypto` and `x/sys`; the wording invited treating a count as a security property | docs audit 2026-09-29 | `docs/DEPENDENCIES.md` (inventory + conditions), invariant restated as "no C libraries, no runtime install" |
 | A directory send dropped `--peer` on the delegation path and delivered to the active peer while reporting success | 2026-09-29 | `tantu send <dir> --peer <untrusted>` returns `destination_unreachable` for every file |
 | A batch that delivered nothing exited 0 in human mode, and printed "the rest arrived" | 2026-09-29 | `TestBatchExitCodeIsWorstOutcome`, `TestBatchStatusReflectsOutcomes` |
 | Send preview never rendered (CSP blocked `blob:`) | Z15 | `TestWebDashboard_SendPreviewImageSchemeIsAuthorized`, harness decode check || Text send reported nothing on the composer's own tab | Z15 | `TestWebDashboard_TextComposerReportsOutcomeInline` |

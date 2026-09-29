@@ -1,7 +1,21 @@
 # Tantu Project Audit
 
 **Audit date:** 2026-09-24
-**Scope:** all Go packages, CLI commands, embedded web surfaces, protocol framing, tests, CI/release configuration, and the incident report in `temp/repeat-bug.md`.
+**Scope:** all Go packages, CLI commands, embedded web surfaces, protocol framing, tests, CI/release configuration, and a user-reported incident describing repeated OAuth browser launches.
+
+> **Note on the incident report (2026-09-29).** The original report lived in
+> `temp/repeat-bug.md`, which is no longer in the repository. It was removed
+> because it contained query values that looked like real authorization codes;
+> per this document's own SEC-01 finding, those must be treated as compromised
+> and revoked. The behavioural description below is sufficient to understand
+> the defect and its remediation. If a fresh copy of the incident is needed for
+> reference, request it privately rather than committing it — an incident
+> report with live credential material in it is itself a disclosure.
+>
+> **Status of this document.** This is a point-in-time audit of 2026-09-24. Its
+> findings were remediated; `docs/KNOWN-LIMITATIONS.md` is the current
+> register of what remains open, and `docs/DEV-RECORD.md` is the engineering
+> record. Read this for the reasoning, not for current state.
 
 ## Executive assessment
 
@@ -9,8 +23,8 @@ Tantu has a useful set of primitives — symmetric nodes, certificate pinning, a
 
 The highest-impact issues found were:
 
-1. OAuth retries were not idempotent. Every retry created another callback listener and browser launch, producing the repeat/port-collision storm recorded in `temp/repeat-bug.md`.
-2. OAuth callback URLs and query values were written to terminal output and the event ring buffer. The incident report contains values that look like real authorization codes; those values must be treated as compromised and revoked where applicable.
+1. OAuth retries were not idempotent. Every retry created another callback listener and browser launch, producing a repeat/port-collision storm (the report that documented it has since been removed; see the note above).
+2. OAuth callback URLs and query values were written to terminal output and the event ring buffer. The original incident report contained values that look like real authorization codes; those values must be treated as compromised and revoked where applicable.
 3. The dashboard and standalone UIs allowed untrusted data to reach inline JavaScript or insufficiently protected local control endpoints, creating a path into a loopback origin that can control peers, files, pairing, and browser actions.
 4. The legacy relay was a state-changing GET with wildcard CORS and no CSRF capability.
 5. LAN accept loops could be stopped or starved by rejected or slow TLS handshakes; blocked receives ignored context cancellation.

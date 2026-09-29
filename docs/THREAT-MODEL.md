@@ -189,6 +189,37 @@
 | **Transport Layer** | Mutual encryption, certificate pinning, provenance extraction | Opaque payload contents |
 | **Identity Provider** | Issuing OAuth tokens and validating PKCE | Inspecting local network topology |
 | **Local Filesystem** | Storing `identity.json`, `peers.json`, `transfers.json`, and `hub.json` with private modes and ownership-safe writes | Public shared directories; Windows ACL enforcement remains platform-specific |
+| **Build Dependencies** | Correctness of the SSH, curve, and certificate code this binary actually calls | Anything: a compromised or vulnerable dependency executes with the user's privileges, holding their identity key and peer store. This is the one party in the trust table that is neither a peer nor the user, and it was previously unlisted, which is itself the finding — see `docs/DEPENDENCIES.md` |
+
+### Supply chain (T12)
+
+**Threat.** Tantu holds an unexported identity key, a peer store, and
+OAuth material in transit. Its security rests on the correctness of
+`golang.org/x/crypto/ssh` (an entire SSH implementation), the X.509 and
+Ed25519 handling in the same module, and `golang.org/x/sys` for Windows file
+queries. A vulnerability in any of these is a vulnerability in Tantu, and it
+executes with the user's full privileges.
+
+**Why the dependency count is not the mitigation.** Tantu's supply-chain
+position is deliberately small — two pinned pure-Go modules, no C libraries,
+no runtime install, and no build-time code generation. But the count does not
+measure the risk, and it should not be presented as though it did. The
+mitigations that do apply are:
+
+- Versions are pinned and an SBOM ships with every release, so a known-bad
+  version is identifiable after the fact.
+- `govulncheck` is configured in CI to report vulnerabilities reachable from
+  this module's own code. It has not yet been observed executing in CI
+  (`docs/KNOWN-LIMITATIONS.md` §1.6).
+- No code generation, no `go:generate` steps, and no plugins execute at build
+  time, so the build does not fetch or execute third-party tooling.
+- Adding a module requires a written justification in `docs/DEV-RECORD.md`
+  (`docs/DEPENDENCIES.md`), so the surface cannot grow silently.
+
+**Residual risk, stated plainly.** The SSH and curve implementations are the
+least-reviewed code in this build, and they were kept precisely *because*
+hand-rolling them would be worse. That trade is accepted knowingly: the
+mitigation is upstream maintenance and scanning, not local review.
 
 ---
 

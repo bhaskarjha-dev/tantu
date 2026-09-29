@@ -37,6 +37,12 @@ In scope:
 - a local origin that an ordinary web page can drive
 - secret material: keys, tokens, authorization codes, or PKCE verifiers
   reaching a log, a file, a URL, or another machine
+- the dependency surface: anything reachable through `golang.org/x/crypto`
+  (the SSH and curve/certificate code) or `golang.org/x/sys`. The full
+  inventory, the reasoning, and the conditions for adding a module are in
+  `docs/DEPENDENCIES.md`. A vulnerability in a dependency that this code
+  actually calls is in scope; a hypothetical in a dependency it does not is
+  not.
 
 Out of scope:
 

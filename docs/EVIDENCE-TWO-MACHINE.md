@@ -30,7 +30,7 @@ is what every previous automated run used.
 | 3 | Same `--idempotency-key`, different content | refused; nothing saved |
 | 4 | Same key, same content | suppressed duplicate, reported as already saved |
 | 5 | Send to an unpaired address (`192.168.0.251:9877`) | refused before sending: "not a trusted paired peer" |
-| 6 | `tantu send <directory>` | refused: "is a directory; archive it before sending", exit 2 |
+| 6 | `tantu send <directory>` (before multi-file support) | refused: "is a directory; archive it before sending", exit 2 |
 | 7 | `tantu doctor` against the live peer | healthy, all checks ok |
 
 Measurement for #2: 8 MiB of pseudo-random bytes, SHA-256

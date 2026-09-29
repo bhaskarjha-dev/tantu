@@ -8,6 +8,13 @@ rollback procedures.
 ## Unreleased
 
 ### Added
+- `docs/DEPENDENCIES.md` — the complete dependency inventory (two pinned
+  `golang.org/x` modules), the reasoning behind the `CGO_ENABLED=0`
+  static-build invariant, the demonstrated cost of that constraint, and four
+  conditions any new module must satisfy.
+- `docs/DECISIONS.md` — the v6.0 decision record (D-01 … D-27), extracted so
+  that decision IDs cited by three tracked documents resolve for anyone
+  cloning the repository. The original plan lives under gitignored `temp/`.
 - **Multi-file sends.** `tantu send <directory>` now sends every file under a
   directory as an independent transfer, following the recorded decision D-13
   ("multi-select becomes multiple logical transfers"). It is not archived: each
@@ -230,6 +237,23 @@ rollback procedures.
   result is valid UTF-8 *and* differs, flags invisible format characters, and
   detects a bare cluster of high-Latin characters that is not part of a word —
   without flagging real accented words, `×`, `÷`, `·`, `§`, or intact emoji.
+- **`AGENTS.md` claimed "Zero External Dependencies" as an architecture
+  invariant.** The module requires `golang.org/x/crypto` (SSH) and
+  `golang.org/x/sys` (Windows hardlink counting). The wording was worse than
+  the facts: it invited a reader to treat a count as a security property, in a
+  product whose job is holding OAuth tokens and private keys. The invariant is
+  restated as *no C libraries, no runtime install* — which is true and
+  verifiable — plus a pinned, enumerable dependency surface.
+- **The threat model had no supply-chain entry**, despite the product holding
+  an identity key and the build importing an entire SSH implementation.
+  Added as T12, including the point that the dependency *count* is not the
+  mitigation and what actually is.
+- Documentation drift corrected: stale cockpit hotkeys and a "zero external
+  dependencies" line in `ARCHITECTURE.md`; P2 sections in `UX-STATUS.md` and
+  `UX-PLAN-MAP.md` still saying multi-file send was not started; a throughput
+  figure in the README that predated the cross-machine measurement; and
+  `AUDIT.md` citing an incident report that was removed because it contained
+  credential-shaped data.
 - **The SAS word list's comment claimed two guarantees it did not have.** It
   stated that the list excluded `i`, `l`, `o`, `0` and `1` — 305 of the 512
   words contain one of them — and that a confusable check existed, which no

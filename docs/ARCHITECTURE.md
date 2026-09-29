@@ -39,7 +39,7 @@ The system derives its name from Sanskrit **तन्तु** (*tantu*, from ver
       ┌────────────────────────────────────┐        ┌────────────────────────────────────┐
       │             tantu hub              │        │             tantu hub              │
       │  • Identity: Keypair / Cert / SAS  │        │  • Identity: Keypair / Cert / SAS  │
-      │  • Cockpit ([o,s,t,c,p,v,q])       │        │  • Cockpit ([o,s,t,c,p,v,q])       │
+      │  • Cockpit ([o,s,t,l,c,p,v,q])       │        │  • Cockpit ([o,s,t,l,c,p,v,q])       │
       │  • Multi-Peer Mesh State Machine   │        │  • Multi-Peer Mesh State Machine   │
       │                                    │        │                                    │
       │  ╔══════════════════════════════╗  │        │  ╔══════════════════════════════╗  │
@@ -233,7 +233,7 @@ Connection Accepted on 0.0.0.0:9877 (mTLS Handshake Verified)
 
 ### 3.5 Single-Page Web Dashboard & Observability Engine (`internal/hub/`)
 
-The embedded HTTP server on `127.0.0.1:9876*` provides a dark-mode Web UI with zero external dependencies:
+The embedded HTTP server on `127.0.0.1:9876*` provides a dark-mode Web UI served entirely from the binary, with no external assets, fonts, or scripts of any kind:
 1. **Header Peer Indicator Pill:** Global visual badge indicating active/default peer with quick-selection dropdown.
 2. **QuickDrop Tab:** Responsive dual-pane layout featuring drag-and-drop, file-picker, and clipboard-paste send (up to 5GB, preview + confirm by default with always-visible destination), text snippets, peer destination selector (Default / Specific Peer), and a live **Received Items Feed** (inbox) with dynamic peer badges, one-click clipboard copying, direct URL opening, and canonical download location controls (`~/Downloads/tantu`).
 3. **OAuth Relay Tab:** 1-click draggable bookmarklet (permanent and ticket-free; opens a confirmation interstitial), manual authorization URL submission form (`POST /api/relay/open`), plus a Recent Authorizations card backed by a durable sender-side ledger (`GET /api/relay/recent`: target peer, origin host only, state, next action; last 50, 30 days).

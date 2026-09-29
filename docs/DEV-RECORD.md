@@ -776,7 +776,7 @@ hardlink gaps. The following were addressed before the final matrix:
 
 ## Batch Z — UX upgrade vertical slice 1 (2026-09-25, EVIDENCE-BASED)
 
-Plan `temp/tantu-ultimate-ux-upgrade-plan.md` (v6.0) was treated as strategy,
+Plan v6.0 (decisions recorded in `docs/DECISIONS.md`) was treated as strategy,
 not a literal patch. Each P0 was interrogated for wire-compat, privacy,
 and fake-history risk before implementation; the slice below is the
 dependency-ordered minimum that makes every send visible, intentional,
@@ -1640,3 +1640,80 @@ it, and every other tab holding that fragment fails forever.
 
 - New headless-Chrome assertion on the spent-link guidance; full suite,
   vet, JS check, cross-compile green (below). No commit or push yet.
+
+---
+
+## Batch Z21 - documentation audit: stated properties versus verified ones (2026-09-29)
+
+### Why this batch exists
+
+Three separate defects found in one session shared a shape: a **stated**
+property with nothing checking it.
+
+1. The UTF-8 encoding gate reported the tree clean while 27 mis-decoded sites
+   were committed, from the first commit onward.
+2. `internal/pairing/cert.go` documented that the SAS word list "excludes
+   i, l, o, 0, 1" and that a confusable test existed. Neither was true: 305 of
+   512 words contain those letters, and no such test ran.
+3. `AGENTS.md` listed "Zero External Dependencies" as an architecture
+   invariant. The module requires `golang.org/x/crypto` and
+   `golang.org/x/sys`.
+
+In each case the code was correct and the *description* was not, and nothing
+in the build or the test suite noticed. That is the failure mode worth naming:
+a claim that no check can falsify stops being a claim and becomes decoration.
+
+### The dependency claim, decided properly
+
+The old wording was not merely inaccurate, it was misleading in a specific
+direction. Tantu exists to hold someone's OAuth tokens, so a reader deciding
+whether to trust it is being offered a *count* in place of evidence.
+`x/crypto/ssh` is the largest and least-reviewed code in the build; the honest
+position is not "we have no dependencies" but "here is the entire surface, it
+is pinned, and here is why each piece is here."
+
+Decided:
+
+- The genuine invariant is **no C libraries, no runtime install** — one static
+  binary that runs on a machine with no toolchain. That maps directly onto the
+  product promise: every install step is a place the tool can fail on a machine
+  that is already broken.
+- The restated invariant is a **pinned, enumerable dependency surface**.
+- `docs/DEPENDENCIES.md` records the inventory, the import sites, the costs,
+  and four conditions for adding a module.
+
+Recorded cost: **clipboard access is blocked on macOS.** Every mature Go
+clipboard binding is cgo-backed, and AppKit bindings need cgo, which breaks
+the static build. The `purego` route is possible but is a large, fragile
+dependency. This is the constraint's first demonstrated price, and it is
+written down rather than rediscovered later.
+
+### Rejected
+
+- **Rewriting the word list to avoid i/l/o/0/1.** 305 of 512 entries would
+  change, and dropping most of the vocabulary is a worse outcome than the
+  confusion those letters cause, which is already handled by the words being
+  real words. The comment was corrected instead of the list.
+- **Forbidding all edit-distance-1 word pairs.** A 512-word English list
+  cannot: the real list has 772 such pairs, and "bear"/"beat" are ordinary
+  words. Asserting zero would have demanded a worse list. The check pins what
+  the list actually achieves - zero prefix pairs against ~900,000 expected by
+  chance - and bounds substitution pairs at 900 so the list cannot silently
+  degrade.
+- **Deleting the sentence rather than correcting it.** A stale claim removed
+  silently cannot be distinguished from a claim never made.
+
+### Validation
+
+- `docs/DEPENDENCIES.md` created; `AGENTS.md` invariant restated with the
+  reasoning inline; `README.md` throughput figure replaced with the
+  cross-machine measurement and its method.
+- Stale claims corrected: `ARCHITECTURE.md` cockpit hotkeys (added `[l]`) and
+  its "zero external dependencies" line; `UX-STATUS.md` and `UX-PLAN-MAP.md`
+  P2 sections (multi-file shipped); `SURFACE-MATRIX.md` batch row and two new
+  convergence rules; `EVIDENCE-TWO-MACHINE.md` directory row.
+- New limitation 5.5 records the systemic issue: nothing checks doc claims
+  against code. The two instances that could be made self-verifying now are;
+  the general case is open.
+- `gofmt`, `go build ./...`, `go vet ./...`, `go run ./tools/encgate`,
+  `staticcheck`, and `go test ./...` all green.
