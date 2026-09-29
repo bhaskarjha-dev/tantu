@@ -70,7 +70,57 @@ func duplicateNextAction(suppressed bool) string {
 	return ""
 }
 
+// sendBatchJSONResult is the `tantu send --json` contract for a directory
+// argument, which expands into several independent transfers.
+//
+// A batch is reported as a batch, not as a single result with a success flag.
+// The whole point of expanding a directory is that individual files can fail
+// while others succeed, so a single "status" would either lie (claiming
+// success when some files did not arrive) or hide which ones did. Every file
+// therefore carries its own outcome, and the top level carries the counts and
+// the one next action.
+type sendBatchJSONResult struct {
+	Status      string          `json:"status"`
+	Source      string          `json:"source"`
+	Destination string          `json:"destination,omitempty"`
+	Total       int             `json:"total"`
+	Succeeded   int             `json:"succeeded"`
+	Failed      int             `json:"failed"`
+	Bytes       int64           `json:"bytes"`
+	Files       []sendBatchFile `json:"files"`
+	NextAction  string          `json:"next_action,omitempty"`
+	_           struct{}        `json:"-"`
+}
+
+// sendBatchFile is one file's outcome within a batch. It carries the same
+// safety vocabulary as a single send, so a caller does not have to learn a
+// second contract: an ambiguous outcome is still reported as an ambiguous
+// outcome, and a refused transfer is still reported as safe to retry.
+type sendBatchFile struct {
+	Name        string `json:"name"`
+	Path        string `json:"path"`
+	Size        int64  `json:"size"`
+	OperationID string `json:"operation_id,omitempty"`
+	Verified    bool   `json:"verified,omitempty"`
+	// Suppressed is a success: the receiver already had this exact content
+	// under the same key, so nothing new was written.
+	Suppressed bool   `json:"duplicate_suppressed,omitempty"`
+	Code       string `json:"code,omitempty"`
+	Message    string `json:"message,omitempty"`
+	RetrySafe  bool   `json:"retry_safe,omitempty"`
+	// DuplicateRisk marks an unknown outcome, which is the one case where a
+	// retry could produce a second copy on the peer.
+	DuplicateRisk bool `json:"duplicate_risk,omitempty"`
+	ExitCode      int  `json:"exit_code"`
+}
+
 func emitSendJSON(res sendJSONResult, exitCode int) {
+	enc := json.NewEncoder(os.Stdout)
+	_ = enc.Encode(res)
+	os.Exit(exitCode)
+}
+
+func emitSendBatchJSON(res sendBatchJSONResult, exitCode int) {
 	enc := json.NewEncoder(os.Stdout)
 	_ = enc.Encode(res)
 	os.Exit(exitCode)
@@ -236,11 +286,13 @@ func runSend(args []string) {
 			os.Exit(sendExitUsage)
 		}
 		if err == nil && stat.IsDir() && (hasPathHint || len(rest) == 1) {
-			if *jsonOut {
-				emitSendJSON(sendJSONResult{Status: "error", Code: "invalid_input", Message: fmt.Sprintf("%s is a directory", cleanPath), NextAction: "Archive it before sending."}, sendExitUsage)
-			}
-			fmt.Fprintf(os.Stderr, "Error: %s is a directory; archive it before sending\n", cleanPath)
-			os.Exit(sendExitUsage)
+			// A directory is expanded into independent per-file transfers
+			// (decision D-13). It is not archived: silently repackaging a
+			// directory would change what the peer receives in a way the user
+			// did not ask for, and would make a partial failure unreportable.
+			runDirectorySend(cleanPath, sendKey, *storeDir, *bridgeAddr, *peerAddr,
+				*timeout, *textFlag, *nameFlag, *jsonOut, *verbose)
+			return
 		}
 		if err == nil && !stat.IsDir() {
 			if hasPathHint || len(rest) == 1 {
