@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/bhaskarjha-dev/tantu/internal/drop"
 )
 
 // Outbound transfer operation states. These are user-visible lifecycle
@@ -160,8 +163,9 @@ func newOutboundDropID() string {
 // ClassifyTransferError maps a send failure to honest user-facing safety
 // flags. The guiding rule: bytes never sent means safe retry; bytes fully
 // streamed without a confirmation means unknown outcome (possible
-// duplicate); integrity rejections mean nothing was published. Exported so
-// CLI send paths share the Hub's single taxonomy instead of drifting.
+// duplicate); an explicit receiver rejection means the outcome is known and
+// nothing was published. Exported so CLI send paths share the Hub's single
+// taxonomy instead of drifting.
 func ClassifyTransferError(err error, bytesSent, size int64, cancelled bool) (code, plain, nextAction string, retrySafe, duplicateRisk, dataSafe bool) {
 	msg := ""
 	if err != nil {
@@ -170,7 +174,22 @@ func ClassifyTransferError(err error, bytesSent, size int64, cancelled bool) (co
 	lower := strings.ToLower(msg)
 	dataSafe = true
 
+	// An explicit rejection is decided before everything else, and by type
+	// rather than by wording. It used to fall through to the byte-count rule
+	// below, which reported "the file may already be saved" and marked a
+	// clean, fully-understood failure as unsafe to retry - sending users to
+	// inspect a receiver inbox for a file the receiver had just said it did
+	// not write. A rejection the receiver states is the one case where the
+	// sender knows the outcome with certainty, so it is handled first.
+	var rejection *drop.RejectionError
+	if errors.As(err, &rejection) {
+		return classifyRejection(rejection.Reason)
+	}
+
 	if cancelled || strings.Contains(lower, "context canceled") || strings.Contains(lower, "context cancelled") {
+		// A cancellation after every byte was streamed is a genuine unknown
+		// outcome: the receiver may already hold the file, and no answer will
+		// ever arrive to say whether it does.
 		if size > 0 && bytesSent >= size && bytesSent > 0 {
 			return "cancelled_after_send",
 				"Transfer cancelled after sending. The file may already be saved on the receiver.",
@@ -206,12 +225,9 @@ func ClassifyTransferError(err error, bytesSent, size int64, cancelled bool) (co
 			"Safe to retry. If it repeats, check the source file and network stability.",
 			true, false, true
 	}
-	if strings.Contains(lower, "drop rejected") {
-		return "receiver_rejected",
-			"Receiver rejected the transfer. No file was saved.",
-			"Check the rejection reason in details. Fix the cause, then retry as a new transfer.",
-			false, false, true
-	}
+	// Rejections no longer match on the wire wording: both the negotiation
+	// and the completion paths return a *drop.RejectionError, handled by type
+	// at the top of this function.
 	if strings.Contains(lower, "drop_ack") || strings.Contains(lower, "resume offset") || strings.Contains(lower, "invalid resume") || strings.Contains(lower, "resumption") {
 		return "negotiation_failed",
 			"Transfer could not start. No file was saved.",
@@ -270,6 +286,43 @@ func ClassifyTransferError(err error, bytesSent, size int64, cancelled bool) (co
 		"Transfer failed before sending. No data was sent.",
 		"Check the error details, then retry. If the peer is offline, bring it online first.",
 		true, false, true
+}
+
+// classifyRejection turns a receiver's own stated refusal into an honest
+// outcome. Every branch here is known: the receiver answered, and a rejection
+// means it published nothing. None of them may claim a possible duplicate,
+// because that would send the user to verify something the receiver has already
+// told us did not happen.
+//
+// The reasons that deserve their own guidance are the ones a user can act on:
+// a reused idempotency key is fixed by changing the key, an integrity failure
+// is fixed by re-sending the same bytes, and a busy receiver is fixed by
+// waiting. Everything else shares one honest message rather than inventing a
+// distinction the receiver did not make.
+func classifyRejection(reason string) (code, plain, nextAction string, retrySafe, duplicateRisk, dataSafe bool) {
+	lower := strings.ToLower(reason)
+	switch {
+	case strings.Contains(lower, "idempotency key"):
+		return "idempotency_key_conflict",
+			"The receiver already completed a different transfer under this idempotency key, so this one was refused. Nothing new was saved.",
+			"Send again with a new idempotency key, or resend the original content to reuse the existing one. Nothing needs cleaning up.",
+			true, false, true
+	case strings.Contains(lower, "checksum") || strings.Contains(lower, "sha-256") || strings.Contains(lower, "size mismatch") || strings.Contains(lower, "byte count mismatch"):
+		return "integrity_rejected",
+			"The receiver rejected this transfer as damaged in transit. Nothing was saved.",
+			"Safe to retry. If it repeats, check network stability and re-send the source file.",
+			true, false, true
+	case strings.Contains(lower, "quota") || strings.Contains(lower, "too many") || strings.Contains(lower, "busy") || strings.Contains(lower, "no space"):
+		return "receiver_busy",
+			"The receiver declined this transfer because it is full or busy. Nothing was saved.",
+			"Free space or wait a moment on the receiver, then retry. Check `tantu doctor` there for its limits.",
+			true, false, true
+	default:
+		return "receiver_rejected",
+			"The receiver refused this transfer and saved nothing.",
+			"Read the reason in the details, fix the cause, then send again as a new transfer.",
+			true, false, true
+	}
 }
 
 // recordOutboundOperation appends sender-side truth to the ledger and

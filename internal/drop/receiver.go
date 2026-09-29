@@ -599,7 +599,16 @@ func ReceiveDrop(ctx context.Context, conn transport.Conn, w io.Writer, cfg Rece
 			}
 			if duplicate && !strings.EqualFold(computedSHA, tombstone.SHA256) {
 				errMsg := "content does not match the recorded completion for this idempotency key"
-				_ = conn.Send(TypeDropComplete, DropComplete{DropID: meta.DropID, Error: errMsg})
+				// BytesRecv is carried even though nothing is published: it is
+				// what tells the sender how far the refused attempt got, which
+				// is the difference between "refused before writing" and
+				// "refused after the whole payload arrived".
+				_ = conn.Send(TypeDropComplete, DropComplete{
+					DropID:    meta.DropID,
+					Success:   false,
+					BytesRecv: totalBytes,
+					Error:     errMsg,
+				})
 				return nil, errors.New(errMsg)
 			}
 			break

@@ -80,3 +80,40 @@ type DropComplete struct {
 	// additive: peers that predate it ignore the field.
 	Duplicate bool `json:"duplicate,omitempty"`
 }
+
+// RejectionError reports that a receiver answered a transfer with an explicit
+// failure, so the outcome is known rather than merely unknown.
+//
+// This distinction is the difference between an honest and a dishonest error
+// message. When every byte has been streamed and the connection then dies, the
+// sender genuinely does not know whether the file landed, and "it may already
+// be saved" is the only truthful thing it can say. But when the receiver sends
+// a drop_complete carrying a specific rejection reason, the receiver has told
+// the sender exactly what happened. Reporting that as an unknown outcome is
+// not caution, it is a false warning: it tells the user to go and check a
+// receiver inbox for a file that was definitively not saved, and it marks a
+// clean, retryable failure as unsafe to retry.
+//
+// The reason travels verbatim from the receiver, so callers must still treat it
+// as untrusted input for display purposes.
+type RejectionError struct {
+	// Reason is the receiver's own explanation, carried through unchanged.
+	Reason string
+	// BytesReceived is what the receiver had taken when it rejected. It is
+	// diagnostic only: a rejection means nothing was published regardless.
+	BytesReceived int64
+}
+
+func (e *RejectionError) Error() string {
+	if e == nil {
+		return "receiver rejected the transfer"
+	}
+	return "drop failed: " + e.Reason
+}
+
+// Is lets errors.Is match any rejection, so a caller can ask "did the receiver
+// answer?" without depending on the reason's wording.
+func (e *RejectionError) Is(target error) bool {
+	_, ok := target.(*RejectionError)
+	return ok
+}

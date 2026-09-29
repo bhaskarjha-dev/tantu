@@ -104,10 +104,15 @@ func SendDrop(ctx context.Context, conn transport.Conn, meta DropSend, payload i
 			return fmt.Errorf("drop_ack id mismatch: got %q, want %q", ack.DropID, meta.DropID)
 		}
 		if !ack.Accepted {
-			if ack.Error != "" {
-				return fmt.Errorf("drop rejected: %s", ack.Error)
+			// A refusal at negotiation is the same kind of known outcome as a
+			// refusal at completion: the receiver answered, and it published
+			// nothing. It carries the same typed error so the user-facing
+			// classification cannot drift between the two stages.
+			reason := ack.Error
+			if reason == "" {
+				reason = "receiver rejected the transfer without a reason"
 			}
-			return errors.New("drop rejected by receiver")
+			return &RejectionError{Reason: reason}
 		}
 		if ack.ReceivedBytes < 0 || (meta.Size > 0 && ack.ReceivedBytes > meta.Size) {
 			return fmt.Errorf("drop_ack returned invalid resume offset %d", ack.ReceivedBytes)
@@ -291,10 +296,15 @@ func SendDrop(ctx context.Context, conn transport.Conn, meta DropSend, payload i
 			return fmt.Errorf("drop_complete id mismatch: got %q, want %q", comp.DropID, meta.DropID)
 		}
 		if !comp.Success {
-			if comp.Error != "" {
-				return fmt.Errorf("drop failed: %s", comp.Error)
+			// The receiver answered with a reason, so the outcome is known:
+			// nothing was published. A RejectionError lets the caller say that
+			// instead of guessing, which it would otherwise do by pattern-
+			// matching this string and landing on "may have been saved".
+			reason := comp.Error
+			if reason == "" {
+				reason = "receiver rejected the transfer without a reason"
 			}
-			return errors.New("drop failed on receiver")
+			return &RejectionError{Reason: reason, BytesReceived: comp.BytesRecv}
 		}
 		if comp.BytesRecv < 0 || (meta.Size > 0 && comp.BytesRecv != meta.Size) {
 			return fmt.Errorf("drop_complete byte count mismatch: got %d, want %d", comp.BytesRecv, meta.Size)
