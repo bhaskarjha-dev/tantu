@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/bhaskarjha-dev/tantu/internal/browser"
 	"github.com/bhaskarjha-dev/tantu/internal/drop"
@@ -20,6 +21,12 @@ import (
 // ClearScreen emits ANSI escape sequences to clear the terminal screen and scrollback buffer.
 func ClearScreen() {
 	fmt.Print("\033[H\033[2J\033[3J")
+}
+
+// cockpitShortcutHelp is the single source for the shortcut line, so the
+// banner, [h], and the unknown-key message can never drift apart.
+func cockpitShortcutHelp() string {
+	return "[o] open  [s] file  [t] text  [l] sign-ins  [c] clear  [p] peer  [v] verbose  [q] quit"
 }
 
 // RunCockpit starts the interactive developer terminal cockpit.
@@ -124,7 +131,25 @@ func RunCockpit(ctx context.Context, h *hub.Hub, cancel context.CancelFunc, init
 						continue
 					}
 					if info.IsDir() {
-						fmt.Println("❌ Directories cannot be sent directly; please archive into .zip first.")
+						// Same policy as `tantu send <dir>`: expand into
+						// independent per-file transfers rather than refusing.
+						// A directory is the most natural thing to point a
+						// file-send prompt at, and refusing it there while
+						// accepting it in the CLI would be an inconsistency
+						// the user has to learn rather than remember.
+						fmt.Printf("📁 Directory: sending each file separately to %s...\n", cockpitDestinationName(h, targetPeer))
+						files, expErr := expandDirectory(filePath)
+						if expErr != nil {
+							fmt.Printf("❌ %s\n", expErr.Message)
+							if expErr.NextAction != "" {
+								fmt.Printf("   Next: %s\n", expErr.NextAction)
+							}
+							continue
+						}
+						dest := targetPeer
+						go func(batch []expandedFile, peer string) {
+							sendCockpitBatch(ctx, h, batch, peer)
+						}(files, dest)
 						continue
 					}
 
@@ -203,6 +228,15 @@ func RunCockpit(ctx context.Context, h *hub.Hub, cancel context.CancelFunc, init
 				ClearScreen()
 				printCockpitBanner(h)
 
+			case "l", "logins", "signin", "sign-ins":
+				// In-flight sign-ins were invisible from the terminal, so
+				// "why is my login stuck" had no answer here even though the
+				// dashboard could answer it. Cancellation matters more than the
+				// listing: an abandoned sign-in holds the peer's loopback
+				// callback port, which is normally the application's fixed
+				// redirect port, so it blocks the retry.
+				printActiveSignIns(ctx, scanner, h)
+
 			case "v", "verbose":
 				cur := !verboseMode.Load()
 				verboseMode.Store(cur)
@@ -221,13 +255,168 @@ func RunCockpit(ctx context.Context, h *hub.Hub, cancel context.CancelFunc, init
 				return
 
 			case "h", "help", "?":
-				fmt.Println("Shortcuts: [o] open  [s] file  [t] text  [c] clear  [p] peer  [v] verbose  [q] quit")
+				fmt.Println("Shortcuts: " + cockpitShortcutHelp())
 
 			default:
-				fmt.Printf("Unknown shortcut '%s'. Available: [o] open  [s] file  [t] text  [c] clear  [p] peer  [v] verbose  [q] quit\n", line)
+				fmt.Printf("Unknown shortcut '%s'. Available: %s\n", line, cockpitShortcutHelp())
 			}
 		}
 	}()
+}
+
+// selectActiveSignIn maps a cockpit answer to one of the listed sign-ins.
+//
+// It is deliberately strict. Only a plain in-range 1-based index selects:
+// empty input means "keep waiting", and anything ambiguous is refused rather
+// than guessed, because releasing the wrong sign-in would tear down a login
+// the user still wanted.
+func selectActiveSignIn(active []hub.ActiveRelay, choice string) (hub.ActiveRelay, bool) {
+	choice = strings.TrimSpace(choice)
+	if choice == "" || len(active) == 0 {
+		return hub.ActiveRelay{}, false
+	}
+	if !isPlainIndex(choice) {
+		return hub.ActiveRelay{}, false
+	}
+	idx, err := strconv.Atoi(choice)
+	if err != nil || idx < 1 || idx > len(active) {
+		return hub.ActiveRelay{}, false
+	}
+	return active[idx-1], true
+}
+
+// describeActiveSignIn renders one listed sign-in. A relay that has not yet
+// reached the wire is labelled distinctly, so the user is not told it is
+// "in flight" on the peer when it is not.
+func describeActiveSignIn(relay hub.ActiveRelay) string {
+	peer := strings.TrimSpace(relay.Peer)
+	if peer == "" {
+		peer = "resolving"
+	}
+	state := "waiting for browser"
+	if relay.State == "starting" {
+		state = "starting (not yet on the wire)"
+	}
+	age := relay.Age
+	if relay.AgeSeconds > 0 {
+		age = time.Duration(relay.AgeSeconds) * time.Second
+	}
+	return fmt.Sprintf("%s · %s · %s", peer, state, age.Round(time.Second))
+}
+
+// printActiveSignIns lists in-flight OAuth sign-ins and offers to release one.
+//
+// A sign-in that is waiting on a browser is invisible everywhere in the
+// terminal by default, and the symptom - a CLI that never returns - has no
+// explanation attached to it. Worse, the peer is holding a loopback callback
+// port for the duration, and because an application's redirect port is
+// normally fixed, an abandoned sign-in blocks the retry that would follow. So
+// this lists what is open, how long it has been open, and offers to stop it.
+func printActiveSignIns(ctx context.Context, scanner *bufio.Scanner, h *hub.Hub) {
+	active := h.ActiveRelays()
+	if len(active) == 0 {
+		fmt.Println("ℹ️  No sign-in is in progress.")
+		return
+	}
+
+	fmt.Println()
+	fmt.Printf("--- In-Flight Sign-Ins (%d) ---\n", len(active))
+	for idx, relay := range active {
+		fmt.Printf("  [%d] %s\n", idx+1, describeActiveSignIn(relay))
+	}
+	fmt.Println("--------------------------------")
+	fmt.Printf("Release one [1-%d], or press Enter to keep waiting: ", len(active))
+
+	if !scanner.Scan() {
+		return
+	}
+	target, ok := selectActiveSignIn(active, scanner.Text())
+	if !ok {
+		// Enter means "keep waiting", which is the common case and needs no
+		// explanation. Anything else is a mis-typed selection, and releasing
+		// the wrong sign-in is worse than releasing none, so it is refused.
+		if strings.TrimSpace(scanner.Text()) != "" {
+			fmt.Println("ℹ️  Enter a number from the list, or press Enter to keep waiting.")
+		}
+		return
+	}
+	// A cancel can take a round trip to the peer, so it is bounded: a slow or
+	// unreachable peer must not hang the cockpit, which is also how the user
+	// would release it if it did.
+	cancelCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	result, err := h.CancelRelay(cancelCtx, target.OperationID)
+	if err != nil {
+		fmt.Printf("❌ Could not release that sign-in: %v\n", err)
+		return
+	}
+	fmt.Printf("🚪 %s\n", result.Message)
+}
+
+// sendCockpitBatch streams a directory from the cockpit, reusing the same
+// per-file transfer path as a single file send so both surfaces report
+// identically. It runs in its own goroutine because the cockpit's hotkey
+// listener must stay responsive while files are moving.
+func sendCockpitBatch(ctx context.Context, h *hub.Hub, files []expandedFile, peer string) {
+	sent, failed := 0, 0
+	for _, f := range files {
+		select {
+		case <-ctx.Done():
+			fmt.Printf("\n⏹️  Stopped after %d of %d file(s).\n", sent, len(files))
+			return
+		default:
+		}
+
+		file, err := os.Open(f.Path)
+		if err != nil {
+			failed++
+			fmt.Printf("❌ %s: %v\n", f.Name, err)
+			continue
+		}
+		conn, dialErr := h.DialPeer(peer)
+		if dialErr != nil {
+			_ = file.Close()
+			failed++
+			fmt.Printf("❌ %s: %v\n", f.Name, dialErr)
+			continue
+		}
+
+		dropID := drop.NewDropID()
+		meta := drop.DropSend{
+			DropID:   dropID,
+			Kind:     drop.DropKindFile,
+			Name:     f.Name,
+			Size:     f.Size,
+			MIMEType: mime.TypeByExtension(filepath.Ext(f.Name)),
+		}
+		sendCtx, cancel := context.WithTimeout(ctx, h.Timeout())
+		suppressed := false
+		cfg := drop.SendDropConfig{Timeout: h.Timeout()}
+		cfg.OnComplete = func(c drop.DropComplete) { suppressed = c.Duplicate }
+		sendErr := drop.SendDrop(sendCtx, conn, meta, file, cfg)
+		cancel()
+		_ = file.Close()
+		_ = conn.Close()
+
+		switch {
+		case sendErr != nil:
+			failed++
+			fmt.Printf("❌ %s: %v\n", f.Name, sendErr)
+		case suppressed:
+			// A success, but nothing new was written, so it must not be
+			// reported as a fresh copy.
+			sent++
+			fmt.Printf("ℹ️  %s was already saved on the peer\n", f.Name)
+		default:
+			sent++
+			fmt.Printf("✅ %s (%s)\n", f.Name, formatBytes(f.Size))
+		}
+	}
+	if failed == 0 {
+		fmt.Printf("✅ Sent %d file(s).\n", sent)
+	} else {
+		fmt.Printf("⚠️  Sent %d of %d file(s); %d failed.\n", sent, len(files), failed)
+	}
 }
 
 // cockpitDestinationName resolves a display destination for sends without
@@ -458,12 +647,20 @@ func printCockpitBanner(h *hub.Hub) {
 	fmt.Printf("│  ➜ Dashboard:  http://%-40s │\n", h.WebAddr()+"/")
 	fmt.Printf("│  ➜ Network:    %-47s │\n", p2pAddr+" ("+h.TransportType()+" mTLS multiplexer)")
 	fmt.Printf("│  ➜ Peer:       %-47s │\n", peerLabel)
+	// A sign-in waiting on a browser used to be invisible from the terminal
+	// entirely: a CLI that never returns looked identical to a hung process.
+	// One line in the banner turns "is it stuck?" into a visible answer, and
+	// names the key that stops it.
+	if active := h.ActiveRelays(); len(active) > 0 {
+		label := fmt.Sprintf("  ⚠️  %d sign-in(s) in progress — press [l] to list or release", len(active))
+		fmt.Printf("│  \033[33m%-59s\033[0m │\n", label)
+	}
 	if nearbyLabel != "" {
 		fmt.Printf("│  \033[32m%-59s\033[0m │\n", nearbyLabel)
 	}
 	fmt.Println("└────────────────────────────────────────────────────────────────┘")
 	fmt.Println()
-	fmt.Println("  Shortcuts: [o] open  [s] file  [t] text  [c] clear  [p] peer  [v] verbose  [q] quit")
+	fmt.Println("  Shortcuts: " + cockpitShortcutHelp())
 	fmt.Println()
 }
 
