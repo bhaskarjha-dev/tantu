@@ -356,32 +356,6 @@ func validBeacon(beacon beaconPayload) bool {
 	return true
 }
 
-// isHexFingerprint reports whether s is a 64-character hex SHA-256 fingerprint.
-func isHexFingerprint(s string) bool {
-	if len(s) != 64 {
-		return false
-	}
-	for _, r := range s {
-		if (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {
-			return false
-		}
-	}
-	return true
-}
-
-// isSASCode reports whether s is a 6-character hex Short Authentication String.
-func isSASCode(s string) bool {
-	if len(s) != 6 {
-		return false
-	}
-	for _, r := range s {
-		if (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {
-			return false
-		}
-	}
-	return true
-}
-
 func (e *Engine) allowBeaconSource(source string) bool {
 	now := time.Now()
 	e.mu.Lock()

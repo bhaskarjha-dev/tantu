@@ -42,9 +42,15 @@ jobs:
 
       - name: staticcheck
         # Catches unreachable code, unused results, and error-handling mistakes
-        # that the compiler and vet do not.
+        # that the compiler and vet do not. The version is pinned because an
+        # unpinned one silently rots: a staticcheck that cannot read the
+        # toolchain's export data fails on every package with an internal
+        # error, which looks like a lint failure rather than a broken tool.
+        # The previous pin (2025.1.1) had exactly that problem against Go
+        # 1.27. Checks that are deliberately off are recorded in
+        # staticcheck.conf with the reason.
         run: |
-          go run honnef.co/go/tools/cmd/staticcheck@2025.1.1 ./...
+          go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
 
       - name: govulncheck
         # Reports vulnerabilities reachable from this module's own code, which

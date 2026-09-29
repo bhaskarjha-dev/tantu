@@ -459,10 +459,6 @@ func escapeHTML(value string) string {
 	).Replace(value)
 }
 
-func localRequestTokenMatches(got, want string) bool {
-	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
-}
-
 // localTicketPool mints single-use capability tickets for standalone servers,
 // mirroring the Hub's relay-ticket model. Tickets are consumed on first use
 // and expire quickly, so a ticket captured from browser history, a synced

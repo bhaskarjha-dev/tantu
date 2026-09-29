@@ -131,8 +131,15 @@ func TestRelayCall_ReleaseAfterClearReportsNothing(t *testing.T) {
 // new login (fresh per-attempt values) never joins another login's session.
 func TestRelayRequestKey_DistinguishesAttempts(t *testing.T) {
 	base := "https://auth.example.test/authorize?client_id=demo&state=one"
-	if relayRequestKey("peer", base) != relayRequestKey("peer", base) {
-		t.Fatal("identical requests must share a key")
+	// Determinism is the property that lets a retry join its own flow, so it
+	// is asserted against a second, independently computed key. Comparing one
+	// call to itself would pass no matter what the function returned.
+	first := relayRequestKey("peer", base)
+	if second := relayRequestKey("peer", base); first != second {
+		t.Fatalf("identical requests must share a key: %q vs %q", first, second)
+	}
+	if first == "" {
+		t.Fatal("a relay key must never be empty, or every request would collide")
 	}
 	other := "https://auth.example.test/authorize?client_id=demo&state=two"
 	if relayRequestKey("peer", base) == relayRequestKey("peer", other) {

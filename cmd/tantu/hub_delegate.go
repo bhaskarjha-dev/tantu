@@ -257,10 +257,6 @@ func validLocalWebAddr(addr string) bool {
 	return isLoopbackHostname(u.Hostname())
 }
 
-func addLocalIPCToken(req *http.Request) {
-	addLocalIPCTokenForStore(req, "")
-}
-
 func addLocalIPCTokenForStore(req *http.Request, storeDir string) {
 	if req == nil {
 		return
