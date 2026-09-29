@@ -8,6 +8,33 @@ rollback procedures.
 ## Unreleased
 
 ### Added
+- **Multi-file sends.** `tantu send <directory>` now sends every file under a
+  directory as an independent transfer, following the recorded decision D-13
+  ("multi-select becomes multiple logical transfers"). It is not archived: each
+  file gets its own operation ID, its own idempotency key, and its own outcome,
+  so 40 of 50 arriving is reported as 40 of 50 rather than as one failure
+  nobody can reason about. Files are named from their path relative to the
+  directory (`docs/api/reference.md` arrives as `docs-api-reference.md`), so
+  two files with the same basename in different subdirectories do not collide
+  on the receiver's flat downloads folder. Symlinks are refused rather than
+  followed or silently skipped, because a link could otherwise pull in files
+  outside the directory — and a silently shortened batch is indistinguishable
+  from a complete one. Expansion is bounded at 2,000 files and 5 GiB total, and
+  fails at the point of the mistake rather than deep into a run.
+  `tantu send <dir> --json` emits a batch contract (`status`, per-file
+  `files[]` with the same safety vocabulary as a single send, `total`,
+  `succeeded`, `failed`, `next_action`), and the exit code is the worst outcome
+  in the batch — a partial send is never reported as success.
+- **Cockpit sign-in visibility.** Pressing `[l]` lists in-flight OAuth
+  sign-ins with their destination, state, and age, and offers to release one.
+  The banner also shows a standing warning while any sign-in is open. An
+  in-flight sign-in was previously invisible from the terminal, so a CLI that
+  never returned looked exactly like a hung process — and because the peer
+  holds a loopback callback port for the duration, and an application's
+  redirect port is normally fixed, an abandoned sign-in blocked the retry that
+  would have followed.
+- The cockpit's file prompt now accepts a directory and streams it the same
+  way `tantu send` does, rather than telling the user to archive it first.
 - `tantu dashboard` and a capability-protected `POST /api/dashboard-url` for
   fresh authenticated dashboard links in headless/recovery workflows.
 - Durable private staging manifests bind resumable partials to transfer
@@ -110,6 +137,24 @@ rollback procedures.
   received files stay in their former location.
 
 ### Changed
+- **A receiver that refuses a transfer is now reported as a known outcome.**
+  Reusing an `--idempotency-key` with different content was refused by the
+  receiver, but the sender matched on wording and, because every byte had
+  already been streamed, reported it as "may have completed, the file may
+  already be saved" and marked it unsafe to retry. That sent users to check a
+  receiver inbox for a file the receiver had just said it did not write.
+  Rejections are now a typed error, classified before any byte-count guessing:
+  the console shows `idempotency_key_conflict` (or `integrity_rejected` /
+  `receiver_busy`) with a safe-to-retry flag and an actionable next step. A
+  genuinely lost acknowledgement is still reported as an unknown outcome.
+- **Live Activity Logs now records the primary journey.** A verified send left
+  no entry at all, so the tab — a headline surface, also part of the support
+  bundle — stayed empty through a working transfer. Successful sends, failed
+  sends (with the plain classification, never a raw transport string), relay
+  completion, and Hub startup are all logged now.
+- The Hub logs its own configuration once at startup (version, transport, P2P
+  and dashboard addresses, downloads directory), so the log has useful content
+  the moment it is opened instead of only after something happens.
 - The Hub dashboard now receives a per-response CSP nonce and uses delegated
   DOM events instead of inline JavaScript handlers; stale unauthenticated tabs
   show recovery guidance without firing a burst of 401 probes.
@@ -151,6 +196,58 @@ rollback procedures.
   token remains as a legacy fallback.
 
 ### Fixed
+- **A directory send ignored `--peer` and delivered to the active peer
+  instead.** On the delegation path the explicit target was dropped, so a batch
+  aimed at one machine arrived on another and reported success. The
+  destination is now carried through every delegated upload.
+- A batch that delivered nothing exited 0 in human mode (the JSON path was
+  correct), which would have let a script read a total failure as a completed
+  send.
+- A batch where nothing arrived printed "re-send the failed files, the rest
+  arrived" — reassuring the user that files were on the peer when none were.
+- **Log messages in the OAuth bridge and multiplexer were shipping as
+  mojibake, and some had lost their entire text.** Every `logf` call in
+  `internal/bridge/aside.go` and `internal/bridge/dispatcher.go` had its
+  status emoji mis-decoded, and the damage had also swallowed the message
+  bodies — the receiver's interstitial heading read `✅` as a broken glyph,
+  and eleven log lines were reduced to a damaged symbol plus arguments that
+  no longer matched any format verb. The damage was present in the very
+  first commit. All messages, emoji, and format strings are restored.
+- **The UTF-8 encoding gate no longer passes on the damage it exists to catch.**
+  The check looked for a lead character followed by a byte in `0x80-0xBF`, but
+  a Windows-1252 mis-decode of the characters that dominate prose — em dash,
+  curly quotes, ellipsis, emoji — substitutes a character from the `U+2000`
+  block instead, so it never fired. Sixteen real damage sites were committed
+  and the gate reported the tree clean. It now reverses the mis-decode and
+  accepts a run only when the recoded bytes are valid UTF-8 *and* differ from
+  what is in the file, so damaged text is caught and legitimate text (an accented
+  letter followed by a real em dash) is not. The damaged prose, comments, and a
+  log-message emoji were repaired.
+- **The encoding gate now catches the damage it previously could not.** Two of
+  the three damage shapes in the tree were invisible to it: a mis-decode whose
+  bytes are not valid UTF-8 and so cannot be reversed, and an invisible soft
+  hyphen. The gate now reverses a candidate run and accepts it only when the
+  result is valid UTF-8 *and* differs, flags invisible format characters, and
+  detects a bare cluster of high-Latin characters that is not part of a word —
+  without flagging real accented words, `×`, `÷`, `·`, `§`, or intact emoji.
+- **The SAS word list's comment claimed two guarantees it did not have.** It
+  stated that the list excluded `i`, `l`, `o`, `0` and `1` — 305 of the 512
+  words contain one of them — and that a confusable check existed, which no
+  test performed. The comment now describes the list accurately, and a
+  mechanical confusable check was added and calibrated against measurements
+  of the real list: zero prefix pairs (where ~900,000 are expected by chance,
+  so the property is deliberate and worth pinning) and 772 single-substitution
+  pairs, which is ordinary for English and now bounded so the list cannot
+  silently become impossible to compare by ear.
+- **The CI staticcheck gate can now run at all.** The pinned version
+  (2025.1.1) could not read the toolchain's export data and failed on every
+  package with an internal error, so the step had never produced a meaningful
+  result. It is pinned to a working version, and the real findings it surfaced
+  are fixed: a test that compared a value with itself and could never fail,
+  and five dead helpers left behind by earlier refactors (including two
+  superseded origin validators in the security middleware).
+- A receiver rejection that happened after the whole payload arrived reported
+  no byte count, so the sender could not say how far the refused attempt got.
 - The dashboard send preview renders again. The chosen file is staged as a
   page-created object URL, which the Content Security Policy did not
   authorize, so the browser blocked the image, the confirmation card showed a

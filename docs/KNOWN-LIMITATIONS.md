@@ -23,8 +23,8 @@ Severity: **Blocker** (a claim is false or a journey is unsafe) ·
 | 1.2 | Windows is the only runtime-verified platform. | Limit | Open | `docs/RELEASE.md` |
 | 1.3 | `-race` runs on Linux/macOS in CI; local Windows race execution needs a full C toolchain, so local evidence is `-count=2` lifecycle reruns. | Limit | Accepted | `docs/RELEASE.md` |
 | 1.4 | Artifacts are **not signed**. No cosign configuration, and signing keys must never live in this repo. | Gap | Open | `docs/RELEASE.md`, `CHANGELOG.md` Security notes |
-| 1.5 | **No release has ever been published** (`git tag -l` is empty). The goreleaser pipeline, SBOM generation, cross-compilation for darwin/linux arm64, and ldflags version stamping have never executed end to end. `docs/RELEASE.md` describes install and upgrade procedures for artifacts that do not exist yet. | Blocker for "installable" | Open | `docs/RELEASE.md` |
-| 1.6 | **The quality gates added after the audit have never run on real CI.** The local Windows toolchain cannot run `-race`; `staticcheck`, `govulncheck`, the coverage floor, and the browser acceptance job are configured but unobserved. | Gap | Open | `.github/workflows/ci.yml` |
+| 1.5 | **No release has ever been published** (`git tag -l` is empty). All six published targets were cross-compiled successfully on 2026-09-29 (linux/darwin/windows × amd64/arm64, CGO_ENABLED=0, release ldflags), so the build matrix is proven; the goreleaser pipeline, SBOM generation, and the release artifacts themselves have still never executed end to end. `docs/RELEASE.md` describes install and upgrade procedures for artifacts that do not exist yet. | Blocker for "installable" | Partly closed 2026-09-29 | `docs/RELEASE.md` |
+| 1.6 | **The quality gates are now exercised locally, but CI itself is still unobserved.** `staticcheck` and the encoding gate have been run to completion on this machine and pass; `-race` still cannot run locally on Windows, and `govulncheck`, the coverage floor, and the browser acceptance job have not been executed here. | Gap | Partly closed 2026-09-29 | `.github/workflows/ci.yml` |
 
 ## 2. Evidence
 
@@ -35,14 +35,14 @@ Severity: **Blocker** (a claim is false or a journey is unsafe) ·
 | 2.3 | The browser acceptance harness covers **Chrome/Edge on Windows only.** Safari, Firefox, and every non-Windows browser are unverified. | Gap | Open | `tools/uxtest/README.md` |
 | 2.4 | **Clipboard-image success is unmeasured per browser/platform.** The paste-event path and the file-picker fallback are implemented; which browsers expose which clipboard shapes is not measured. | Gap | Open | `docs/UX-STATUS.md` (Browser/platform clipboard matrix) |
 | 2.5 | No **performance budget** in the plan's §12 sense is enforced in CI. A throughput baseline exists in DEV-RECORD Batch J; the user-perceived budgets are not gated. | Gap | Open | `docs/DEV-RECORD.md` Batch J |
-| 2.6 | **A second live machine was never dialled.** Multi-peer layout, SAS derivation, and row rendering are verified from a seeded store. A real pairing handshake, a real cross-machine transfer, and reachable/unreachable transitions are unproven. | Gap | Open | `docs/DEV-RECORD.md` Batch Z16 |
+| 2.6 | **A second live machine has now been dialled.** A real peer at `192.168.0.178:9877` (a distinct host: different IP and MAC) accepted verified text and 8 MiB file transfers at 15.0 MiB/s, refused a reused idempotency key, and returned a hard failure for an unpaired address. Pairing ceremony, discovery, and inbound approval are still unexercised, and evidence is one-directional: nothing has been observed on the peer's own dashboard. | Gap (partly closed) | Partly closed 2026-09-29 | `docs/EVIDENCE-TWO-MACHINE.md` |
 
 ## 3. Product behaviour
 
 | # | Limitation | Severity | Status | Where it is visible |
 |---|---|---|---|---|
 | 3.1 | **In-place transfer retry is refused by design.** `transfer retry` teaches idempotency-key reuse instead. Same-DropID resume is library-only. | Limit | By design (D-07) | `docs/UX-STATUS.md` (Retry/resume actions) |
-| 3.2 | **Directories are rejected** by send; multi-file selection is not yet separate logical transfers. | Limit | Deferred (P2, D-13) | `docs/UX-STATUS.md` P2 |
+| 3.2 | **Directories are now sent as multiple independent transfers** (D-13), bounded at 2,000 files / 5 GiB, with symlinks refused and per-file outcomes. Structure is **not** preserved on the receiver: `a/b.txt` arrives as `a-b.txt` in a flat folder, so a two-file tree with colliding basenames is disambiguated by path, not by directory. A whole directory arriving as an archive remains unsupported. | Limit | Partly closed 2026-09-29 | `tantu send <dir>` |
 | 3.3 | **Inbox items cannot be deleted from the dashboard.** Entry-only removal strands files; file removal needs OS-trash semantics. | Limit | Deferred with rationale | `docs/DEV-RECORD.md` Batch Z13 |
 | 3.4 | **Dashboard session state does not survive a Hub restart.** Sessions live in Hub memory (now 24 h sliding while the Hub lives). A restart is reported as a lost session with instructions to reopen. | Limit | By design | Dashboard session banner |
 | 3.5 | A Hub **restart drops the session**, so an open dashboard tab must be reopened; there is no silent re-establishment. | Limit | By design | Dashboard session banner |
@@ -52,7 +52,7 @@ Severity: **Blocker** (a claim is false or a journey is unsafe) ·
 | 3.9 | **An OAuth flow with no `redirect_uri` and no `state` has no redirect binding.** `callbackExpectation` reports it as `unbound`, and the browser checks still apply, but the flow is weaker than one that carries a `state` and is not separately surfaced to the user at the call site. | Limit | Open | `internal/bridge/aside.go` |
 | 3.10 | **Abandoning a sign-in closes the listener, not the browser tab.** `bridge_cancel` releases the session, its bound loopback callback port, and the wire wait immediately, and a new attempt supersedes a stale session on the same port. The authorization page already open in the browser is not closed: no supported signal distinguishes a tab the user still wants from one they abandoned, and closing tabs a script did not open is unreliable across browsers. The user closes that tab themselves. | Limit | Open, by design | `internal/bridge/session_registry.go` |
 | 3.11 | **A cancel against a peer running a release without `bridge_cancel` cannot be confirmed.** The send is attempted and the reply is treated as "not released" rather than as an error, so the UI says the other machine may still release on its own timeout. Given 3.7, this only arises across a mixed-version pair. | Limit | Open, by design | `internal/bridge/cancel_client.go` |
-| 3.12 | **The cockpit has no sign-in count or cancel key.** Cancellation is available from the dashboard (`/api/relay/active`) and the relay popup's Cancel button, but the terminal cockpit shows neither a count of in-flight sign-ins nor a way to stop one. | Gap | Open | `cmd/tantu/cockpit.go` |
+| 3.12 | The cockpit now shows in-flight sign-ins and can release one. The banner carries a standing warning while any sign-in is open, and `[l]` lists destination, state, and age before offering to cancel. A relay still in `starting` is labelled distinctly from one already on the wire, and a mis-typed selection is refused rather than guessed — releasing the wrong login is worse than releasing none. | Gap | Closed 2026-09-29 | `cmd/tantu/cockpit.go` |
 
 ## 4. Interface
 
@@ -73,7 +73,7 @@ Severity: **Blocker** (a claim is false or a journey is unsafe) ·
 | 5.1 | **Received items are session-local and in memory only.** They are cleared on Hub restart and are not persisted. Inbound persistence was evaluated and rejected for privacy. | Limit | By design | Dashboard inbox note |
 | 5.2 | Transfer history is **metadata-only and bounded** (last 50, 30 days). No payload bytes, clipboard contents, text snippets, or full OAuth URLs are ever stored. | Limit | By design (D-14) | `docs/ARCHITECTURE.md` |
 | 5.3 | The client-side 10 MiB text limit **mirrors** the server default rather than querying it. A non-default server limit would make the early rejection wrong (the server still enforces the truth). | Limit | Accepted | `internal/hub/web_dashboard.go` |
-| 5.4 | The SAS word list has **no automated confusable-pair check.** Words are unique, 4-6 lowercase ASCII letters, and drawn from a 512-entry list, but a mechanical "these two words look alike" test is not implemented, so a future edit could introduce a visually similar pair and weaken a spoken comparison. | Limit | Open | `internal/pairing/cert.go` |
+| 5.4 | The SAS word list now has an **automated confusable-pair check, bounded by what the list can actually achieve.** Measured on the real 512-word list: **zero** prefix pairs where ~900,000 are expected by chance (a deliberate property, now asserted exactly), and 772 single-substitution pairs, which is ordinary for English words ("bear"/"beat") and bounded at 900 so the list cannot silently become uncomparable. The check is mechanically decidable only — rhyme and homophony still need a human. | Limit | Partly closed 2026-09-29 | `internal/pairing/sas_test.go` |
 
 ## 6. Resolved
 
@@ -81,6 +81,15 @@ Recorded so the register shows movement, not just accumulation.
 
 | Limitation | Resolved by | Evidence |
 |---|---|---|
+| A refused send was reported as "may have completed, the file may already be saved", sending users to verify a file the receiver had just said it did not write | audit 2026-09-29 | `TestClassifyTransferError_ReceiverRejectionIsKnown`, `TestE2E_IdempotencyKeyConflictIsAKnownRejection` |
+| Live Activity Logs stayed empty through a verified send | audit 2026-09-29 | `TestWebDashboard_SuccessfulSendIsVisibleInActivityLog`, `TestWebDashboard_StartupIsVisibleInActivityLog` |
+| The UTF-8 gate reported the tree clean while 27 committed sites were mis-decoded across 6 files | audit 2026-09-29 | `TestCountMojibakeCatchesTheShippedDamage`, `TestCountMojibakeRunsCatchesUnreversibleDamage`, `TestCountFormatCharsCatchesInvisibleDamage` |
+| Every OAuth-bridge and multiplexer log message shipped as mojibake, and eleven had lost their entire text and format verbs | audit 2026-09-29 | `go vet ./...` (format-verb check), `tools/encgate` |
+| A test compared `relayRequestKey(...)` with itself and could never fail | audit 2026-09-29 | `TestRelayRequestKey_DistinguishesAttempts` |
+| The CI staticcheck pin could not read the toolchain's export data, so the step could never pass | audit 2026-09-29 | `staticcheck.conf`, `go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...` exits 0 |
+| The SAS word list's own comment claimed it excluded `i l o 0 1` and that a confusable test existed; neither was true (305 of 512 words contain those letters) | audit 2026-09-29 | `TestSASWordListHasNoMechanicalConfusables`, comment corrected in `cert.go` |
+| A directory send dropped `--peer` on the delegation path and delivered to the active peer while reporting success | 2026-09-29 | `tantu send <dir> --peer <untrusted>` returns `destination_unreachable` for every file |
+| A batch that delivered nothing exited 0 in human mode, and printed "the rest arrived" | 2026-09-29 | `TestBatchExitCodeIsWorstOutcome`, `TestBatchStatusReflectsOutcomes` |
 | Send preview never rendered (CSP blocked `blob:`) | Z15 | `TestWebDashboard_SendPreviewImageSchemeIsAuthorized`, harness decode check || Text send reported nothing on the composer's own tab | Z15 | `TestWebDashboard_TextComposerReportsOutcomeInline` |
 | Pairing approval rebuilt every 3 s, destroying keyboard focus | Z15 | `TestWebDashboard_AccessibilityMechanicsMarkers`, harness focus-hold check |
 | Four sub-4.5:1 contrast elements, three below 1.4:1 | Z15 | Harness computed-contrast sweep, both themes |
