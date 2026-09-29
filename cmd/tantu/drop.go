@@ -996,7 +996,7 @@ func runDrop(args []string) {
 		})
 	}
 
-	// 1. GET / â€” serve HTML
+	// 1. GET / — serve HTML
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -1006,7 +1006,7 @@ func runDrop(args []string) {
 		_, _ = w.Write([]byte(pageContent))
 	})
 
-	// 2. POST /api/send-text â€” send text drop
+	// 2. POST /api/send-text — send text drop
 	mux.HandleFunc("/api/send-text", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -1085,7 +1085,7 @@ func runDrop(args []string) {
 		})
 	})
 
-	// 3. POST /api/send-file â€” send file upload
+	// 3. POST /api/send-file — send file upload
 	mux.HandleFunc("/api/send-file", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -1189,7 +1189,7 @@ func runDrop(args []string) {
 		})
 	})
 
-	// 4. GET /api/receive â€” long poll for incoming drops
+	// 4. GET /api/receive — long poll for incoming drops
 	mux.HandleFunc("/api/receive", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -1232,7 +1232,7 @@ func runDrop(args []string) {
 		}
 	})
 
-	// 5. GET /api/download â€” download a received file
+	// 5. GET /api/download — download a received file
 	mux.HandleFunc("/api/download", func(w http.ResponseWriter, r *http.Request) {
 		id := r.URL.Query().Get("id")
 		dropMu.Lock()

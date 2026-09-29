@@ -227,7 +227,7 @@ func validateCallbackRequestState(r *http.Request, expected callbackExpectationS
 // redirect) or the Origin is the provider's own (a form_post response). An
 // attacker's page issues fetch(), XHR, or a subresource request, and the browser
 // labels it "cors", "no-cors", or "same-origin" and stamps the attacker's Origin
-// ÔÇö neither of which can be forged from a page, which is the whole point.
+// — neither of which can be forged from a page, which is the whole point.
 //
 // Both headers are enforced when present and tolerated when absent, so a client
 // that strips them falls back to the state check rather than being locked out.
@@ -337,7 +337,7 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 		return errors.New(ackErr)
 	}
 
-	a.logf("­ƒöù Session started: handling request %s (callback port %d)", req.RequestID, req.CallbackPort)
+	a.logf("🔗 Session started: handling request %s (callback port %d)", req.RequestID, req.CallbackPort)
 
 	// Track the session before binding anything, so an abandoned sign-in is
 	// always listable and always releasable from the moment it exists. The
@@ -371,7 +371,7 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 	req.URL = browser.SanitizeURL(req.URL)
 	if err := browser.ValidateURL(req.URL); err != nil {
 		ackErr := fmt.Sprintf("invalid url: %v", err)
-		a.logf("ÔØî Session error: %s", ackErr)
+		a.logf("❌ Session error: %s", ackErr)
 		_ = a.conn.Send(protocol.TypeBridgeAck, protocol.BridgeAck{
 			RequestID:     req.RequestID,
 			ListeningPort: 0,
@@ -400,7 +400,7 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 		return errors.New(ackErr)
 	}
 	if !lease.owner {
-		a.logf("ÔÖ╗´©Å Duplicate OAuth request suppressed for callback port %d", req.CallbackPort)
+		a.logf("♻️ Duplicate OAuth request suppressed for callback port %d", req.CallbackPort)
 		waitCtx, waitCancel := context.WithTimeout(ctx, a.cfg.Timeout)
 		waitErr := lease.wait(waitCtx)
 		waitCancel()
@@ -437,7 +437,7 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 	listener, err := net.Listen("tcp", bindAddr)
 	if err != nil {
 		ackErr := bindListenErrorText(req.CallbackPort, err)
-		a.logf("ÔØî Session error: %s", ackErr)
+		a.logf("❌ Session error: %s", ackErr)
 		_ = a.conn.Send(protocol.TypeBridgeAck, protocol.BridgeAck{
 			RequestID:     req.RequestID,
 			ListeningPort: 0,
@@ -477,9 +477,9 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 	// contain state, PKCE challenges, and (in callback requests) auth codes.
 	if a.cfg.OpenBrowser != nil {
 		a.cfg.Registry.SetState(req.RequestID, SessionStateWaitingCallback)
-		a.logf("­ƒîÉ Opening browser for URL: %s", browser.RedactURL(req.URL))
+		a.logf("🌐 Opening browser for URL: %s", browser.RedactURL(req.URL))
 		if err := a.cfg.OpenBrowser(req.URL); err != nil {
-			a.logf("ÔØî failed to open browser: %s", safeBridgeError(err))
+			a.logf("❌ failed to open browser: %s", safeBridgeError(err))
 		}
 	}
 
@@ -494,21 +494,21 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if err := validateCallbackRequest(r, callbackExpectationSpec{}); err != nil {
-			a.logf("ÔÜá´©Å Rejected callback request: %v", err)
+			a.logf("⚠️ Rejected callback request: %v", err)
 			http.Error(w, "invalid OAuth callback", http.StatusBadRequest)
 			return
 		}
 
 		body, readErr := io.ReadAll(io.LimitReader(r.Body, (1<<20)+1))
 		if readErr != nil {
-			a.logf("ÔÜá´©Å Failed to read callback body: %v", readErr)
+			a.logf("⚠️ Failed to read callback body: %v", readErr)
 			callbackErrCh <- fmt.Errorf("read callback body: %w", readErr)
 			http.Error(w, "invalid OAuth callback", http.StatusBadRequest)
 			return
 		}
 		if len(body) > 1<<20 {
 			err := errors.New("callback body exceeds 1 MiB limit")
-			a.logf("ÔÜá´©Å %v", err)
+			a.logf("⚠️ %v", err)
 			callbackErrCh <- err
 			http.Error(w, "invalid OAuth callback", http.StatusRequestEntityTooLarge)
 			return
@@ -520,7 +520,7 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 			}
 		}
 		if err := validateCallbackRequestState(r, expected, formState); err != nil {
-			a.logf("ÔÜá´©Å Rejected callback request: %v", err)
+			a.logf("⚠️ %v", err)
 			http.Error(w, "invalid OAuth callback", http.StatusBadRequest)
 			return
 		}
@@ -530,7 +530,7 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 			captured = true
 		}
 		captureMu.Unlock()
-		a.logf("­ƒôÑ Callback received: %s %s", r.Method, r.URL.Path)
+		a.logf("📥 Callback received: %s %s", r.Method, r.URL.Path)
 		if alreadyCaptured {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusConflict)
@@ -559,14 +559,14 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 					`<style>body{font-family:system-ui,sans-serif;display:flex;align-items:center;` +
 					`justify-content:center;min-height:100vh;margin:0;background:#111;color:#eee}` +
 					`.card{text-align:center;padding:40px}</style></head>` +
-					`<body><div class="card"><h1>Ô£à Authentication complete</h1>` +
+					`<body><div class="card"><h1>✅ Authentication complete</h1>` +
 					`<p>You can close this tab.</p></div></body></html>`))
 			} else {
 				_, _ = w.Write([]byte(`<html><head><meta charset="utf-8"><title>tantu</title>` +
 					`<style>body{font-family:system-ui,sans-serif;display:flex;align-items:center;` +
 					`justify-content:center;min-height:100vh;margin:0;background:#111;color:#eee}` +
 					`.card{text-align:center;padding:40px}</style></head>` +
-					`<body><div class="card"><h1>ÔÜá´©Å Callback captured</h1>` +
+					`<body><div class="card"><h1>⚠️ Callback captured</h1>` +
 					`<p>Delivery to the application may have failed.</p></div></body></html>`))
 			}
 		case <-r.Context().Done():
@@ -578,7 +578,7 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 				`<style>body{font-family:system-ui,sans-serif;display:flex;align-items:center;` +
 				`justify-content:center;min-height:100vh;margin:0;background:#111;color:#eee}` +
 				`.card{text-align:center;padding:40px}</style></head>` +
-				`<body><div class="card"><h1>ÔÜá´©Å Callback captured</h1>` +
+				`<body><div class="card"><h1>⚠️ Callback captured</h1>` +
 				`<p>Delivery status unknown. You can close this tab.</p></div></body></html>`))
 		}
 	})
@@ -623,10 +623,10 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 			return ErrSessionCancelled
 		}
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(context.Cause(ctx), context.DeadlineExceeded) {
-			a.logf("ÔØî Session error: timeout waiting for authentication callback")
+			a.logf("❌ Session error: timeout waiting for authentication callback")
 			return errors.New("timeout waiting for authentication callback")
 		}
-		a.logf("ÔØî Session error: %v", ctx.Err())
+		a.logf("❌ Session error: %v", ctx.Err())
 		return ctx.Err()
 	case serveErr := <-serveErrCh:
 		signalCompletion(completionCh, false)
@@ -640,17 +640,17 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 	// 6. Send CallbackRelay over bridge connection.
 	if err := a.conn.Send(protocol.TypeCallbackRelay, relay); err != nil {
 		signalCompletion(completionCh, false)
-		a.logf("ÔØî Session error: %v", err)
+		a.logf("❌ Session error: %v", err)
 		return fmt.Errorf("send callback_relay: %w", err)
 	}
 	a.cfg.Registry.SetState(req.RequestID, SessionStateCompleting)
-	a.logf("­ƒôª Callback relayed to B-side, awaiting completion")
+	a.logf("📦 Callback relayed to B-side, awaiting completion")
 
 	// 7. Wait for the correlated BridgeComplete from B-side.
 	for {
 		env, err := receiveEnvelope(ctx, a.conn)
 		if err != nil {
-			a.logf("ÔØî Session error: %v", err)
+			a.logf("❌ Session error: %v", err)
 			signalCompletion(completionCh, false)
 			return err
 		}
@@ -687,7 +687,7 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 			return errors.New("bridge completion reported failure")
 		}
 		signalCompletion(completionCh, true)
-		a.logf("Ô£à Session completed successfully")
+		a.logf("✅ Session completed successfully")
 		return nil
 	}
 }

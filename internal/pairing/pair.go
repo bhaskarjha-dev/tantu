@@ -217,7 +217,7 @@ func verifyTLSClaim(conn net.Conn, claimedCertPEM []byte) error {
 	return nil
 }
 
-const maxPairMessageSize = 64 * 1024 // 64KB â€” pairing messages are small JSON
+const maxPairMessageSize = 64 * 1024 // 64KB — pairing messages are small JSON
 
 func readJSON(conn net.Conn, dest any) error {
 	var lenBuf [4]byte
@@ -274,7 +274,7 @@ func getOrGenerateIdentity(store *PeerStore) (*Identity, error) {
 
 // PairInitiator listens for an incoming pairing connection on listenAddr.
 // It returns the PairResult after certificate exchange.
-// confirmFn is called with the peer's SAS code and local SAS code â€” return true to accept, false to reject.
+// confirmFn is called with the peer's SAS code and local SAS code — return true to accept, false to reject.
 func PairInitiator(store *PeerStore, listenAddr string, confirmFn func(peerSAS, localSAS string) bool) (*PairResult, error) {
 	if listenAddr == "" {
 		listenAddr = net.JoinHostPort("0.0.0.0", DefaultPairingPort)
@@ -433,7 +433,7 @@ func PairInitiatorWithListener(store *PeerStore, l net.Listener, confirmFn func(
 }
 
 // PairResponder connects to an initiator at peerAddr for pairing.
-// confirmFn is called with the peer's SAS code and local SAS code â€” return true to accept, false to reject.
+// confirmFn is called with the peer's SAS code and local SAS code — return true to accept, false to reject.
 func PairResponder(store *PeerStore, peerAddr string, confirmFn func(peerSAS, localSAS string) bool) (*PairResult, error) {
 	return PairResponderWithContext(context.Background(), store, peerAddr, confirmFn)
 }

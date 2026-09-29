@@ -124,8 +124,8 @@ All communications over a `transport.Conn` utilize length-prefixed JSON envelope
 > known types and drops unknown ones (logged, connection closed), and session
 > handlers reject unexpected types explicitly. A decoder allowlist would turn
 > every future message type into a wire break against older peers without
-> adding any security â€” unknown types already receive no handler and no
-> trust â€” so forward compatibility is preserved at the layer that can
+> adding any security — unknown types already receive no handler and no
+> trust — so forward compatibility is preserved at the layer that can
 > actually judge a type.
 
 ---

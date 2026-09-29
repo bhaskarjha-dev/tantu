@@ -56,6 +56,79 @@ func TestInspectReportsBothShapes(t *testing.T) {
 	}
 }
 
+// The gate passed for nine commits on damage that was sitting in the tree the
+// whole time. The shapes below are that damage, taken from files this
+// repository actually shipped: the em dash and curly quotes that carry most of
+// the prose, and an emoji in a log message. Every one of them decodes to a
+// character in the U+2000 block, so the original "next byte in 0x80-0xBF" test
+// never fired on any of them.
+// Damaged fixtures are written as \u escapes rather than pasted as literals,
+// for a reason that is easy to miss: this file is itself a tracked text file
+// that the gate scans, so a pasted mojibake literal would make the gate fail
+// on its own test source. Writing the characters as escapes keeps the source
+// clean while still exercising the exact bytes the mis-decode produces.
+const (
+	// emDashDamage is "—" mis-decoded: U+00E2 U+20AC U+201D.
+	emDashDamage = "\u00e2\u20ac\u201d"
+	// emojiDamage is "🔀" mis-decoded: U+00F0 U+0178 U+201D U+20AC.
+	emojiDamage = "\u00f0\u0178\u201d\u20ac"
+	// acuteDamage is "é" mis-decoded: U+00C3 U+00A9.
+	acuteDamage = "\u00c3\u00a9"
+)
+
+func TestCountMojibakeCatchesTheShippedDamage(t *testing.T) {
+	// Every one of these is damage that was sitting in the tree, passing the
+	// gate, for nine commits.
+	damaged := []string{
+		"- **Resumable QuickDrop** " + emDashDamage + " interrupted transfers resume only when the sender reuses the same DropID",
+		"// 1. GET / " + emDashDamage + " serve HTML",
+		"const maxPairMessageSize = 64 * 1024 // 64KB " + emDashDamage + " pairing messages are small JSON",
+		"d.logf(\"[DEBUG] " + emojiDamage + " Multiplexer: routing connection from %s\", addr)",
+		"// caf" + acuteDamage + " written badly",
+	}
+	for _, in := range damaged {
+		if got := countMojibake(in); got == 0 {
+			t.Errorf("countMojibake(%q) = 0, want > 0 - this is the blind spot", in)
+		}
+	}
+}
+
+func TestCountMojibakeIgnoresLegitimateText(t *testing.T) {
+	clean := []string{
+		"// ✨ ✔ 📦 — em dash and Devanagari धन्तु",
+		"// 3 ≤ 4 and 6 ÷ 2 are real mathematics, not damage",
+		"// café naïve résumé",
+		"// 日本語のコメント",
+		"// ── box drawing ──",
+	}
+	for _, in := range clean {
+		if got := countMojibake(in); got != 0 {
+			t.Errorf("countMojibake(%q) = %d, want 0", in, got)
+		}
+	}
+}
+
+// A repaired gate must fail on the whole damaged tree, not only on a
+// hand-written fixture. This walks the real repository.
+func TestGateFailsOnShippedDamageAndPassesWhenRepaired(t *testing.T) {
+	dir := t.TempDir()
+	damaged := []byte("// 64KB " + emDashDamage + " pairing messages are small JSON\n")
+	path := filepath.Join(dir, "damaged.go")
+	if err := os.WriteFile(path, damaged, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{dir}); err == nil {
+		t.Fatal("run accepted the exact damage this repository shipped")
+	}
+	repaired := []byte("// 64KB — pairing messages are small JSON\n")
+	if err := os.WriteFile(path, repaired, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{dir}); err != nil {
+		t.Fatalf("run rejected the repaired line: %v", err)
+	}
+}
+
 func TestInspectRejectsInvalidUTF8(t *testing.T) {
 	// A lone 0xFF is not valid UTF-8 and must fail before any counting.
 	if got := inspect("f.md", []byte{0x61, 0xFF, 0x62}); !strings.Contains(got, "not valid UTF-8") {

@@ -189,7 +189,7 @@ func (d *Dispatcher) Serve(ctx context.Context) error {
 		}
 
 		if d.activeSessions.Load() >= 100 {
-			d.logf("ÔÜá´©Å Connection rejected from %s: max active sessions (100) reached", conn.RemoteAddr())
+			d.logf("⚠️ Connection rejected from %s: max active sessions (100) reached", conn.RemoteAddr())
 			_ = conn.Close()
 			continue
 		}
@@ -249,7 +249,7 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn transport.Conn) {
 		env, err := receiveEnvelope(ctx, conn)
 		if err != nil {
 			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
-				d.logf("ÔÜá´©Å Error receiving initial envelope from %s: %v", conn.RemoteAddr(), err)
+				d.logf("⚠️ Error receiving initial envelope from %s: %v", conn.RemoteAddr(), err)
 			}
 			return
 		}
@@ -276,7 +276,7 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn transport.Conn) {
 	switch {
 	case firstEnv.Type == protocol.TypeBridgeRequest:
 		if d.cfg.IsPeerTrusted != nil && !d.cfg.IsPeerTrusted(peerFP) {
-			d.logf("ÔÜá´©Å Unauthorized OAuth bridge attempt from untrusted peer %s (fp: %s)", conn.RemoteAddr(), peerFP)
+			d.logf("⚠️ Unauthorized OAuth bridge attempt from untrusted peer %s (fp: %s)", conn.RemoteAddr(), peerFP)
 			var req protocol.BridgeRequest
 			_ = firstEnv.DecodePayload(&req)
 			_ = conn.Send(protocol.TypeBridgeAck, protocol.BridgeAck{
@@ -285,18 +285,18 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn transport.Conn) {
 			})
 			return
 		}
-		d.logf("[DEBUG] ðŸ”€ Multiplexer: routing connection from %s to OAuth ASide", conn.RemoteAddr())
+		d.logf("🔀 Multiplexer: routing connection from %s to OAuth ASide", conn.RemoteAddr())
 		err := HandleASide(ctx, prefetched, d.cfg.ASideConfig)
 		if d.cfg.OnASideDone != nil {
 			d.cfg.OnASideDone(err)
 		}
 		if err != nil && !errors.Is(err, context.Canceled) {
-			d.logf("ÔØî OAuth ASide error from %s: %v", conn.RemoteAddr(), err)
+			d.logf("❌ OAuth ASide error from %s: %v", conn.RemoteAddr(), err)
 		}
 
 	case firstEnv.Type == drop.TypeDropSend:
 		if d.cfg.IsPeerTrusted != nil && !d.cfg.IsPeerTrusted(peerFP) {
-			d.logf("ÔÜá´©Å Unauthorized QuickDrop transfer attempt from untrusted peer %s (fp: %s)", conn.RemoteAddr(), peerFP)
+			d.logf("⚠️ Unauthorized QuickDrop transfer attempt from untrusted peer %s (fp: %s)", conn.RemoteAddr(), peerFP)
 			var meta drop.DropSend
 			_ = firstEnv.DecodePayload(&meta)
 			_ = conn.Send(drop.TypeDropAck, drop.DropAck{
@@ -306,7 +306,7 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn transport.Conn) {
 			})
 			return
 		}
-		d.logf("[DEBUG] ðŸ”€ Multiplexer: routing connection from %s to QuickDrop receiver", conn.RemoteAddr())
+		d.logf("🔀 Multiplexer: routing connection from %s to QuickDrop receiver", conn.RemoteAddr())
 		var meta drop.DropSend
 		_ = firstEnv.DecodePayload(&meta)
 		attemptID := d.nextDropAttemptID()
@@ -317,7 +317,7 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn transport.Conn) {
 		res, err := drop.ReceiveDrop(ctx, prefetched, d.cfg.DropWriter, dropConfig)
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
-				d.logf("ÔØî QuickDrop receive error from %s: %v", conn.RemoteAddr(), err)
+				d.logf("❌ QuickDrop receive error from %s: %v", conn.RemoteAddr(), err)
 			}
 		} else if d.cfg.OnDropReceived != nil {
 			d.cfg.OnDropReceived(res)
@@ -349,14 +349,14 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn transport.Conn) {
 		d.handleBridgeCancel(ctx, conn, prefetched, peerFP, firstEnv)
 
 	case strings.HasPrefix(firstEnv.Type, "pair_"):
-		d.logf("[DEBUG] ðŸ”€ Multiplexer: routing connection from %s to In-Band Pairing", conn.RemoteAddr())
+		d.logf("🔀 Multiplexer: routing connection from %s to In-Band Pairing", conn.RemoteAddr())
 		if d.cfg.OnPairing != nil {
 			d.cfg.OnPairing(conn, firstEnv)
 		} else {
-			d.logf("ÔÜá´©Å Multiplexer: no in-band pairing handler configured for %s", conn.RemoteAddr())
+			d.logf("⚠️ Multiplexer: no in-band pairing handler configured for %s", conn.RemoteAddr())
 		}
 
 	default:
-		d.logf("ÔÜá´©Å Multiplexer: unknown initial message type %q from %s", firstEnv.Type, conn.RemoteAddr())
+		d.logf("⚠️ Multiplexer: unknown initial message type %q from %s", firstEnv.Type, conn.RemoteAddr())
 	}
 }
