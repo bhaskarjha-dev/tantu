@@ -137,9 +137,16 @@ func ValidateIdentity(id *Identity) error {
 }
 
 // SASWords is the word list used to render a SAS. Words are 4-6 lowercase ASCII
-// letters and deliberately exclude i, l, o, 0, and 1 so a code read aloud or
-// copied off one screen matches on the other. TestSASWordListIsSound asserts
-// the list is exactly SASWordCount entries, unique, and free of confusables.
+// letters drawn from an English-like vocabulary, so a code read aloud or copied
+// off one screen matches on the other. TestSASWordListIsSound asserts the list
+// is exactly SASWordCount entries, unique, and uniformly shaped.
+//
+// This comment previously claimed the list excluded i, l, o, 0 and 1, and
+// claimed a confusable check that no test performed. Neither was true: 305 of
+// the 512 words contain one of those letters. The claim is withdrawn rather
+// than the list rewritten, because dropping them would remove most of the
+// vocabulary and the confusion those letters actually cause is handled by the
+// word being a real word, not by avoiding individual glyphs.
 var SASWords = [...]string{
 	"able", "acid", "aged", "aloe", "arch", "atom", "aunt", "away", "axis", "baby",
 	"back", "bald", "barn", "beam", "bear", "beat", "bell", "belt", "bend", "best",

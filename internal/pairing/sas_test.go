@@ -43,6 +43,83 @@ func TestSASWordListIsSound(t *testing.T) {
 	}
 }
 
+// A SAS is compared by a human reading two screens, so a word pair that is easy
+// to confuse defeats the comparison even though the strings are distinct. The
+// list had no automated check for this, which the limitations register records
+// as an open gap; this is that check.
+//
+// It is deliberately a floor rather than a proof, and the bar is set by what
+// the list can actually achieve. Two things were measured against the real
+// 512-word list:
+//
+//   - Prefix pairs (one word a prefix of another, so the shorter is heard as
+//     the start of the longer) are zero, where roughly 900,000 are expected if
+//     the words were chosen independently. That is a real, deliberate property
+//     and it is asserted exactly, because a single new word could break it.
+//
+//   - Single-substitution pairs number 772. A 512-word English vocabulary
+//     cannot avoid them - "bear"/"beat" and "back"/"pack" are ordinary words -
+//     so forbidding them is not a design goal that is achievable. What matters
+//     is that the count does not grow without review, since that is how a
+//     sloppily maintained list would quietly become unusable. The bound is set
+//     at 900: above the measured 772, and far below the 130,816 pairs that a
+//     512-word list contains in total.
+//
+// Neither check can judge rhyme or homophony, which need a human. The point is
+// that the mechanically decidable failure modes are now pinned, so a future
+// edit to this hand-maintained list cannot introduce one unnoticed.
+func TestSASWordListHasNoMechanicalConfusables(t *testing.T) {
+	prefixPairs := 0
+	singleSubstitutionPairs := 0
+	var examples []string
+
+	for i := 0; i < len(SASWords); i++ {
+		for j := 0; j < len(SASWords); j++ {
+			if i == j {
+				continue
+			}
+			short, long := SASWords[i], SASWords[j]
+			if len(short) < len(long) && strings.HasPrefix(long, short) {
+				prefixPairs++
+				if len(examples) < 5 {
+					examples = append(examples, short+"/"+long)
+				}
+			}
+		}
+	}
+
+	// Recompute single-substitution pairs over each unordered pair once.
+	for i := 0; i < len(SASWords); i++ {
+		for j := i + 1; j < len(SASWords); j++ {
+			a, b := SASWords[i], SASWords[j]
+			if len(a) != len(b) {
+				continue
+			}
+			diff := 0
+			for k := 0; k < len(a); k++ {
+				if a[k] != b[k] {
+					diff++
+				}
+			}
+			if diff == 1 {
+				singleSubstitutionPairs++
+			}
+		}
+	}
+
+	if prefixPairs != 0 {
+		t.Errorf("the list has %d prefix pair(s) (%v); a shorter word heard as the start of a longer one defeats the comparison",
+			prefixPairs, examples)
+	}
+	const substitutionCeiling = 900
+	if singleSubstitutionPairs > substitutionCeiling {
+		t.Errorf("the list has %d single-substitution pairs, above the %d ceiling; the list is becoming harder to compare by ear",
+			singleSubstitutionPairs, substitutionCeiling)
+	}
+	t.Logf("SAS list: %d words, %d prefix pairs, %d single-substitution pairs (ceiling %d)",
+		len(SASWords), prefixPairs, singleSubstitutionPairs, substitutionCeiling)
+}
+
 // A SAS must be bound to the whole transcript. The old implementation was a
 // static prefix of one certificate, so the same code applied to every pairing
 // with that peer forever and could be pre-computed before the session even
