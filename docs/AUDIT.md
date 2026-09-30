@@ -118,7 +118,7 @@ go test -count=1 ./...
 go test -race -count=1 ./...
 ```
 
-The local Windows toolchain cannot run the race runtime (`-race` requires a complete cgo installation); CI runs race tests on Linux/macOS, while Windows uses repeated non-race tests. The release job pins Go and GoReleaser versions rather than using floating `latest` values.
+The local Windows toolchain *can* run the race runtime once a C toolchain is on `PATH`; this was verified on 2026-09-30 with mingw-w64 gcc 16.2.0, where `go test -race -count=1 ./...` completed green across all 13 packages. On a stock Windows install without gcc the local fallback remains repeated non-race tests (`-count=2`), and CI runs race tests on Linux/macOS while Windows uses that non-race form. The release job pins Go and GoReleaser versions rather than using floating `latest` values; note that the Go pin is a *security* decision as well as a reproducibility one, because `govulncheck` judges the standard library against the pinned toolchain (the 1.26.3 pin reported 9 reachable stdlib vulnerabilities and failed the quality gate on an otherwise clean tree; 1.27.1 reports 0).
 
 ## Release recommendation
 

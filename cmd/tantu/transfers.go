@@ -166,37 +166,56 @@ func readSavedTransferRecords(storeDir string) ([]transferRecord, error) {
 	return env.Operations, nil
 }
 
+// transferDispatch decides which `tantu transfer` subcommand the arguments
+// select, and what arguments that sub-command should receive.
+//
+// The subcommand is the first *positional*: NormalizeArgs has already hoisted
+// every flag — and every flag's value — ahead of it, so reading args[0]
+// rejected this command's own documented usage ("Unknown transfer
+// subcommand: --json" for `transfer list --json`, and the same for
+// `transfer clear --yes`). Flags are handed back so the sub-runner's FlagSet
+// parses them instead of silently dropping them.
+//
+// It is a separate function from runTransfer because runTransfer ends in
+// os.Exit, which would make the decision it makes untestable.
+func transferDispatch(args []string) (sub string, subArgs []string) {
+	flags, pos := splitLeadingFlags(NormalizeArgs(args))
+	if len(pos) > 0 {
+		sub = pos[0]
+	}
+	return sub, append(append([]string{}, flags...), tailOf(pos)...)
+}
+
+// tailOf returns everything after the first element, or nil when there is
+// nothing after it. s[1:] on an empty slice panics.
+func tailOf(s []string) []string {
+	if len(s) < 2 {
+		return nil
+	}
+	return s[1:]
+}
+
 // runTransfer implements `tantu transfer <subcommand>` (`list`, `clear`).
 // A `retry` subcommand is deliberately absent: retrying after an ambiguous
 // acknowledgement is at-least-once and may duplicate receiver output, so the
 // CLI refuses blind retry and points at the safe check.
 func runTransfer(args []string) {
-	rest := NormalizeArgs(args)
-	if len(rest) == 0 || rest[0] == "list" {
-		listArgs := []string{}
-		if len(rest) > 1 {
-			listArgs = rest[1:]
-		}
-		runTransfers(listArgs)
-		return
-	}
-	if rest[0] == "clear" {
-		clearArgs := []string{}
-		if len(rest) > 1 {
-			clearArgs = rest[1:]
-		}
-		runTransferClear(clearArgs)
-		return
-	}
-	if rest[0] == "retry" {
+	sub, subArgs := transferDispatch(args)
+
+	switch sub {
+	case "", "list":
+		runTransfers(subArgs)
+	case "clear":
+		runTransferClear(subArgs)
+	case "retry":
 		fmt.Fprintln(os.Stderr, "Error: `tantu transfer retry` is not offered because the Hub keeps no payload to resend, and retry after an unknown outcome may create a duplicate.")
 		fmt.Fprintln(os.Stderr, "For a duplicate-safe retry, re-run the original send with the same --idempotency-key: the receiver re-acknowledges instead of publishing twice.")
 		fmt.Fprintln(os.Stderr, "Otherwise check `tantu transfers` for duplicate-risk flags and the receiver inbox first; then send again as a new transfer.")
 		os.Exit(1)
-		return
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown transfer subcommand: %s\n\nUsage:\n  tantu transfer list [--json]\n  tantu transfer clear --yes [--store-dir DIR]\n", sub)
+		os.Exit(1)
 	}
-	fmt.Fprintf(os.Stderr, "Unknown transfer subcommand: %s\n\nUsage:\n  tantu transfer list [--json]\n  tantu transfer clear --yes [--store-dir DIR]\n", rest[0])
-	os.Exit(1)
 }
 
 // runTransferClear deletes sender-side transfer metadata after explicit

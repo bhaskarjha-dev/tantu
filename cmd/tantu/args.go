@@ -69,6 +69,34 @@ func isValueFlag(f string) bool {
 	return valueFlags[f]
 }
 
+// splitLeadingFlags separates the flag block that NormalizeArgs hoists to the
+// front of the argument list from the positionals that follow it.
+//
+// NormalizeArgs deliberately reorders, so after it runs the first element is
+// never the subcommand: `tantu transfer list --json` arrives as
+// ["--json", "list"]. A dispatcher that reads rest[0] therefore rejects its own
+// documented usage — "Unknown transfer subcommand: --json" — and the same
+// applies to `transfer clear --yes`. Reading the subcommand means skipping the
+// flag block, and skipping it correctly means knowing which flags consume a
+// separate value, otherwise the directory in `--store-dir DIR` would be read
+// as the subcommand instead.
+func splitLeadingFlags(args []string) (flags, positionals []string) {
+	i := 0
+	for i < len(args) {
+		arg := args[i]
+		if arg == "--" || !strings.HasPrefix(arg, "-") {
+			break
+		}
+		flags = append(flags, arg)
+		i++
+		if !strings.Contains(arg, "=") && isValueFlag(arg) && i < len(args) && !strings.HasPrefix(args[i], "-") {
+			flags = append(flags, args[i])
+			i++
+		}
+	}
+	return flags, args[i:]
+}
+
 // sendHasPathHint reports whether a bare send argument looks like a filesystem
 // path rather than text the user wants transmitted. A hint means a failed
 // os.Stat is a user error that must be reported, not text to send silently.

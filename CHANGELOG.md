@@ -203,6 +203,57 @@ rollback procedures.
   token remains as a legacy fallback.
 
 ### Fixed
+- **"Cancel sign-in" was a dead button on every Hub.** The delegated click
+  listener is bound to `document`, so inside it `this` is the document, but
+  the handler read the operation id with `this.getAttribute(...)`. Every
+  click threw `Uncaught TypeError: this.getAttribute is not a function`,
+  the in-flight sign-in stayed stuck, and the user got no feedback — while
+  the acceptance harness still reported 29/29 passing, because nothing in
+  the suite ever invoked a delegated action. The handler now reads from the
+  clicked `target`, and the defect class is closed by two independent
+  gates: a static test (`internal/hub/delegation_test.go`) that fails if any
+  delegated handler reads state from `this` and verifies all 32
+  `data-action` values have a handler, and a behavioral sweep in
+  `tools/uxtest/run.mjs` that clicks every action in a real browser (32/32;
+  with the bug reintroduced it fails 30/32 and names the dead action).
+- **`tantu transfer list --json`, `transfer clear --yes`, and
+  `transfer list --store-dir DIR` all failed with
+  `Unknown transfer subcommand: --json`.** `NormalizeArgs` hoists flags
+  ahead of positionals, but `runTransfer` dispatched on the first token of
+  the reordered rest — so every documented flag-bearing transfer command
+  misdispatched. Dispatch now separates leading flags from the subcommand
+  (`splitLeadingFlags` / `transferDispatch`), covered by an 18-subtest
+  regression test in `cmd/tantu/transfer_dispatch_test.go`.
+- The UX acceptance harness now starts deterministically and fails with a
+  reason: a bounded readiness probe replaces the fixed 4-second sleep, hub
+  stdout/stderr is captured and printed on failure (so a port clash reads as
+  a port clash instead of `fetch failed`), navigation waits for the location
+  hash to settle, and free required ports are documented in
+  `tools/uxtest/README.md`.
+- **CI had been red for fourteen consecutive runs (runs #6–#19), for three
+  independent reasons, all now fixed.** (1) The workflows pinned Go `1.26.3`,
+  and `govulncheck` scans the standard library *that toolchain builds*: 1.26.3
+  carries 9 reachable stdlib vulnerabilities (GO-2026-6218 … GO-2026-4970,
+  fixed across 1.26.4–1.26.6), so the quality gate exited 3 on a perfectly
+  clean tree. Both workflows now pin `1.27.1`, verified locally with
+  `GOTOOLCHAIN=go1.27.1 govulncheck ./...` → *No vulnerabilities found*
+  (exit 0), against `GOTOOLCHAIN=go1.26.3` → 9 findings (exit 3).
+  (2) `TestRelayCoordinator_LeaderSurvivesCallerDisconnect` had a scheduling
+  race of its own: it signalled `flowStarted` from a watcher goroutine
+  launched *before* the `Do` goroutine, so the signal could arrive before
+  `Do` ran, `cancel()` then won the race, and `Do` returned at its context
+  check without ever inserting the relay — `0 open relays, want 1`. The
+  signal now closes inside the leader callback, after `call.register`, which
+  `Do` reaches only once the relay is already in `c.active`. It failed 6 of
+  25 runs under `-race` before the change and 0 of 60 after. (3) The browser
+  harness exited 3 in CI on the fixed 4-second startup timer described above.
+  CI is publicly observable through the unauthenticated GitHub API, which is
+  how these were found: every run, job, and check annotation is readable,
+  only the raw logs need admin rights.
+- The race detector now runs locally on Windows too: with a C toolchain on
+  `PATH` (mingw-w64 gcc 16.2.0) `go test -race -count=1 ./...` completes
+  green across all 13 packages, so the Linux/macOS-only coverage that the
+  docs described as CI-exclusive no longer has to wait for a push.
 - **A directory send ignored `--peer` and delivered to the active peer
   instead.** On the delegation path the explicit target was dropped, so a batch
   aimed at one machine arrived on another and reported success. The

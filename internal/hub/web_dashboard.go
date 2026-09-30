@@ -1401,7 +1401,12 @@ const dashboardHTML = `<!DOCTYPE html>
           cancelRelay();
           break;
         case 'cancel-active-relay':
-          cancelActiveRelay(this.getAttribute('data-operation-id') || '');
+          // Use target, not this: this listener is attached to document, so
+          // this is document and document.getAttribute is not a function.
+          // Reading the id from this threw a TypeError on every click and the
+          // sign-in stayed stuck with no feedback at all. Every other case in
+          // this switch already reads from target.
+          cancelActiveRelay(target.getAttribute('data-operation-id') || '');
           break;
         case 'load-transfers':
           loadTransfers();

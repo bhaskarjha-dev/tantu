@@ -18,6 +18,11 @@ node tools/uxtest/run.mjs            # peerless Hub
 node tools/uxtest/run.mjs --peers    # three seeded trusted peers
 ```
 
+It needs ports **18976**, **19877** and **19470** to be free. Another Tantu
+running with default ports does not conflict; a second copy of this harness
+does. A Hub that cannot start is reported with its own output rather than as a
+bare `fetch failed`, so a port clash is distinguishable from a slow machine.
+
 Optional environment variables:
 
 | Variable | Purpose |
@@ -55,6 +60,22 @@ Requirements: **Node 18+** and **a Chrome or Edge binary**. That is all.
 - **Computed contrast in both OS themes** for the surfaces that carry meaning.
 - 200% zoom, a 360px viewport on every tab, and reduced motion with every
   animation and transition neutralized.
+- **Every `data-action` control runs when clicked.** The harness synthesises a
+  button for each action the page can render — including ones only live data
+  produces, such as *Cancel sign-in* — clicks it, and fails if the handler
+  throws or leaves an unhandled rejection. Dialogs, the OS shell, the
+  clipboard, file choosers and downloads are neutralised first, while every
+  other call reaches the real Hub, so argument extraction and dispatch are
+  exercised for real.
+
+  This is the check that catches the class of defect nothing else can: a
+  delegated handler that reads its element from the wrong place throws before
+  it does anything, so there is no message, no state change, and no other
+  assertion that goes red. "Cancel sign-in" read its operation id from `this`,
+  which in a listener bound to `document` is `document`, and therefore threw
+  `TypeError: this.getAttribute is not a function` on every click — while all
+  the other checks here passed.
+
 - Zero unexpected console errors.
 
 Screenshots and a JSON report are written under a temporary directory that is

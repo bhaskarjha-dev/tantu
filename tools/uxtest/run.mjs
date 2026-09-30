@@ -118,11 +118,37 @@ async function main() {
 
     hub = spawn(exe, ['hub', '--server', '--transport', 'loopback',
       '--web-addr', '127.0.0.1:' + WEB_PORT, '--listen', '127.0.0.1:' + P2P_PORT,
-      '--store-dir', store, '--output-dir', out], { stdio: 'ignore' });
-    await sleep(4000);
+      '--store-dir', store, '--output-dir', out], { stdio: ['ignore', 'pipe', 'pipe'] });
 
-    // Never trust a Hub we did not just build.
-    const probe = await (await fetch('http://127.0.0.1:' + WEB_PORT + '/')).text();
+    // The Hub prints its banner only after its listeners are bound, which on a
+    // cold machine takes several seconds. A fixed sleep raced it, and because
+    // stdout/stderr were discarded a failed start surfaced as a bare
+    // "fetch failed" — indistinguishable from a slow machine, a crashed Hub,
+    // or another Tantu already holding one of these ports. Probe until it
+    // answers, and if it never does, say exactly what happened.
+    let hubOut = '';
+    hub.stdout.on('data', (d) => { hubOut += d; });
+    hub.stderr.on('data', (d) => { hubOut += d; });
+
+    let probe = null, lastProbeError = '';
+    const readyBy = Date.now() + 30000;
+    while (Date.now() < readyBy && hub.exitCode === null && !probe) {
+      try {
+        probe = await (await fetch('http://127.0.0.1:' + WEB_PORT + '/')).text();
+      } catch (e) {
+        lastProbeError = e.message;
+        await sleep(250);
+      }
+    }
+    if (hub.exitCode !== null) {
+      throw new Error('Hub exited with code ' + hub.exitCode + ' before answering on ' + WEB_PORT + '.\n'
+        + (hubOut.trim() || '(no output)')
+        + '\nAnother Tantu holding ' + WEB_PORT + ' or ' + P2P_PORT + ' is the usual cause — this harness needs both ports free.');
+    }
+    if (!probe) {
+      throw new Error('Hub did not answer on ' + WEB_PORT + ' within 30s (' + lastProbeError + ').\n'
+        + (hubOut.trim() || '(no output)'));
+    }
     const vtag = (probe.match(/class="version-tag">([^<]*)</) || [])[1] || '';
     if (!vtag.includes(head)) throw new Error('served tag ' + vtag + ' does not contain HEAD ' + head);
     console.log('uxtest: serving ' + vtag);
@@ -170,8 +196,17 @@ async function main() {
       var need=(size>=24||(size>=18.66&&bold))?3:4.5;
       return {ratio:+(((Math.max(l1,l2)+0.05)/(Math.min(l1,l2)+0.05)).toFixed(2)), need:need, size:size};})(${JSON.stringify(sel)})`);
 
+    // Navigate, then wait for the bootstrap exchange to settle rather than
+    // assuming four seconds is enough: the exchange POSTs, strips the fragment
+    // and reloads, so "the fragment is gone" means the page is done booting.
     await cdp.send('Page.navigate', { url: `http://127.0.0.1:${WEB_PORT}/#tantu_bootstrap=${token}` });
-    await sleep(4000);
+    let settled = false;
+    for (let i = 0; i < 60 && !settled; i++) {
+      const hash = await cdp.js('location.hash');
+      settled = typeof hash === 'string' && hash === '';
+      if (!settled) await sleep(250);
+    }
+    await sleep(500);
 
     // --- session and the send preview (the CSP regression) ---
     const sess = await cdp.js('(function(){return {banner:getComputedStyle(document.getElementById("sessionBanner")).display, dest:document.getElementById("destinationSummary").textContent, url:location.href};})()');
@@ -290,6 +325,109 @@ async function main() {
       return bad.slice(0,8);
     })()`);
     check('reduced motion kills all animation and transition', motion && motion.length === 0, JSON.stringify(motion));
+
+    // --- every delegated action actually runs ---
+    // Nothing else in this suite, or anywhere else, clicks these controls.
+    // A case that reads its element from the wrong place throws before it does
+    // anything: no message, no state change, and a suite that stays green
+    // because it never clicked. That is not hypothetical — "Cancel sign-in"
+    // read its operation id from `this`, which in a listener bound to
+    // `document` is `document`, and threw "getAttribute is not a function" on
+    // every click while 29/29 checks passed.
+    //
+    // So sweep every data-action the page can render — including the ones only
+    // live data produces — and fail on any that throws. Dialogs, the OS shell,
+    // the clipboard, file choosers and downloads are neutralised; every other
+    // call reaches the real Hub, so argument extraction and dispatch are
+    // exercised for real rather than against a stub.
+    const sweep = await cdp.js(`(async function () {
+      var errors = [], rejections = [], current = '', restored = [];
+      function keep(obj, key, val) { try { restored.push([obj, key, obj[key]]); obj[key] = val; } catch (_) {} }
+      window.addEventListener('error', function (e) { errors.push(current + ': ' + e.message); });
+      window.addEventListener('unhandledrejection', function (e) {
+        rejections.push(current + ': ' + (e.reason && e.reason.message ? e.reason.message : String(e.reason)));
+        e.preventDefault();
+      });
+
+      keep(window, 'alert', function () {});
+      keep(window, 'prompt', function () { return null; });   // "cancelled": the handler stops before mutating
+      keep(window, 'confirm', function () { return false; });  // same
+      keep(window, 'open', function () { return null; });      // no new windows
+      keep(document, 'execCommand', function () { return true; });
+      keep(navigator.clipboard || {}, 'writeText', function () { return Promise.resolve(); });
+      keep(HTMLInputElement.prototype, 'click', function () {});  // no file chooser
+      keep(HTMLAnchorElement.prototype, 'click', function () {}); // no download
+
+      // Reaching the Hub is the point; reaching the OS is not. Opening the
+      // downloads folder shells out to the file manager, so answer that one
+      // call here. The peer and pairing mutations are answered here too: the
+      // sweep synthesises buttons, so it has no real fingerprint or pairing id
+      // to send, and those endpoints would answer 400 for a value the product
+      // would never submit. Every other call — including the cancel this
+      // sweep exists to prove — reaches the real Hub.
+      var realApiFetch = window.apiFetch;
+      var syntheticData = /^\\/api\\/(peers\\/(active|default|alias|remove)|pair\\/(decision|initiate))$/;
+      var fakeOk = function () {
+        return Promise.resolve({ ok: true, status: 200, statusText: 'OK',
+          json: function () { return Promise.resolve({ status: 'success' }); } });
+      };
+      keep(window, 'apiFetch', function (path, options) {
+        var p = String(path);
+        if (/\\/api\\/open-folder/.test(p)) return fakeOk();
+        if (syntheticData.test(p)) return fakeOk();
+        return realApiFetch(path, options);
+      });
+
+      var names = {}, m;
+      var re = /data-action\\s*=\\s*["']([a-z0-9-]+)["']/g;
+      var html = document.documentElement.outerHTML;
+      while ((m = re.exec(html))) names[m[1]] = true;
+      var list = Object.keys(names).sort();
+
+      var host = document.createElement('div');
+      host.id = 'uxtest-sweep-host';
+      document.body.appendChild(host);
+      for (var i = 0; i < list.length; i++) {
+        current = list[i];
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.setAttribute('data-action', list[i]);
+        b.setAttribute('data-operation-id', 'uxtest-' + list[i]);
+        b.setAttribute('data-value', '');
+        b.setAttribute('data-address', '127.0.0.1:9877');
+        b.setAttribute('data-alias', 'uxtest');
+        b.setAttribute('data-name', 'uxtest');
+        b.setAttribute('data-accept', 'true');
+        host.appendChild(b);
+        // An exception thrown inside a listener does not reach this call —
+        // the browser reports it to window.onerror instead, which is why the
+        // error listener above is the actual assertion.
+        b.click();
+      }
+      current = '';
+      host.remove();
+      await new Promise(function (r) { setTimeout(r, 750); });
+
+      for (var j = 0; j < restored.length; j++) {
+        try { restored[j][0][restored[j][1]] = restored[j][2]; } catch (_) {}
+      }
+      var modal = document.getElementById('pairModal');
+      if (modal) modal.style.display = 'none';
+      var banner = document.getElementById('pendingPairingsBanner');
+      if (banner) banner.style.display = 'none';
+      var list2 = document.getElementById('pendingPairingsList');
+      if (list2) list2.innerHTML = '';
+      return { actions: list, errors: errors, rejections: rejections };
+    })()`);
+    check('action sweep reached every data-action', !!(sweep && sweep.actions && sweep.actions.length >= 30),
+      sweep && sweep.actions ? sweep.actions.length + ' actions' : 'sweep returned ' + JSON.stringify(sweep));
+    check('every delegated action runs without throwing',
+      !!(sweep && (!sweep.errors || sweep.errors.length === 0)),
+      JSON.stringify((sweep && sweep.errors) || ['no result']));
+    check('no delegated action leaves an unhandled rejection',
+      !!(sweep && (!sweep.rejections || sweep.rejections.length === 0)),
+      JSON.stringify((sweep && sweep.rejections) || ['no result']));
+    await sleep(300);
 
     // --- console hygiene ---
     const noise = (x) => /favicon\.ico/.test(x) || /javascript%3Aalert/.test(x) || (/api\/drop\/upload/.test(x) && /50[023]/.test(x));

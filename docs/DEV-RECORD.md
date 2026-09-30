@@ -1717,3 +1717,96 @@ written down rather than rediscovered later.
   the general case is open.
 - `gofmt`, `go build ./...`, `go vet ./...`, `go run ./tools/encgate`,
   `staticcheck`, and `go test ./...` all green.
+
+## Batch Z22 - CI forensics: fourteen red runs, three root causes (2026-09-30)
+
+### Why this batch exists
+
+Two documentation claims were falsified by looking at the artifact instead of
+the prose. `docs/KNOWN-LIMITATIONS.md` §1.6 said CI was "unobserved", and
+several DEV-RECORD entries (Batch Y, the runtime-lock closeout, Batch Z, Batch
+Z4) plus `docs/AUDIT.md` said local `-race` was blocked for lack of gcc. Both
+were false on this machine:
+
+- **CI is publicly observable.** `bhaskarjha-dev/tantu` is a public
+  repository, so the unauthenticated GitHub API returns every run, job, step
+  conclusion, and check annotation. Only the raw job *logs* are gated (403,
+  "must have admin rights"), which is enough to see *where* a job died but not
+  the stack trace inside it. The last green run was **#5, 2026-09-25**;
+  runs **#6 through #19 all failed**.
+- **`-race` runs locally.** With `C:\Users\ai2\scoop\apps\mingw\current\bin`
+  (mingw-w64 gcc 16.2.0) on `PATH` and `CGO_ENABLED=1`, the full
+  `go test -race -count=1 ./...` completes green across all 13 packages.
+
+Fifteen consecutive red runs with nobody reading the result is the same
+failure shape as Batch Z21: a gate whose output no one consumes is not a gate.
+
+### The three root causes, isolated by timing
+
+Job durations and annotations from the public API separated the failures into
+three independent defects:
+
+1. **govulncheck, fails at ~6 s in `Quality gates`.** Reproduced exactly by
+   re-running the gate under CI's own toolchain:
+   `GOTOOLCHAIN=go1.26.3 govulncheck ./...` → *9 reachable standard library
+   vulnerabilities*, exit 3 (GO-2026-6218, -6090, -6089, -5972, -5856,
+   -5039, -5037, -5026, -4970; fixed across 1.26.4-1.26.6), while the local
+   1.27 toolchain reports 0. The repository's code was never at fault:
+   `govulncheck` judges the stdlib against the *toolchain that compiles it*,
+   so pinning Go 1.26.3 in the workflow is what failed the gate. Under
+   `GOTOOLCHAIN=go1.27.1` the same command reports *No vulnerabilities
+   found*, exit 0. **Decision: pin `1.27.1` exactly** (both workflows, all
+   four occurrences) rather than the floating `stable` alias, because this
+   repository pins GoReleaser `v2.18.2` and staticcheck `v0.8.1` for the same
+   reason - a floating version turns "my build broke" into archaeology. The
+   cost of pinning is that the pin must be *bumped on purpose*, which is why
+   the workflow comment now says so and the bump is recorded here.
+2. **`TestRelayCoordinator_LeaderSurvivesCallerDisconnect` fails only under
+   `-race`, at ~55 s on Ubuntu and ~35 s on macOS.** The test closed
+   `flowStarted` from a watcher goroutine launched *before* the `Do`
+   goroutine, so `<-flowStarted` could return before `c.Do` had run at all;
+   `cancel()` then won the race, `Do` returned at its `ctx.Err()` check
+   (line 184) and never inserted into `c.active` (line 208), and the
+   assertion saw `0 open relays, want 1`. Reproduced locally at 6 failures in
+   25 `-race` runs. The signal now closes **inside the leader callback**, one
+   statement after `call.register` — a point `Do` only reaches with the relay
+   already registered — and the test then failed 0 times in 60 runs. This is
+   a test defect, not a product defect: `Do` inserts before it invokes `fn`,
+   so the ordering the callback establishes is airtight by construction.
+3. **The dashboard harness exited 3 at ~8 s.** CI was still running the old
+   harness, whose fixed 4-second sleep plus `fetch` added up to exactly the
+   observed duration; on a runner where the Hub takes longer than 4 s to
+   listen, the probe fails and every check reports `fetch failed`. The
+   bounded readiness probe with captured hub logs (Batch Z21's successor,
+   in `tools/uxtest/run.mjs`) is the fix and is in this working tree.
+
+### Decisions
+
+- **`dashboard-acceptance` keeps `continue-on-error: true` for now.** The
+  harness has never once completed on that runner, so there is no evidence
+  about Chrome-for-Testing there either way, and a job that fails for
+  infrastructure reasons is a gate people learn to ignore. The criterion for
+  flipping it is stated in the workflow comment: one observed green Linux run.
+  The finding it exists to catch is *not* left unguarded in the meantime -
+  `TestEveryDataActionHasAHandler` enforces the action-wiring half of the
+  sweep on every push and cannot vary by environment.
+- **Local race evidence stops being CI-exclusive.** Earlier entries in this
+  record and in `docs/AUDIT.md` described `-race` as unavailable locally;
+  both were corrected rather than left to stand, and the corrected wording
+  names the condition (a C toolchain on `PATH`) instead of asserting a
+  platform property.
+- **No product code changed for CI.** The relay fix is confined to a test,
+  the pin to workflow YAML. A red pipeline got exactly as much change as it
+  needed, so the diff stays reviewable against the cause.
+
+### Validation
+
+- `GOTOOLCHAIN=go1.26.3 go run golang.org/x/vuln/cmd/govulncheck@latest ./...`
+  → 9 findings, exit 3 (CI reproduced); `GOTOOLCHAIN=go1.27.1` → 0
+  findings, exit 0 (CI fixed).
+- `go test -count=1 -race ./...` with mingw gcc on PATH: all 13 packages
+  pass. The relay test alone: 0 failures in 60 `-race` runs (6 in 25 before).
+- `gofmt -l .`, `go build ./...`, `go vet ./...`, `staticcheck@v0.8.1`,
+  `go run ./tools/encgate`, `go test -count=1 ./...`, coverage floor
+  (`cmd/tantu` 19.5% against the floor of 18), and `node tools/uxtest/run.mjs`
+  at 32/32 all green.

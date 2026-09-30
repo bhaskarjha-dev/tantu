@@ -20,7 +20,10 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26.3'
+          # Kept in lockstep with .github/workflows/ci.yml. Go 1.26.3 was
+          # replaced because govulncheck reported 9 reachable stdlib
+          # vulnerabilities in it; see the comment on the quality job's pin.
+          go-version: '1.27.1'
           cache: true
 
       - name: Verify modules

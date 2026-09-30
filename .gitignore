@@ -10,6 +10,7 @@
 
 # Output
 *.out
+/coverage
 
 # Go workspace
 go.work

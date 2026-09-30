@@ -1,6 +1,6 @@
 # Tantu — Known Limitations Register
 
-> **Status:** living register. **Last reviewed:** 2026-09-29.
+> **Status:** living register. **Last reviewed:** 2026-09-30.
 > **Purpose:** one place where every admitted limitation is written down, so a
 > release gate cannot quietly drift and so "we always knew" is checkable.
 
@@ -21,10 +21,10 @@ Severity: **Blocker** (a claim is false or a journey is unsafe) ·
 |---|---|---|---|---|
 | 1.1 | **Linux and macOS are compile-verified only.** No runtime verification on either. | Gap | Open | `docs/RELEASE.md` "Known release limitations" |
 | 1.2 | Windows is the only runtime-verified platform. | Limit | Open | `docs/RELEASE.md` |
-| 1.3 | `-race` runs on Linux/macOS in CI; local Windows race execution needs a full C toolchain, so local evidence is `-count=2` lifecycle reruns. | Limit | Accepted | `docs/RELEASE.md` |
+| 1.3 | `-race` runs on Linux/macOS in CI. It also runs locally on Windows, but only when a C toolchain is on `PATH` — verified 2026-09-30 with mingw-w64 gcc 16.2.0 (`go test -race -count=1 ./...` green, all 13 packages). On a machine without gcc the local evidence is `-count=2` lifecycle reruns. | Limit | Partly closed 2026-09-30 | `docs/RELEASE.md`, `docs/DEV-RECORD.md` Batch Z22 |
 | 1.4 | Artifacts are **not signed**. No cosign configuration, and signing keys must never live in this repo. | Gap | Open | `docs/RELEASE.md`, `CHANGELOG.md` Security notes |
 | 1.5 | **No release has ever been published** (`git tag -l` is empty). All six published targets were cross-compiled successfully on 2026-09-29 (linux/darwin/windows × amd64/arm64, CGO_ENABLED=0, release ldflags), so the build matrix is proven; the goreleaser pipeline, SBOM generation, and the release artifacts themselves have still never executed end to end. `docs/RELEASE.md` describes install and upgrade procedures for artifacts that do not exist yet. | Blocker for "installable" | Partly closed 2026-09-29 | `docs/RELEASE.md` |
-| 1.6 | **The quality gates are now exercised locally, but CI itself is still unobserved.** `staticcheck` and the encoding gate have been run to completion on this machine and pass; `-race` still cannot run locally on Windows, and `govulncheck`, the coverage floor, and the browser acceptance job have not been executed here. | Gap | Partly closed 2026-09-29 | `.github/workflows/ci.yml` |
+| 1.6 | **CI is observable, and it was red.** The repository is public, so the unauthenticated GitHub API returns every run, job, and check annotation (job *logs* still need admin rights). Runs #6–#19 — every run since 2026-09-25 — failed for three independent reasons: the Go pin `1.26.3` has 9 reachable stdlib vulnerabilities so `govulncheck` exits non-zero; `TestRelayCoordinator_LeaderSurvivesCallerDisconnect` has a scheduling race that fails only under `-race` (Linux/macOS jobs); and the dashboard harness exited 3 on a fixed 4 s startup timer. All three are fixed in the working tree (Go pin → `1.27.1`, test signals from inside the leader callback, bounded readiness probe) and locally green: `staticcheck`, `tools/encgate`, `govulncheck`, coverage floor (`cmd/tantu` 19.5% > 18%), `go test -count=1 ./...`, full `-race`, and the browser harness 32/32. **End-to-end CI confirmation still requires a push** — that is the remaining open part of this row. | Gap | Partly closed 2026-09-30 | `.github/workflows/ci.yml`, `.github/workflows/release.yml` |
 
 ## 2. Evidence
 
@@ -82,6 +82,9 @@ Recorded so the register shows movement, not just accumulation.
 
 | Limitation | Resolved by | Evidence |
 |---|---|---|
+| "Cancel sign-in" was dead on every Hub: the delegated click handler read the operation id from `this` (the `document`) and threw a TypeError on each click, leaving the sign-in stuck with no feedback — while the acceptance harness still reported 29/29 because nothing invoked a delegated action | 2026-09-30 | `TestDelegatedClickHandlerNeverReadsFromThis`, `TestEveryDataActionHasAHandler` (32 actions), harness action sweep 32/32 — 30/32 with the bug reintroduced |
+| `tantu transfer list --json`, `transfer clear --yes`, and `transfer list --store-dir DIR` failed with `Unknown transfer subcommand: --json` — `NormalizeArgs` hoists flags ahead of positionals but `runTransfer` dispatched on `rest[0]` | 2026-09-30 | `cmd/tantu/transfer_dispatch_test.go` (18 subtests), CLI smoke of every documented form |
+| The UX harness slept on a fixed 4 s startup timer and reported port clashes as `fetch failed`, so a broken run was indistinguishable from a slow one | 2026-09-30 | `tools/uxtest/run.mjs` bounded readiness probe + captured hub logs; `tools/uxtest/README.md` |
 | A refused send was reported as "may have completed, the file may already be saved", sending users to verify a file the receiver had just said it did not write | audit 2026-09-29 | `TestClassifyTransferError_ReceiverRejectionIsKnown`, `TestE2E_IdempotencyKeyConflictIsAKnownRejection` |
 | Live Activity Logs stayed empty through a verified send | audit 2026-09-29 | `TestWebDashboard_SuccessfulSendIsVisibleInActivityLog`, `TestWebDashboard_StartupIsVisibleInActivityLog` |
 | The UTF-8 gate reported the tree clean while 27 committed sites were mis-decoded across 6 files | audit 2026-09-29 | `TestCountMojibakeCatchesTheShippedDamage`, `TestCountMojibakeRunsCatchesUnreversibleDamage`, `TestCountFormatCharsCatchesInvisibleDamage` |

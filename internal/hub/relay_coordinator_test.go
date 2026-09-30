@@ -349,13 +349,19 @@ func TestRelayCoordinator_LeaderSurvivesCallerDisconnect(t *testing.T) {
 	flowCtx, flowCancel := context.WithCancelCause(context.Background())
 	defer flowCancel(context.Canceled)
 	flowExited := make(chan struct{})
-	flowStarted := make(chan struct{})
 	go func() {
 		defer close(flowExited)
-		close(flowStarted)
 		<-flowCtx.Done()
 	}()
 
+	// flowStarted must be closed by the leader's own callback, not by a
+	// goroutine that outlives Do's entry. Do returns on a cancelled ctx
+	// before it ever touches c.active, so signalling from a watcher that
+	// starts first let cancel() race ahead of the insert: the snapshot then
+	// saw zero open relays and the test failed outright under -race (6 of 25
+	// local runs). Because Do inserts into c.active before invoking fn, a
+	// signal inside fn is a guarantee that the relay is registered.
+	flowStarted := make(chan struct{})
 	done := make(chan struct{})
 	var attemptID string
 	go func() {
@@ -363,11 +369,20 @@ func TestRelayCoordinator_LeaderSurvivesCallerDisconnect(t *testing.T) {
 		_, _ = c.Do(ctx, "k", func(call *relayCall) error {
 			attemptID = "rl-live"
 			call.register(func(error) { flowCancel(context.Canceled) }, attemptID, "peerA", "flow-1")
+			close(flowStarted)
 			<-flowCtx.Done()
 			return flowCtx.Err()
 		})
 	}()
-	<-flowStarted
+	select {
+	case <-flowStarted:
+	case <-time.After(5 * time.Second):
+		// Bounded: this wait used to be satisfied by a watcher goroutine, so
+		// it could not hang. It now waits for the leader callback itself, and
+		// an unbounded wait here would turn a regression in Do into a CI job
+		// that times out rather than a test that fails.
+		t.Fatal("the leader callback never started")
+	}
 
 	// The caller walks away: the browser tab is closed, the request is abandoned.
 	cancel()
