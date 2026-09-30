@@ -116,7 +116,27 @@ jobs:
 
       - name: Test
         if: matrix.os != 'windows-latest'
-        run: go test -count=1 -race ./...
+        shell: bash
+        # A job's raw log needs admin rights to read, so outside this
+        # repository a red run is only an exit code. The failure is therefore
+        # re-emitted as annotations, which the public API exposes: which test
+        # failed, and the detail beneath it. An unexplained red run is the
+        # thing that let fourteen consecutive failures go unnoticed.
+        run: |
+          status=0
+          go test -count=1 -race ./... 2>&1 | tee test-output.log || status=$?
+          if [ "$status" -ne 0 ]; then
+            # `|| true` because this shell runs with -o pipefail: a run that
+            # failed without a `--- FAIL` line (a build error, say) would
+            # otherwise abort here and drop the detail annotation below.
+            (grep -E -- '--- FAIL' test-output.log || true) | sort -u | head -20 \
+              | while IFS= read -r line; do
+                  printf '::error title=failed test::%s\n' "$line"
+                done
+            detail=$(tail -n 60 test-output.log)
+            printf '::error::%s\n' "${detail//$'\n'/%0A}"
+          fi
+          exit "$status"
 
       - name: Test (Windows)
         if: matrix.os == 'windows-latest'
@@ -174,4 +194,15 @@ jobs:
       - name: Run acceptance harness
         env:
           TANTU_TEST_CHROME: /tmp/browsers/chrome/linux-*/chrome-linux64/chrome
-        run: node tools/uxtest/run.mjs
+        # Same reasoning as the test step: the harness's diagnostics are the
+        # only diagnosis available for this job, and a log nobody can read
+        # turns "exit 3" into a mystery. The harness already prints what went
+        # wrong; this surfaces it as annotations.
+        run: |
+          status=0
+          node tools/uxtest/run.mjs 2>&1 | tee harness-output.log || status=$?
+          if [ "$status" -ne 0 ]; then
+            detail=$(tail -n 60 harness-output.log)
+            printf '::error::%s\n' "${detail//$'\n'/%0A}"
+          fi
+          exit "$status"

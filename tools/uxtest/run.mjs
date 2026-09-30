@@ -45,7 +45,35 @@ function check(name, ok, detail) {
   if (!ok) console.log('  FAIL  ' + name + '  ' + String(detail ?? '').slice(0, 200));
 }
 function findChrome() {
-  for (const c of CHROME_CANDIDATES) if (fs.existsSync(c)) return c;
+  for (const c of CHROME_CANDIDATES) {
+    const hit = firstExisting(c);
+    if (hit) return hit;
+  }
+  return null;
+}
+// TANTU_TEST_CHROME may be a pattern: CI points it at whatever version
+// @puppeteer/browsers just unpacked (/tmp/browsers/chrome/linux-*/...), and
+// the install directory is not known until the install step has run. One '*'
+// in a single path segment is supported, which is the shape installers
+// produce; a literal path is checked as-is, so a typo still reads as a
+// missing binary rather than a bad glob.
+function firstExisting(candidate) {
+  if (!candidate) return null;
+  if (!candidate.includes('*')) return fs.existsSync(candidate) ? candidate : null;
+  const star = candidate.indexOf('*');
+  const cut = Math.max(candidate.lastIndexOf('/', star), candidate.lastIndexOf('\\', star)) + 1;
+  const dir = candidate.slice(0, cut);
+  const tail = candidate.slice(cut);
+  const sep = tail.search(/[\\/]/);
+  const partial = tail.slice(0, sep === -1 ? tail.length : sep).replace('*', '');
+  const rest = sep === -1 ? null : tail.slice(sep + 1);
+  let entries;
+  try { entries = fs.readdirSync(dir); } catch { return null; }
+  for (const e of entries) {
+    if (!e.startsWith(partial)) continue;
+    const full = rest === null ? path.join(dir, e) : path.join(dir, e, rest);
+    if (fs.existsSync(full)) return full;
+  }
   return null;
 }
 function go(args, opts = {}) {
