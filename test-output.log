@@ -1,4 +1,0 @@
-build error here
-NOFAIL: TestSomething (0.01s)
-    relay_coordinator_test.go:390: open relays = 0, want 1
-FAIL	github.com/x/y [build failed]

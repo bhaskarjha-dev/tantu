@@ -11,6 +11,9 @@
 # Output
 *.out
 /coverage
+# CI tees command output next to the workflow to re-emit it as annotations
+/test-output.log
+/harness-output.log
 
 # Go workspace
 go.work
