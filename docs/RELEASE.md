@@ -115,5 +115,8 @@ preserved for manual review.
   is repeated non-race runs (`-count=2`) plus CI's `-race` coverage elsewhere.
 - Resume manifests bind metadata and a 64 KiB head hash, not the full payload
   or sender identity; completion after a lost acknowledgement is at-least-once.
-- macOS/Linux binaries are compile-verified; runtime verification matrix is
-  tracked in `docs/DEV-RECORD.md`.
+- The shipped archive has never been executed on macOS or Linux: those OSes
+  are verified by the full Go suite in CI on every push (`-race` on both, and
+  the browser harness on Linux), not by running the artifact a user would
+  download. The runtime verification matrix is tracked in
+  `docs/DEV-RECORD.md`.
