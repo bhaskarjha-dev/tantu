@@ -1810,3 +1810,88 @@ three independent defects:
   `go run ./tools/encgate`, `go test -count=1 ./...`, coverage floor
   (`cmd/tantu` 19.5% against the floor of 18), and `node tools/uxtest/run.mjs`
   at 32/32 all green.
+
+## Batch Z23 - what the annotations found: four tests that had never passed (2026-09-30)
+
+### Why this batch exists
+
+Batch Z22 fixed the three causes that were known about and stopped there, on
+the assumption that the `-race` failures were the relay test. Run #20 proved
+that wrong: Quality gates and Windows went green, Ubuntu and macOS did not,
+and the failure was still only an exit code. The fix in this batch came first
+and the diagnosis followed from it: **a failure that cannot be read cannot be
+fixed**, so the test and harness steps now re-emit their output as check
+annotations, which the unauthenticated API returns even though job logs do not.
+
+Run #22 then named four failing tests, identical on Ubuntu and macOS. None of
+them had ever passed in CI: `upload_failure_test.go` landed 2026-09-26 and
+`publish_atomic_test.go` 2026-09-28, both *after* the last green run (#5,
+2026-09-25). They had been red and unreadable ever since.
+
+### The four, and what each one was actually about
+
+1. **`TestFinalizeIncomingPartConsumesStagingName`,
+   `TestFinalizeIncomingPartDoesNotOverwriteExistingFile`,
+   `TestFinalizeIncomingPartRejectsDigestMismatch`** all failed in
+   `publishIncomingFile`, which had two return values: `finalName`
+   (`filepath.Base`) after a successful rename, `candidate` (full path) after a
+   copy. The rename is the normal path on macOS and Linux; the copy is what
+   Windows takes, because a file that is still open cannot be renamed there.
+   So the function returned a bare file name on the platforms people use, and
+   the digest check that guards the copy was skipped by the rename entirely.
+2. **`TestWebDashboard_UploadReadOnlyOutputDir`** chmod'd the output
+   directory and then posted a *text* drop. Text drops are buffered in memory
+   and never touch the output directory, so the receiver had nothing to
+   refuse: the test asserted 500 and got 200. Its second assertion — a
+   terminal ledger state — could not have passed either, because
+   `classifyRejection` reports receiver rejections as retry-safe and
+   `classify_test.go` pins that.
+3. The Hub had the same two defects as the CLI — `publishPartFile` returned a
+   bare name on both paths, and verified the digest only where it copied —
+   with **no failing test at all**, because every test that inspects an inbox
+   item constructs it with an absolute `SavedPath` by hand.
+
+The interesting one is the Hub's. A bare `saved_path` makes
+`serveReceivedFile` resolve against the Hub's working directory, fail its
+containment check, and 404 — correct behaviour for an escape attempt, wrong
+for a normal receive. Inbox preview, the download link, and `tantu drop`'s
+`/api/download` could not serve a file anyone had actually received, on any
+platform, and nothing failed because the tests supplied paths the product
+never produces.
+
+### Decisions
+
+- **Verify before publishing, not after.** The digest is now re-read through
+  the receiver's own descriptor before either path can expose the delivered
+  name. The alternative — rename first, hash, undo if it mismatches — puts
+  unverified bytes under a delivered name for the length of that window,
+  which is the property the atomic-publication work existed to prevent. The
+  cost is one sequential read of bytes just written and no write, so peak
+  disk stays at N; the comment on `PublishFromStaging` was reworded because
+  "no I/O proportional to the payload" was no longer true of publication as a
+  whole.
+- **Fix the test, not the classifier.** A read-only output directory is
+  indeed not worth retrying, but `classifyRejection`'s retry-safe default is
+  pinned by `classify_test.go` and changing wire-visible classification for a
+  string match ("permission denied") is a decision, not a correction. The test
+  now asserts what the code promises — `receiver_rejected`, retry-safe, no
+  duplicate risk, data safe, nothing published — and the classification
+  question stays open rather than being settled silently inside a test fix.
+- **Add the test the product was missing, not only the one that failed.**
+  `TestHub_ReceivedFileSavedPathIsAbsoluteAndServes` sends a real file through
+  the loopback, then asserts the recorded path resolves and that
+  `/api/drop/file` serves the bytes; `TestFinalizePartFileVerifiesDigestAndReturnsFullPath`
+  covers the Hub's copy of the publication code, which was untested for both
+  of these properties.
+
+### Validation
+
+- `go build ./...`, `go vet ./...`, `gofmt -l .`, `staticcheck@v0.8.1`,
+  `go run ./tools/encgate`, `go test -count=1 ./...`, and
+  `go test -race -count=1 ./...` across all 13 packages, all on Go 1.27.1.
+- `node tools/uxtest/run.mjs` 32/32, run once with a literal Chrome path and
+  once with a glob, which is what CI uses.
+- The annotation plumbing itself was tested in isolation against a failing
+  run, a clean run, and a non-zero exit with no `--- FAIL` line — the shape
+  where a bare `grep` under `set -eo pipefail` would abort the step and drop
+  the detail it was written to produce.

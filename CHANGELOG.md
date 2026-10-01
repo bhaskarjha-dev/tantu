@@ -254,6 +254,47 @@ rollback procedures.
   `PATH` (mingw-w64 gcc 16.2.0) `go test -race -count=1 ./...` completes
   green across all 13 packages, so the Linux/macOS-only coverage that the
   docs described as CI-exclusive no longer has to wait for a push.
+- **Every received file's saved path was a bare file name, so the Hub could
+  not serve a file anyone actually received.** The Hub's `publishPartFile`
+  returned `filepath.Base(name)` on the rename path and `publishViaTemp`
+  returned the bare name on the copy path — so the inbox recorded
+  `photo.png` rather than its path. `serveReceivedFile` resolves
+  `saved_path` with `filepath.Abs` before its containment check, and a bare
+  name resolves against the *Hub's working directory*: the check failed
+  closed (right for an escape attempt, wrong for a normal receive), and
+  inline preview, the download link, and the standalone `drop` server's
+  `/api/download` all 404'd for every received file on every platform. The
+  receipts printed by `tantu receive` and `node` lost the directory as well,
+  and `publishIncomingFile` in the CLI had the same split, so only the copy
+  path was ever correct, and only where the copy path runs. Both paths now
+  return the full published path. The defect had no failing test because
+  every test that touched this code injected an absolute `SavedPath` by hand;
+  `TestHub_ReceivedFileSavedPathIsAbsoluteAndServes` now sends a real file
+  through the loopback and asserts that the recorded path resolves to the
+  received bytes and that `/api/drop/file` serves them.
+- **A published file's digest was checked only on the copy path.** The
+  preferred path is a same-filesystem rename, which moves bytes without
+  reading them, so on macOS and Linux neither `finalizeIncomingPart` nor
+  `finalizePartFile` compared the staged bytes against the digest they
+  reported as verified — `TestFinalizeIncomingPartRejectsDigestMismatch`
+  failed there for precisely that reason while Windows passed, because a file
+  that is still open cannot be renamed there and so always takes the copy
+  path. The staged bytes are now re-read through the receiver's own descriptor
+  and verified before either path can expose the delivered name
+  (`drop.VerifyStagedDigest`): one sequential read, no write, peak disk still
+  N, and no published name ever appears with content that has not been
+  checked. `TestFinalizePartFileVerifiesDigestAndReturnsFullPath` covers the
+  Hub's copy of this code.
+- **The test guarding receiver rejection never exercised one.**
+  `TestWebDashboard_UploadReadOnlyOutputDir` chmod'd the output directory and
+  then sent a *text* drop — a payload that lives in an in-memory buffer and
+  never touches the output directory — so it asserted 500 while receiving 200
+  on Linux and macOS, and it also asserted a terminal ledger state that the
+  classifier reports as retryable by contract. It now sends a file, which is
+  the branch that creates `.tantu-staging` inside the output directory and
+  publishes into it, and it asserts what the classifier really produces for a
+  rejection: `receiver_rejected`, retry-safe, no duplicate risk, data safe,
+  one ledger record, and no published file.
 - **A directory send ignored `--peer` and delivered to the active peer
   instead.** On the delegation path the explicit target was dropped, so a batch
   aimed at one machine arrived on another and reported success. The

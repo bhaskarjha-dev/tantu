@@ -280,9 +280,11 @@ func (d *StagingDirectory) PublishStagedFile(tempName, finalName string) error {
 // PublishFromStaging renames an existing staging partial directly to its final
 // name. Because the private staging area lives inside the output directory, this
 // is a same-filesystem rename: it is atomic, costs no I/O proportional to the
-// payload, and keeps peak disk at N rather than 2N. The published bytes are the
-// very bytes that were hashed during the transfer, so no second copy can
-// diverge from the digest the receiver verified.
+// payload, and keeps peak disk at N rather than 2N. (The only payload-sized
+// I/O in publication is the caller's digest re-read of the staged bytes, which
+// writes nothing.) The published bytes are the very bytes that were hashed
+// during the transfer, so no second copy can diverge from the digest the
+// receiver verified.
 //
 // It reports ok=false when partPath lies on a different filesystem (or outside
 // this root), in which case the caller falls back to a verified copy.

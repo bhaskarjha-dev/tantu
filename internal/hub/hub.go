@@ -2521,13 +2521,23 @@ var ErrPublishedCleanupIncomplete = errors.New("published file but could not rem
 
 // publishPartFile publishes a verified staging file to its final name.
 //
+// Before anything is published the staged bytes are re-read through the open
+// descriptor and checked against the digest: a rename moves bytes without
+// reading them, so the verification has to happen before the delivered name
+// becomes visible rather than after.
+//
 // The preferred path is a same-filesystem rename of the staging partial into
-// place. It is atomic, costs no I/O proportional to the payload, and keeps peak
-// disk at N rather than 2N, and the published bytes are exactly the bytes that
-// were hashed during the transfer so no second pass can diverge from the digest
-// the receiver verified. When a rename is not possible (a staging area on a
-// different filesystem) it falls back to copying through a hidden temporary,
-// hashing and length-checking the copy before an atomic rename.
+// place. It is atomic, and together with the pre-publication verification it
+// keeps peak disk at N rather than 2N: no second copy is written, so no second
+// copy can diverge from the digest the receiver verified. When a rename is not
+// possible (a staging area on a different filesystem) it falls back to copying
+// through a hidden temporary, hashing and length-checking the copy before an
+// atomic rename.
+//
+// Both paths return the full path of the published file. The bare name they
+// used to return is what the inbox records as SavedPath, and the dashboard
+// resolves it against the output directory, so a bare name made every received
+// file's preview and download fail closed with a 404.
 //
 // Either way a crash mid-publication leaves a hidden .tantu-publish-*
 // temporary that SweepPublicationTemps reclaims, never a truncated file under
@@ -2545,6 +2555,10 @@ func publishPartFile(source *os.File, partPath, desiredPath, expectedSHA string,
 	}
 	if expectedSize > 0 && sourceInfo.Size() != expectedSize {
 		return "", false, fmt.Errorf("staged %d bytes, expected %d", sourceInfo.Size(), expectedSize)
+	}
+	// Verify before the rename below can make the name visible.
+	if err := drop.VerifyStagedDigest(source, expectedSHA); err != nil {
+		return "", false, err
 	}
 
 	ext := filepath.Ext(desiredPath)
@@ -2571,21 +2585,20 @@ func publishPartFile(source *os.File, partPath, desiredPath, expectedSHA string,
 		} else if ok {
 			// The staging name is now the published name, so there is no
 			// separate partial left to remove.
-			return finalName, true, nil
+			return candidate, true, nil
 		}
 
 		// Fallback: verified copy through a hidden temporary.
 		if _, err := source.Seek(0, io.SeekStart); err != nil {
 			return "", false, fmt.Errorf("rewind staging file: %w", err)
 		}
-		published, err := publishViaTemp(outputDir, source, finalName, expectedSHA, expectedSize)
-		if err != nil {
+		if err := publishViaTemp(outputDir, source, finalName, expectedSHA, expectedSize); err != nil {
 			if os.IsExist(err) {
 				continue // lost the race for this name; try the next suffix
 			}
 			return "", false, err
 		}
-		return published, false, nil
+		return candidate, false, nil
 	}
 	return "", false, errors.New("too many existing file candidates")
 }
@@ -2593,15 +2606,17 @@ func publishPartFile(source *os.File, partPath, desiredPath, expectedSHA string,
 // publishViaTemp writes source into a hidden temporary inside the destination
 // directory, verifying the byte count and digest of what is actually written,
 // and only then renames it into place. The rename is atomic, so a reader never
-// observes a partially written file under the final name.
-func publishViaTemp(outputDir *drop.StagingDirectory, source *os.File, finalName, expectedSHA string, expectedSize int64) (string, error) {
+// observes a partially written file under the final name. It returns only an
+// error: the caller already knows the final name it asked for, and the full
+// published path is the caller's to construct.
+func publishViaTemp(outputDir *drop.StagingDirectory, source *os.File, finalName, expectedSHA string, expectedSize int64) error {
 	tempName, err := outputDir.NewPublicationTempName()
 	if err != nil {
-		return "", err
+		return err
 	}
 	out, err := outputDir.OpenFile(tempName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
-		return "", err
+		return err
 	}
 
 	// Hash while streaming so the reported digest describes the published
@@ -2615,26 +2630,26 @@ func publishViaTemp(outputDir *drop.StagingDirectory, source *os.File, finalName
 	if copyErr != nil || closeErr != nil {
 		_ = outputDir.Remove(tempName)
 		if copyErr != nil {
-			return "", copyErr
+			return copyErr
 		}
-		return "", closeErr
+		return closeErr
 	}
 	if expectedSize > 0 && written != expectedSize {
 		_ = outputDir.Remove(tempName)
-		return "", fmt.Errorf("published %d bytes, expected %d", written, expectedSize)
+		return fmt.Errorf("published %d bytes, expected %d", written, expectedSize)
 	}
 	if expectedSHA != "" {
 		got := hex.EncodeToString(hasher.Sum(nil))
 		if !strings.EqualFold(got, expectedSHA) {
 			_ = outputDir.Remove(tempName)
-			return "", fmt.Errorf("published content digest %s does not match verified digest %s", got, expectedSHA)
+			return fmt.Errorf("published content digest %s does not match verified digest %s", got, expectedSHA)
 		}
 	}
 	if err := outputDir.PublishStagedFile(tempName, finalName); err != nil {
 		_ = outputDir.Remove(tempName)
-		return "", err
+		return err
 	}
-	return finalName, nil
+	return nil
 }
 
 func formatBytes(b int64) string {

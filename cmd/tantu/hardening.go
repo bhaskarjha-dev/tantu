@@ -352,11 +352,18 @@ func finalizeIncomingPart(f *os.File, partPath, desiredPath, expectedSHA string,
 }
 
 // publishIncomingFile publishes a verified staging partial under its final
-// name. It uses the same staged publication as the Hub: a same-filesystem
-// rename of the verified partial when possible, otherwise a copy into a hidden
-// temporary that is hashed and length-checked before an atomic rename. A crash
-// mid-publication therefore leaves a hidden .tantu-publish-* temporary, never a
-// truncated file under a name the user would open.
+// name. It uses the same staged publication as the Hub: the staged bytes are
+// re-read and checked against the digest first, then a same-filesystem rename
+// of the partial when possible, otherwise a copy into a hidden temporary that
+// is hashed and length-checked before an atomic rename. A crash mid-publication
+// therefore leaves a hidden .tantu-publish-* temporary, never a truncated file
+// under a name the user would open.
+//
+// It returns the full path of the published file on both paths. Only the copy
+// path used to, which meant the normal path on macOS and Linux reported a bare
+// file name: callers resolved it against the process working directory, so the
+// receipt printed a directory-less name and the standalone server's download
+// link 404'd.
 func publishIncomingFile(source *os.File, partPath, desiredPath, expectedSHA string, expectedSize int64) (string, bool, error) {
 	outputDir, err := drop.OpenStagingDirectory(filepath.Dir(desiredPath))
 	if err != nil {
@@ -370,6 +377,11 @@ func publishIncomingFile(source *os.File, partPath, desiredPath, expectedSHA str
 	}
 	if expectedSize > 0 && sourceInfo.Size() != expectedSize {
 		return "", false, fmt.Errorf("staged %d bytes, expected %d", sourceInfo.Size(), expectedSize)
+	}
+	// The rename below publishes the staged bytes without reading them, so the
+	// digest is checked here, before either path can expose the delivered name.
+	if err := drop.VerifyStagedDigest(source, expectedSHA); err != nil {
+		return "", false, err
 	}
 
 	ext := filepath.Ext(desiredPath)
@@ -393,7 +405,7 @@ func publishIncomingFile(source *os.File, partPath, desiredPath, expectedSHA str
 			}
 			return "", false, linkErr
 		} else if ok {
-			return finalName, true, nil
+			return candidate, true, nil
 		}
 
 		if _, err := source.Seek(0, io.SeekStart); err != nil {
