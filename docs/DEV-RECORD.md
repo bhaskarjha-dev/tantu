@@ -1877,6 +1877,13 @@ never produces.
   now asserts what the code promises — `receiver_rejected`, retry-safe, no
   duplicate risk, data safe, nothing published — and the classification
   question stays open rather than being settled silently inside a test fix.
+- **Make the contract test runnable everywhere.** The permission-bit variant
+  is Unix-only, so its assertions had never executed on a machine anyone
+  could debug them on — the first rewrite of this batch inverted `retry_safe`
+  and was only caught by the next CI run. A second variant blocks
+  `.tantu-staging` with a regular file, which every platform refuses the same
+  way, so the shared assertions run on Windows too and were verified locally
+  before the push.
 - **Add the test the product was missing, not only the one that failed.**
   `TestHub_ReceivedFileSavedPathIsAbsoluteAndServes` sends a real file through
   the loopback, then asserts the recorded path resolves and that

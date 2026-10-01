@@ -294,7 +294,11 @@ rollback procedures.
   the branch that creates `.tantu-staging` inside the output directory and
   publishes into it, and it asserts what the classifier really produces for a
   rejection: `receiver_rejected`, retry-safe, no duplicate risk, data safe,
-  one ledger record, and no published file.
+  one ledger record, and no published file. A second variant blocks
+  `.tantu-staging` with a regular file instead of permission bits, so the same
+  contract runs on Windows too — where the permission variant is skipped, and
+  where those assertions had therefore never executed on any machine anyone
+  could debug them on.
 - **A directory send ignored `--peer` and delivered to the active peer
   instead.** On the delegation path the explicit target was dropped, so a batch
   aimed at one machine arrived on another and reported success. The
