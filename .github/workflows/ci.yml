@@ -166,20 +166,18 @@ jobs:
   dashboard-acceptance:
     name: Dashboard acceptance (browser)
     # The Go suite cannot catch a blocked image, a focus-destroying poll, or
-    # sub-AA contrast; tools/uxtest drives a real browser for those. It is
-    # allowed to fail while it is being stabilized, so it does not block a PR,
-    # but it reports on every run instead of being a manual local ritual.
+    # sub-AA contrast; tools/uxtest drives a real browser for those, and this
+    # job is what makes that evidence mandatory rather than a local ritual.
     #
-    # Flip this to a blocking job once a Linux run is observed green end to
-    # end: the harness has never completed on this runner (every run since
-    # #6 died before the checks, on a fixed 4 s startup timer, which the
-    # bounded readiness probe now replaces). Until a green run exists there
-    # is no evidence either way about Chrome-for-Testing on the runner, and
-    # a gate that fails for infrastructure reasons teaches people to ignore
-    # it. The 32/32 action-wiring sweep is separately enforced on every push
-    # by TestEveryDataActionHasAHandler, which cannot be environment-dependent.
+    # It is blocking as of 2026-09-30, when it had three consecutive green
+    # runs (#22, #23, #24) on this runner. Until then it carried
+    # `continue-on-error` because it had never once completed here - every
+    # run since #6 died before its first check - and a gate that fails for
+    # infrastructure reasons teaches people to ignore it. The finding it
+    # exists to catch was never left unguarded: TestEveryDataActionHasAHandler
+    # enforces the action-wiring half of the sweep on every push, and that
+    # cannot vary by environment.
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

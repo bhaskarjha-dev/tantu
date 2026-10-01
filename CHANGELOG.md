@@ -249,7 +249,11 @@ rollback procedures.
   harness exited 3 in CI on the fixed 4-second startup timer described above.
   CI is publicly observable through the unauthenticated GitHub API, which is
   how these were found: every run, job, and check annotation is readable,
-  only the raw logs need admin rights.
+  only the raw logs need admin rights. Run #24 (2026-09-30) was the first
+  fully green run since #5 — quality gates, all three OS test jobs and the
+  browser acceptance job together — and with three consecutive green runs
+  behind it, `dashboard-acceptance` no longer carries `continue-on-error`:
+  the browser harness is a blocking gate again.
 - The race detector now runs locally on Windows too: with a C toolchain on
   `PATH` (mingw-w64 gcc 16.2.0) `go test -race -count=1 ./...` completes
   green across all 13 packages, so the Linux/macOS-only coverage that the

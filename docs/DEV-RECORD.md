@@ -1898,6 +1898,13 @@ never produces.
   `go test -race -count=1 ./...` across all 13 packages, all on Go 1.27.1.
 - `node tools/uxtest/run.mjs` 32/32, run once with a literal Chrome path and
   once with a glob, which is what CI uses.
+- CI run #24 (2026-09-30, `cf7d6c7`) was the first fully green run since #5:
+  Quality gates, `Test (ubuntu-latest)`, `Test (macos-latest)`,
+  `Test (windows-latest)` and `Dashboard acceptance (browser)` all success.
+  Runs #22 and #23 had already gone green for four of the five jobs, and #23's
+  annotations are what identified the one assertion still wrong — which is
+  also why `dashboard-acceptance` stopped carrying `continue-on-error`: its
+  stated condition, one observed green Linux run, had been met three times.
 - The annotation plumbing itself was tested in isolation against a failing
   run, a clean run, and a non-zero exit with no `--- FAIL` line — the shape
   where a bare `grep` under `set -eo pipefail` would abort the step and drop
