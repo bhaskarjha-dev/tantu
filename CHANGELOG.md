@@ -254,6 +254,29 @@ rollback procedures.
   browser acceptance job together — and with three consecutive green runs
   behind it, `dashboard-acceptance` no longer carries `continue-on-error`:
   the browser harness is a blocking gate again.
+- **The release pipeline would have failed on its own first tag push.**
+  `release.yml` never installed `syft`, which GoReleaser's `sboms` step shells
+  out to: a tag build would have compiled and archived all six targets and
+  then exited 1 with `exec: "syft": executable file not found`. The config
+  also used `archives.format`, which `goreleaser check` exits 2 on as
+  deprecated. Both defects were found by *running* the pipeline instead of
+  reading it — the pinned GoReleaser `v2.18.2` and a checksum-verified syft
+  `1.52.0`: `goreleaser check` now exits 0 and
+  `goreleaser release --snapshot --clean` completes, producing all 6 archives,
+  6 SPDX-2.3 SBOMs and `checksums.txt` with every hash re-verified, the
+  archives confirmed to hold the single binary plus README and LICENSE, and
+  `tantu version` reporting the link-time-injected version. CI now also fails
+  when `go mod tidy` would change `go.mod`/`go.sum`: the release's before-hook
+  repairs a non-tidy tree *during* the build, which would ship code that
+  differs from the tag.
+- **`docs/RELEASE.md` carried three claims that had stopped being true.** It
+  named Go `1.26.3` as the CI/release toolchain (both workflows pin
+  `1.27.1`, a security decision), said `govulncheck` had never been observed
+  running in CI (the quality job runs it green on every push), and said local
+  Windows `-race` evidence was only `-count=2` reruns (it runs with a C
+  toolchain as of 2026-09-30). A release document that misstates the
+  toolchain is worse than a missing one, because it is what someone reads
+  while preparing to ship.
 - The race detector now runs locally on Windows too: with a C toolchain on
   `PATH` (mingw-w64 gcc 16.2.0) `go test -race -count=1 ./...` completes
   green across all 13 packages, so the Linux/macOS-only coverage that the

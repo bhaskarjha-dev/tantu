@@ -114,6 +114,19 @@ jobs:
       - name: Verify modules
         run: go mod verify
 
+      - name: Module files are tidy
+        # The release pipeline runs `go mod tidy` as a before-hook, which
+        # would rewrite go.mod/go.sum during a tag build if the tagged commit
+        # were not tidy - releasing code that differs from the tag. Tidiness
+        # belongs to the commit, so it is checked here rather than being
+        # repaired at release time. Linux only: tidiness is platform-
+        # independent, and a Windows checkout's line endings would make
+        # `git diff` of go.mod disagree with itself.
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
       - name: Build
         run: go build ./...
 

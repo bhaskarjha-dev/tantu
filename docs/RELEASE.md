@@ -3,8 +3,13 @@
 ## Versioning
 
 - Versions are `vMAJOR.MINOR.PATCH` git tags; goreleaser builds on tag push.
-- CI/release use Go `1.26.3` (matching `go.mod`) and GoReleaser `v2.18.2`; do not
-  float either tool version for a release.
+- Every tool in the pipeline is pinned, and none should be floated for a
+  release: Go `1.27.1` in both workflows (a security decision as much as a
+  reproducibility one — `govulncheck` judges the standard library against the
+  toolchain that builds it, and 1.26.3 carried 9 reachable stdlib
+  vulnerabilities), GoReleaser `v2.18.2`, syft `1.52.0`, staticcheck
+  `v0.8.1`. `go.mod` declares language version `1.26.3`; that is the language
+  the module requires, not the toolchain CI builds with.
 - The version is embedded at link time (`-X main.version` and
   `-X .../internal/hub.HubVersion`); `tantu version` and the dashboard
   report it. A local `go build` without ldflags reports
@@ -42,6 +47,15 @@ SBOM per archive. There is currently **no artifact signing** (no cosign
 configuration — signing keys must never live in this repo). Until signing
 lands, verify downloads against `checksums.txt` from the GitHub release page.
 
+The pipeline is verified rather than assumed: on 2026-09-30 `goreleaser check`
+and `goreleaser release --snapshot --clean` were run with the pinned
+GoReleaser and syft, producing all 6 archives, 6 SPDX-2.3 SBOMs and
+`checksums.txt` — every hash re-checked, the archives confirmed to hold the
+single binary plus README and LICENSE, an SBOM inspected for its pinned
+modules, and `tantu version` reporting the link-time-injected version. What
+that run cannot exercise is the publishing half: creating the GitHub release
+and fetching the artifacts back from it, which a tag push does.
+
 ## Supply chain
 
 The full dependency inventory, the reasoning behind the `CGO_ENABLED=0`
@@ -50,12 +64,13 @@ static-build invariant, and the conditions for adding a module are in
 (`crypto` for SSH, `sys` for Windows hardlink counting), no C libraries, no
 runtime install.
 
-An SBOM ships with every archive. `govulncheck` runs in CI; it has not yet
-been observed executing there (see `docs/KNOWN-LIMITATIONS.md` §1.6), so run
-it locally before a release:
+An SBOM ships with every archive. `govulncheck` runs in the quality job on
+every push, judged against the pinned toolchain, and reports 0 findings as of
+2026-09-30 (the runs from #24 on are green). Re-running it locally before a
+release is still cheap:
 
 ```sh
-go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+GOTOOLCHAIN=go1.27.1 go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 ```
 
 ## Install
@@ -94,9 +109,10 @@ preserved for manual review.
 ## Known release limitations
 
 - No signed artifacts yet (see above).
-- `-race` runs on Linux/macOS in CI; local Windows race execution depends on a
-  complete C toolchain, so local evidence uses `-count=2` lifecycle reruns
-  rather than claiming race safety.
+- `-race` runs on Linux/macOS in CI, and on Windows locally once a C toolchain
+  is on `PATH` (verified 2026-09-30 with mingw-w64 gcc 16.2.0: all 13
+  packages green). On a stock Windows install without gcc the local evidence
+  is repeated non-race runs (`-count=2`) plus CI's `-race` coverage elsewhere.
 - Resume manifests bind metadata and a 64 KiB head hash, not the full payload
   or sender identity; completion after a lost acknowledgement is at-least-once.
 - macOS/Linux binaries are compile-verified; runtime verification matrix is

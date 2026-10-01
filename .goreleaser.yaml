@@ -25,10 +25,16 @@ builds:
 
 archives:
   - id: tantu-archive
-    format: tar.gz
+    # `formats` (plural), not `format`: the singular property is deprecated in
+    # GoReleaser v2 and `goreleaser check` exits non-zero on it. The release
+    # workflow would keep building, but the config would stop validating the
+    # moment the property is removed.
+    formats:
+      - tar.gz
     format_overrides:
       - goos: windows
-        format: zip
+        formats:
+          - zip
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - README.md

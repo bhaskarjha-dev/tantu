@@ -32,6 +32,30 @@ jobs:
       - name: Test release toolchain
         run: go test -count=1 ./...
 
+      - name: Install syft (pinned)
+        # GoReleaser's `sboms` step shells out to syft; without it a tag push
+        # builds and archives everything and then fails with
+        # `exec: "syft": executable file not found` - verified locally on
+        # 2026-09-30 with the pinned GoReleaser. Pinned and checksum-verified
+        # like every other tool in this pipeline: this step downloads and
+        # executes code from outside go.mod's pinned surface, so it gets the
+        # same treatment a release artifact would.
+        env:
+          SYFT_VERSION: 1.52.0
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          base="https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}"
+          asset="syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          curl -sSfL --retry 3 -o "${work}/${asset}" "${base}/${asset}"
+          curl -sSfL --retry 3 -o "${work}/checksums.txt" "${base}/syft_${SYFT_VERSION}_checksums.txt"
+          grep " ${asset}\$" "${work}/checksums.txt" > "${work}/expected"
+          (cd "${work}" && sha256sum -c expected)
+          mkdir -p "${HOME}/.local/bin"
+          tar -xzf "${work}/${asset}" -C "${HOME}/.local/bin" syft
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+          "${HOME}/.local/bin/syft" version
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:

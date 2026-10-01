@@ -1909,3 +1909,80 @@ never produces.
   run, a clean run, and a non-zero exit with no `--- FAIL` line — the shape
   where a bare `grep` under `set -eo pipefail` would abort the step and drop
   the detail it was written to produce.
+
+## Batch Z24 — running the release pipeline instead of reading it (2026-09-30)
+
+### Why this batch exists
+
+With CI green end to end, the largest remaining "never executed" surface was
+`.github/workflows/release.yml`: `git tag -l` is empty, so the release job has
+never run once, while `docs/RELEASE.md` already describes install and upgrade
+procedures for artifacts that do not exist. A release workflow that has never
+run is a release workflow whose first run *is* the release. The only honest
+way to close that was to execute the pipeline locally with the exact pinned
+tools.
+
+### What executing it found
+
+1. **`release.yml` would have failed its first tag push.** GoReleaser's
+   `sboms` step shells out to `syft` and the workflow never installs it:
+   `goreleaser release` built all six binaries and archived all six, then
+   exited 1 with `exec: "syft": executable file not found in %PATH%`. Every
+   artifact had been produced and none of them would have been published.
+2. **`goreleaser check` exits 2 on the config as committed**, because
+   `archives.format` and `archives.format_overrides.format` are deprecated in
+   v2 (`format` was replaced by `formats`). `release` only warns today, which
+   is the interesting part: the gate fails *now* and the build fails at the
+   next major, so the config was one version away from breaking silently.
+3. **`docs/RELEASE.md` carried three stale claims** — Go `1.26.3` as the
+   CI/release toolchain, `govulncheck` unobserved in CI, local Windows
+   `-race` evidence limited to `-count=2` — each one documentation describing
+   a repository that no longer exists.
+
+### Decisions
+
+- **Provision syft pinned and checksum-verified, not `curl | sh`.** The
+  workflow downloads `syft_1.52.0_linux_amd64.tar.gz` plus its published
+  `checksums.txt`, verifies with `sha256sum -c`, extracts to `~/.local/bin`
+  and adds it to `GITHUB_PATH`. That step fetches and executes code from
+  outside go.mod's pinned surface, so it gets the same treatment a release
+  artifact would: a floating install script inside a release job is precisely
+  the hole `docs/DEPENDENCIES.md` exists to prevent. The script was executed
+  locally in git bash against the Linux asset — checksum `OK`, binary
+  extracted, PATH line written — before it was committed, because a release
+  step that has only ever been read is the same mistake as a release job that
+  has only ever been read.
+- **Migrate the config rather than silence the check.** `goreleaser check`
+  exiting non-zero is a gate like any other; the fix is the property rename,
+  not a skip.
+- **Enforce tidiness in CI instead of repairing it at release time.** The
+  config's before-hook runs `go mod tidy`, which would rewrite `go.mod` and
+  `go.sum` during a tag build — releasing code that differs from the tag. The
+  quality job now runs `go mod tidy` followed by `git diff --exit-code go.mod
+  go.sum`, making tidiness a property of the commit. The hook is a no-op on a
+  tidy tree (confirmed: the snapshot run left the tree clean).
+- **Verify the artifacts, not just the exit code.** A pipeline that exits 0
+  and produces an empty archive is still broken. The snapshot run was checked
+  for all 6 archives, 6 SBOMs and `checksums.txt`; every one of the 12 hashes
+  was re-computed against the file; the linux archive was listed for
+  `LICENSE`, `README.md` and a single `tantu`; an SBOM was opened and shown to
+  be SPDX-2.3 carrying `golang.org/x/crypto@v0.56.0`; and the built binary
+  reported `v0.0.0-SNAPSHOT-05d7678`, proving the `-X main.version` ldflags.
+
+### Still unproven
+
+The publishing half: creating the GitHub release, attaching the artifacts and
+fetching them back. That requires a tag, and pushing one tells users a version
+exists — a product decision rather than an engineering one — so row 1.5 stays
+open for exactly that, and no further.
+
+### Validation
+
+- `goreleaser check` → 0 (was 2) and `goreleaser release --snapshot --clean`
+  → 0 (was 1), using GoReleaser v2.18.2 and syft 1.52.0, the versions the
+  workflow pins.
+- The syft install script executed verbatim in git bash against the Linux
+  asset.
+- `go build ./...`, `go vet ./...`, `gofmt -l .`, `staticcheck@v0.8.1`,
+  `go run ./tools/encgate`, `go test -count=1 ./...` and
+  `node tools/uxtest/run.mjs` at 32/32, green after the config and doc edits.
