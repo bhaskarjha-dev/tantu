@@ -11,16 +11,22 @@ on:
     branches:
       - '**'
 
+# Action majors are current as of 2026-09-30. The previous pins
+# (checkout@v4, setup-go@v5, setup-node@v4) run on Node 20, which GitHub has
+# deprecated - every run reported it, and the runtime underneath them is being
+# removed. The release workflow's goreleaser-action deliberately stays at v6:
+# nothing exercises it until a tag is pushed, and bumping a step that has never
+# run is how a release pipeline gets discovered to be broken at release time.
 jobs:
   quality:
     name: Quality gates
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           # Pinned, but not to an arbitrary patch: govulncheck scans the
           # standard library this toolchain builds, so a toolchain behind on
@@ -94,10 +100,10 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           # Must match the quality job: stdlib findings are judged against
           # this version, and a mismatch would test a different runtime than
@@ -179,11 +185,11 @@ jobs:
     # cannot vary by environment.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '20'
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.27.1'
           cache: true
