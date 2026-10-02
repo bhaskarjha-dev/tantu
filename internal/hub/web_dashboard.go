@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/bhaskarjha-dev/tantu/internal/browser"
+	"github.com/bhaskarjha-dev/tantu/internal/discovery"
 	"github.com/bhaskarjha-dev/tantu/internal/drop"
 	"github.com/bhaskarjha-dev/tantu/internal/pairing"
 )
@@ -3669,12 +3670,34 @@ type probeStatusResponse struct {
 }
 
 type discoveredPeerResponse struct {
-	Name        string `json:"name"`
-	Address     string `json:"address"`
-	Port        int    `json:"port"`
-	SAS         string `json:"sas"`
-	Fingerprint string `json:"fingerprint"`
-	IsPaired    bool   `json:"is_paired"`
+	Name     string `json:"name"`
+	Address  string `json:"address"`
+	Port     int    `json:"port"`
+	IsPaired bool   `json:"is_paired"`
+}
+
+// buildDiscoveredPeers converts discovery's unauthenticated hints into the
+// dashboard response. Discovery carries no identity, so there is no
+// fingerprint or SAS to report — nothing here has been verified. IsPaired is
+// a display/filter hint derived from the address host (see
+// pairing.PeerStore.HasPeerAtAddress) and must never be used for
+// authorization; trust is decided by fingerprint checks on authenticated
+// connections.
+func buildDiscoveredPeers(nodes []discovery.DiscoveredNode, store *pairing.PeerStore) []discoveredPeerResponse {
+	out := make([]discoveredPeerResponse, 0, len(nodes))
+	for _, node := range nodes {
+		isPaired := false
+		if store != nil {
+			isPaired = store.HasPeerAtAddress(node.Address)
+		}
+		out = append(out, discoveredPeerResponse{
+			Name:     node.InstanceName,
+			Address:  node.Address,
+			Port:     node.Port,
+			IsPaired: isPaired,
+		})
+	}
+	return out
 }
 
 type identityStatus struct {
@@ -5109,23 +5132,7 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 
 		discovered := make([]discoveredPeerResponse, 0)
 		if engine := h.DiscoveryEngine(); engine != nil {
-			nodes := engine.ListNodes()
-			for _, node := range nodes {
-				isPaired := false
-				if h.store != nil {
-					if _, ok := h.store.GetPeer(node.Fingerprint); ok {
-						isPaired = true
-					}
-				}
-				discovered = append(discovered, discoveredPeerResponse{
-					Name:        node.InstanceName,
-					Address:     node.Address,
-					Port:        node.Port,
-					SAS:         node.SAS,
-					Fingerprint: node.Fingerprint,
-					IsPaired:    isPaired,
-				})
-			}
+			discovered = buildDiscoveredPeers(engine.ListNodes(), h.store)
 		}
 		writeJSON(w, http.StatusOK, discovered)
 	})

@@ -203,6 +203,86 @@ rollback procedures.
   token remains as a legacy fallback.
 
 ### Fixed
+- **The SSH listener wedged instead of failing when its accept loop died.**
+  A listener-level `Accept` error was published once into the results queue
+  and `serve()` returned: the first caller saw the error, every later
+  `Accept` blocked forever on an empty queue, and the bound TCP socket was
+  never released — the port stayed held with nothing accepting on it, while
+  the LAN listener (the reference implementation) records a terminal error,
+  closes the socket, and returns that error from every subsequent call.
+  `Close()` also never drained the queue, so a connection accepted
+  concurrently with shutdown outlived the listener. The SSH listener now
+  mirrors the LAN contract (`terminalErr` + `serveDone` + wait-then-drain in
+  `Close`), with `TestSSHListener_FatalAcceptErrorIsRepeated` and
+  `TestSSHListener_CloseDrainsQueuedConnections` red against the previous
+  code (blocked second Accept; leaked queue entry). The LAN gate's own read
+  assertion was strengthened in the same commit: it counted a deadline
+  timeout as a closed pipe, so it passed even when `Close` leaked.
+- **Setting a deadline on a closed SSH connection reported success.** All
+  three `Set*Deadline` methods checked for closure via `c.channel == nil`,
+  which `Close` never sets, so they returned nil and armed timers against a
+  dead session — `net.Conn` returns an error there.
+  `TestSSHConn_SetDeadlineAfterCloseIsRejected` was red against the old code
+  on all three methods. The interface docs now state what was previously
+  written nowhere: an SSH deadline expiry *closes* the connection (a blocked
+  `ssh.Channel` read cannot be interrupted otherwise) while LAN/loopback fail
+  the pending I/O and keep the connection, and fingerprint formats differ by
+  transport (LAN's 64-hex SHA-256 vs SSH's `SHA256:<base64>`).
+- **Paired-hub detection in discovery had been dead since the cleartext SAS
+  was removed.** `discovery.DiscoveredNode` kept `SAS` and `Fingerprint`
+  fields that `recordNode` forced to `""`, so every consumer correlating via
+  `store.GetPeer(node.Fingerprint)` queried the empty string and always
+  missed: the dashboard's Nearby list called every already-paired hub "not
+  yet verified" and offered it for re-pairing, `tantu pair` listed
+  already-paired hubs as candidates on both paths, the cockpit repeated the
+  filter, the log printed `(SAS: )` with an empty code, `discSeen`
+  throttled every node through one key, and the discovery-driven roaming
+  probe was unreachable code. The identity fields are now *deleted* rather
+  than kept empty — the compiler refuses any future consumer from claiming
+  identity discovery cannot provide — and correlation is an address-host
+  match (`pairing.PeerStore.HasPeerAtAddress`) documented as display-only,
+  never authorization. The roaming probe is removed rather than revived:
+  without identity there is no safe way to tell which stored peer a beacon
+  from a *new* address belongs to, and the authenticated self-healing path
+  (which pins the fingerprint before rewriting an address) was never dead.
+  Gates: `TestPeerStoreHasPeerAtAddress`, `TestBuildDiscoveredPeers` (which
+  also pins the response shape: no `sas`/`fingerprint` keys survive).
+- **A legacy beacon whose `sas`/`fp` keys were present but *empty* was
+  accepted** — exactly what pre-`d7de281` peers emitted, since they declared
+  those fields without `omitempty` (verified against local git history).
+  `validBeacon` now rejects on *presence* (`*string` fields), not on a
+  non-empty value. The E2E test that claimed to catch legacy beacons was
+  also restructured: it sent a valid beacon milliseconds before the legacy
+  one, so the 50 ms per-source rate limiter dropped the legacy packet and
+  the test passed with the validation deleted.
+  `TestEngine_RejectsLegacyBeaconEndToEnd` now sends the legacy packet
+  *first* — only validation can be what refuses it — and then requires a
+  well-formed peer from the same source to still be discovered, so it cannot
+  pass vacuously. Both it and `TestValidBeaconRejectsPresentButEmptyLegacyFields`
+  were red before the fix.
+- **One LAN host could evict every legitimate peer from discovery.** The
+  256-slot table is keyed by `ip:port`, so a single source claiming rotating
+  ports manufactured distinct keys and the oldest-first eviction removed
+  everyone else — `TestRecordNodeBoundsPerSourceHost` observed 256/256 slots
+  held by one host with the legitimate peer gone. New keys from a host
+  already at the 8-slot per-source cap are now refused (existing entries
+  keep refreshing).
+- **`tantu pair`'s discovery scan failed silently.** `_ = eng.Start(...)`
+  discarded the error, so a machine where the UDP socket could not bind
+  scanned nothing for two seconds and printed "done." — indistinguishable
+  from an empty LAN. The failure is now reported with an instruction to
+  enter an address manually, and the listing no longer prints an empty
+  `(SAS: )`.
+- **Three stale claims corrected while fixing the above.**
+  `ARCHITECTURE.md` §4.3 said LAN connections reject certificates not
+  stored in `peers.json`, but the hub's wire listener completes the TLS
+  handshake for unknown certificates by design (`AllowPairing: true`) and
+  authorizes at the application layer — which THREAT-MODEL already
+  documented. `AUDIT.md` described roaming cooldown/probing that no longer
+  exists, and `transport.go` named roaming probes as `DialPinnedContext`'s
+  caller. THREAT-MODEL T6 now records the SSH pre-auth handshake bound (64,
+  excess rejected rather than queued) and the LAN listener's missing
+  aggregate handshake cap.
 - **"Cancel sign-in" was a dead button on every Hub.** The delegated click
   listener is bound to `document`, so inside it `this` is the document, but
   the handler read the operation id with `this.getAttribute(...)`. Every

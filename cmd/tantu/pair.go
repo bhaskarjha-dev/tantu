@@ -55,12 +55,10 @@ func runPair(args []string) {
 	if *peerAddr == "" {
 		// Actively discover nearby hubs on LAN
 		type discPeer struct {
-			Name        string `json:"name"`
-			Address     string `json:"address"`
-			Port        int    `json:"port"`
-			SAS         string `json:"sas"`
-			Fingerprint string `json:"fingerprint"`
-			IsPaired    bool   `json:"is_paired"`
+			Name     string `json:"name"`
+			Address  string `json:"address"`
+			Port     int    `json:"port"`
+			IsPaired bool   `json:"is_paired"`
 		}
 		var discovered []discPeer
 
@@ -96,21 +94,28 @@ func runPair(args []string) {
 			}
 			if eng, err := discovery.NewEngine(discCfg); err == nil {
 				scanCtx, scanCancel := context.WithTimeout(context.Background(), 2*time.Second)
-				_ = eng.Start(scanCtx)
+				if startErr := eng.Start(scanCtx); startErr != nil {
+					// Silently scanning nothing for two seconds and reporting
+					// "done." left a broken scan indistinguishable from an
+					// empty LAN; say so and let the user enter an IP instead.
+					fmt.Fprintf(os.Stderr, "\n(discovery unavailable: %v — enter a peer address manually)\n", startErr)
+				}
 				<-scanCtx.Done()
 				_ = eng.Close()
 				scanCancel()
 				for _, node := range eng.ListNodes() {
-					if _, ok := store.GetPeer(node.Fingerprint); !ok {
-						discovered = append(discovered, discPeer{
-							Name:        node.InstanceName,
-							Address:     node.Address,
-							Port:        node.Port,
-							SAS:         node.SAS,
-							Fingerprint: node.Fingerprint,
-							IsPaired:    false,
-						})
+					// Discovery carries no fingerprint to match on; paired
+					// hubs are recognized by address host, which is a
+					// filter hint only (see HasPeerAtAddress).
+					if store.HasPeerAtAddress(node.Address) {
+						continue
 					}
+					discovered = append(discovered, discPeer{
+						Name:     node.InstanceName,
+						Address:  node.Address,
+						Port:     node.Port,
+						IsPaired: false,
+					})
 				}
 			}
 			fmt.Println("done.")
@@ -119,7 +124,10 @@ func runPair(args []string) {
 		if len(discovered) > 0 {
 			fmt.Println("\nDiscovered nearby hubs on LAN:")
 			for idx, d := range discovered {
-				fmt.Printf("  [%d] %s (%s, SAS: %s)\n", idx+1, d.Name, d.Address, d.SAS)
+				// No SAS is printed: discovery broadcasts no identity, so any
+				// code shown here would be fabricated. The verification code
+				// exists only inside an active pairing handshake.
+				fmt.Printf("  [%d] %s (%s, not yet paired)\n", idx+1, d.Name, d.Address)
 			}
 			fmt.Printf("Select peer [1-%d] or enter custom IP (or press Enter to view my pairing code): ", len(discovered))
 			var selection string

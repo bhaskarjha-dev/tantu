@@ -30,28 +30,35 @@ const (
 
 	// BeaconPrefix identifies tantu discovery frames.
 	BeaconPrefix = "AUTHDISC:"
-
-	maxDiscoveredNodes = 256
 )
 
-// DiscoveredNode represents an active tantu peer found on the local network.
+const (
+	// maxDiscoveredNodes bounds the unauthenticated discovery table.
+	maxDiscoveredNodes = 256
+	// maxNodesPerSourceHost bounds how many table slots a single source host
+	// may occupy. Without it one host can manufacture distinct Address keys by
+	// claiming rotating ports until the oldest-first eviction has removed
+	// every legitimate peer. Eight comfortably covers several hubs on one
+	// machine while keeping a flood from dominating a 256-slot table.
+	maxNodesPerSourceHost = 8
+)
+
 // DiscoveredNode describes a hub seen on the LAN.
 //
-// SAS and Fingerprint are deliberately NOT part of this struct's wire form.
-// They used to be broadcast in cleartext every few seconds, which handed any
-// host on the network the exact value a user is asked to verify by eye during
-// pairing. An attacker who learns it can grind a certificate whose fingerprint
-// shares that prefix, then present that certificate during pairing and defeat
+// It carries no identity of any kind, and the type makes that impossible to
+// violate: there are no SAS or fingerprint fields. They used to be broadcast
+// in cleartext every few seconds, which handed any host on the network the
+// exact value a user is asked to verify by eye during pairing — an attacker
+// who learns it can grind certificates sharing that prefix and then defeat
 // the human check entirely. The handshake SAS is derived from the pairing
 // transcript and only ever travels inside an authenticated, mTLS-protected
-// flow, so a discovered node carries no verifiable identity at all until the
-// user chooses to pair with it.
+// flow, so a discovered node has no verifiable identity at all until the user
+// pairs. Consumers that need identity must take it from the authenticated
+// session, never from here.
 type DiscoveredNode struct {
 	InstanceName string    `json:"name"`
 	Address      string    `json:"addr"` // IP address or host:port
 	Port         int       `json:"port"` // Wire port (e.g. 9877)
-	SAS          string    `json:"-"`    // Never broadcast; always empty on a discovered node
-	Fingerprint  string    `json:"-"`    // Never broadcast; always empty on a discovered node
 	LastSeen     time.Time `json:"last_seen"`
 }
 
@@ -74,11 +81,13 @@ type beaconPayload struct {
 	Name        string `json:"name"`
 	Port        int    `json:"port"`
 	BeaconNonce string `json:"nonce,omitempty"`
-	// SAS and FP are accepted by the decoder only so a beacon from an older
-	// peer can be recognised and rejected. validBeacon drops any beacon that
-	// sets them, so nothing is ever read from these fields.
-	SAS string `json:"sas,omitempty"`
-	FP  string `json:"fp,omitempty"`
+	// SAS and FP exist only so a beacon from an older peer can be recognised
+	// and rejected. Pre-d7de281 declared them without omitempty, so an older
+	// peer emits the keys even when it has nothing to advertise — presence of
+	// the key, not its value, marks the sender, hence pointers. Nothing is
+	// ever read from them.
+	SAS *string `json:"sas,omitempty"`
+	FP  *string `json:"fp,omitempty"`
 }
 
 // Engine advertises node coordinates and maintains an active subnet registry.
@@ -171,11 +180,14 @@ func (e *Engine) ListNodes() []DiscoveredNode {
 			res = append(res, *n)
 		}
 	}
+	// Address is the only key that identifies a node: discovery carries no
+	// identity fields, so this both orders the list and keeps it stable
+	// between calls.
 	sort.Slice(res, func(i, j int) bool {
-		if res[i].Fingerprint == res[j].Fingerprint {
-			return res[i].Address < res[j].Address
+		if res[i].Address == res[j].Address {
+			return res[i].InstanceName < res[j].InstanceName
 		}
-		return res[i].Fingerprint < res[j].Fingerprint
+		return res[i].Address < res[j].Address
 	})
 	return res
 }
@@ -317,11 +329,7 @@ func (e *Engine) listenLoop(conn *net.UDPConn) {
 			InstanceName: beacon.Name,
 			Address:      net.JoinHostPort(nodeAddr, fmt.Sprintf("%d", beacon.Port)),
 			Port:         beacon.Port,
-			// A beacon carries no identity. Anything a previous version leaked
-			// is dropped here rather than retained.
-			SAS:         "",
-			Fingerprint: "",
-			LastSeen:    time.Now(),
+			LastSeen:     time.Now(),
 		}
 
 		e.recordNode(node)
@@ -344,10 +352,12 @@ func validBeacon(beacon beaconPayload) bool {
 		return false
 	}
 	// Reject any beacon that still carries identity fields. A peer running an
-	// older release will send them; accepting them would reintroduce the
-	// cleartext SAS leak this change exists to close, so such beacons are
-	// dropped and the peer simply does not appear in discovery.
-	if beacon.SAS != "" || beacon.FP != "" {
+	// older release sends them unconditionally (pre-d7de281 declared them
+	// without omitempty), so the keys are checked for presence rather than
+	// content: an empty value is still the cleartext-identity wire format this
+	// change exists to close, and such a beacon is dropped — the peer simply
+	// does not appear in discovery.
+	if beacon.SAS != nil || beacon.FP != nil {
 		return false
 	}
 	if beacon.BeaconNonce != "" && len(beacon.BeaconNonce) > 64 {
@@ -395,32 +405,55 @@ func (e *Engine) allowBeaconSource(source string) bool {
 	return true
 }
 
-func (e *Engine) recordNode(node DiscoveredNode) {
-	// A discovered node is an unauthenticated hint and must never carry a
-	// verifiable identity: no SAS and no certificate fingerprint reaches or
-	// leaves this map. Clearing here rather than at the call site means a future
-	// caller cannot reintroduce the leak.
-	node.SAS = ""
-	node.Fingerprint = ""
-
-	e.mu.Lock()
-	key := node.Address
-	existing, isNew := e.nodes[key]
-	if !isNew && len(e.nodes) >= maxDiscoveredNodes {
-		// Evict the least recently seen hint before accepting a new one.
-		// Discovery is unauthenticated, so this bound is a security boundary.
-		var oldestKey string
-		var oldest time.Time
-		for candidateKey, candidate := range e.nodes {
-			if oldestKey == "" || candidate.LastSeen.Before(oldest) {
-				oldestKey, oldest = candidateKey, candidate.LastSeen
-			}
+// sourceHostCountLocked counts table entries sharing addr's host. The caller
+// must hold e.mu.
+func (e *Engine) sourceHostCountLocked(addr string) int {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	count := 0
+	for key := range e.nodes {
+		entryHost, _, entryErr := net.SplitHostPort(key)
+		if entryErr != nil {
+			entryHost = key
 		}
-		if oldestKey != "" {
-			delete(e.nodes, oldestKey)
+		if strings.EqualFold(entryHost, host) {
+			count++
 		}
 	}
-	if !isNew {
+	return count
+}
+
+func (e *Engine) recordNode(node DiscoveredNode) {
+	e.mu.Lock()
+	key := node.Address
+	// found is the map lookup's ok value: true when the key is already present.
+	existing, found := e.nodes[key]
+	if !found {
+		// New keys from a host already at its slot cap are refused before the
+		// global eviction can remove a legitimate peer on this host's behalf.
+		// Existing entries keep refreshing normally at the cap.
+		if e.sourceHostCountLocked(key) >= maxNodesPerSourceHost {
+			e.mu.Unlock()
+			return
+		}
+		if len(e.nodes) >= maxDiscoveredNodes {
+			// Evict the least recently seen hint before accepting a new one.
+			// Discovery is unauthenticated, so this bound is a security boundary.
+			var oldestKey string
+			var oldest time.Time
+			for candidateKey, candidate := range e.nodes {
+				if oldestKey == "" || candidate.LastSeen.Before(oldest) {
+					oldestKey, oldest = candidateKey, candidate.LastSeen
+				}
+			}
+			if oldestKey != "" {
+				delete(e.nodes, oldestKey)
+			}
+		}
+	}
+	if !found {
 		e.nodes[key] = &node
 	} else {
 		existing.LastSeen = node.LastSeen

@@ -499,6 +499,44 @@ func (s *PeerStore) GetPeer(fingerprint string) (Peer, bool) {
 	return p, ok
 }
 
+// HasPeerAtAddress reports whether any paired peer is stored at addr, which
+// may be "host:port" (as discovery reports it) or a bare host. Discovery
+// beacons carry no cryptographic identity since the cleartext SAS was
+// removed, so this address-host match is the only correlation available for
+// display purposes; ports legitimately differ (the pairing listener uses
+// 9878 while the wire port is 9877). Callers must treat the result as a
+// display or filter hint and never as authorization: a host address is not
+// an identity, and trust decisions come from fingerprint checks on
+// authenticated connections. An unreadable store reports false so callers
+// fall back to showing, not hiding, a candidate.
+func (s *PeerStore) HasPeerAtAddress(addr string) bool {
+	trimmed := strings.TrimSpace(addr)
+	if trimmed == "" {
+		return false
+	}
+	host, _, err := net.SplitHostPort(trimmed)
+	if err != nil {
+		host = trimmed
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	peers, err := s.loadPeersMap()
+	if err != nil {
+		return false
+	}
+	for _, p := range peers {
+		peerHost, _, err := net.SplitHostPort(p.Address)
+		if err != nil {
+			peerHost = p.Address
+		}
+		if strings.EqualFold(peerHost, host) {
+			return true
+		}
+	}
+	return false
+}
+
 // HasPeer reports whether a fingerprint is present in the peer store and
 // distinguishes a readable store with no match from a transient read/parse
 // failure. Callers that use presence for cleanup should not delete state when

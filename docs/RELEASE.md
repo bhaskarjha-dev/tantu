@@ -3,6 +3,11 @@
 ## Versioning
 
 - Versions are `vMAJOR.MINOR.PATCH` git tags; goreleaser builds on tag push.
+- **The first tag will be `v0.1.0`.** Nothing in this repository creates tags
+  — pushing one is a person's decision, and until it happens the publishing
+  half of the pipeline (create the GitHub release, attach the artifacts, fetch
+  them back) has never run. That is KNOWN-LIMITATIONS 1.5, and `v0.1.0` is
+  the version meant to close it.
 - Every tool in the pipeline is pinned, and none should be floated for a
   release: Go `1.27.1` in both workflows (a security decision as much as a
   reproducibility one — `govulncheck` judges the standard library against the

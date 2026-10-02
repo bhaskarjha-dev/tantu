@@ -115,8 +115,9 @@ type PeerPinningTransport interface {
 	DialPinned(address, expectedFingerprint string) (Conn, error)
 }
 
-// ContextPeerPinningTransport is the cancellable form used by background
-// discovery work. It is optional so existing transports remain source
+// ContextPeerPinningTransport is the cancellable form of
+// PeerPinningTransport, for callers that must be able to abandon a dial that
+// is in progress. It is optional so existing transports remain source
 // compatible.
 type ContextPeerPinningTransport interface {
 	DialPinnedContext(ctx context.Context, address, expectedFingerprint string) (Conn, error)
@@ -129,10 +130,11 @@ func DialPinned(tr Transport, address, expectedFingerprint string) (Conn, error)
 	return DialPinnedContext(context.Background(), tr, address, expectedFingerprint)
 }
 
-// DialPinnedContext is DialPinned with cancellation for callers such as Hub
-// roaming probes and HTTP-triggered operations. When expectedFingerprint is
-// non-empty but the transport offers no pinning capability, an error is
-// returned instead of silently downgrading to an unauthenticated dial.
+// DialPinnedContext is DialPinned with cancellation: ctx abandons the dial
+// (including its handshake) instead of running to the transport's timeout.
+// When expectedFingerprint is non-empty but the transport offers no pinning
+// capability, an error is returned instead of silently downgrading to an
+// unauthenticated dial.
 func DialPinnedContext(ctx context.Context, tr Transport, address, expectedFingerprint string) (Conn, error) {
 	if ctx == nil {
 		ctx = context.Background()

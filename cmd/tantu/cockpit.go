@@ -627,12 +627,7 @@ func printCockpitBanner(h *hub.Hub) {
 	var nearbyLabel string
 	if engine := h.DiscoveryEngine(); engine != nil {
 		for _, node := range engine.ListNodes() {
-			isPaired := false
-			if h.Store() != nil {
-				if _, ok := h.Store().GetPeer(node.Fingerprint); ok {
-					isPaired = true
-				}
-			}
+			isPaired := h.Store() != nil && h.Store().HasPeerAtAddress(node.Address)
 			if !isPaired {
 				nearbyLabel = fmt.Sprintf("⚡ Nearby: %s (%s)", node.InstanceName, node.Address)
 				break
@@ -677,14 +672,12 @@ func printPeerStatus(h *hub.Hub) {
 
 	if engine := h.DiscoveryEngine(); engine != nil {
 		for _, node := range engine.ListNodes() {
-			isPaired := false
-			if h.Store() != nil {
-				if _, ok := h.Store().GetPeer(node.Fingerprint); ok {
-					isPaired = true
-				}
-			}
+			isPaired := h.Store() != nil && h.Store().HasPeerAtAddress(node.Address)
 			if !isPaired {
-				fmt.Printf("Nearby Hub:     \033[32m⚡ %s (%s, SAS: %s)\033[0m\n", node.InstanceName, node.Address, node.SAS)
+				// No SAS is shown: discovery broadcasts no identity, so any
+				// code printed here would be fabricated. The real verification
+				// code exists only inside an active pairing handshake.
+				fmt.Printf("Nearby Hub:     \033[32m⚡ %s (%s, not yet paired)\033[0m\n", node.InstanceName, node.Address)
 			}
 		}
 	}

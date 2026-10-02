@@ -3,12 +3,15 @@ package discovery
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+func strPtr(s string) *string { return &s }
 
 func TestEngine_SelfFiltering(t *testing.T) {
 	e, err := NewEngine(DiscoveryConfig{
@@ -250,9 +253,11 @@ func TestValidBeaconRejectsLegacyIdentityBearingBeacons(t *testing.T) {
 	}{
 		{"no identity", beaconPayload{Version: 1, Name: "n", Port: 9877}, true},
 		{"with nonce", beaconPayload{Version: 1, Name: "n", Port: 9877, BeaconNonce: "deadbeef"}, true},
-		{"legacy sas only", beaconPayload{Version: 1, Name: "n", Port: 9877, SAS: "a1b2c3"}, false},
-		{"legacy fp only", beaconPayload{Version: 1, Name: "n", Port: 9877, FP: strings.Repeat("a", 64)}, false},
-		{"legacy both", beaconPayload{Version: 1, Name: "n", Port: 9877, SAS: "a1b2c3", FP: strings.Repeat("a", 64)}, false},
+		{"legacy sas only", beaconPayload{Version: 1, Name: "n", Port: 9877, SAS: strPtr("a1b2c3")}, false},
+		{"legacy fp only", beaconPayload{Version: 1, Name: "n", Port: 9877, FP: strPtr(strings.Repeat("a", 64))}, false},
+		{"legacy both", beaconPayload{Version: 1, Name: "n", Port: 9877, SAS: strPtr("a1b2c3"), FP: strPtr(strings.Repeat("b", 64))}, false},
+		{"legacy sas present but empty", beaconPayload{Version: 1, Name: "n", Port: 9877, SAS: strPtr("")}, false},
+		{"legacy fp present but empty", beaconPayload{Version: 1, Name: "n", Port: 9877, FP: strPtr("")}, false},
 		{"bad version", beaconPayload{Version: 2, Name: "n", Port: 9877}, false},
 		{"bad port", beaconPayload{Version: 1, Name: "n", Port: 0}, false},
 		{"control in name", beaconPayload{Version: 1, Name: "a\x01b", Port: 9877}, false},
@@ -266,7 +271,9 @@ func TestValidBeaconRejectsLegacyIdentityBearingBeacons(t *testing.T) {
 }
 
 // A discovered node must never carry an identity: it is an unauthenticated hint,
-// and the UI must not be able to present it as verified.
+// and the UI must not be able to present it as verified. DiscoveredNode has no
+// identity fields at all (the compiler enforces that), so this pins the
+// serialized shape: adding an identity key later fails here.
 func TestDiscoveredNodeNeverCarriesIdentity(t *testing.T) {
 	e, err := NewEngine(DiscoveryConfig{NodeName: "n", WirePort: 9877, BroadcastPort: 19899})
 	if err != nil {
@@ -276,27 +283,28 @@ func TestDiscoveredNodeNeverCarriesIdentity(t *testing.T) {
 		InstanceName: "hint",
 		Address:      "10.0.0.9:9877",
 		Port:         9877,
-		// Even if a caller supplies them, recordNode must not retain them.
-		SAS:         "a1b2c3",
-		Fingerprint: strings.Repeat("a", 64),
-		LastSeen:    time.Now(),
+		LastSeen:     time.Now(),
 	})
 	nodes := e.ListNodes()
 	if len(nodes) != 1 {
 		t.Fatalf("expected one node, got %d", len(nodes))
 	}
-	if nodes[0].SAS != "" || nodes[0].Fingerprint != "" {
-		t.Fatalf("a discovered node must not retain identity: sas=%q fp=%q", nodes[0].SAS, nodes[0].Fingerprint)
-	}
 
-	// The node list must also be free of identity once serialized.
 	encoded, err := json.Marshal(nodes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, forbidden := range []string{`"sas"`, `"fp"`, "a1b2c3", strings.Repeat("a", 64)} {
-		if strings.Contains(string(encoded), forbidden) {
-			t.Errorf("discovered node list leaked %q: %s", forbidden, encoded)
+	var decoded []map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("decode discovered node list: %v", err)
+	}
+	if len(decoded) != 1 {
+		t.Fatalf("expected one serialized node, got %d", len(decoded))
+	}
+	allowed := map[string]bool{"name": true, "addr": true, "port": true, "last_seen": true}
+	for key := range decoded[0] {
+		if !allowed[key] {
+			t.Errorf("discovered node serialized unexpected key %q: %s", key, encoded)
 		}
 	}
 }
@@ -323,7 +331,7 @@ func FuzzValidBeacon(f *testing.F) {
 		}
 		// A beacon that is accepted must never be carrying identity, and must
 		// always describe a reachable port on a known version.
-		if b.SAS != "" || b.FP != "" {
+		if b.SAS != nil || b.FP != nil {
 			t.Fatalf("accepted beacon carries identity: %+v", b)
 		}
 		if b.Version != 1 || b.Port <= 0 || b.Port > 65535 {
@@ -352,8 +360,10 @@ func TestIsSelfBeaconUsesOnlyTheNonce(t *testing.T) {
 	}
 }
 
-// End to end: our own broadcast echo is filtered, a foreign peer's beacon is
-// discovered, and a legacy identity-bearing beacon is refused.
+// End to end: our own broadcast echo is filtered and a foreign peer's beacon
+// is discovered. Legacy identity-bearing rejection is covered separately by
+// TestEngine_RejectsLegacyBeaconEndToEnd, which orders packets so the
+// per-source rate limiter cannot mask a validation failure.
 func TestEngine_SelfFilterEndToEndUDP(t *testing.T) {
 	port := 19885
 	e, err := NewEngine(DiscoveryConfig{
@@ -386,9 +396,6 @@ func TestEngine_SelfFilterEndToEndUDP(t *testing.T) {
 		}
 	}
 	send(beaconPayload{Version: 1, Name: "foreign", Port: 9877, BeaconNonce: "theirs"})
-	// A legacy peer that still advertises its SAS must be ignored entirely.
-	send(beaconPayload{Version: 1, Name: "legacy", Port: 9877, SAS: "a1b2c3",
-		FP: strings.Repeat("b", 64)})
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
@@ -408,5 +415,136 @@ func TestEngine_SelfFilterEndToEndUDP(t *testing.T) {
 			t.Fatalf("foreign peer not discovered: %+v", nodes)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// Pre-d7de281 peers declared "sas" and "fp" without omitempty, so a legacy
+// scanner with nothing to advertise emitted them as empty strings. Rejecting
+// only non-empty values accepts that beacon, contradicting the release note
+// that any beacon still setting those fields is dropped.
+func TestValidBeaconRejectsPresentButEmptyLegacyFields(t *testing.T) {
+	for _, raw := range []string{
+		`{"v":1,"name":"legacy","port":9877,"sas":"","fp":""}`,
+		`{"v":1,"name":"legacy","port":9877,"sas":""}`,
+		`{"v":1,"name":"legacy","port":9877,"fp":""}`,
+	} {
+		var b beaconPayload
+		if err := json.Unmarshal([]byte(raw), &b); err != nil {
+			t.Fatalf("unmarshal %s: %v", raw, err)
+		}
+		if validBeacon(b) {
+			t.Errorf("accepted a legacy beacon that still sets identity fields: %s", raw)
+		}
+	}
+}
+
+// End to end for that rejection, structured so it cannot pass vacuously: the
+// legacy packet is sent FIRST, so the per-source rate limiter lets it through
+// and only validation can be what refuses it; a well-formed peer from the same
+// source is then sent to prove the engine is alive. The old ordering sent the
+// valid beacon first and the legacy one was dropped by the 50ms rate limiter
+// regardless of validation.
+func TestEngine_RejectsLegacyBeaconEndToEnd(t *testing.T) {
+	port := 19887
+	e, err := NewEngine(DiscoveryConfig{
+		NodeName:      "rejector",
+		WirePort:      9877,
+		BroadcastPort: port,
+		Interval:      time.Hour,
+		TTL:           time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("NewEngine failed: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer e.Close()
+
+	conn, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port})
+	if err != nil {
+		t.Fatalf("DialUDP failed: %v", err)
+	}
+	defer conn.Close()
+	send := func(raw string) {
+		t.Helper()
+		if _, err := conn.Write([]byte(BeaconPrefix + raw)); err != nil {
+			t.Fatalf("Write failed: %v", err)
+		}
+	}
+
+	send(`{"v":1,"name":"legacy","port":9877,"sas":"","fp":""}`)
+	legacyDeadline := time.Now().Add(1500 * time.Millisecond)
+	for time.Now().Before(legacyDeadline) {
+		for _, n := range e.ListNodes() {
+			if n.InstanceName == "legacy" {
+				t.Fatalf("legacy identity-bearing beacon was recorded as a node: %+v", n)
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	send(`{"v":1,"name":"current","port":9877,"nonce":"theirs"}`)
+	acceptDeadline := time.Now().Add(2 * time.Second)
+	for {
+		nodes := e.ListNodes()
+		for _, n := range nodes {
+			if n.InstanceName == "current" {
+				return
+			}
+			if n.InstanceName == "legacy" {
+				t.Fatalf("legacy beacon recorded: %+v", n)
+			}
+		}
+		if time.Now().After(acceptDeadline) {
+			t.Fatalf("well-formed peer not discovered, so the rejection above proves nothing: %+v", nodes)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// One source must not be able to empty the discovery table. Claiming rotating
+// ports manufactures distinct Address keys, and the global oldest-first
+// eviction then removes every legitimate peer.
+func TestRecordNodeBoundsPerSourceHost(t *testing.T) {
+	const maxNodesPerSourceHost = 8 // policy bound asserted independently of the implementation
+	e, err := NewEngine(DiscoveryConfig{NodeName: "n", WirePort: 9877, BroadcastPort: 19898})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	e.recordNode(DiscoveredNode{
+		InstanceName: "legit",
+		Address:      "10.9.9.9:9877",
+		Port:         9877,
+		LastSeen:     now,
+	})
+	for i := 0; i < 400; i++ {
+		e.recordNode(DiscoveredNode{
+			InstanceName: "spoof",
+			Address:      fmt.Sprintf("10.0.0.5:%d", 1024+i),
+			Port:         9877,
+			LastSeen:     now.Add(time.Duration(i+1) * time.Millisecond),
+		})
+	}
+
+	nodes := e.ListNodes()
+	legitFound := false
+	perHost := 0
+	for _, n := range nodes {
+		if n.InstanceName == "legit" && n.Address == "10.9.9.9:9877" {
+			legitFound = true
+		}
+		if strings.HasPrefix(n.Address, "10.0.0.5:") {
+			perHost++
+		}
+	}
+	if !legitFound {
+		t.Errorf("a single source host evicted every legitimate peer from discovery (%d nodes left)", len(nodes))
+	}
+	if perHost > maxNodesPerSourceHost {
+		t.Errorf("one source host occupies %d table slots, want <= %d", perHost, maxNodesPerSourceHost)
 	}
 }

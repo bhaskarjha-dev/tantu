@@ -276,8 +276,6 @@ type Hub struct {
 	discoveryCancel   context.CancelFunc
 	pendingPairingsMu sync.Mutex
 	pendingPairings   map[string]*PendingPairing
-	roamingProbesMu   sync.Mutex
-	roamingProbes     map[string]time.Time
 }
 
 // maxHubConcurrentUploads bounds simultaneous multipart file uploads through
@@ -689,7 +687,6 @@ func NewHub(cfg HubConfig) (*Hub, error) {
 		readyCh:                 make(chan struct{}),
 		stopCh:                  make(chan struct{}),
 		pendingPairings:         make(map[string]*PendingPairing),
-		roamingProbes:           make(map[string]time.Time),
 	}, nil
 }
 
@@ -2133,26 +2130,33 @@ func (h *Hub) Start(parent context.Context) (err error) {
 				if store == nil {
 					return
 				}
-				p, isPaired := store.GetPeer(node.Fingerprint)
-				if !isPaired {
-					now := time.Now()
-					discSeenMu.Lock()
-					lastSeen := discSeen[node.Fingerprint]
-					seen := now.Sub(lastSeen) < 15*time.Second
-					discSeen[node.Fingerprint] = now
-					if len(discSeen) > 256 {
-						for fp, seenAt := range discSeen {
-							if now.Sub(seenAt) > time.Minute {
-								delete(discSeen, fp)
-							}
+				// Discovery carries no identity, so a discovered node is
+				// correlated to a paired peer only by address host (see
+				// pairing.PeerStore.HasPeerAtAddress), which is a display hint
+				// and nothing more. Paired hosts produce no prompt. A paired
+				// peer's address change is healed by the authenticated
+				// self-healing path when the peer next connects: an
+				// unauthenticated beacon must never rewrite a stored address,
+				// and without identity there is no safe way to tell which
+				// stored peer a beacon from a *new* address belongs to.
+				if store.HasPeerAtAddress(node.Address) {
+					return
+				}
+				now := time.Now()
+				discSeenMu.Lock()
+				lastSeen := discSeen[node.Address]
+				seen := now.Sub(lastSeen) < 15*time.Second
+				discSeen[node.Address] = now
+				if len(discSeen) > 256 {
+					for addr, seenAt := range discSeen {
+						if now.Sub(seenAt) > time.Minute {
+							delete(discSeen, addr)
 						}
 					}
-					discSeenMu.Unlock()
-					if !seen {
-						h.logger.Action(DomainNet, fmt.Sprintf("Nearby hub discovered on LAN: %s at %s (SAS: %s)", node.InstanceName, node.Address, node.SAS))
-					}
-				} else if p.Address != node.Address {
-					go h.verifyAndApplyPeerRoaming(ctx, p.Fingerprint, node.Address, p.DisplayName())
+				}
+				discSeenMu.Unlock()
+				if !seen {
+					h.logger.Action(DomainNet, fmt.Sprintf("Nearby hub discovered on LAN: %s at %s (not yet paired)", node.InstanceName, node.Address))
 				}
 			})
 
@@ -2663,53 +2667,4 @@ func formatBytes(b int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
-}
-
-func (h *Hub) verifyAndApplyPeerRoaming(ctx context.Context, expectedFP, candidateAddr, peerName string) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	h.mu.RLock()
-	tr := h.tr
-	store := h.store
-	h.mu.RUnlock()
-	if tr == nil || store == nil {
-		return
-	}
-
-	now := time.Now()
-	h.roamingProbesMu.Lock()
-	if last, ok := h.roamingProbes[expectedFP]; ok && now.Sub(last) < 30*time.Second {
-		h.roamingProbesMu.Unlock()
-		return
-	}
-	h.roamingProbes[expectedFP] = now
-	if len(h.roamingProbes) > 256 {
-		for fp, seen := range h.roamingProbes {
-			if now.Sub(seen) > 10*time.Minute {
-				delete(h.roamingProbes, fp)
-			}
-		}
-	}
-	h.roamingProbesMu.Unlock()
-
-	conn, err := transport.DialPinnedContext(ctx, tr, candidateAddr, expectedFP)
-	if err != nil {
-		if ctx.Err() == nil {
-			h.logger.Action(DomainNet, fmt.Sprintf("Roaming probe to %s for peer '%s' failed mTLS verification: %v", candidateAddr, peerName, err))
-		}
-		return
-	}
-	defer conn.Close()
-
-	remoteFP := transport.GetPeerFingerprint(conn)
-	if ctx.Err() != nil {
-		return
-	}
-	if strings.EqualFold(remoteFP, expectedFP) {
-		_ = store.UpdatePeerAddress(expectedFP, candidateAddr)
-		h.logger.Action(DomainPeer, fmt.Sprintf("✅ Authenticated roaming update: peer '%s' verified at %s via mTLS", peerName, candidateAddr))
-	} else {
-		h.logger.Action(DomainNet, fmt.Sprintf("⚠️ Roaming probe to %s presented fingerprint %s (expected %s) — update rejected", candidateAddr, remoteFP, expectedFP))
-	}
 }

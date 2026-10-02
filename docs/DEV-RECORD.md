@@ -1986,3 +1986,125 @@ open for exactly that, and no further.
 - `go build ./...`, `go vet ./...`, `gofmt -l .`, `staticcheck@v0.8.1`,
   `go run ./tools/encgate`, `go test -count=1 ./...` and
   `node tools/uxtest/run.mjs` at 32/32, green after the config and doc edits.
+
+
+## Batch Z25 — an audit that compared implementations to each other (2026-10-02)
+
+### Why this batch exists
+
+Previous hardening batches reviewed subsystems one at a time. This one
+compared the three transports against *each other*, and compared each
+subsystem's tests against what they actually prove — the two comparisons a
+single-subsystem review cannot make, because both need a second thing to
+hold the first one against.
+
+### What the comparison found
+
+1. **The SSH listener had the LAN listener's contract wrong in two ways that
+   compound into a wedge.** A listener-level `Accept` error was published
+   once into the results queue and `serve()` returned. The first caller gets
+   the error; the second blocks forever (empty queue, `closed` never fires),
+   and the TCP socket is never released — the port stays bound with nothing
+   accepting on it. `Close()` never drained the queue either, so a
+   connection accepted concurrently with shutdown outlived the listener.
+   LAN records `terminalErr`, closes the socket, closes in-flight
+   handshakes, waits, and drains. Same package, same interface, same
+   comment conventions — two different behaviours, with only LAN tested.
+2. **`sshConn` deadlines lied after close.** All three `Set*Deadline`
+   methods checked `c.channel == nil`, which `Close` never sets, so they
+   returned nil and armed timers against a dead session.
+3. **Paired-hub correlation had been dead since `d7de281` (2026-09-28).**
+   That commit stopped broadcasting identity — correct — but left `SAS` and
+   `Fingerprint` fields on `DiscoveredNode` that `recordNode` forces to
+   `""`, and left four consumers keying on `GetPeer(node.Fingerprint)`. The
+   empty string never matches a peer, so: the dashboard's Nearby list
+   invited re-pairing of every paired hub, `tantu pair` listed
+   already-paired hubs as candidates on both paths, the cockpit repeated
+   it, logs printed `(SAS: )`, `discSeen` throttled all nodes through one
+   key, and the discovery-driven roaming probe was unreachable code. Four
+   surfaces, one silent cause, zero failing tests — the definition of
+   unverified.
+4. **The legacy-beacon rejection was half-true.** `validBeacon` rejected
+   *non-empty* `sas`/`fp`, but `git show d7de281~1:internal/discovery/discovery.go`
+   shows the old code declared them without `omitempty` — an old scanner
+   with nothing to advertise sent `"sas":""`, and current releases accept
+   it. The E2E test claiming to catch legacy beacons sent a valid beacon
+   milliseconds earlier, so the 50 ms rate limiter dropped the legacy
+   packet before validation ran: delete the validation and the test still
+   passes.
+5. **One host could empty the discovery table.** The 256-slot table keys on
+   `ip:port`; rotating claimed ports manufactures keys and oldest-first
+   eviction removes everyone else. Reproduced in a gate: 256/256 slots from
+   one source, legitimate peer gone.
+6. **Two tests could not fail.** The LAN drain test counted a deadline
+   timeout as a closed pipe, so its assertion was unreachable, and the
+   legacy E2E was confounded as above. A test that cannot fail is worse
+   than no test: it is the evidence that made the gaps above look covered.
+
+### Decisions
+
+- **Delete the identity fields rather than keep them empty.** An
+  always-empty field invites the next consumer to wonder why it is empty
+  and where the value moved to; an absent field makes the question
+  unaskable — `go build` now rejects `GetPeer(node.Fingerprint)` outright.
+  The correlation that remains, `PeerStore.HasPeerAtAddress`, is an
+  address-host match documented as display-only at its definition and at
+  every call site, because trust decisions stay fingerprint-based on
+  authenticated connections.
+- **Delete the roaming probe rather than revive it.** The probe itself was
+  properly hardened (pinned dial before any address rewrite), but its feed
+  is structurally impossible now: a beacon from a *new* address is exactly
+  the case where identity is needed to say which stored peer it belongs to,
+  and an unauthenticated beacon must never name one. The authenticated
+  self-healing path (pinned, on first real contact) was never dead and
+  covers the user-visible symptom, so keeping unreachable code would
+  misrepresent capability rather than preserve it.
+- **Presence, not value, for legacy rejection** — `*string` fields, so
+  `"sas":""` is rejected as firmly as a full fingerprint.
+- **Restructure the E2E so only validation can be what refuses** — legacy
+  packet first (the rate limiter admits it), then a well-formed peer from
+  the same source must still appear, which also proves the negative above
+  is not a dead engine.
+- **Mirror LAN rather than invent SSH semantics.** The fix copies LAN's
+  terminal-error/wait/drain structure; two transports behind one interface
+  must fail the same way, and LAN's behaviour was the tested one.
+- **Per-source cap of 8** against a 256-slot table: enough for several hubs
+  on one machine (test setups do run several), too few for one host to
+  dominate.
+
+### Still open (deliberately deferred this batch)
+
+- Discovery's silent failure modes — broadcast write errors ignored, the
+  receive loop giving up after 50 consecutive errors with no signal — need
+  an Engine status surface the dashboard can render, which is a product
+  decision rather than a one-line fix. Recorded as KNOWN-LIMITATIONS 3.13;
+  IPv4-only discovery is 3.14.
+- The LAN listener has no *aggregate* handshake cap (SSH bounds at 64 and
+  rejects beyond it); each LAN handshake is time-bounded but the count is
+  not. Now recorded honestly in THREAT-MODEL T6's residual risk instead of
+  being absent.
+- `is_paired` can hide a new machine that inherits a paired machine's DHCP
+  address; the escape hatch is manual address entry. Recorded as 3.15.
+- SSH deadline expiry closing the connection is a transport nature, not a
+  fixable defect — documented on `Deadliner` and `sshConn` (3.16).
+
+### Validation
+
+- Every behavioural gate was run red against the pre-fix code first, its
+  failure message naming the defect: `TestSSHListener_FatalAcceptErrorIsRepeated`
+  ("second Accept blocked forever after a fatal listener error"),
+  `TestSSHListener_CloseDrainsQueuedConnections` ("queued connection
+  leaked"), `TestSSHConn_SetDeadlineAfterCloseIsRejected` (three nil
+  errors), `TestValidBeaconRejectsPresentButEmptyLegacyFields` (three
+  accepted legacy shapes), `TestEngine_RejectsLegacyBeaconEndToEnd`
+  ("legacy identity-bearing beacon was recorded as a node"),
+  `TestRecordNodeBoundsPerSourceHost` (256/256 slots, legit peer evicted).
+  Finding 3 is gated structurally instead: deleting the fields is itself
+  the test, since every call site fails to compile without them.
+- `gofmt -l .`, `go build ./...`, `go vet ./...`, `staticcheck@v0.8.1` →
+  0, `go run ./tools/encgate`, `go test -count=1 ./...` and `-race ./...`
+  (13 packages green each), `cmd/tantu` coverage 19.5% against the 18
+  floor.
+- CI run #29 (2026-10-02) green for the transport half (`8261bd4`,
+  including its `-race` jobs on three OSes); the discovery half rides the
+  push that carries this record.
