@@ -1,7 +1,7 @@
 # Dashboard acceptance harness
 
-A real-browser acceptance pass for the Hub dashboard, driven over the Chrome
-DevTools Protocol.
+A real-browser acceptance pass for the Hub dashboard, driven by Playwright
+across **three engines: chromium, firefox, webkit**.
 
 This exists because **a marker test cannot catch the defects that actually
 matter here.** A substring assertion for `blob:` passes whether or not the
@@ -11,33 +11,43 @@ user's focus, or that a page is unreadable at 1.2:1 contrast in the light
 theme. Those were all real bugs in this repository, and all three were found
 here rather than by a test.
 
+Running three engines is not decoration: the third one earned its seat by
+surfacing a measurement defect neither of the first two could (see *What it
+asserts*).
+
 ## Running it
 
 ```sh
-node tools/uxtest/run.mjs            # peerless Hub
-node tools/uxtest/run.mjs --peers    # three seeded trusted peers
+cd tools/uxtest && npm ci                      # once
+npx playwright install chromium firefox webkit # once (per platform)
+
+node tools/uxtest/run.mjs                     # chromium, peerless Hub
+node tools/uxtest/run.mjs --peers             # three seeded trusted peers
+node tools/uxtest/run.mjs --browser=firefox
+node tools/uxtest/run.mjs --browser=webkit
 ```
 
-It needs ports **18976**, **19877** and **19470** to be free. Another Tantu
-running with default ports does not conflict; a second copy of this harness
-does. A Hub that cannot start is reported with its own output rather than as a
-bare `fetch failed`, so a port clash is distinguishable from a slow machine.
-
-Optional environment variables:
+The engine can also come from `TANTU_TEST_BROWSER`. Every run needs ports
+**18976** and **19877** to be free. Another Tantu running with default ports
+does not conflict; a second copy of this harness does. A Hub that cannot start
+is reported with its own output rather than as a bare `fetch failed`, so a port
+clash is distinguishable from a slow machine.
 
 | Variable | Purpose |
 |---|---|
-| `TANTU_TEST_CHROME` | Path to a Chrome/Edge binary, if it is not in a standard location |
+| `TANTU_TEST_BROWSER` | Engine to drive: `chromium` (default), `firefox`, `webkit` |
+| `TANTU_TEST_CHROME` | Literal path to a Chrome/Edge binary standing in for Playwright's chromium (e.g. a machine that cannot download Playwright's build). Ignored for the other engines. |
 
-Requirements: **Node 18+** and **a Chrome or Edge binary**. That is all.
+Requirements: **Node 18+** (CI uses 20) and the pinned Playwright from
+`tools/uxtest/package.json`. Playwright downloads the browser builds itself —
+there is no system Chrome to hunt for.
 
 ## What it does *not* require
 
-- No `npm install`. There are **no dependencies**; it uses only Node's built-in
-  `fetch`, `WebSocket`, `child_process`, and `fs`.
 - It is **not** needed to build, test, or run Tantu. The Go suite remains
-  self-contained: `go test ./...` does not invoke this, and the product ships
-  zero runtime dependencies as always.
+  self-contained: `go test ./...` does not invoke this, and the shipped binary
+  gains no dependency — Playwright is dev-only tooling, pinned in
+  `tools/uxtest/package.json` and justified like any other dependency.
 - It never touches your real config directory, peers, or identity. It builds
   into a temporary directory, starts a Hub on `127.0.0.1:18976` with an
   isolated store, and deletes everything afterwards.
@@ -57,7 +67,17 @@ Requirements: **Node 18+** and **a Chrome or Edge binary**. That is all.
   announced status region with full-size targets.
 - **Staleness is declared** when the Hub stops answering, the destination is
   labelled rather than hidden, and a retry recovers cleanly.
-- **Computed contrast in both OS themes** for the surfaces that carry meaning.
+- **Computed contrast in both OS themes, for every rendered target.** The sweep
+  visits all five tabs in both themes and measures only elements that actually
+  generate boxes: an element inside an inactive tab paints nothing, so there is
+  no pixel to contrast — and WebKit demonstrably leaves computed colors inside
+  hidden subtrees stale across a `prefers-color-scheme` flip, resolving them
+  when the subtree renders, so measuring a hidden element reads a value no user
+  can ever see. Two coverage checks keep that honesty from becoming an
+  escape hatch: both themes must measure the *same* rendered set (a theme flip
+  must not change what is on screen), and the count must not fall below the
+  full complement — so a sweep that silently measures nothing fails instead of
+  passing.
 - 200% zoom, a 360px viewport on every tab, and reduced motion with every
   animation and transition neutralized.
 - **Every `data-action` control runs when clicked.** The harness synthesises a
@@ -78,19 +98,26 @@ Requirements: **Node 18+** and **a Chrome or Edge binary**. That is all.
 
 - Zero unexpected console errors.
 
+Every run, on every push, is mandatory in CI: the `dashboard-acceptance` job
+sweeps all three engines in one gate and annotates each engine's tail
+separately, so "chromium failed, so firefox was never looked at" never
+happens.
+
 Screenshots and a JSON report are written under a temporary directory that is
-removed on exit. If Windows still holds a handle on the Chrome profile, the
-harness says so and prints the path rather than leaving it behind quietly.
+removed on exit.
 
 ## Evidence, honestly scoped
 
 This harness raises evidence to **E3** (browser/runtime validated) for the paths
-it drives. It cannot produce:
+it drives, now across three engine implementations. It cannot produce:
 
 - **E4** — representative-user testing.
 - **E5** — screen-reader and assistive-technology sessions, high-contrast mode,
-  Safari, or Firefox.
+  and **Safari-the-application on macOS**: Playwright's WebKit is the engine,
+  not the app, and its `emulateMedia` is not a user switching the OS
+  appearance — a real macOS theme flip with the dashboard open remains
+  untested, as do real mobile and embedded browsers.
 
-A green run here means "measured in a real browser", not "validated with users".
-`docs/UX-STATUS.md` tracks the difference, and the plan's release gates D and C
-stay red until that evidence exists.
+A green run here means "measured in three real browser engines", not
+"validated with users". `docs/UX-STATUS.md` tracks the difference, and the
+plan's release gates D and C stay red until that evidence exists.

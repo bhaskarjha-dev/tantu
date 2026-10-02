@@ -196,6 +196,12 @@ jobs:
     # exists to catch was never left unguarded: TestEveryDataActionHasAHandler
     # enforces the action-wiring half of the sweep on every push, and that
     # cannot vary by environment.
+    #
+    # As of 2026-10-02 the harness runs on Playwright and sweeps all three
+    # engines (chromium, firefox, webkit) in this one gate: engine-specific
+    # rendering bugs are exactly the class a single engine cannot see, and
+    # webkit already earned its seat by surfacing the hidden-subtree theme
+    # staleness the sweep now measures around.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -206,20 +212,29 @@ jobs:
         with:
           go-version: '1.27.1'
           cache: true
-      - name: Install Chrome for Testing
-        run: npx --yes @puppeteer/browsers install chrome@stable --path /tmp/browsers
-      - name: Run acceptance harness
-        env:
-          TANTU_TEST_CHROME: /tmp/browsers/chrome/linux-*/chrome-linux64/chrome
+      - name: Install Playwright and the three engines
+        run: |
+          cd tools/uxtest
+          npm ci
+          npx playwright install --with-deps chromium firefox webkit
+      - name: Run acceptance harness across engines
         # Same reasoning as the test step: the harness's diagnostics are the
         # only diagnosis available for this job, and a log nobody can read
-        # turns "exit 3" into a mystery. The harness already prints what went
-        # wrong; this surfaces it as annotations.
+        # turns "exit 3" into a mystery. Every engine runs even when an
+        # earlier one fails — one gate, three engines, one annotation each —
+        # because "chromium failed, so firefox was never looked at" wastes
+        # the only run you get.
         run: |
           status=0
-          node tools/uxtest/run.mjs 2>&1 | tee harness-output.log || status=$?
-          if [ "$status" -ne 0 ]; then
-            detail=$(tail -n 60 harness-output.log)
-            printf '::error::%s\n' "${detail//$'\n'/%0A}"
-          fi
+          for engine in chromium firefox webkit; do
+            echo "::group::dashboard-acceptance $engine"
+            engine_status=0
+            node tools/uxtest/run.mjs --browser="$engine" 2>&1 | tee "harness-$engine.log" || engine_status=$?
+            if [ "$engine_status" -ne 0 ]; then
+              status="$engine_status"
+              detail=$(tail -n 60 "harness-$engine.log")
+              printf '::error::dashboard-acceptance (%s) failed: %s\n' "$engine" "${detail//$'\n'/%0A}"
+            fi
+            echo "::endgroup::"
+          done
           exit "$status"

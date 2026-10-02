@@ -14,6 +14,7 @@
 # CI tees command output next to the workflow to re-emit it as annotations
 /test-output.log
 /harness-output.log
+/harness-*.log
 
 # Go workspace
 go.work
@@ -41,3 +42,7 @@ Thumbs.db
 
 # Temporary
 temp/
+
+# Dashboard acceptance harness (dev-only tooling; package-lock.json is
+# committed, node_modules is not)
+tools/uxtest/node_modules/

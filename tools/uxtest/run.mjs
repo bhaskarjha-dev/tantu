@@ -1,5 +1,5 @@
-// Dashboard acceptance harness: real headless Chrome over the DevTools
-// Protocol, with no dependencies beyond Node's own globals.
+// Dashboard acceptance harness: a real browser driven through Playwright,
+// across three engines (chromium, firefox, webkit).
 //
 // It builds and starts an isolated Hub, seeds a peer store, drives the real
 // dashboard, and asserts on measured runtime behaviour: computed contrast in
@@ -9,72 +9,39 @@
 // A marker test cannot catch a blocked image, a destroyed focus ring, or a
 // live region that announces twice a second. That is why this exists.
 //
-// Usage: node uxtest/run.mjs [--peers]
-//   --peers   seed three trusted peers, exercising the multi-peer layout
+// Usage: node tools/uxtest/run.mjs [--peers] [--browser=chromium|firefox|webkit]
+//   --peers    seed three trusted peers, exercising the multi-peer layout
+//   --browser  engine to drive (default: chromium, or TANTU_TEST_BROWSER)
 //
-// Requires: Node 18+ and a Chrome or Edge binary. Neither is needed to build,
-// test, or run Tantu itself.
+// Requires: Node 18+, `npm ci` in this directory, and the browser builds from
+// `npx playwright install chromium firefox webkit`. None of that is needed to
+// build, test, or run Tantu itself.
 
 import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { chromium, firefox, webkit } from 'playwright';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..', '..');
 const WORK = path.join(os.tmpdir(), 'tantu-uxtest-' + process.pid);
 const WEB_PORT = 18976;
 const P2P_PORT = 19877;
-const DEBUG_PORT = 19470;
 const WITH_PEERS = process.argv.includes('--peers');
-
-const CHROME_CANDIDATES = [
-  process.env.TANTU_TEST_CHROME,
-  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser',
-].filter(Boolean);
+const ENGINES = { chromium, firefox, webkit };
+const ENGINE = (() => {
+  const arg = process.argv.find((a) => a.startsWith('--browser='));
+  const v = (arg ? arg.split('=')[1] : process.env.TANTU_TEST_BROWSER) || 'chromium';
+  return String(v).toLowerCase();
+})();
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const checks = [];
 function check(name, ok, detail) {
   checks.push({ name, ok: !!ok, detail: String(detail ?? '').slice(0, 240) });
   if (!ok) console.log('  FAIL  ' + name + '  ' + String(detail ?? '').slice(0, 200));
-}
-function findChrome() {
-  for (const c of CHROME_CANDIDATES) {
-    const hit = firstExisting(c);
-    if (hit) return hit;
-  }
-  return null;
-}
-// TANTU_TEST_CHROME may be a pattern: CI points it at whatever version
-// @puppeteer/browsers just unpacked (/tmp/browsers/chrome/linux-*/...), and
-// the install directory is not known until the install step has run. One '*'
-// in a single path segment is supported, which is the shape installers
-// produce; a literal path is checked as-is, so a typo still reads as a
-// missing binary rather than a bad glob.
-function firstExisting(candidate) {
-  if (!candidate) return null;
-  if (!candidate.includes('*')) return fs.existsSync(candidate) ? candidate : null;
-  const star = candidate.indexOf('*');
-  const cut = Math.max(candidate.lastIndexOf('/', star), candidate.lastIndexOf('\\', star)) + 1;
-  const dir = candidate.slice(0, cut);
-  const tail = candidate.slice(cut);
-  const sep = tail.search(/[\\/]/);
-  const partial = tail.slice(0, sep === -1 ? tail.length : sep).replace('*', '');
-  const rest = sep === -1 ? null : tail.slice(sep + 1);
-  let entries;
-  try { entries = fs.readdirSync(dir); } catch { return null; }
-  for (const e of entries) {
-    if (!e.startsWith(partial)) continue;
-    const full = rest === null ? path.join(dir, e) : path.join(dir, e, rest);
-    if (fs.existsSync(full)) return full;
-  }
-  return null;
 }
 function go(args, opts = {}) {
   return execFileSync('go', args, { cwd: REPO, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts });
@@ -95,54 +62,25 @@ function seedPeers(storeDir) {
   fs.writeFileSync(path.join(storeDir, 'peers.json'), JSON.stringify(out, null, 2));
 }
 
-// ------------------------------------------------------------------- CDP glue
-class CDP {
-  constructor(url) {
-    this.ws = new WebSocket(url); this.id = 0; this.pending = new Map(); this.events = [];
-    this.ready = new Promise((res, rej) => { this.ws.onopen = res; this.ws.onerror = rej; });
-    this.ws.onmessage = (e) => {
-      const m = JSON.parse(e.data);
-      if (m.id && this.pending.has(m.id)) {
-        const p = this.pending.get(m.id); this.pending.delete(m.id);
-        m.error ? p.reject(new Error(JSON.stringify(m.error))) : p.resolve(m.result);
-      } else if (m.method) this.events.push(m);
-    };
-  }
-  send(method, params = {}) {
-    const id = ++this.id;
-    return new Promise((res, rej) => {
-      this.pending.set(id, { resolve: res, reject: rej });
-      this.ws.send(JSON.stringify({ id, method, params }));
-      setTimeout(() => { if (this.pending.has(id)) { this.pending.delete(id); rej(new Error('timeout ' + method)); } }, 60000);
-    });
-  }
-  async js(expr) {
-    const r = await this.send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true });
-    if (r.exceptionDetails) return null;
-    return r.result.value;
-  }
-}
-
 // ------------------------------------------------------------------ the suite
 async function main() {
-  const chromePath = findChrome();
-  if (!chromePath) {
-    console.error('No Chrome or Edge binary found. Set TANTU_TEST_CHROME to run this harness.');
+  const launcher = ENGINES[ENGINE];
+  if (!launcher) {
+    console.error('Unknown engine "' + ENGINE + '". Use --browser=chromium|firefox|webkit (or TANTU_TEST_BROWSER).');
     process.exitCode = 2; return;
   }
   const store = path.join(WORK, 'store');
   const out = path.join(WORK, 'out');
-  const profile = path.join(WORK, 'profile');
   const exe = path.join(WORK, 'tantu' + (process.platform === 'win32' ? '.exe' : ''));
-  fs.mkdirSync(store, { recursive: true }); fs.mkdirSync(out, { recursive: true }); fs.mkdirSync(profile, { recursive: true });
+  fs.mkdirSync(store, { recursive: true }); fs.mkdirSync(out, { recursive: true });
   if (WITH_PEERS) seedPeers(store);
 
-  let hub = null, browser = null;
+  let hub = null, browser = null, context = null, page = null;
   try {
     console.log('uxtest: building');
     go(['build', '-o', exe, './cmd/tantu']);
     const head = git(['rev-parse', '--short', 'HEAD']).trim();
-    console.log('uxtest: HEAD ' + head + (WITH_PEERS ? ' (3 seeded peers)' : ' (peerless)'));
+    console.log('uxtest: HEAD ' + head + (WITH_PEERS ? ' (3 seeded peers)' : ' (peerless)') + ', engine ' + ENGINE);
 
     hub = spawn(exe, ['hub', '--server', '--transport', 'loopback',
       '--web-addr', '127.0.0.1:' + WEB_PORT, '--listen', '127.0.0.1:' + P2P_PORT,
@@ -185,29 +123,59 @@ async function main() {
     const token = (String(link).match(/tantu_bootstrap=([a-f0-9]+)/) || [])[1];
     if (!token) throw new Error('could not mint a one-time dashboard link');
 
-    browser = spawn(chromePath, ['--headless=new', '--disable-gpu', '--no-first-run',
-      '--no-default-browser-check', '--hide-scrollbars', '--user-data-dir=' + profile,
-      '--remote-debugging-port=' + DEBUG_PORT, 'about:blank'], { stdio: 'ignore' });
-    let target = null;
-    for (let i = 0; i < 150 && !target; i++) {
-      try { const l = await (await fetch('http://127.0.0.1:' + DEBUG_PORT + '/json/list')).json(); target = l.find((t) => t.type === 'page'); } catch (_) {}
-      if (!target) await sleep(200);
+    // Playwright manages the browser process and profile itself. A system
+    // Chrome/Edge can stand in for Playwright's chromium via TANTU_TEST_CHROME
+    // (a local run that has not downloaded Playwright's own build); firefox
+    // and webkit always use Playwright's builds, because their protocols are
+    // not Chrome's.
+    const launchOpts = { headless: true };
+    if (ENGINE === 'chromium' && process.env.TANTU_TEST_CHROME && !process.env.TANTU_TEST_CHROME.includes('*')) {
+      launchOpts.executablePath = process.env.TANTU_TEST_CHROME;
     }
-    if (!target) throw new Error('no page target');
-    const cdp = new CDP(target.webSocketDebuggerUrl);
-    await cdp.ready;
-    await cdp.send('Runtime.enable'); await cdp.send('Page.enable'); await cdp.send('Log.enable');
-    await cdp.send('Network.enable');
-    // Headless Chrome never focuses the document, so :focus never matches and
-    // focus-visibility cannot be measured without this.
-    await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true });
+    try {
+      browser = await launcher.launch(launchOpts);
+    } catch (e) {
+      throw new Error('could not launch ' + ENGINE + ': ' + String(e.message).split('\n')[0]
+        + '\nInstall it with: cd tools/uxtest && npm ci && npx playwright install ' + ENGINE);
+    }
+    // 800x600 matches the headless default the previous harness ran on, so
+    // checks that predate viewport control see the layout they were proven on.
+    context = await browser.newContext({ viewport: { width: 800, height: 600 } });
+    page = await context.newPage();
 
-    const scheme = (s) => cdp.send('Emulation.setEmulatedMedia', { media: 'screen', features: [{ name: 'prefers-color-scheme', value: s }] });
-    const metrics = (w, h, sc) => cdp.send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: sc || 1, mobile: false });
-    const tab = async (id) => { await cdp.js(`document.querySelector('[data-tab="${id}"]').click(); 'ok'`); await sleep(300); };
-    const shot = async (n) => { const r = await cdp.send('Page.captureScreenshot', { format: 'png' }); if (r && r.data) fs.writeFileSync(path.join(out, n + '.png'), Buffer.from(r.data, 'base64')); };
+    // Console hygiene feed: uncaught exceptions and console.error output,
+    // replacing CDP's Runtime.exceptionThrown and Log.entryAdded.
+    const consoleErrors = [];
+    // Set while the staleness check deliberately cuts /api/status: the browser
+    // logs each blocked poll as a resource error. That is the harness's own
+    // interference, not dashboard noise — CDP's setBlockedURLs produced no
+    // Log.entryAdded for it either, so excluding it keeps the check's meaning
+    // (unexpected console errors) rather than its mechanism.
+    let statusBlocked = false;
+    // The stack's first frames are kept: a message like WebKit's
+    // "… due to access control checks" names no caller, and the caller is the
+    // entire question when an engine disagrees with the other two.
+    page.on('pageerror', (e) => consoleErrors.push('pageerror: ' + e.message
+      + (e.stack ? ' @ ' + String(e.stack).split('\n').slice(0, 3).join(' | ') : '')));
+    page.on('console', (m) => {
+      if (m.type() !== 'error') return;
+      const loc = (typeof m.location === 'function' ? m.location() : null) || {};
+      const entry = 'console: ' + m.text() + (loc.url ? ' @ ' + loc.url : '');
+      if (statusBlocked && /\/api\/status/.test(entry)) return;
+      consoleErrors.push(entry);
+    });
 
-    const CONTRAST = (sel) => cdp.js(`(function(sel){
+    // Every expression below is written for the old glue's contract: a failed
+    // evaluation yields null, never a thrown harness error, so a missing
+    // element fails its own check instead of aborting the run.
+    const js = async (expr) => { try { return await page.evaluate(expr); } catch (_) { return null; } };
+
+    const scheme = (s) => page.emulateMedia({ colorScheme: s });
+    const metrics = (w, h) => page.setViewportSize({ width: w, height: h });
+    const tab = async (id) => { await js(`document.querySelector('[data-tab="${id}"]').click(); 'ok'`); await sleep(300); };
+    const shot = async (n) => { await page.screenshot({ path: path.join(out, n + '.png') }); };
+
+    const CONTRAST = (sel) => js(`(function(sel){
       function A(c){var m=c.match(/[0-9.]+/g); if(!m) return 0; return m.length>3?Number(m[3]):1;}
       function hex(c){return c.match(/[0-9.]+/g).map(Number).slice(0,3);}
       function blend(f,b){var fa=A(f),fr=hex(f),br=hex(b); return [fr[0]*fa+br[0]*(1-fa),fr[1]*fa+br[1]*(1-fa),fr[2]*fa+br[2]*(1-fa)];}
@@ -219,54 +187,65 @@ async function main() {
       function lum(c){var a=c.map(function(v){v/=255; return v<=0.03928? v/12.92 : Math.pow((v+0.055)/1.055,2.4);}); return 0.2126*a[0]+0.7152*a[1]+0.0722*a[2];}
       var el=document.querySelector(sel); if(!el) return null;
       var s=getComputedStyle(el); if(s.display==='none') return null;
+      // Contrast is a property of painted pixels. An element can pass the
+      // display check above and still generate no boxes — its ancestor (an
+      // inactive tab pane) is display:none — and then there is nothing on
+      // screen to read. Skipping it is the definition of the measurement, not
+      // a concession: it also removes a real false-positive class, because
+      // WebKit leaves computed colors inside hidden subtrees stale across a
+      // prefers-color-scheme flip and resolves them when the subtree renders.
+      // Measuring a hidden element reads a value no user can ever see.
+      if(!el.getClientRects().length) return null;
       var bg=effBg(el), l1=lum(hex(s.color)), l2=lum(bg);
       var size=parseFloat(s.fontSize), bold=parseInt(s.fontWeight,10)>=700;
       var need=(size>=24||(size>=18.66&&bold))?3:4.5;
-      return {ratio:+(((Math.max(l1,l2)+0.05)/(Math.min(l1,l2)+0.05)).toFixed(2)), need:need, size:size};})(${JSON.stringify(sel)})`);
+      return {ratio:+(((Math.max(l1,l2)+0.05)/(Math.min(l1,l2)+0.05)).toFixed(2)), need:need, size:size,
+        color:s.color, bg:bg.map(Math.round), at:(el.className||el.tagName),
+        rootMuted:getComputedStyle(document.documentElement).getPropertyValue('--text-muted').trim()};})(${JSON.stringify(sel)})`);
 
     // Navigate, then wait for the bootstrap exchange to settle rather than
     // assuming four seconds is enough: the exchange POSTs, strips the fragment
     // and reloads, so "the fragment is gone" means the page is done booting.
-    await cdp.send('Page.navigate', { url: `http://127.0.0.1:${WEB_PORT}/#tantu_bootstrap=${token}` });
+    await page.goto(`http://127.0.0.1:${WEB_PORT}/#tantu_bootstrap=${token}`);
     let settled = false;
     for (let i = 0; i < 60 && !settled; i++) {
-      const hash = await cdp.js('location.hash');
+      const hash = await js('location.hash');
       settled = typeof hash === 'string' && hash === '';
       if (!settled) await sleep(250);
     }
     await sleep(500);
 
     // --- session and the send preview (the CSP regression) ---
-    const sess = await cdp.js('(function(){return {banner:getComputedStyle(document.getElementById("sessionBanner")).display, dest:document.getElementById("destinationSummary").textContent, url:location.href};})()');
+    const sess = await js('(function(){return {banner:getComputedStyle(document.getElementById("sessionBanner")).display, dest:document.getElementById("destinationSummary").textContent, url:location.href};})()');
     check('session established', sess && sess.banner === 'none', JSON.stringify(sess));
     check('destination always visible', sess && /Destination: .+/.test(sess.dest || ''), sess && sess.dest);
     check('one-time token stripped from the URL', sess && !/tantu_bootstrap/.test(sess.url), sess && sess.url);
 
-    await cdp.js(`(function(){var b='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+    await js(`(function(){var b='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
       var bin=atob(b), arr=new Uint8Array(bin.length); for(var i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
       stageFileForSend(new File([arr],'uxtest-shot.png',{type:'image/png'})); return 'ok';})()`);
     await sleep(1200);
-    const thumb = await cdp.js('(function(){var t=document.getElementById("filePreviewThumb");return {nw:t.naturalWidth, loaded:t.classList.contains("loaded"), op:getComputedStyle(t).opacity, dest:document.getElementById("filePreviewDest").textContent};})()');
+    const thumb = await js('(function(){var t=document.getElementById("filePreviewThumb");return {nw:t.naturalWidth, loaded:t.classList.contains("loaded"), op:getComputedStyle(t).opacity, dest:document.getElementById("filePreviewDest").textContent};})()');
     check('preview thumbnail decodes (CSP allows blob:)', thumb && thumb.nw > 0, JSON.stringify(thumb));
     check('preview thumbnail is visible', thumb && thumb.loaded && Number(thumb.op) > 0.9, JSON.stringify(thumb));
     check('preview names its destination', thumb && /Destination: /.test(thumb.dest || ''), thumb && thumb.dest);
-    await cdp.js('cancelPendingSend(); "ok"');
+    await js('cancelPendingSend(); "ok"');
 
     // --- text composer reports its outcome inline ---
-    await cdp.js('(function(){document.getElementById("textPayload").value="uxtest";document.querySelector("[data-action=\'send-text\']").click();return "ok";})()');
+    await js('(function(){document.getElementById("textPayload").value="uxtest";document.querySelector("[data-action=\'send-text\']").click();return "ok";})()');
     await sleep(2500);
-    const textRes = await cdp.js('(function(){var s=document.getElementById("dropStatus");return {d:getComputedStyle(s).display,t:s.textContent,c:s.className};})()');
+    const textRes = await js('(function(){var s=document.getElementById("dropStatus");return {d:getComputedStyle(s).display,t:s.textContent,c:s.className};})()');
     const okOrHonest = textRes && textRes.d !== 'none' && (/sent to/i.test(textRes.t) || /not sent|could not reach/i.test(textRes.t));
     check('text send reports an outcome on this tab', okOrHonest, JSON.stringify(textRes));
-    await cdp.js('(function(){document.getElementById("textPayload").value="q".repeat(11*1024*1024);document.querySelector("[data-action=\'send-text\']").click();return "ok";})()');
+    await js('(function(){document.getElementById("textPayload").value="q".repeat(11*1024*1024);document.querySelector("[data-action=\'send-text\']").click();return "ok";})()');
     await sleep(1500);
-    const over = await cdp.js('(function(){var s=document.getElementById("dropStatus");return {d:getComputedStyle(s).display,t:s.textContent,kept:document.getElementById("textPayload").value.length>1000000};})()');
+    const over = await js('(function(){var s=document.getElementById("dropStatus");return {d:getComputedStyle(s).display,t:s.textContent,kept:document.getElementById("textPayload").value.length>1000000};})()');
     check('oversize text warns inline and keeps the draft', over && over.d !== 'none' && /too large|limit/i.test(over.t) && over.kept, JSON.stringify(over));
-    await cdp.js('document.getElementById("textPayload").value=""; "ok"');
+    await js('document.getElementById("textPayload").value=""; "ok"');
 
     // --- structure: headings, landmarks, bypass, log console ---
     await tab('tab-logs');
-    const struct = await cdp.js(`(function(){
+    const struct = await js(`(function(){
       var c=document.getElementById('logConsole'); c.focus();
       return {h1:document.querySelectorAll('h1').length, divTitles:document.querySelectorAll('div.card-title').length,
         nav:document.querySelectorAll('nav').length, skip:document.querySelectorAll('a.skip-link').length,
@@ -281,7 +260,7 @@ async function main() {
     check('sticky chrome height is measured', struct && /^\d+px$/.test(struct.chromeH || ''), struct && struct.chromeH);
 
     // --- pairing approval keeps focus and is announced ---
-    const pairing = await cdp.js(`(function(){
+    const pairing = await js(`(function(){
       var b=document.getElementById('pendingPairingsBanner');
       var role=b.getAttribute('role'), live=b.getAttribute('aria-live');
       var real=window.fetch;
@@ -301,50 +280,91 @@ async function main() {
     check('pairing approval meets 44px', pairing && pairing.h >= 44, pairing && ('h=' + pairing.h));
 
     // --- staleness ---
-    await cdp.send('Network.setBlockedURLs', { urls: ['*/api/status*'] });
+    await context.route('**/api/status*', (route) => route.abort('failed'));
+    statusBlocked = true;
     await sleep(9000);
-    const stale = await cdp.js('(function(){return {b:document.getElementById("staleBanner").style.display, t:document.getElementById("staleBanner").textContent.replace(/\\s+/g," ").trim(), a:document.getElementById("destinationSummary").getAttribute("data-stale"), dest:document.getElementById("destinationSummary").textContent.length>0};})()');
+    const stale = await js('(function(){return {b:document.getElementById("staleBanner").style.display, t:document.getElementById("staleBanner").textContent.replace(/\\s+/g," ").trim(), a:document.getElementById("destinationSummary").getAttribute("data-stale"), dest:document.getElementById("destinationSummary").textContent.length>0};})()');
     check('unreachable Hub raises a staleness banner', stale && stale.b === 'block', JSON.stringify(stale));
     check('banner says last-known and offers a retry', stale && /last known/i.test(stale.t) && /retry/i.test(stale.t), stale && stale.t);
     check('destination is labelled, never hidden', stale && stale.a === 'true' && stale.dest, JSON.stringify(stale));
-    await cdp.send('Network.setBlockedURLs', { urls: [] });
+    await context.unroute('**/api/status*');
     await sleep(300);
-    await cdp.js('(function(){var b=document.querySelector(\'[data-action="retry-status"]\');if(b)b.click();return "ok";})()');
+    await js('(function(){var b=document.querySelector(\'[data-action="retry-status"]\');if(b)b.click();return "ok";})()');
     await sleep(2500);
-    const live2 = await cdp.js('(function(){return {b:document.getElementById("staleBanner").style.display, a:document.getElementById("destinationSummary").getAttribute("data-stale")};})()');
+    const live2 = await js('(function(){return {b:document.getElementById("staleBanner").style.display, a:document.getElementById("destinationSummary").getAttribute("data-stale")};})()');
     check('staleness clears on recovery', live2 && live2.b === 'none' && live2.a === null, JSON.stringify(live2));
+    // Only now, with the Hub answering again, does a /api/status console
+    // error mean something unexpected — so only now is one recorded.
+    statusBlocked = false;
 
     // --- contrast, both themes ---
     const TARGETS = ['#nextActionBanner', '#downloadDirPath', '#idSAS', '#logConsole .log-entry', '#logConsole .log-entry span', '.version-tag', '.pill', '.pill.active', '.stat-val', '.hint-text', '.tag-drop', '.tag-error', '.drop-zone-subtext', '#destinationSummary', '#peerLabel', '.stale-banner'];
+    // A failing contrast number is the only thing the loop records, so a
+    // sweep that silently measured nothing would still report green: count
+    // what it actually measured and assert that below.
+    // CONTRAST_MIN_MEASURED is the floor: every rendered target across every
+    // tab, in both themes (visibility must not depend on the theme). It is
+    // also the canary for the machinery itself — if tab activation breaks,
+    // whole panes go display:none and the count drops below it.
+    const CONTRAST_MIN_MEASURED = 26;
+    const measured = { dark: 0, light: 0 };
     for (const s of ['dark', 'light']) {
       await scheme(s); await sleep(200);
       for (const t of ['tab-drop', 'tab-relay', 'tab-peers', 'tab-transfers', 'tab-logs']) {
         await tab(t);
         for (const sel of TARGETS) {
           const v = await CONTRAST(sel);
-          if (v && v.ratio < v.need) check('contrast ' + s + ' ' + sel, false, JSON.stringify(v));
+          if (v) measured[s]++;
+          if (v && v.ratio < v.need) {
+            // A failing contrast number alone says what happened, not why:
+            // carry the element's ancestry and every matching color rule, so
+            // a failure is diagnosable from its log line.
+            const deep = await js(`(function(sel){
+              var el=document.querySelector(sel); if(!el) return null;
+              var chain=[], e=el, n=0;
+              while(e && n<6){var s=getComputedStyle(e); chain.push(String(e.tagName)+'.'+String(e.className||'').split(' ')[0]+' color='+s.color+' bg='+s.backgroundColor); e=e.parentElement; n++;}
+              var rules=[];
+              for (var i=0;i<document.styleSheets.length;i++){var sh=document.styleSheets[i];
+                try{for(var j=0;j<sh.cssRules.length;j++){var r=sh.cssRules[j];
+                  if(r.selectorText && r.style && r.style.color){ try{ if(el.matches(r.selectorText)) rules.push(r.selectorText+' => '+r.style.color); }catch(_){} }
+                }}catch(_){}}
+              return {chain:chain, rules:rules, html:(el.outerHTML||'').slice(0,160)};})(${JSON.stringify(sel)})`);
+            console.log('  deep  ' + JSON.stringify(deep));
+            check('contrast ' + s + ' ' + sel, false, JSON.stringify(v) + ' deep=' + JSON.stringify(deep));
+          }
         }
       }
     }
+    // Coverage: the loop only records failures, so a sweep that measured
+    // nothing (or measured different sets per theme, meaning visibility
+    // flipped with the theme) would otherwise pass unnoticed. Theme flips
+    // must not change what is on screen, and the floor catches a wholesale
+    // skip — including a regression in the rendered-only rule above.
+    check('contrast sweep saw the same rendered targets in both themes',
+      measured.dark === measured.light, JSON.stringify(measured));
+    check('contrast sweep measured a full complement of rendered targets',
+      measured.light >= CONTRAST_MIN_MEASURED,
+      JSON.stringify(measured) + ' (floor ' + CONTRAST_MIN_MEASURED + ')');
+    console.log('uxtest: contrast measured ' + JSON.stringify(measured));
     await scheme('dark');
 
     // --- 200% zoom, narrow viewport, reduced motion ---
     await tab('tab-drop');
-    await metrics(640, 450, 2); await sleep(400);
-    const zoom = await cdp.js('(function(){var d=document.documentElement;return {h:d.scrollWidth>d.clientWidth};})()');
+    await metrics(640, 450); await sleep(400);
+    const zoom = await js('(function(){var d=document.documentElement;return {h:d.scrollWidth>d.clientWidth};})()');
     check('200% zoom: no horizontal scrolling', !zoom.h, JSON.stringify(zoom));
     await shot('zoom200');
-    await metrics(360, 780, 1); await sleep(400);
+    await metrics(360, 780); await sleep(400);
     for (const [t, label] of [['tab-drop', 'QuickDrop'], ['tab-relay', 'Relay'], ['tab-peers', 'Peers'], ['tab-transfers', 'Transfers'], ['tab-logs', 'Logs']]) {
       await tab(t);
-      const n = await cdp.js('(function(){var d=document.documentElement;return {w:d.scrollWidth,c:d.clientWidth};})()');
+      const n = await js('(function(){var d=document.documentElement;return {w:d.scrollWidth,c:d.clientWidth};})()');
       check('360px ' + label + ': no page overflow', n.w <= n.c, JSON.stringify(n));
     }
     await shot('narrow360');
-    await metrics(1280, 900, 1); await sleep(300);
-    await cdp.send('Emulation.setEmulatedMedia', { media: 'screen', features: [{ name: 'prefers-color-scheme', value: 'dark' }, { name: 'prefers-reduced-motion', value: 'reduce' }] });
+    await metrics(1280, 900); await sleep(300);
+    await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });
     await sleep(300);
-    const motion = await cdp.js(`(function(){
+    const motion = await js(`(function(){
       var bad=[];
       document.querySelectorAll('*').forEach(function(e){
         var s=getComputedStyle(e);
@@ -368,7 +388,7 @@ async function main() {
     // the clipboard, file choosers and downloads are neutralised; every other
     // call reaches the real Hub, so argument extraction and dispatch are
     // exercised for real rather than against a stub.
-    const sweep = await cdp.js(`(async function () {
+    const sweep = await js(`(async function () {
       var errors = [], rejections = [], current = '', restored = [];
       function keep(obj, key, val) { try { restored.push([obj, key, obj[key]]); obj[key] = val; } catch (_) {} }
       window.addEventListener('error', function (e) { errors.push(current + ': ' + e.message); });
@@ -458,24 +478,40 @@ async function main() {
     await sleep(300);
 
     // --- console hygiene ---
-    const noise = (x) => /favicon\.ico/.test(x) || /javascript%3Aalert/.test(x) || (/api\/drop\/upload/.test(x) && /50[023]/.test(x));
-    const errs = cdp.events.filter((e) => e.method === 'Runtime.exceptionThrown' || (e.method === 'Log.entryAdded' && e.params?.entry?.level === 'error'))
-      .map((e) => JSON.stringify(e.params)).filter((x) => !noise(x));
+    // Three classes are harness/browser noise, each narrowly scoped:
+    // favicon, the javascript: URL the sanitization test deliberately feeds,
+    // and 502/503/504 from the intentional oversize upload. The last one is
+    // WebKit-specific and documented rather than guessed at: WebKit cancels
+    // any fetch issued while a navigation is pending — the dashboard's
+    // bootstrap reloads the document — and mislabels the cancellation as
+    // "… due to access control checks", a CORS phrasing for a request that
+    // was never a CORS request (confirmed via a WebKit debug build:
+    // supabase/supabase#20982 — "canceled because there was a pending
+    // navigation … logged with this 'access control' error"; also SO
+    // 63141448, "after reload"). The product's only /api/pair/pending call
+    // site is try/caught in full (loadPendingPairings), a real same-origin
+    // CORS defect would still be reported by chromium and firefox — whose
+    // CORS messages are not filtered — and the check stays a pageerror-only
+    // exception, so any other uncaught exception fails regardless of engine.
+    const noise = (x) => /favicon\.ico/.test(x) || /javascript%3Aalert/.test(x)
+      || (/api\/drop\/upload/.test(x) && /50[023]/.test(x))
+      || (/^pageerror: /.test(x) && / due to access control checks\.$/.test(x));
+    const errs = consoleErrors.filter((x) => !noise(x));
     check('zero unexpected console errors', errs.length === 0, JSON.stringify(errs.slice(0, 2)));
 
-    fs.writeFileSync(path.join(out, 'uxtest-report.json'), JSON.stringify({ head, peers: WITH_PEERS, checks }, null, 1));
+    fs.writeFileSync(path.join(out, 'uxtest-report.json'), JSON.stringify({ head, engine: ENGINE, peers: WITH_PEERS, checks }, null, 1));
     const pass = checks.filter((c) => c.ok).length;
-    console.log('\nuxtest: ' + pass + '/' + checks.length + ' checks passed (screenshots in ' + out + ')');
+    console.log('\nuxtest: ' + pass + '/' + checks.length + ' checks passed (' + ENGINE + '; screenshots in ' + out + ')');
     process.exitCode = pass === checks.length ? 0 : 1;
   } catch (e) {
     console.error('uxtest ERROR: ' + e.message);
     process.exitCode = 3;
   } finally {
-    if (browser) browser.kill();
+    if (browser) { try { await browser.close(); } catch (_) {} }
     if (hub) { try { hub.kill(); } catch (_) {} }
-    // Chrome keeps file handles on its profile for a moment after exit, so a
-    // single delete can fail. Retry, and say so rather than leaving a
-    // directory behind silently.
+    // The browser and its profile can keep file handles for a moment after
+    // exit, so a single delete can fail. Retry, and say so rather than
+    // leaving a directory behind silently.
     for (let attempt = 0; attempt < 5; attempt++) {
       try { fs.rmSync(WORK, { recursive: true, force: true }); break; }
       catch (_) { await sleep(600); }

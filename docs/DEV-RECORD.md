@@ -2198,3 +2198,118 @@ dashboard-visible is the intended ordering, and the fix documents it.
 - Red: original assertion failed in a 200-run local stress (and CI run #32).
 - Green after: `gofmt`, `go vet`, the identical 200-run stress (39.9s,
   0 failures), full package suite.
+
+
+## Batch Z28 — The acceptance harness goes cross-engine (2026-10-02)
+
+### Why engines, not just a browser
+
+Round 3 of the production-readiness push, after the transport/discovery audit
+(Z25) and the dashboard extraction (Z26). Limitation 2.3 said the harness
+covered "Chrome/Edge on Windows only" — a single engine cannot see
+engine-specific rendering bugs at all, and a page whose whole job is theme
+tokens is exactly where engines disagree. The rewrite replaces raw CDP with
+Playwright 1.63.0 (pinned; dev-only, `tools/uxtest/package.json`) and drives
+chromium, firefox, webkit. CI's `dashboard-acceptance` keeps its name (any
+required-check binding survives) and now installs the three engines and sweeps
+them sequentially, one annotation per failing engine, all engines run even
+when an earlier one fails.
+
+### What webkit found, and what it actually was
+
+Chromium and firefox: 32/32. Webkit: one red — `contrast light .hint-text`,
+2.67:1. The diagnostics added for exactly this moment showed the split:
+
+```
+DIV.hint-text        color=rgb(139,148,158)   ← dark --text-muted, stale
+DIV.bookmarklet-box  color=rgb(230,237,243)   ← dark --text, stale
+DIV.tab-pane         color=rgb(22,33,58)      ← light, fresh
+BODY                 color=rgb(22,33,58)      ← light, fresh
+:root --text-muted   #5b6478                  ← correct light value
+```
+
+Root and ancestors resolved light correctly; only this one subtree kept dark
+values. Bisecting the harness state against the deterministic repro (staleness
+window out — still red; sends out — still red; dark-theme evaluations out —
+green; dark evaluations alone — red again) narrowed the trigger to the
+dark→light theme flip in combination with the measured element's own
+situation. The decisive detail was in the pixel probe: the element's
+`getBoundingClientRect()` was **0×0** — the first `.hint-text` lives in
+`#tab-relay`, and the failure was measured while the suite sat on `tab-drop`,
+inside a `display:none` pane.
+
+That reframes the finding. Three facts:
+
+1. The element generated no boxes: there was nothing painted, in any engine,
+   anywhere. The "failing" contrast ratio described pixels that do not exist.
+2. WebKit leaves computed colors stale inside hidden subtrees across a
+   `prefers-color-scheme` flip and resolves them when the subtree renders —
+   the same element measured clean on its own tab later in the same loop, and
+   forced reflow did not heal it while hidden (reload did).
+3. Chromium and firefox were "passing" by resolving `var()` correctly in
+   hidden subtrees — still measuring an unrendered element, i.e. also
+   measuring nothing useful, just with nicer numbers.
+
+So this was never a product bug to fix in CSS: no user can see a color inside
+a tab that is not displayed, and on display the value is correct. It was a
+**measurement defect** — the harness asking a question that has no answer.
+
+### The fix, and the gate that keeps it honest
+
+`CONTRAST` now returns null unless `el.getClientRects().length` — an element
+generating no boxes is skipped, with the reasoning in the comment at the
+skip. Contrast failures are the only thing the sweep records, so
+"skips everything" would be a silent green: two coverage checks were added
+alongside it — both themes must measure the *same* rendered set (a theme flip
+must not change what is on screen), and a floor (`CONTRAST_MIN_MEASURED =
+26`, the observed full complement in both peerless and `--peers` modes on all
+three engines) so wholesale skip — including a broken tab activation hiding
+whole panes — fails loudly. Result: 34/34 on chromium, firefox, webkit.
+
+### Red proof
+
+A gate that has never failed is not a gate. With both defects injected into
+`dashboard.html` — light `--text-muted` set to `#cdd4e0` (1.29:1 and 1.49:1
+on the surfaces that use it), and the historical
+`cancelActiveRelay(this.getAttribute(...))` delegation bug restored — chromium
+reported 32/36 with every failure named: `contrast light .hint-text`,
+`contrast light .drop-zone-subtext`, `every delegated action runs without
+throwing [cancel-active-relay: Uncaught TypeError: this.getAttribute is not a
+function]`, plus the pageerror in console hygiene. The coverage checks stayed
+green, which is correct: they detect measurement skip, not product defects.
+Both injections reverted byte-exact (`git diff` clean).
+
+### Also in this batch
+
+- **WebKit's unload-fetch phrasing scoped out of console hygiene.** A rare
+  webkit-only pageerror (`/api/pair/pending due to access control checks`,
+  2 occurrences in ~10 webkit runs, none on chromium/firefox) survived static
+  analysis: the product's single call site is fully try/caught, so no JS path
+  could emit it. The mechanism was found by search rather than derivation —
+  WebKit cancels any fetch issued while a navigation is pending (the
+  dashboard's bootstrap reloads the document) and logs the cancellation with
+  CORS phrasing for a request that was never CORS (supabase/supabase#20982,
+  from a WebKit debug build: "canceled because there was a pending
+  navigation … logged with this 'access control' error"; SO 63141448). The
+  filter is scoped to that exact `pageerror` phrasing; a real CORS defect
+  still fails on chromium and firefox, whose messages are untouched, and
+  every other uncaught exception still fails on all three. The pageerror
+  feed now carries the first stack frames so any recurrence names its site.
+- CI flake fix shipped separately as Z27 (`5365d9f`) after run #32 failed on
+  `TestHub_DropResumption`; run #33 green.
+- `.gitignore`: `tools/uxtest/node_modules/` and `/harness-*.log`;
+  `package-lock.json` committed.
+- README rewritten for Playwright, two ports (19470/DEBUG_PORT gone), the
+  engine matrix, and an honest E5 paragraph: Playwright's WebKit is the engine
+  not Safari-the-app, and `emulateMedia` is not a user flipping macOS
+  appearance.
+- KNOWN-LIMITATIONS 2.3 moved to "Partly closed 2026-10-02" with the Safari /
+  mobile / non-CI-machine residue named rather than implied.
+
+### Validation
+
+- Three engines × (peerless, `--peers`): 34/34, measured `{dark:26, light:26}`
+  on each.
+- Red proof as above, reverted.
+- Go gates green on the batch (gofmt, build, vet, staticcheck, full suite).
+- No tag, no release: v0.1.0 remains the first tag, on the user's go.

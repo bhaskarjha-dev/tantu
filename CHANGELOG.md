@@ -144,6 +144,22 @@ rollback procedures.
   received files stay in their former location.
 
 ### Changed
+- **The dashboard acceptance harness runs on Playwright across three engines.**
+  `tools/uxtest` now drives chromium, firefox and webkit (Playwright 1.63.0,
+  pinned, dev-only) instead of raw CDP against a system Chrome, and CI's
+  `dashboard-acceptance` sweeps all three in one gate — each engine annotated
+  separately, every engine run even when an earlier one fails. The third
+  engine earned its seat immediately: webkit revealed that the contrast sweep
+  was measuring elements in *inactive tabs* — which generate no boxes and
+  therefore have no pixels to contrast — and that WebKit leaves computed
+  colors inside such hidden subtrees stale across a `prefers-color-scheme`
+  flip (resolving them when the subtree renders), so the check could report a
+  failure for a value no user can ever see. The sweep now measures only
+  rendered elements, in both themes, and two new coverage checks keep that
+  honest: both themes must measure the same rendered set, and the count has a
+  floor, so a sweep that silently measures nothing fails instead of passing.
+  Red-proven after the change: an injected light-theme contrast defect and the
+  historical `this`-delegation bug both fail the run by name (32/36).
 - **The dashboard source is a real HTML file now.** The Hub's two pages —
   `dashboard.html` (3,355 lines) and `relay_interstitial.html` (172 lines) —
   moved out of Go raw strings in `web_dashboard.go` (5,265 → 1,750 lines)

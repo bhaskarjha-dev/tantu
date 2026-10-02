@@ -1,0 +1,9 @@
+{
+  "name": "tantu-uxtest",
+  "private": true,
+  "type": "module",
+  "description": "Dashboard acceptance harness for Tantu. Dev-only tooling: not part of the shipped binary, not invoked by go test.",
+  "dependencies": {
+    "playwright": "1.63.0"
+  }
+}
