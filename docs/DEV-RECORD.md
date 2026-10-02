@@ -2163,3 +2163,38 @@ template literals, ever, in code that now writes real JavaScript.
 - `gofmt -l .`, `go build ./...`, `go vet ./...`, `staticcheck@v0.8.1` → 0,
   `go test -count=1 ./...` and `-race ./...` green, `node tools/uxtest/run.mjs`
   32/32 against the extracted source.
+
+
+## Batch Z27 — TestHub_DropResumption stops racing its own buffer (2026-10-02)
+
+### What happened
+
+CI run #32 (`dfafbc3`) failed on ubuntu with `--- FAIL: TestHub_DropResumption`
+— `expected RecentDrops to contain item, got 0`. The same tree had passed run
+#31, which pointed at flake first; but stress (`-run TestHub_DropResumption
+-count=200`) reproduced it on Windows inside the first 200 runs. This was a
+real synchronization bug in the test, not runner noise — a gate that fails
+randomly teaches people to re-run it, which is worse than no gate.
+
+### The window
+
+`drop.ReceiveDrop` publishes the destination file, then records the
+completion tombstone (atomic renames), sends `TypeDropComplete` on the wire,
+and returns; only then does the bridge dispatcher call `OnDropReceived`,
+which resolves the peer name and calls `recentDrops.Add`. The test polled
+for the *file* to reach full length and then read the buffer once — sampling
+exactly the gap between "file visible" and "buffer appended". The
+neighboring receive test (`hub_test.go` around line 831) already polls the
+buffer with a bounded deadline; this one predates that lesson.
+
+### Fix and validation
+
+The single read became a 3-second/50ms poll, matching the sibling test. The
+file-content and staging-cleanup assertions keep their own independent
+waits — they poll the artifact they assert on, which is the correct signal
+for them. Product code is unchanged: durable-and-acknowledged before
+dashboard-visible is the intended ordering, and the fix documents it.
+
+- Red: original assertion failed in a 200-run local stress (and CI run #32).
+- Green after: `gofmt`, `go vet`, the identical 200-run stress (39.9s,
+  0 failures), full package suite.

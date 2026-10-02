@@ -645,8 +645,21 @@ func TestHub_DropResumption(t *testing.T) {
 		t.Fatalf("file content mismatch: received %d bytes, expected %d bytes", len(content), len(payload))
 	}
 
-	// Verify recent drops recorded
-	drops := h.RecentDrops().GetAll()
+	// Verify recent drops recorded. The file is published inside ReceiveDrop,
+	// but the buffer is appended by the OnDropReceived callback that runs
+	// afterwards — after the completion tombstone is written and the wire
+	// complete is sent — so a fully-written file on disk can precede the
+	// buffer entry by milliseconds. Sampling the buffer once here raced that
+	// window and flaked (CI run #32; reproduced locally in 200 runs). Poll it.
+	var drops []ReceivedDropItem
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		drops = h.RecentDrops().GetAll()
+		if len(drops) > 0 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	if len(drops) == 0 {
 		t.Errorf("expected RecentDrops to contain item, got 0")
 	} else if drops[0].Name != fileName {

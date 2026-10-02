@@ -218,6 +218,18 @@ rollback procedures.
   token remains as a legacy fallback.
 
 ### Fixed
+- **`TestHub_DropResumption` no longer races the RecentDrops buffer against
+  file publication.** The test waited for the delivered file to reach full
+  length and then sampled the buffer once, but the buffer is appended by the
+  `OnDropReceived` callback, which runs *after* publication, the completion
+  tombstone, and the wire complete — so a full file on disk can precede the
+  buffer entry by milliseconds. That single read landed in the window on CI
+  (run #32: `expected RecentDrops to contain item, got 0`) and reproduced
+  locally within 200 runs, making the test a coin-flip gate rather than a
+  check. It now polls the buffer with a bounded deadline, the same pattern
+  the neighboring receive tests already use. Product ordering is unchanged
+  and intentional: a drop is durable and acknowledged before it becomes a
+  dashboard "recent drop".
 - **The SSH listener wedged instead of failing when its accept loop died.**
   A listener-level `Accept` error was published once into the results queue
   and `serve()` returned: the first caller saw the error, every later
