@@ -86,8 +86,12 @@ type Listener interface {
 	// Accept waits for and returns the next successfully established connection.
 	// Implementations may report rejected candidate connections through their
 	// transport-specific error callback without returning them from Accept.
+	// When the accept loop itself fails, the resulting terminal error is
+	// returned by every later call instead of the call blocking: the socket is
+	// released and the listener is finished, just as with a failed net.Listener.
 	Accept() (Conn, error)
-	// Close stops the listener.
+	// Close stops the listener, waits for in-flight handshakes, and closes any
+	// connection that was accepted into the queue but never handed out.
 	Close() error
 	// Addr returns the listener's network address.
 	Addr() net.Addr
@@ -151,8 +155,11 @@ type PeerIdentity interface {
 	PeerFingerprint() string
 }
 
-// GetPeerFingerprint retrieves the cryptographic fingerprint (lowercase hex SHA-256)
-// of the connected peer, or an empty string if not available.
+// GetPeerFingerprint retrieves the connected peer's cryptographic fingerprint,
+// or an empty string if the transport carries no peer identity. The format is
+// transport-specific: LAN returns 64 lowercase hex characters (SHA-256 of the
+// leaf certificate) while SSH returns OpenSSH's "SHA256:<base64>" form, so
+// compare fingerprints only within one transport or normalize first.
 func GetPeerFingerprint(conn Conn) string {
 	if pi, ok := conn.(PeerIdentity); ok {
 		return pi.PeerFingerprint()
@@ -161,7 +168,10 @@ func GetPeerFingerprint(conn Conn) string {
 }
 
 // Deadliner is an optional interface implemented by transport connections
-// that support I/O deadlines.
+// that support I/O deadlines. Every implementation bounds pending I/O;
+// transport-specific expiry behavior (for example sshConn closing the
+// connection, because a blocked SSH channel read cannot be interrupted)
+// is documented on the implementation.
 type Deadliner interface {
 	SetDeadline(t time.Time) error
 	SetReadDeadline(t time.Time) error

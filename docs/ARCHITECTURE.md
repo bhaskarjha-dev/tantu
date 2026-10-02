@@ -154,7 +154,10 @@ type PeerIdentity interface {
 }
 
 // Deadliner is an optional interface implemented by transport connections
-// that support I/O deadlines.
+// that support I/O deadlines. Every implementation bounds pending I/O;
+// transport-specific expiry behavior (for example sshConn closing the
+// connection, because a blocked SSH channel read cannot be interrupted)
+// is documented on the implementation.
 type Deadliner interface {
     SetDeadline(t time.Time) error
     SetReadDeadline(t time.Time) error
@@ -278,7 +281,7 @@ To avoid port conflicts and eliminate duplicate daemon instances, CLI commands c
 
 1. **Loopback-Only Web & IPC Surface with Anti-CSRF:** The Web Dashboard, REST IPC, and SSE stream bind strictly to `127.0.0.1` (with dynamic fallback). External network interfaces cannot reach the HTTP API. `securityMiddleware` validates the exact authority, Origin, and Referer, and requires a session/capability for sensitive reads and mutations; wildcard CORS and unauthenticated status/data reads are not used.
 2. **Dual-Socket Network Isolation:** Public/LAN traffic is strictly restricted to port 9877, requiring length-prefixed TLS/SSH frames with pinned cryptographic certificates.
-3. **Mutual TLS with Fingerprint Pinning:** LAN connections reject any TLS client or server certificate whose SHA-256 fingerprint is not explicitly stored in `peers.json`.
+3. **Mutual TLS with Fingerprint Pinning:** The fingerprint of the verified TLS 1.3 certificate is a peer's identity on LAN connections. The handshake itself completes for unknown certificates so that in-band pairing can start (`AllowPairing: true`), but completing it grants nothing: every operation except `pair_hello` is authorized against `peers.json`, and operational dials pin the expected fingerprint (`DialPinned`) so a connection cannot be substituted after pairing.
 4. **Cryptographic Leaf Certificate Identity Attribution:** Provenance on inbound drops and OAuth requests is derived directly from verified TLS 1.3 client certificates (`sha256(leaf.Raw)`). Handlers are completely immune to application-layer envelope spoofing.
 5. **No Credential Caching:** `tantu` never stores, inspects, or logs OAuth refresh tokens, access tokens, or client secrets. It operates strictly as an ephemeral transport pipe.
 6. **Frame Size Limits, Quotas & Handshake Deadlines:** General frames are capped at 4 MiB and typed control frames at 64 KiB; pairing connections use the smaller cap before allocation. Inbound connections enforce a 30-second read deadline during protocol negotiation via `Deadliner`. File data is chunked (1MB) and streamed directly to disk. Each long-lived receiver process uses a shared `TransferQuota` (4 active transfers / 8 GiB and 2 / 6 GiB per peer by default); unknown-size streams reserve one chunk and grow their reservation as bytes arrive. Failed Tantu-owned partials are separately trimmed to an 8 GiB / 1,024-file retained-partial budget, including private numbered layouts; unmarked direct legacy `.part` files are preserved for manual review because they may be user data. Resumable partials carry a private metadata sidecar binding DropID, name, size, MIME, chunk size, and a 64 KiB head hash; mismatched sidecars fail closed. Staging operations are anchored to verified directory handles, and activity/marker transitions are coordinated across processes; power-loss durability and full-content identity are not claimed beyond the documented protocol limits.

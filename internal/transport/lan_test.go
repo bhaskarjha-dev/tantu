@@ -5,6 +5,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"net"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -112,9 +113,13 @@ func TestLANListener_CloseDrainsQueuedConnections(t *testing.T) {
 	if _, err := l.Accept(); !errors.Is(err, net.ErrClosed) {
 		t.Fatalf("Accept after Close = %v, want net.ErrClosed", err)
 	}
-	_ = remote.SetReadDeadline(time.Now().Add(time.Second))
-	if _, err := remote.Read(make([]byte, 1)); err == nil {
+	_ = remote.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, readErr := remote.Read(make([]byte, 1))
+	if readErr == nil {
 		t.Fatal("queued connection was not closed during listener shutdown")
+	}
+	if errors.Is(readErr, os.ErrDeadlineExceeded) {
+		t.Fatal("queued connection leaked: the far side is still open, so Close never drained the queue")
 	}
 	_ = remote.Close()
 }

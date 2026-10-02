@@ -897,3 +897,82 @@ func TestSSHTransport_HostKeyFingerprintPin(t *testing.T) {
 		}
 	}
 }
+
+// A listener-level Accept failure must terminate Accept for good: every later
+// call returns the same terminal error instead of blocking forever, and the
+// bound socket is released. Mirrors TestLANListener_FatalAcceptErrorIsReturned
+// so both transports behave identically when their accept loop dies.
+func TestSSHListener_FatalAcceptErrorIsRepeated(t *testing.T) {
+	underlying := &fatalAcceptListener{err: errors.New("synthetic accept failure"), closeCh: make(chan struct{})}
+	l := &sshListener{
+		listener:       underlying,
+		closed:         make(chan struct{}),
+		serveDone:      make(chan struct{}),
+		results:        make(chan acceptResult, 1),
+		handshakeSlots: make(chan struct{}, 1),
+	}
+	go l.serve()
+
+	_, err := l.Accept()
+	if err == nil {
+		t.Fatal("expected fatal listener error")
+	}
+	if !errors.Is(err, underlying.err) {
+		t.Fatalf("expected wrapped accept error, got %v", err)
+	}
+
+	second := make(chan error, 1)
+	go func() {
+		_, acceptErr := l.Accept()
+		second <- acceptErr
+	}()
+	select {
+	case acceptErr := <-second:
+		if acceptErr == nil {
+			t.Fatal("second Accept returned a nil error after a fatal listener failure")
+		}
+		if !errors.Is(acceptErr, underlying.err) {
+			t.Fatalf("second Accept = %v, want the wrapped listener error", acceptErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second Accept blocked forever after a fatal listener error")
+	}
+
+	select {
+	case <-underlying.closeCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("underlying socket was not closed after a fatal listener error; the port stays bound")
+	}
+}
+
+// Close must drain connections that were queued but never accepted, otherwise
+// the wrapped socket outlives the listener. The read below must fail with a
+// closed-pipe error, not with the deadline: a deadline hit means the far side
+// is still open, i.e. the connection leaked.
+func TestSSHListener_CloseDrainsQueuedConnections(t *testing.T) {
+	underlying := &fatalAcceptListener{err: errors.New("unused"), closeCh: make(chan struct{})}
+	l := &sshListener{
+		listener:       underlying,
+		closed:         make(chan struct{}),
+		serveDone:      make(chan struct{}),
+		results:        make(chan acceptResult, 1),
+		handshakeSlots: make(chan struct{}, 1),
+	}
+	local, remote := net.Pipe()
+	l.results <- acceptResult{conn: newTCPConn(local)}
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := l.Accept(); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("Accept after Close = %v, want net.ErrClosed", err)
+	}
+	_ = remote.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, err := remote.Read(make([]byte, 1))
+	if err == nil {
+		t.Fatal("queued connection was not closed during listener shutdown")
+	}
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatal("queued connection leaked: the far side is still open, so Close never drained the queue")
+	}
+	_ = remote.Close()
+}

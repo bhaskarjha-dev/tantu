@@ -268,6 +268,7 @@ func (t *SSHTransport) Listen(address string) (Listener, error) {
 		serverConfig:         serverConfig,
 		results:              make(chan acceptResult, 16),
 		closed:               make(chan struct{}),
+		serveDone:            make(chan struct{}),
 		pendingConns:         make(map[net.Conn]struct{}),
 		serverConns:          make(map[*ssh.ServerConn]struct{}),
 		handshakeTimeout:     t.handshakeTimeout,
@@ -410,9 +411,12 @@ type sshListener struct {
 	closeOnce    sync.Once
 	closeErr     error
 	closed       chan struct{}
+	serveDone    chan struct{}
 	mu           sync.Mutex
 	pendingConns map[net.Conn]struct{}
 	serverConns  map[*ssh.ServerConn]struct{}
+	terminalErr  error
+	wg           sync.WaitGroup
 
 	handshakeTimeout     time.Duration
 	handshakeSlots       chan struct{}
@@ -423,6 +427,7 @@ type sshListener struct {
 }
 
 func (l *sshListener) serve() {
+	defer close(l.serveDone)
 	for {
 		nc, err := l.listener.Accept()
 		if err != nil {
@@ -430,10 +435,18 @@ func (l *sshListener) serve() {
 			case <-l.closed:
 				return
 			default:
-				select {
-				case l.results <- acceptResult{err: err}:
-				case <-l.closed:
+				// A listener failure is not a candidate handshake failure. Like
+				// the LAN listener it must terminate Accept permanently and
+				// release the bound socket; publishing a single error and
+				// returning would leave the port held while every later Accept
+				// blocked forever.
+				l.mu.Lock()
+				if l.terminalErr == nil {
+					l.terminalErr = fmt.Errorf("ssh listener accept: %w", err)
 				}
+				l.mu.Unlock()
+				_ = l.listener.Close()
+				l.closePendingConns()
 				return
 			}
 		}
@@ -450,7 +463,9 @@ func (l *sshListener) serve() {
 			l.publishHandshakeError(nc, errors.New("maximum concurrent SSH handshakes reached"))
 			continue
 		}
+		l.wg.Add(1)
 		go func(nc net.Conn) {
+			defer l.wg.Done()
 			l.handleTCPConn(nc)
 		}(nc)
 	}
@@ -582,11 +597,67 @@ func (l *sshListener) publishHandshakeError(nc net.Conn, err error) {
 }
 
 func (l *sshListener) Accept() (Conn, error) {
-	select {
-	case <-l.closed:
-		return nil, net.ErrClosed
-	case res := <-l.results:
-		return res.conn, res.err
+	for {
+		l.mu.Lock()
+		terminalErr := l.terminalErr
+		l.mu.Unlock()
+		if terminalErr != nil {
+			return nil, terminalErr
+		}
+		select {
+		case <-l.closed:
+			return nil, net.ErrClosed
+		case <-l.serveDone:
+			// The accept loop is gone. Report why it died, or ErrClosed when
+			// it exited because this listener was closed.
+			l.mu.Lock()
+			terminalErr = l.terminalErr
+			l.mu.Unlock()
+			if terminalErr != nil {
+				return nil, terminalErr
+			}
+			return nil, net.ErrClosed
+		case res := <-l.results:
+			// Close and a terminal listener error take precedence over a
+			// result queued concurrently. This prevents a post-close Accept
+			// from handing a leaked connection to the dispatcher.
+			select {
+			case <-l.closed:
+				if res.conn != nil {
+					_ = res.conn.Close()
+				}
+				return nil, net.ErrClosed
+			default:
+			}
+			l.mu.Lock()
+			terminalErr = l.terminalErr
+			l.mu.Unlock()
+			if terminalErr != nil {
+				if res.conn != nil {
+					_ = res.conn.Close()
+				}
+				return nil, terminalErr
+			}
+			if res.conn == nil && res.err == nil {
+				return nil, net.ErrClosed
+			}
+			return res.conn, res.err
+		}
+	}
+}
+
+// closePendingConns closes every pre-authentication TCP connection still being
+// handshaked. Used when the accept loop dies and on Close.
+func (l *sshListener) closePendingConns() {
+	l.mu.Lock()
+	pending := make([]net.Conn, 0, len(l.pendingConns))
+	for nc := range l.pendingConns {
+		pending = append(pending, nc)
+	}
+	l.pendingConns = nil
+	l.mu.Unlock()
+	for _, nc := range pending {
+		_ = nc.Close()
 	}
 }
 
@@ -595,27 +666,32 @@ func (l *sshListener) Close() error {
 		close(l.closed)
 		l.closeErr = l.listener.Close()
 
+		l.closePendingConns()
 		l.mu.Lock()
-		pending := make([]net.Conn, 0, len(l.pendingConns))
-		for nc := range l.pendingConns {
-			pending = append(pending, nc)
-		}
 		servers := make([]*ssh.ServerConn, 0, len(l.serverConns))
 		for sConn := range l.serverConns {
 			servers = append(servers, sConn)
 		}
-		l.pendingConns = nil
 		l.serverConns = nil
 		l.mu.Unlock()
-
-		for _, nc := range pending {
-			_ = nc.Close()
-		}
 		for _, sConn := range servers {
 			_ = sConn.Close()
 		}
 	})
-	return l.closeErr
+	// Wait for the accept loop and all in-flight handshakes. They all observe
+	// closed and cannot enqueue new work after this point, so whatever is left
+	// in the queue is final.
+	l.wg.Wait()
+	for {
+		select {
+		case res := <-l.results:
+			if res.conn != nil {
+				_ = res.conn.Close()
+			}
+		default:
+			return l.closeErr
+		}
+	}
 }
 
 func (l *sshListener) Addr() net.Addr {
@@ -732,8 +808,16 @@ func (c *sshConn) setDeadlineTimer(timer **time.Timer, t time.Time) {
 	c.deadlineMu.Unlock()
 }
 
+// SetDeadline arms the read and write deadline timers. Unlike net.Conn, an
+// expired deadline closes this connection instead of only failing the pending
+// I/O: a blocked ssh.Channel read cannot be interrupted any other way. The
+// deadline still bounds the I/O, which is what callers depend on; a closed
+// connection reports the close rather than accepting new timers.
 func (c *sshConn) SetDeadline(t time.Time) error {
 	if c == nil || c.channel == nil {
+		return errors.New("connection is closed")
+	}
+	if c.isClosed() {
 		return errors.New("connection is closed")
 	}
 	c.setDeadlineTimer(&c.readTimer, t)
@@ -745,6 +829,9 @@ func (c *sshConn) SetReadDeadline(t time.Time) error {
 	if c == nil || c.channel == nil {
 		return errors.New("connection is closed")
 	}
+	if c.isClosed() {
+		return errors.New("connection is closed")
+	}
 	c.setDeadlineTimer(&c.readTimer, t)
 	return nil
 }
@@ -753,8 +840,18 @@ func (c *sshConn) SetWriteDeadline(t time.Time) error {
 	if c == nil || c.channel == nil {
 		return errors.New("connection is closed")
 	}
+	if c.isClosed() {
+		return errors.New("connection is closed")
+	}
 	c.setDeadlineTimer(&c.writeTimer, t)
 	return nil
+}
+
+// isClosed reports whether Close has already run.
+func (c *sshConn) isClosed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
 }
 
 func (c *sshConn) Close() error {
