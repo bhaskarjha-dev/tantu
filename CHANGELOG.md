@@ -144,6 +144,21 @@ rollback procedures.
   received files stay in their former location.
 
 ### Changed
+- **The dashboard source is a real HTML file now.** The Hub's two pages —
+  `dashboard.html` (3,355 lines) and `relay_interstitial.html` (172 lines) —
+  moved out of Go raw strings in `web_dashboard.go` (5,265 → 1,750 lines)
+  and are compiled into the binary with `//go:embed`, so the static-binary
+  invariant is unchanged. The benefit is everything a raw string denies:
+  syntax highlighting, linting, per-hunk diffs and review of 3,500 lines of
+  HTML/CSS/JS that no tool could previously see, and JavaScript template
+  literals become usable (a backtick is the one character a Go raw string
+  can never contain — the constraint is named in DEV-RECORD Z15's notes).
+  Serving is provably byte-identical: both embedded digests match the
+  pre-extraction literals (`d395e796…`, `2b96aa75…`), logged by
+  `TestEmbeddedHTMLMatchesSourceFile`, which was red-proven both ways — a
+  mis-pointed directive fails the divergence check with both byte counts,
+  and a corrupted file fails the completeness check. The acceptance harness
+  still passes 32/32 against the extracted source.
 - **A receiver that refuses a transfer is now reported as a known outcome.**
   Reusing an `--idempotency-key` with different content was refused by the
   receiver, but the sender matched on wording and, because every byte had

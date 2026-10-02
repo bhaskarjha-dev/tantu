@@ -2108,3 +2108,58 @@ hold the first one against.
 - CI run #29 (2026-10-02) green for the transport half (`8261bd4`,
   including its `-race` jobs on three OSes); the discovery half rides the
   push that carries this record.
+
+
+## Batch Z26 — the dashboard becomes a file the toolchain can see (2026-10-02)
+
+### Why this batch exists
+
+`web_dashboard.go` was a 5,265-line Go file in which two raw strings held
+3,527 lines of HTML/CSS/JS. Nothing that reads HTML or JavaScript — no
+highlighter, no linter, no per-hunk diff — could see any of it, so every
+frontend change had been reviewed as uncolored text inside a language file,
+and the frontend carried a hard constraint with no visible owner: DEV-RECORD
+Z15's notes record "no backticks inside the Go raw string", which means no
+template literals, ever, in code that now writes real JavaScript.
+
+### What the extraction did
+
+- `dashboard.html` (3,355 lines) and `relay_interstitial.html` (172 lines)
+  were cut from the raw strings byte-for-byte (SHA-256 recorded at cut time:
+  `d395e796…` / `2b96aa75…`) and are now compiled into the binary with
+  `//go:embed`. The Go file dropped to 1,750 lines; the static-binary
+  invariant is untouched, because embed happens at build time.
+- The serving path is unchanged: `{{VERSION}}`/`{{NONCE}}` substitution and
+  the CSP hash computation read the same variable as before.
+
+### Decisions
+
+- **Extract, do not restructure.** One file per page, identical bytes,
+  identical substitution points. Splitting the page into external `.js`/`.css`
+  would change the security story — the inline script is authorized by a
+  per-response CSP nonce, and an external file needs a different `script-src`
+  entry — so that is a security review, not an extraction, and was not
+  smuggled into this batch.
+- **A drift gate instead of a content pin.**
+  `TestEmbeddedHTMLMatchesSourceFile` compares the embedded value against the
+  file on disk. It logs SHA-256 forensically but does not assert it: a pinned
+  digest breaks on the next legitimate edit while proving nothing the disk
+  comparison does not already prove.
+- The small `fmt.Fprintf` HTML fragments (relay error/success pages) stay in
+  their handlers. They are format-string templates whose substitutions *are*
+  the handler logic; extracting them would separate each `%s` from its
+  argument for no tooling gain.
+
+### Validation
+
+- Red runs, both branches of the gate: a mis-pointed `//go:embed` fails with
+  "diverge (file=143841 bytes, embedded=11400 bytes)"; a single byte appended
+  to `dashboard.html` fails the completeness check. Both restored and
+  re-verified against the recorded digest.
+- Byte-identity chain: original literal == extracted file (digest at cut) ==
+  embedded value (the test prints the same two digests) == served bytes (the
+  serving path only substitutes placeholders; the acceptance harness drives
+  the rendered page).
+- `gofmt -l .`, `go build ./...`, `go vet ./...`, `staticcheck@v0.8.1` → 0,
+  `go test -count=1 ./...` and `-race ./...` green, `node tools/uxtest/run.mjs`
+  32/32 against the extracted source.

@@ -1,0 +1,172 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Confirm OAuth Relay</title><style>body{background:#090b10;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;-webkit-font-smoothing:antialiased;}.box{background:#131722;border:1px solid #232a3b;border-radius:16px;padding:2rem;max-width:460px;width:92%;text-align:center;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);}.icon{font-size:2.5rem;margin-bottom:0.75rem;}h2{margin:0 0 0.5rem 0;letter-spacing:-0.01em;}h2.ok{color:#34d399;}p{color:#8b949e;font-size:0.9rem;margin:0 0 1rem 0;}p strong{color:#e6edf3;}.note{background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.4);color:#fbbf24;border-radius:8px;padding:0.6rem 0.8rem;font-size:0.85rem;}.hint{color:#94a3b8;font-size:0.8rem;}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;}.btn{background:#2563eb;border:none;color:#fff;min-height:44px;padding:0.6rem 1.25rem;border-radius:8px;font-weight:600;font-size:0.9rem;cursor:pointer;box-shadow:0 4px 14px rgba(37,99,235,0.35);transition:transform 150ms ease-out,opacity 150ms ease-out;}.btn:hover:not(:disabled){transform:translateY(-1px);}.btn:disabled{opacity:0.5;cursor:not-allowed;}.btn-ghost{background:transparent;border:1px solid #323c52;color:#e6edf3;box-shadow:none;}button:focus-visible{outline:2px solid #3b82f6;outline-offset:2px;}
+/* The Relay button is autofocused on load, and a programmatic focus does not
+   match :focus-visible, so the initial focused state had no visible ring at
+   all. :focus covers it without double-drawing on pointer interaction. */
+button:focus{outline:2px solid #60a5fa;outline-offset:2px;}@media (prefers-color-scheme: light){body{background:#f4f6fb;color:#16213a;}.box{background:#ffffff;border-color:#d9e0ec;box-shadow:0 25px 50px -12px rgba(22,33,58,0.25);}p{color:#5b6478;}p strong{color:#16213a;}.hint{color:#5b6478;}.btn-ghost{border-color:#b9c4d8;color:#16213a;}button:focus{outline-color:#1d4ed8;}}@media (prefers-reduced-motion: reduce){.btn{transition:none;}}</style></head><body><main class="box"><h1 class="sr-only">Confirm OAuth relay</h1><div id="confirmView"><div class="icon">🔐</div><h2>Relay this authorization?</h2><p>From: <strong>{{ORIGIN}}</strong></p>{{NOTICE}}<p class="hint" id="peerLine">Checking destination…</p><div id="noSession" style="display:none" class="hint">Dashboard session not established. Open the dashboard from the Hub terminal (press o) — this popup will keep checking, and enable Relay by itself once the session appears.</div><div style="display:flex;gap:0.5rem;justify-content:center;margin-top:1rem;"><button id="btnRelayNow" class="btn" disabled>Relay now</button><button id="btnCancel" class="btn btn-ghost">Cancel</button></div><div class="hint" id="resultLine" role="status" aria-live="polite" style="margin-top:0.75rem;"></div></div><div id="okView" style="display:none"><div class="icon">✅</div><h2 class="ok">Authentication Relayed!</h2><p id="okText"></p><div class="hint" id="okStatus" role="status" aria-live="polite" style="margin-top:0.5rem;">This window closes automatically in 3 seconds. The login continues on the other machine.</div><div style="display:flex;justify-content:center;margin-top:0.75rem;"><button id="okClose" class="btn btn-ghost">Close now</button></div></div></div></main><script>
+const relayURL = new URLSearchParams(window.location.search).get('url') || '';
+function show(el) { el.style.display = 'block'; }
+function hide(el) { el.style.display = 'none'; }
+let statusTimer = null;
+let sessionWasReady = false;
+async function refreshSessionState() {
+  const peerLine = document.getElementById('peerLine');
+  const noSession = document.getElementById('noSession');
+  const btnRelay = document.getElementById('btnRelayNow');
+  const resultLine = document.getElementById('resultLine');
+  if (!relayURL) {
+    peerLine.textContent = 'No authorization URL found. Start from the OAuth login page and retry the bookmark.';
+    return;
+  }
+  let authed = false;
+  let data = null;
+  try {
+    const res = await fetch('/api/status', { credentials: 'same-origin' });
+    if (res.ok) {
+      authed = true;
+      data = await res.json();
+    }
+  } catch (_) {}
+  // Readiness is the HTTP result, not the payload shape: an authenticated
+  // Hub with zero peers answers 200 with peers:null, which is a valid
+  // session that must enable the button.
+  if (!authed || data == null || typeof data !== 'object') {
+    // No session (or Hub unreachable): guidance stays up and the button
+    // stays off. If a session appears later — e.g. the dashboard was just
+    // opened in another tab — the next poll enables everything by itself.
+    if (sessionWasReady) {
+      sessionWasReady = false;
+      btnRelay.disabled = true;
+      resultLine.textContent = '';
+    }
+    hide(peerLine);
+    show(noSession);
+    return;
+  }
+  const peers = Array.isArray(data.peers) ? data.peers : [];
+  let dest = 'Default peer';
+  if (peers.length === 1) { dest = peers[0].name || 'Peer'; }
+  else if (peers.length > 1) {
+    const sel = peers.filter(function(p) { return p.active; })[0] || peers[0];
+    dest = (sel && sel.name) || 'Peer';
+  } else if ((data.transport || 'loopback') === 'loopback') { dest = 'this Hub (local)'; }
+  else { dest = 'No trusted peers yet'; btnRelay.disabled = true; peerLine.textContent = 'Destination: ' + dest + ' — pair a peer first.'; return; }
+  show(peerLine);
+  hide(noSession);
+  peerLine.textContent = 'Destination: ' + dest;
+  btnRelay.disabled = false;
+  if (!sessionWasReady) {
+    // Transition only: announce once and focus, never steal focus or
+    // repeat announcements on routine polls.
+    sessionWasReady = true;
+    resultLine.textContent = 'Dashboard session established. Relay button enabled.';
+    btnRelay.focus();
+  }
+}
+async function boot() {
+  await refreshSessionState();
+  statusTimer = setInterval(refreshSessionState, 3000);
+}
+function closeSelf() {
+  // window.close() is a no-op for a tab the script did not open, which left
+  // the user staring at a popup that refused to do anything. Say so instead.
+  window.close();
+  setTimeout(function() {
+    const hint = document.getElementById('resultLine');
+    if (hint) {
+      hint.textContent = 'This window cannot close itself. Close the tab to continue.';
+    }
+  }, 250);
+}
+// A cancel that is only a window close is a lie: the relay keeps running on the
+// Hub, the peer keeps its sign-in open and its callback port bound, and the next
+// attempt can fail with "port in use" - so the user has to restart the Hub.
+// Once a relay has been started from this window, Cancel means cancel.
+let relayInFlight = false;
+let relayStarted = false;
+// The attempt id is only known once the Hub replies, so a Cancel that lands
+// before then is sent with an empty id and targets the oldest open relay from
+// this window's own request. The Hub resolves it server-side.
+let currentOperationID = '';
+let relayAbort = null;
+document.getElementById('btnCancel').addEventListener('click', async function() {
+  if (!relayStarted) {
+    closeSelf();
+    return;
+  }
+  const btn = document.getElementById('btnCancel');
+  const resultLine = document.getElementById('resultLine');
+  btn.disabled = true;
+  resultLine.textContent = 'Cancelling…';
+  try {
+    const res = await fetch('/api/relay/active', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ operation_id: currentOperationID }) });
+    let data = {};
+    try { data = await res.json(); } catch (_) {}
+    const msg = (data && data.message) || 'Sign-in cancelled. You can start again.';
+    // Say plainly what was and was not released: a cancel that only ended this
+    // window's wait leaves the peer holding its port until it times out, and the
+    // user needs to know that before retrying.
+    resultLine.textContent = msg + (relayInFlight ? ' This window can now be closed.' : '');
+    if (!relayInFlight) { closeSelf(); }
+  } catch (_) {
+    resultLine.textContent = 'Could not reach the Hub to cancel. The sign-in will end on its own timeout; retry, or cancel from the dashboard.';
+    btn.disabled = false;
+  }
+});
+document.getElementById('okClose').addEventListener('click', closeSelf);
+document.getElementById('btnRelayNow').addEventListener('click', async function() {
+  const btnRelay = document.getElementById('btnRelayNow');
+  const resultLine = document.getElementById('resultLine');
+  btnRelay.disabled = true;
+  relayStarted = true;
+  resultLine.textContent = 'Relaying…';
+  // Abort the relay request itself on Cancel, so this window stops waiting
+  // immediately. The server-side cancel is what releases the peer.
+  relayAbort = new AbortController();
+  relayInFlight = true;
+  try {
+    const res = await fetch('/api/relay/open', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ url: relayURL }), signal: relayAbort.signal });
+    relayInFlight = false;
+    let data = {};
+    try { data = await res.json(); } catch (_) {}
+    currentOperationID = (data && data.operation_id) || currentOperationID;
+    if (res.ok && data.status === 'success') {
+      // The success text lives outside the hidden confirm view, and the view
+      // carries its own live region: resultLine is inside confirmView, so a
+      // success was previously rendered into a display:none subtree and never
+      // announced at all.
+      hide(document.getElementById('confirmView'));
+      const okText = document.getElementById('okText');
+      okText.textContent = 'Authentication relayed' + (data.destination ? ' to the waiting terminal via ' + data.destination : '') + '. Return to that terminal to continue.' + (data.operation_id ? ' (ID ' + data.operation_id + ')' : '');
+      show(document.getElementById('okView'));
+      if (statusTimer != null) { clearInterval(statusTimer); statusTimer = null; }
+      const okBtn = document.getElementById('okClose');
+      if (okBtn) okBtn.focus();
+      setTimeout(function() { window.close(); }, 3000);
+    } else {
+      if (res.status === 401) {
+        sessionWasReady = false;
+        btnRelay.disabled = true;
+        hide(document.getElementById('peerLine'));
+        show(document.getElementById('noSession'));
+      } else if (res.status >= 500) {
+        // A server fault is not a missing session. Reporting it as one sent
+        // users off to re-mint a dashboard link for a problem a retry fixed.
+        resultLine.textContent = 'The Hub could not complete the relay (HTTP ' + res.status + '). Nothing was relayed. Try again in a moment.';
+        btnRelay.disabled = false;
+        return;
+      }
+      let msg = (data && data.message) || 'Relay failed';
+      if (data && data.next_action) msg += ' Next: ' + data.next_action;
+      if (data && data.operation_id) msg += ' (ID ' + data.operation_id + ')';
+      resultLine.textContent = msg;
+      if (res.status !== 401) {
+        btnRelay.disabled = false;
+      }
+    }
+  } catch (err) {
+    resultLine.textContent = 'Connection error: ' + err.message;
+    btnRelay.disabled = false;
+  }
+});
+boot();
+</script></body></html>
