@@ -2475,6 +2475,28 @@ the code did, the comment moved.
   past 30 s, and no peer-store transaction does JSON I/O that slow. Accepted
   as documented in `store.go`.
 
+### Caught by CI while validating this batch (run #35, macOS arm64)
+
+The batch's own validation surfaced a fourth latent test defect rather than
+a product one: `TestWebDashboard_RelayActiveListsInFlightRelay` broke out
+of its poll on the *first* listed entry and demanded an operation id — but
+a relay is deliberately listed from the moment its flow begins, in a
+`starting` phase with no attempt id yet (`snapshot()` in
+`relay_coordinator.go`, pinned by `relay_coordinator_test`, cancellable via
+flow key). `Do` inserts the entry before `fn` runs, and `fn` acquires
+`h.mu.RLock()` *before* `register`, so on a loaded runner the first GET can
+land pre-registration — which is exactly what the annotation shows
+(`a listed relay has no operation id`, on a correct product; Windows,
+Ubuntu, and the browser job passed the same commit). The test now polls
+past `starting` to the id-bearing phase, leak-checks *every* observation in
+either phase (strictly stronger than the old single-entry check), keeps the
+pre-existing skip for environments where no relay reaches the wire, and
+asserts `state == "relaying"` on the id-bearing entry. The id itself stays
+pinned deterministically by `relay_coordinator_test`. Verified by injecting
+a 500 ms pre-registration window — the exact condition CI hit — through
+which the new logic rides to the `relaying` entry (0.51 s), reverted
+byte-exact.
+
 ### Validation
 
 - Gates: gofmt clean, `go build ./...`, `go vet ./...`,

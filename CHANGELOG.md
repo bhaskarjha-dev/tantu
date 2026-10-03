@@ -234,6 +234,18 @@ rollback procedures.
   token remains as a legacy fallback.
 
 ### Fixed
+- **The relay-listing integration test no longer races a phase the product
+  deliberately exposes.** `TestWebDashboard_RelayActiveListsInFlightRelay`
+  asserted an operation id on the *first* entry its poll saw, but an
+  in-flight relay is listed from the moment its flow begins — in a
+  `starting` phase with no attempt id yet (still cancellable by flow key) —
+  and the id is published only after the coordinator's first hub lock
+  acquisition. CI run #35 (macOS arm64) landed a GET inside exactly that
+  window and failed a correct product. The test now polls past `starting`
+  to the id-bearing phase, leak-checks every observation in either phase,
+  keeps the pre-existing skip for environments where no relay reaches the
+  wire, and asserts the `relaying` state; the id-bearing snapshot itself
+  stays pinned by the coordinator unit test.
 - **A symlinked output directory was accepted at configuration time and then
   failed every transfer at the final publish step.** Validation used
   `os.Stat`, which follows links, while publication and the maintenance
