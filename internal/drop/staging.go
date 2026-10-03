@@ -65,6 +65,13 @@ type partialCandidate struct {
 	staging  bool
 }
 
+// isRealStagingOutputDir reports whether outDir is a real directory rather
+// than a symlink or junction; maintenance refuses to traverse links.
+func isRealStagingOutputDir(outDir string) bool {
+	info, err := os.Lstat(outDir)
+	return err == nil && info.Mode()&os.ModeSymlink == 0 && info.IsDir()
+}
+
 // SweepStalePartials removes stale partials under outDir/.tantu-staging and
 // manifest-marked legacy partials directly under outDir. Unmarked direct
 // .part/.part-N files are left untouched because they cannot be distinguished
@@ -72,11 +79,6 @@ type partialCandidate struct {
 // uses DefaultStagingMaxAge. A missing directory is not an error. Files that
 // cannot be inspected or removed are skipped so one odd entry cannot abort the
 // sweep.
-func isRealStagingOutputDir(outDir string) bool {
-	info, err := os.Lstat(outDir)
-	return err == nil && info.Mode()&os.ModeSymlink == 0 && info.IsDir()
-}
-
 func SweepStalePartials(outDir string, maxAge time.Duration) (removed int, freed int64) {
 	if !isRealStagingOutputDir(outDir) {
 		return 0, 0
@@ -293,7 +295,11 @@ func (d *StagingDirectory) PublishFromStaging(partPath, finalName string) (ok bo
 	if relErr != nil || rel == "" || rel == "." || strings.HasPrefix(rel, "..") {
 		return false, nil
 	}
-	// The final name must not already exist: publication never overwrites.
+	// The final name must not already exist: publication does not overwrite.
+	// This is a check-then-rename rather than an atomic no-replace primitive,
+	// so a same-user writer creating finalName inside this window is replaced
+	// by the rename — an actor who could modify the output directory directly
+	// regardless.
 	if _, statErr := d.Lstat(finalName); statErr == nil {
 		return false, os.ErrExist
 	} else if !os.IsNotExist(statErr) {

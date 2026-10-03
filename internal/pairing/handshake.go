@@ -83,8 +83,9 @@ type PairHelloPayload struct {
 	// Nonce is this side's contribution to the pairing transcript. Both sides
 	// feed their own and their peer's nonce into TranscriptSAS, which is what
 	// makes the displayed code specific to this session. A peer that omits it
-	// (older release) still pairs, but the resulting code carries no nonce
-	// entropy, so the handshake surfaces that.
+	// (older release) still pairs: the local nonce is generated fresh for
+	// every attempt, so the transcript always carries at least those 128
+	// bits. The omission itself is not detected or surfaced anywhere.
 	Nonce []byte `json:"nonce,omitempty"`
 }
 

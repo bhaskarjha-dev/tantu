@@ -234,6 +234,18 @@ rollback procedures.
   token remains as a legacy fallback.
 
 ### Fixed
+- **A symlinked output directory was accepted at configuration time and then
+  failed every transfer at the final publish step.** Validation used
+  `os.Stat`, which follows links, while publication and the maintenance
+  sweeps inspect the directory with `os.Lstat` and reject a link — so a Hub
+  configured with a linked output directory accepted the whole transfer,
+  streamed the payload, and failed at the last step with a message about a
+  "staging path", while stale-partial reclamation silently no-opped with no
+  recorded error. Startup and `POST /api/config` now refuse a symlinked or
+  junctioned output directory up front, with a message naming the problem,
+  so the failure happens where it can still be acted on.
+  (`TestValidateOutputDirRejectsSymlinkedDirectory`, red against the
+  previous code.)
 - **`TestHub_DropResumption` no longer races the RecentDrops buffer against
   file publication.** The test waited for the delivered file to reach full
   length and then sampled the buffer once, but the buffer is appended by the
@@ -624,6 +636,16 @@ rollback procedures.
   attempts (4) capped with 503 + Retry-After.
 
 ### Security notes
+- Security & integrity audit (batch Z29): dashboard route/authorization,
+  pairing identity binding, and QuickDrop resume integrity were each traced
+  to the implementing line and now have enumerated, red-proven gates — every
+  registered route outside the documented public allowlist must answer 401
+  unauthenticated, a substituted pairing certificate or transport
+  fingerprint must be refused, and planted staging bytes must never appear
+  in a delivered file. No vulnerability was found in those chains; five
+  comments that claimed properties the code did not implement were
+  corrected (`docs/DEV-RECORD.md` Batch Z29 records what was checked,
+  rejected, and why).
 - Resume identity is metadata plus a 64 KiB head hash, not a full-content or
   sender-fingerprint proof; built-in one-shot sends use a new DropID per
   attempt. Completion is at-least-once if the final acknowledgement is lost.

@@ -37,11 +37,17 @@ type DropSend struct {
 	Size      int64    `json:"size"`                // Total size in bytes (0 if unknown for stdin pipe)
 	MIMEType  string   `json:"mime_type,omitempty"` // MIME type hint (e.g. "text/plain", "image/png")
 	ChunkSize int      `json:"chunk_size"`          // Max bytes per DropData chunk (default 1MB)
-	HeadHash  string   `json:"head_hash,omitempty"` // SHA-256 of first 64KB for resumption file identity check
-	// IdempotencyKey is the sender's logical-operation key, reserved for
-	// idempotent retry (see docs/SPEC-WIRE-VERSIONING.md). Receivers validate
-	// it but take no duplicate-suppression action yet; retries remain
-	// at-least-once with explicit duplicate-risk UX.
+	// HeadHash is the SHA-256 of the first 64KB. Resume is impossible
+	// without it (the Hub restarts the transfer instead) and it is verified
+	// when the partial is at least 64KB; omitempty reflects the wire shape,
+	// not optionality.
+	HeadHash string `json:"head_hash,omitempty"`
+	// IdempotencyKey is the sender's logical-operation key (see
+	// docs/SPEC-WIRE-VERSIONING.md). Receivers validate it: a completed
+	// transfer records a completion tombstone under the key, a retry with
+	// the same metadata re-verifies the payload digest against that record
+	// instead of republishing, and reuse with different metadata or a
+	// differing digest is refused outright.
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
 	// AttemptID is local dispatcher state and is never serialized on the wire.
 	// It lets receiver callbacks distinguish concurrent attempts that reuse a

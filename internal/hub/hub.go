@@ -436,6 +436,12 @@ func (h *Hub) ensureOutputDir() error {
 // items keep the SavedPath recorded at receive time, so changing the output
 // directory orphans old inbox IDs by design (their previews 404 fail-closed
 // rather than resolving into the new directory).
+//
+// The directory must be a real directory, not a symlink or junction:
+// publication opens the output directory through OpenStagingDirectory and
+// the maintenance sweeps inspect it the same way, so a link that passes
+// here would accept the whole transfer and then fail at the final publish
+// step — with reclamation silently disabled alongside it.
 func validateOutputDir(dir string) error {
 	if strings.TrimSpace(dir) == "" {
 		return errors.New("output directory is not configured")
@@ -443,9 +449,12 @@ func validateOutputDir(dir string) error {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("create output directory %q: %w", dir, err)
 	}
-	info, err := os.Stat(dir)
+	info, err := os.Lstat(dir)
 	if err != nil {
 		return fmt.Errorf("inspect output directory %q: %w", dir, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("output directory %q must be a real directory, not a symlink", dir)
 	}
 	if !info.IsDir() {
 		return fmt.Errorf("output path %q is not a directory", dir)
@@ -1412,7 +1421,9 @@ func (h *Hub) Start(parent context.Context) (err error) {
 		// A start-time snapshot must NOT be passed here: snapshot OR live
 		// semantics would keep a peer trusted at the transport layer after
 		// `unpair` removed it, until the next Hub restart. The dispatcher
-		// applies the same live check at the application layer.
+		// re-checks live trust at the application layer for OAuth, QuickDrop,
+		// and cancel; pair_* traffic and heartbeats are routed without that
+		// check.
 		tr, err = transport.NewLANTransport(transport.LANTransportConfig{
 			Cert: tlsCert,
 			IsTrusted: func(fp string) bool {

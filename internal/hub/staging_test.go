@@ -3,6 +3,7 @@ package hub
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -151,6 +152,36 @@ func TestEnsureStagingDir_RejectsSymlink(t *testing.T) {
 	}
 	if err := ensureStagingDir(real); err != nil {
 		t.Fatalf("real staging dir rejected: %v", err)
+	}
+}
+
+// A symlinked output directory can never receive a file: publication opens
+// the output directory through OpenStagingDirectory, which Lstat-rejects a
+// symlinked final component (staging.go), and the maintenance sweeps reject
+// it too. Configuration must reject it at the same contract point as
+// ensureOutputDir does at startup — otherwise every transfer is accepted,
+// streams to the last step, and fails at publication with a message that
+// talks about a "staging path".
+func TestValidateOutputDirRejectsSymlinkedDirectory(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real-out")
+	if err := os.Mkdir(real, 0700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "out-link")
+	if err := os.Symlink(real, link); err != nil {
+		// Windows without symlink privilege: a directory junction exercises
+		// the same contract — os.Stat follows it while every consumer
+		// (publication, maintenance) Lstat-rejects the reparse point.
+		if mkErr := exec.Command("cmd", "/c", "mklink", "/J", link, real).Run(); mkErr != nil {
+			t.Skipf("symlinks not supported: %v", err)
+		}
+	}
+	if err := validateOutputDir(link); err == nil {
+		t.Fatal("symlinked output dir accepted, want error")
+	}
+	if err := validateOutputDir(real); err != nil {
+		t.Fatalf("real output dir rejected: %v", err)
 	}
 }
 

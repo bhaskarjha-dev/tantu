@@ -2313,3 +2313,176 @@ Both injections reverted byte-exact (`git diff` clean).
 - Red proof as above, reverted.
 - Go gates green on the batch (gofmt, build, vet, staticcheck, full suite).
 - No tag, no release: v0.1.0 remains the first tag, on the user's go.
+
+## Batch Z29 — security and integrity audit: gates for the claims that had none (2026-10-03)
+
+Scope selected by the user for this round: (0) a mojibake sweep, (1) a
+security & integrity audit; performance budgets (2.5) and a deeper harness
+are the next two batches. No tag.
+
+### Mojibake sweep (item 0)
+
+A strict UTF-8 scan (custom scanner, kept in the temp directory rather than
+the repo) over all 187 tracked text files: no invalid sequences, no U+FFFD,
+no stray BOMs, no CP1252 mojibake sequences, no C0 controls. The last 12
+commit messages are BOM-free and the dashboard's non-ASCII markers
+(`⭐ ✓`, `✕`) are intact. Clean; the sweep is re-run before any release tag.
+
+### The audit method
+
+Two mapper agents (QuickDrop resume/publish integrity; pairing trust path)
+plus direct reads of the remaining surfaces: dashboard middleware, routes,
+and session model, `serveReceivedFile`, `hub.json`, the pairing store,
+cert/SAS, bridge redaction, browser URL validation. Every claimed property
+was traced to the line that implements it; where a comment claimed more than
+the code did, the comment moved.
+
+### Finding that shipped a behaviour fix
+
+1. **A symlinked output directory passed validation and failed every
+   transfer at publication.** `validateOutputDir` used `os.Stat`, which
+   follows links, while publication opens the output directory through
+   `OpenStagingDirectory` (`staging.go` Lstat-rejects a symlinked final
+   component) and the maintenance sweeps inspect it the same way. A linked
+   output directory therefore accepted the whole transfer, streamed the
+   payload, and failed at the last step with `open output directory: staging
+   path is not a directory` — while stale-partial reclamation silently
+   no-opped alongside it, recording no maintenance error. The function's own
+   doc promised the opposite ("fails fast instead of failing every transfer
+   later"). Now `Lstat` + an explicit "must be a real directory, not a
+   symlink" error, at the same contract point that already rejects
+   non-directories (startup `ensureOutputDir`, `POST /api/config`). Gate:
+   `TestValidateOutputDirRejectsSymlinkedDirectory`, written first and red
+   against the previous code — observed locally, because a directory
+   junction stands in for the symlink when Windows refuses unprivileged
+   `os.Symlink`; Go reports a junction as neither symlink nor directory,
+   which is precisely what publication rejects, so the fixture exercises the
+   real disagreement rather than a stand-in.
+
+### Comment/behaviour divergences (both mappers' flagged lists, all fixed)
+
+- `drop/types.go` claimed receivers "take no duplicate-suppression action
+  yet"; they do — completion tombstones with digest re-verification
+  (`receiver.go:278-288`, `:600-613`, `:645-656`, pinned by
+  `TestE2E_TombstoneSuppressesRepublish` and `TestHub_SameKeyRedeliveryPublishesOnce`).
+  The comment now describes the real contract. `HeadHash`'s doc called it
+  optional; resume is impossible without it and it is verified when the
+  partial is ≥ 64 KiB.
+- `drop/staging.go` said "publication never overwrites"; it is a
+  check-then-rename, and no portable atomic no-replace primitive exists in
+  the dependency surface. The residual window only matters to a same-user
+  writer who could edit the output directory directly anyway; the comment
+  now says that instead of promising a property the code does not have. The
+  `SweepStalePartials` doc that sat on `isRealStagingOutputDir` was moved to
+  its function.
+- `pairing/handshake.go`'s nonce comment claimed a missing peer nonce leaves
+  "no nonce entropy" and that "the handshake surfaces that". Both false: the
+  local nonce is fresh per attempt (16 bytes, `crypto/rand`), so the
+  transcript always carries at least those 128 bits, and nothing detects or
+  surfaces the omission. The comment now states exactly that.
+- `hub.go`'s LAN trust comment said the dispatcher "applies the same live
+  check at the application layer"; true for OAuth, QuickDrop, and cancel,
+  not for `pair_*` (the trust bootstrap) or heartbeats. It now enumerates
+  which routes re-check and which do not.
+- `transport/lan.go`'s "certificate pinning is performed below" was written
+  as if every connection were pinned at the TLS layer; with
+  `AllowPairing` (the Hub's inbound socket) the TLS callback accepts any
+  presented certificate and trust moves to the application layer. Both
+  config comments now say which mode they are in.
+
+### Findings that became gates (correct today, unguarded before)
+
+2. **Dashboard route × authorization — `dashboard_authz_test.go`.** Routes
+   are enumerated from the package source (`mux.Handle[Func](` with a
+   literal path; a non-literal registration fails the test, so a new route
+   cannot dodge the sweep), and the classification is asserted per method:
+   every `/api/*` route answers 401 unauthenticated; OPTIONS is answered by
+   the middleware itself (204, empty body) and never reaches a handler;
+   `/api/session` keeps its 405/403 bootstrap shape; every non-`/api/`
+   route must be on the explicit public allowlist (`/`, `/healthz`,
+   `/relay`) — a new public route fails until it is deliberately
+   allowlisted, and a stale allowlist entry fails too. Red-proven twice: a
+   rogue `/debug-dump` registration named itself in the failure; with the
+   capability check disabled the gate reported every leak, worst being
+   `POST /api/dashboard-url = 200` — an unauthenticated call minting a fresh
+   bootstrap link. The first red run *hung* rather than failed (the deny
+   sweep reached the `/api/events` SSE stream), so the gate now runs under a
+   10 s client timeout: an unauthenticated request that escapes into a
+   long-lived handler fails the assertion by name instead of blocking the
+   test.
+
+3. **QuickDrop resume never publishes planted staging bytes —
+   `drop_resume_tamper_test.go`.** Both resume windows are covered: below
+   64 KiB the head-identity check is skipped and only the whole-payload
+   digest stands between a planted prefix and the output directory; at or
+   above 64 KiB the head check must discard the planted file and restart
+   from zero (asserted via the resume ACK offset). `TestHub_DropResumption`
+   pinned only the honest path, so a change that began trusting the on-disk
+   prefix would have shipped silently. Red-proven by disabling the
+   receiver's digest comparison: the planted file appeared in the output
+   directory — while the *sender* simultaneously reported the mismatch from
+   the completion ack. That ordering is the finding in miniature: the
+   sender's check reports, the receiver's check keeps the disk clean.
+
+4. **Pairing identity binding — `identity_binding_test.go`.** A substituted
+   certificate inside `pair_hello` must be refused by `verifyTLSClaim`
+   (tested against a real TLS 1.3 handshake over `net.Pipe`, honest claim
+   accepted, substituted claim and garbage rejected), a substituted
+   transport fingerprint by `verifyPairTransportIdentity`, `confirmFn ==
+   nil` must fail closed (no human said yes, so no stored peer), and
+   transcript nonces must differ across attempts. Both verify functions
+   sabotaged in one run → both gates failed naming the substitution →
+   reverted byte-exact. The fixture initially cost 5 s per run: cleanup
+   called `tls.Conn.Close()`, whose `close_notify` write blocks on an
+   unbuffered `net.Pipe` whose peer is closing too until the stdlib's 5 s
+   give-up. Closing the raw pipes is instant; the test is now 0.00 s.
+
+### Considered and rejected (no fix, reasoning recorded)
+
+- **`dashboardSessionValid` compares with `!=`.** Constant-time discipline
+  matters for byte-wise comparisons of attacker-steerable input; Go map
+  access hashes with a per-process random `memequal`-gated bucket lookup, so
+  the classical prefix-timing oracle does not exist — the attacker cannot
+  steer which prefix length gets compared, only a rare bucket-hit
+  `memequal` runs at all. A same-user attacker has `hub.json` (0600)
+  anyway; cross-user extraction needs sustained nanosecond discrimination
+  through loopback noise against a session that must stay alive for days.
+  No behavioural test can pin timing, and a source-scan assertion would
+  encode the shape of a fix rather than the property — documented here
+  instead.
+- **Cross-peer staging reuse (mapper F10).** `attemptOwners` binds a partial
+  to an attempt, not to a peer: after cleanup, a different peer presenting
+  the same DropID with matching metadata could resume the retained partial.
+  The DropID is 128 random bits disclosed only to the intended recipient —
+  the same secrecy the transfer itself already depends on. No change.
+- **Relay tokens in a loopback URL** (`?token=`): browser-history exposure
+  sits inside the same-user boundary (a cross-user reader cannot read the
+  browser profile either), and the spent-link guidance from Z19/Z20 already
+  bounds replay. No change.
+- **SSH in-band pairing is unreachable.** `dialInBandPairing` always dials
+  its own TLS connection to the pairing port; pairing messages multiplexed
+  over an SSH transport channel would compare `SHA256:<base64>` against 64
+  hex chars, never match, and fail closed with a TLS-flavoured error.
+  Nothing routes them there today, so this is dead defensive code, not a
+  user-visible limitation — no KNOWN-LIMITATIONS row.
+- **The `<64 KiB` head-check skip is not a hole.** A tampered small prefix
+  is still hashed into the final digest and rejected (gate 3, red-proven);
+  the retained failing partial self-heals on a fresh DropID or the 24 h
+  sweep. Rejection of the skip would only force earlier restarts.
+- **`dashboardSessionValid`'s sliding-window TTL and the mkdir-lock stale
+  sweep in the peer store** were also read closely: the former is Z17-tested;
+  the latter's three-process stale-removal race requires a transaction held
+  past 30 s, and no peer-store transaction does JSON I/O that slow. Accepted
+  as documented in `store.go`.
+
+### Validation
+
+- Gates: gofmt clean, `go build ./...`, `go vet ./...`,
+  staticcheck@v0.8.1, full `go test -count=1 ./...` exit 0 — with all four
+  new gates in place.
+- Red proofs: five, each reverted byte-exact (rogue route; disabled
+  capability check; disabled receiver digest; sabotaged `verifyTLSClaim` and
+  `verifyPairTransportIdentity`; the symlink test red before its fix).
+  `git diff HEAD` shows only the intended files after each cycle.
+- Mojibake: sweep clean (above).
+- No tag, no release — v0.1.0 remains the first tag, on the user's go.

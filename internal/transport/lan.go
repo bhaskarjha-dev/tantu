@@ -113,14 +113,14 @@ func NewLANTransport(config LANTransportConfig) (*LANTransport, error) {
 		MinVersion:            tls.VersionTLS13,
 		Certificates:          []tls.Certificate{config.Cert},
 		ClientAuth:            tls.RequireAnyClientCert,
-		InsecureSkipVerify:    true, // Certificate pinning is performed below.
+		InsecureSkipVerify:    true, // Verification runs below; with AllowPairing it accepts any presented certificate and trust moves to the application layer.
 		VerifyPeerCertificate: verifyPeer(config.AllowPairing),
 	}
 
 	clientTLS := &tls.Config{
 		MinVersion:            tls.VersionTLS13,
 		Certificates:          []tls.Certificate{config.Cert},
-		InsecureSkipVerify:    true, // Certificate pinning is performed below.
+		InsecureSkipVerify:    true, // Verification runs below: trust-set membership, or the explicit pin in DialPinned.
 		VerifyPeerCertificate: verifyPeer(false),
 	}
 
