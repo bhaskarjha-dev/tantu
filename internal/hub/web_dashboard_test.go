@@ -683,8 +683,8 @@ func TestWebDashboard_BootstrapSessionAndNoEmbeddedTokens(t *testing.T) {
 		t.Fatalf("bootstrap exchange status = %d", exchangeResp.StatusCode)
 	}
 	cookies := exchangeResp.Cookies()
-	if len(cookies) != 1 || cookies[0].Name != "tantu_dashboard_session" || !cookies[0].HttpOnly {
-		t.Fatalf("bootstrap response did not set an HttpOnly session cookie: %+v", cookies)
+	if len(cookies) != 1 || cookies[0].Name != dashboardSessionCookieName(h.WebAddr()) || !cookies[0].HttpOnly {
+		t.Fatalf("bootstrap response did not set an HttpOnly session cookie scoped to the Hub's port: %+v", cookies)
 	}
 
 	second, err := http.NewRequest(http.MethodPost, "http://"+h.WebAddr()+"/api/session", nil)
@@ -2016,6 +2016,19 @@ func TestWebDashboard_UploadProgressAndPeerRenderMarkers(t *testing.T) {
 		"formatDuration",
 		"modalIn",
 		"bannerIn",
+		// Z30: the initiator's pairing conversation must live inside the
+		// dialog - session code, in-modal approve/reject, direction-aware
+		// banner copy, honest outcome messages, and an unpair confirmation
+		// that explains how the other machine converges.
+		"pairSessionBlock",
+		"pairSessionSAS",
+		"startPairingWatch",
+		"notePairWatchDecision",
+		"pairingRejectionMessage",
+		"pairingFailureMessage",
+		"direction === 'outbound'",
+		"not</strong> the pairing code",
+		"told right away if it is online",
 	} {
 		if !strings.Contains(content, s) {
 			t.Errorf("dashboard HTML missing %q (upload-progress / focus-preservation UX)", s)
@@ -2044,6 +2057,18 @@ func TestWebDashboard_UploadProgressAndPeerRenderMarkers(t *testing.T) {
 	} {
 		if strings.Contains(content, s) {
 			t.Errorf("dashboard HTML still contains faked upload progress %q", s)
+		}
+	}
+	// Z30: the identity SAS was labeled as the pairing code (the initiator
+	// compared it against the other screen's session words and every attempt
+	// failed), and every rejected handshake was blamed on the remote device
+	// even when this machine had not answered or had timed out.
+	for _, s := range []string{
+		"Local SAS Verification Code",
+		"Pairing was rejected by the remote device.",
+	} {
+		if strings.Contains(content, s) {
+			t.Errorf("dashboard HTML still contains misleading pairing copy %q", s)
 		}
 	}
 	// Multi-GB units must render beyond MB.
@@ -2350,5 +2375,163 @@ func TestWebDashboard_DropFileServeSymlinkedDirRejected(t *testing.T) {
 	_, _ = io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("symlinked-dir file serve = %d, want 404", resp.StatusCode)
+	}
+}
+
+// The initiator's only surface for the session SAS is /api/pair/pending: the
+// dashboard's pairing modal renders from it while the POST /api/pair/initiate
+// call is still in flight. Without this contract the machine that started the
+// pairing has no code to compare and no confirmation to give - the two
+// 60-second timeouts in the field report were exactly that: the initiator
+// waiting on the other side while its own approval row sat unreachable. The
+// direction field is part of the contract too, because the initiator's row has
+// to say it was started here for the modal and banner to word it correctly.
+func TestWebDashboard_PairPendingExposesDirectionAndSessionSAS(t *testing.T) {
+	hA, err := NewHub(HubConfig{
+		TransportType:     "lan",
+		ListenAddr:        "127.0.0.1:0",
+		WebAddr:           "127.0.0.1:0",
+		StoreDir:          t.TempDir(),
+		Headless:          true,
+		AutoAcceptPairing: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hB, err := NewHub(HubConfig{
+		TransportType:     "lan",
+		ListenAddr:        "127.0.0.1:0",
+		WebAddr:           "127.0.0.1:0",
+		StoreDir:          t.TempDir(),
+		Headless:          true,
+		AutoAcceptPairing: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = hA.Start(ctx) }()
+	go func() { _ = hB.Start(ctx) }()
+	select {
+	case <-hA.Ready():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for Hub A")
+	}
+	select {
+	case <-hB.Ready():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for Hub B")
+	}
+	defer func() {
+		_ = hA.Stop()
+		_ = hB.Stop()
+		cancel()
+	}()
+
+	// Hub B initiates; both sides stay in manual-approval mode, so the
+	// initiate call blocks until this test resolves both decisions.
+	type pairResult struct {
+		resp *http.Response
+		err  error
+	}
+	pairResultCh := make(chan pairResult, 1)
+	go func() {
+		body, _ := json.Marshal(map[string]string{"peer_addr": hA.P2PAddr().String()})
+		req, _ := http.NewRequest(http.MethodPost, "http://"+hB.WebAddr()+"/api/pair/initiate", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", "http://"+hB.WebAddr())
+		req.Header.Set(IPCTokenHeader, hB.ipcToken)
+		res, rErr := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+		pairResultCh <- pairResult{resp: res, err: rErr}
+	}()
+
+	// Decoded as raw maps so the assertion fails on the missing field rather
+	// than on compilation: the field is the behaviour under test.
+	pollPending := func(h *Hub) []map[string]any {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			resp, pErr := testGet(h.ipcToken, "http://"+h.WebAddr()+"/api/pair/pending")
+			if pErr == nil {
+				var list []map[string]any
+				_ = json.NewDecoder(resp.Body).Decode(&list)
+				resp.Body.Close()
+				if len(list) > 0 {
+					return list
+				}
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		return nil
+	}
+
+	inbound := pollPending(hA)
+	if len(inbound) == 0 {
+		t.Fatal("expected a pending pairing on the responder (Hub A)")
+	}
+	outbound := pollPending(hB)
+	if len(outbound) == 0 {
+		t.Fatal("expected a pending pairing on the initiator (Hub B)")
+	}
+
+	if dir, _ := inbound[0]["direction"].(string); dir != "inbound" {
+		t.Errorf("responder direction = %q, want inbound", dir)
+	}
+	if dir, _ := outbound[0]["direction"].(string); dir != "outbound" {
+		t.Errorf("initiator direction = %q, want outbound", dir)
+	}
+	responderSAS, _ := inbound[0]["peer_sas"].(string)
+	initiatorSAS, _ := outbound[0]["peer_sas"].(string)
+	if responderSAS == "" {
+		t.Error("responder pending entry has no peer_sas to display")
+	}
+	if initiatorSAS == "" {
+		t.Error("initiator pending entry has no peer_sas to display")
+	}
+	// The whole point of SAS: both screens must show the same words, and the
+	// initiator reads its words from this very field.
+	if responderSAS != initiatorSAS {
+		t.Errorf("session SAS differs across screens: responder %q vs initiator %q", responderSAS, initiatorSAS)
+	}
+	if addr, _ := outbound[0]["remote_addr"].(string); addr != hA.P2PAddr().String() {
+		t.Errorf("initiator remote_addr = %q, want %q", addr, hA.P2PAddr().String())
+	}
+
+	// Resolve both sides so the blocked initiate call finishes cleanly.
+	approve := func(h *Hub, id string) {
+		t.Helper()
+		body, _ := json.Marshal(map[string]any{"id": id, "accept": true})
+		req, _ := http.NewRequest(http.MethodPost, "http://"+h.WebAddr()+"/api/pair/decision", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", "http://"+h.WebAddr())
+		req.Header.Set(IPCTokenHeader, h.ipcToken)
+		resp, dErr := http.DefaultClient.Do(req)
+		if dErr != nil {
+			t.Fatalf("decision POST failed: %v", dErr)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("decision POST = %d, want 200", resp.StatusCode)
+		}
+	}
+	approve(hA, inbound[0]["id"].(string))
+	approve(hB, outbound[0]["id"].(string))
+
+	select {
+	case pr := <-pairResultCh:
+		if pr.err != nil {
+			t.Fatalf("initiate failed: %v", pr.err)
+		}
+		defer pr.resp.Body.Close()
+		var out struct {
+			Accepted bool `json:"accepted"`
+		}
+		_ = json.NewDecoder(pr.resp.Body).Decode(&out)
+		if pr.resp.StatusCode != http.StatusOK || !out.Accepted {
+			t.Fatalf("pairing did not complete: status=%d accepted=%v", pr.resp.StatusCode, out.Accepted)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("initiate never returned after both approvals")
 	}
 }

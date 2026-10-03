@@ -1,13 +1,40 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
 	"strings"
 
+	"github.com/bhaskarjha-dev/tantu/internal/hub"
 	"github.com/bhaskarjha-dev/tantu/internal/pairing"
 )
+
+// notifyRemovedPeers tells each just-removed peer that the pair is gone, the
+// same best-effort notice the dashboard's Unpair sends. Without it a CLI
+// unpair would converge only one store: the other machine would keep listing
+// this one as paired until its next send was refused. Failure to notify is
+// reported but never fatal - the removal already happened, and the refused
+// send carries an honest reason as the fallback.
+func notifyRemovedPeers(store *pairing.PeerStore, removed []pairing.Peer) {
+	if len(removed) == 0 {
+		return
+	}
+	id, err := store.LoadOrCreateIdentity()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Note: could not load identity to notify removed peers: %v\n", err)
+		return
+	}
+	for _, p := range removed {
+		name := p.DisplayName()
+		if err := hub.NotifyUnpaired(context.Background(), id, p); err != nil {
+			fmt.Printf("Note: could not notify %s it was unpaired (%v). Its next send will get an honest \"no longer trusted\" reason instead of a generic refusal.\n", name, err)
+			continue
+		}
+		fmt.Printf("📣 Told %s it was unpaired.\n", name)
+	}
+}
 
 func runUnpair(args []string) {
 	fs := flag.NewFlagSet("unpair", flag.ExitOnError)
@@ -59,12 +86,19 @@ func runUnpair(args []string) {
 			fmt.Println("Aborted.")
 			return
 		}
+		var removed []pairing.Peer
 		for _, p := range peers {
 			if err := store.RemovePeer(p.Fingerprint); err != nil {
 				fmt.Fprintf(os.Stderr, "Error removing peer %s: %v\n", p.Fingerprint, err)
+				continue
 			}
+			removed = append(removed, p)
 		}
 		fmt.Printf("✅ Successfully removed all %d peers.\n", len(peers))
+		// Only peers whose removal actually persisted are announced; telling a
+		// still-listed peer it was unpaired would split the stores the other
+		// way.
+		notifyRemovedPeers(store, removed)
 		return
 	}
 
@@ -114,6 +148,7 @@ func runUnpair(args []string) {
 			os.Exit(1)
 		}
 		fmt.Printf("✅ Successfully removed peer %q (%s)\n", target.Name, target.Fingerprint)
+		notifyRemovedPeers(store, []pairing.Peer{target})
 		return
 	}
 
@@ -155,6 +190,7 @@ func runUnpair(args []string) {
 			pName = "(unnamed)"
 		}
 		fmt.Printf("✅ Successfully removed peer %s (fp: %s)\n", pName, target.Fingerprint)
+		notifyRemovedPeers(store, []pairing.Peer{target})
 		return
 	}
 }

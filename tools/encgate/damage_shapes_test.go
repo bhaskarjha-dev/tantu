@@ -18,6 +18,13 @@ var (
 	// whose bytes are not valid UTF-8. It cannot be reversed, so no round
 	// trip can detect it - only its shape can.
 	latinRunDamage = string([]rune{0x00D4, 0x00D8, 0x00EE})
+	// cp850ArrowDamage is U+2192 mis-decoded as CP850 (the OEM console code
+	// page, which is what a PowerShell console round trip applies) and then
+	// re-encoded as UTF-8: bytes E2 86 92 become U+00D4 U+00E5 U+00C6. The
+	// cluster sits between ASCII letters ("B...A"), so the bare-cluster run
+	// rule treats it as a word, and the CP1252 reverse yields bytes that are
+	// not valid UTF-8. Only reversing the OEM page finds it.
+	cp850ArrowDamage = string([]rune{0x00D4, 0x00E5, 0x00C6})
 )
 
 // countMojibakeRuns catches the one damage shape that leaves no reversible
@@ -70,5 +77,33 @@ func TestCountFormatCharsCatchesInvisibleDamage(t *testing.T) {
 	}
 	if got := countFormatChars("clean ✅ text with an em dash — and ❌"); got != 0 {
 		t.Errorf("countFormatChars = %d, want 0 on clean text", got)
+	}
+}
+
+// An OEM (CP850/CP437) console round trip is a second real damage path: it
+// produced four mis-decoded arrows in internal/protocol/protocol.go that the
+// gate passed, because its reverse table was CP1252 only. The damaged run here
+// is bounded by ASCII letters on both sides, so neither the bare-cluster shape
+// rule nor a CP1252 reverse can see it - the combined inspect must.
+func TestInspectCatchesCP850ArrowDamage(t *testing.T) {
+	damaged := "// BridgeRequest: B" + cp850ArrowDamage + `A. "Open this URL."`
+	if got := inspect("protocol.go", []byte(damaged)); got == "" {
+		t.Errorf("inspect(%q) reported clean; CP850 round-trip damage must fail the gate", damaged)
+	}
+	// The intact line must stay clean - the check exists next to 83 real
+	// arrows in this repository and must not flag any of them.
+	clean := "// BridgeRequest: B→A. \"Open this URL.\""
+	if got := inspect("protocol.go", []byte(clean)); got != "" {
+		t.Errorf("inspect(%q) = %q, want clean", clean, got)
+	}
+	// Adjacent accented prose must stay clean too: reversing OEM pages must
+	// not turn legitimate words into damage.
+	for _, prose := range []string{
+		"// café and naïve are real words",
+		"a.logf(\"⚠️ Connection rejected from %s\", addr)",
+	} {
+		if got := inspect("x.go", []byte(prose)); got != "" {
+			t.Errorf("inspect(%q) = %q, want clean", prose, got)
+		}
 	}
 }

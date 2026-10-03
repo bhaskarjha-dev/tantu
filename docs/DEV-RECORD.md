@@ -2508,3 +2508,171 @@ byte-exact.
   `git diff HEAD` shows only the intended files after each cycle.
 - Mojibake: sweep clean (above).
 - No tag, no release — v0.1.0 remains the first tag, on the user's go.
+
+## Batch Z30 — pairing and unpair: the conversation the initiator could not see (2026-10-03)
+
+User-reported defects for this round: (1) the machine that starts a pairing
+never sees the SAS and has to approve invisibly after the other side
+approves; (2) unpair leaves the removed peer listed, and its next send fails
+with a misleading error. The batch sweeps the pairing UX around those two
+reports. Scope for the next batches is unchanged: performance budgets (plan
+2.5), then the deeper harness. No tag.
+
+### The reports, located in the code
+
+- **C1 — the initiator's approval row sat behind the pair modal.** Pending
+  requests render in the banner, but the pair dialog's overlay is
+  `z-index: 9999` over the whole viewport: on the initiating side the banner
+  (with the session code and Approve/Reject) existed but was covered for the
+  entire handshake. The initiator had nothing to compare and no button to
+  press, so the request waited out both 60-second windows.
+- **C2 — the dialog showed the wrong code.** The modal's SAS box was fed
+  `idSAS` — this machine's identity SAS (six hex chars) — under the heading
+  "Local SAS Verification Code". The other screen shows the *session* words.
+  Comparing them can never succeed, so even a determined initiator would not
+  approve.
+- **C3 — status said "Connecting…" for the whole handshake.** No state
+  change for 60 seconds reads as a hang; two field timeouts followed.
+- **C4 — every rejection blamed the remote device.** The only failure copy
+  was "Pairing was rejected by the remote device", printed for local
+  rejections, remote rejections, and timeouts alike.
+- **C5 — unpair was one-sided.** The store edit removed the peer locally;
+  the other machine kept listing the remover until its next send was
+  refused, and that refusal (`unauthorized: peer certificate not paired or
+  trusted`) fell through the classifier as a generic `receiver_rejected`.
+
+### Fixes and gates (red proven before implementation)
+
+1. **Direction on pending pairings** — `PendingPairing.Direction` is set at
+   both creation sites (`inbound` on the listener callback, `outbound` on the
+   initiate callback), and the banner renders direction-aware instructions:
+   outbound rows say *this request was started here and your confirmation is
+   the missing step*. Gate G1 `TestWebDashboard_PairPendingExposesDirectionAndSessionSAS`
+   was red (direction empty) before the field existed; it also pins that
+   both sides derive the same `peer_sas`, so the two screens can match.
+2. **The conversation moved inside the dialog** — `pairSessionBlock` in the
+   modal renders the session words, in-modal Approve/Reject wired through the
+   existing `decide-pairing` dispatch, and a watch (`startPairingWatch`)
+   that polls `/api/pair/pending` while the initiate call is in flight and
+   keeps state honest whichever surface the user clicks
+   (`notePairWatchDecision`). After a local decision the block holds the
+   "✅ Confirmed on this machine. Waiting for <addr>…" state until the
+   handshake settles. The identity box was relabeled ("This machine's
+   identity SAS — … NOT the pairing code"). Static markers in G5's list pin
+   every piece of this; red-proven by swapping the pre-Z30 HTML back in
+   (all 11 markers failed, both misleading strings still present).
+3. **Honest outcome copy** — `pairingRejectionMessage` distinguishes local
+   rejection / remote rejection-or-silence / ≥55 s timeout from the elapsed
+   time and the watch's local-decision state; `pairingFailureMessage` maps
+   deadline and unreachable errors to plain language. Pinned in G5.
+4. **Classifier branch** — `classifyRejection` now maps the dispatcher's
+   exact refusal (`unauthorized: peer certificate not paired or trusted`) to
+   `untrusted_peer`: "The receiver no longer trusts this machine — it was
+   removed from the receiver's paired devices…", next action "pair again".
+   Gate G2 `TestClassifyTransferError_UntrustedPeerExplainsUnpair` was red
+   (`got receiver_rejected`).
+5. **Unpair notice (F7)** — new `protocol.TypePeerUnpaired` /
+   `PeerUnpaired{ByFingerprint}` over the authenticated channel. The sender
+   (`hub.NotifyUnpaired`, called from `/api/peers/remove` after capturing the
+   peer's address *before* removal, and from `tantu unpair` for every
+   successfully removed peer) dials with the removed peer's fingerprint
+   pinned in `TrustedFingerprints` — trust-set membership is gone after the
+   store edit, the pin still rejects a substituted listener — best effort
+   with a 3 s budget: the removal already happened and an unreachable peer
+   falls back to the pull path (fix 4). The receiver's dispatcher case is
+   gated twice: the payload fingerprint must match the certificate the
+   handshake authenticated (`strings.EqualFold`), and the sender must still
+   be `IsPeerTrusted`, before the hub removes it and logs the event. Acting
+   on it can only ever *remove* trust, and only for the sender itself, so
+   the worst case of a spoofed or replayed notice is an over-eager unpair
+   that pairing again restores.
+   - Gate G3 `TestHub_UnpairNotifiesRemovedPeer` was red (B still listed 1
+     peer after 5 s).
+   - Spoof gate `TestHub_UnpairNoticeFromUntrustedSenderIsIgnored` (both
+     shapes: masquerade and self-announcement) — injection red-proven:
+     with the payload trusted instead of the certificate, the spoofed
+     notice emptied the store, reverted byte-exact.
+   - CLI gate `TestRunUnpair_NotifiesRemovedPeerAndReceiverConverges` —
+     `runUnpair --name` against a live hub; injection red-proven by
+     removing the notify call (receiver kept its peer after 5 s), reverted
+     byte-exact.
+   - The `--all` loop now skips the notify for peers whose removal failed —
+     announcing a removal that did not persist would split the stores the
+     other way. (The pre-existing "removed all N" success line, which counts
+     attempts rather than successes, was left untouched: `RemovePeer` fails
+     only on I/O errors and no portable test can force that on Windows.)
+6. **Unpair confirmation copy** — says how the other machine converges
+   (told immediately if online; otherwise its next send fails with an honest
+   reason), pinned in G5.
+
+### Decision: two-sided approval retained; the initiator's SAS moment stands
+
+Considered: auto-accepting on the initiator, since its confirmation click
+necessarily precedes the transcript-derived comparison on that side. Rejected —
+an existing gate pins the property that a web-initiated request must not
+silently auto-accept a peer the *initiating* user has not reviewed, and the
+SAS moment is what makes the fingerprint check a human check. The reported
+defects were visibility (C1–C3), not the protocol: with the conversation in
+the dialog, both sides now see the same words and both click one button.
+
+### Found by running it: the dashboard session cookie ignored ports
+
+The live two-hub run stalled the moment both hubs were authenticated in one
+browser: hub A's dashboard began 401ing every poll with "Dashboard session
+not established" while the hub itself was healthy and answered
+`/api/status` with a valid IPC token. Browsers key cookies by name, domain
+and path — never by port — and both hubs set `tantu_dashboard_session` on
+`127.0.0.1`, so hub B's exchange *replaced* hub A's session value (stale-first
+duplicates were proven the same way at the server: `bogus; valid → 401`,
+`valid; bogus → 200`). Fix: `dashboardSessionCookieName` scopes the cookie to
+the hub's web port (`tantu_dashboard_session_<port>`), so every hub owns its
+slot in the shared jar. Gate
+`TestDashboardSession_SecondHubExchangeDoesNotClobberFirstHub` models the jar
+literally (apply both hubs' Set-Cookie, replay the combined header at both);
+it was red with "browser jar holds 1 cookie(s)… the second login replaced the
+first session". Single-hub setups were never affected; a second hub in the
+same browser (testing, `tantu dashboard` on an instance) hit the dead state
+every time. This defect was found by running the product, not by reading it.
+
+### Live run (two hubs, fresh stores, real browser, no auto-accept)
+
+- Both dashboards authenticated simultaneously after the cookie fix (the
+  exact sequence that previously killed A's session).
+- Pairing A→B: entry visible in 157–159 ms; the dialog showed
+  `HOUR-THIN-TONE-WAND-ROCK-PAGE` while B's banner showed the same words;
+  in-modal Approve carried the pending id; the confirm named
+  `127.0.0.1:39877` (outbound) and `DESKTOP-SUD78TU` (inbound); success read
+  "✅ Successfully paired with DESKTOP-SUD78TU (SAS: …)" and both stores
+  listed one peer.
+- Local rejection settled in 508 ms with "You rejected this pairing. Nothing
+  was trusted on either side." — the old code would have blamed the remote.
+- A slow round-trip reproduced the timeout path honestly: B's banner cleared
+  at 60 s and A reported "The other device rejected the pairing, or stopped
+  responding" — nothing trusted on either side.
+- Unpair: the new consequence copy was in the confirm dialog, and B's store
+  converged **267 ms** after A's click (push notice), both stores at 0.
+- Zero console errors throughout; harness 34/34 chromium on the final tree.
+
+### Validation
+
+- Gates: gofmt clean, `go build ./...`, full `go test -count=1 ./...`,
+  staticcheck@v0.8.1, `go run ./tools/encgate`, uxtest chromium 34/34 — all
+  green on the final tree.
+- Red proofs: eight cycles, each reverted byte-exact (G1, G2, G3, encgate
+  CP850, spoof-payload injection, CLI-notify injection, G5 against pre-Z30
+  HTML, cookie-jar clobber) — `git diff` shows only intended files after
+  each.
+- The encgate extension itself (CP850/CP437 reverse tables) was red-proven
+  with `TestInspectCatchesCP850ArrowDamage` before the four damaged arrows in
+  `internal/protocol/protocol.go` were repaired.
+- No tag, no release — v0.1.0 remains the first tag, on the user's go.
+
+### Known and deferred (with reasons)
+
+- When one side rejects remotely, the *other* side's pending banner simply
+  clears; surfacing "they rejected" needs an outcome queue the polling
+  banner does not have. Noted, not fixed — the state is safe (nothing
+  trusted) and inventing an event channel this late in the batch would be
+  the wrong size.
+- Responding-side timeouts and local rejection on the initiator are covered
+  by honest copy; the 60-second window itself is unchanged.

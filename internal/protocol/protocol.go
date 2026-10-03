@@ -12,6 +12,12 @@ const (
 	TypeBridgeComplete = "bridge_complete"
 	TypeBridgeCancel   = "bridge_cancel"
 	TypeHeartbeat      = "heartbeat"
+	// TypePeerUnpaired travels alone on a fresh connection: one machine telling
+	// another that it has just been removed from the sender's trusted peer
+	// store. It grants nothing and asks for nothing - the receiver decides
+	// whether to converge its own store. Older peers log the unknown type and
+	// close, which costs only the notice, never the connection's safety.
+	TypePeerUnpaired = "peer_unpaired"
 )
 
 // ProtocolVersion is the wire envelope version emitted by this release.
@@ -54,7 +60,7 @@ func (e *Envelope) DecodePayload(dest any) error {
 	return json.Unmarshal(e.Payload, dest)
 }
 
-// BridgeRequest: BÔåÆA. "Open this URL, forward callback on this port."
+// BridgeRequest: B→A. "Open this URL, forward callback on this port."
 type BridgeRequest struct {
 	URL          string `json:"url"`               // OAuth authorization URL to open
 	CallbackPort int    `json:"callback_port"`     // Port where app's callback listener runs on B
@@ -62,7 +68,7 @@ type BridgeRequest struct {
 	FlowID       string `json:"flow_id,omitempty"` // Stable application flow/idempotency identity
 }
 
-// BridgeAck: AÔåÆB. "URL opened, I'm listening for the callback."
+// BridgeAck: A→B. "URL opened, I'm listening for the callback."
 type BridgeAck struct {
 	RequestID     string `json:"request_id"`
 	ListeningPort int    `json:"listening_port"`  // Port A-side bound for callback capture
@@ -73,7 +79,7 @@ type BridgeAck struct {
 	Replay bool `json:"replay,omitempty"`
 }
 
-// CallbackRelay: AÔåÆB. The captured HTTP callback request.
+// CallbackRelay: A→B. The captured HTTP callback request.
 type CallbackRelay struct {
 	RequestID  string            `json:"request_id"`
 	Method     string            `json:"method"`
@@ -83,7 +89,7 @@ type CallbackRelay struct {
 	StatusCode int               `json:"status_code"` // Not needed for relay but useful for error callbacks
 }
 
-// BridgeComplete: BÔåÆA. "Auth complete, tear down."
+// BridgeComplete: B→A. "Auth complete, tear down."
 type BridgeComplete struct {
 	RequestID string `json:"request_id"`
 	Success   bool   `json:"success"`
@@ -122,4 +128,22 @@ type BridgeCancelAck struct {
 // Heartbeat: Both directions. Keep-alive.
 type Heartbeat struct {
 	RequestID string `json:"request_id,omitempty"` // Empty for general keep-alive
+}
+
+// PeerUnpaired: A→B. "I removed you from my trusted peers."
+//
+// Unpairing is unilateral: the removing side never waits for consent, so
+// without this message the removed machine keeps believing the pair is live
+// until its first transfer is refused - with an error that blamed a generic
+// receiver refusal instead of the cause. This is the acknowledgement: best
+// effort, sent over the authenticated mTLS connection, carrying only the
+// sender's own fingerprint as a self-declaration for the receiver to
+// cross-check against the certificate it just authenticated. It never carries
+// an instruction to trust, only the fact of a revocation already applied.
+type PeerUnpaired struct {
+	// ByFingerprint is the sender's own identity fingerprint. The receiver
+	// must compare it with the fingerprint derived from the peer certificate;
+	// a mismatch means the payload is lying about who is speaking and the
+	// notice is dropped.
+	ByFingerprint string `json:"by_fingerprint"`
 }

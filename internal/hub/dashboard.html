@@ -1192,8 +1192,26 @@
           </p>
 
           <div class="pair-sas-box">
-            <div class="pair-sas-label">Local SAS Verification Code</div>
+            <div class="pair-sas-label">This machine's identity SAS <span style="font-weight:400;">— shown on other devices after pairing; <strong>not</strong> the pairing code</span></div>
             <div id="pairModalSAS" class="pair-sas-code">---</div>
+          </div>
+
+          <!-- The initiator's whole pairing conversation, inside the dialog
+               that stays open for the entire handshake. Before this existed
+               the session code and this machine's own confirmation lived only
+               in the banner behind this overlay: the initiator saw
+               "Connecting..." for 60 seconds, never saw the code to compare,
+               never saw the approve button, and the request timed out. The
+               watch below renders into these nodes while the initiate call is
+               in flight. -->
+          <div id="pairSessionBlock" style="display:none; margin-top:1rem; padding:1rem; border:1px solid var(--border); border-radius:10px; background:var(--surface);">
+            <div class="pair-sas-label">Pairing code — must match the other device's screen</div>
+            <div id="pairSessionSAS" class="pair-sas-code">---</div>
+            <p id="pairSessionHint" style="font-size:0.78rem; color:var(--text-muted); margin:0.5rem 0 0;">Both machines show the same words. Check the other screen now — approve only if they match.</p>
+            <div id="pairSessionActions" style="display:flex; gap:0.5rem; margin-top:0.75rem;">
+              <button type="button" class="btn-approve" data-action="decide-pairing" data-value="" data-accept="true" aria-label="Approve this pairing after comparing the codes" style="flex:1;">✓ Approve</button>
+              <button type="button" class="btn-reject" data-action="decide-pairing" data-value="" data-accept="false" aria-label="Reject this pairing" style="flex:1;">✕ Reject</button>
+            </div>
           </div>
 
           <div style="margin-bottom:1.25rem;">
@@ -1913,18 +1931,32 @@
         if (signature === lastPendingPairingsSignature) return;
         lastPendingPairingsSignature = signature;
         // Only the first request is nameable in a single confirm() dialog; a
-        // queue of several still requires the user to read the banner.
-        lastPendingPairingName = (list[0] && list[0].peer_name) ? String(list[0].peer_name) : '';
+        // queue of several still requires the user to read the banner. For a
+        // request this machine started, "Remote Device" says nothing the user
+        // typed - the address does.
+        var firstItem = list[0] || {};
+        lastPendingPairingName = firstItem.direction === 'outbound'
+          ? (firstItem.remote_addr || firstItem.peer_name || '')
+          : (firstItem.peer_name || '');
         banner.style.display = 'block';
         container.innerHTML = list.map(function(item) {
           var name = escapeHTML(item.peer_name || 'Nearby Device');
           var addr = escapeHTML(item.remote_addr);
           var sas = escapeHTML(item.peer_sas);
           var id = escapeHTML(item.id);
+          // The two directions need opposite instructions: an inbound row
+          // tells you to compare with the screen over there, an outbound row
+          // has to say this request was started here and that the local
+          // confirmation is the missing step - the field report timed out
+          // twice because nothing on screen ever said so.
+          var outbound = item.direction === 'outbound';
+          var meta = outbound
+            ? 'You started this pairing. Check the other device\'s screen — approve only if the codes match: <strong class="pairing-sas">' + sas + '</strong>'
+            : 'Compare this code with the code shown on the remote screen: <strong class="pairing-sas">' + sas + '</strong>';
           return '<div class="pairing-row">' +
             '<div>' +
               '<div class="pairing-row-name">' + name + ' <span class="pairing-row-addr">(' + addr + ')</span></div>' +
-              '<div class="pairing-row-meta">Compare this code with the code shown on the remote screen: <strong class="pairing-sas">' + sas + '</strong></div>' +
+              '<div class="pairing-row-meta">' + meta + '</div>' +
             '</div>' +
             '<div class="pairing-actions">' +
               '<button type="button" class="btn-approve" data-action="decide-pairing" data-value="' + escapeHTML(id) + '" data-accept="true" aria-label="Approve pairing request from ' + name + '">✓ Approve</button>' +
@@ -1957,6 +1989,7 @@
           body: JSON.stringify({ id, accept })
         });
         if (res.ok) {
+          notePairWatchDecision(id, accept);
           await loadPendingPairings();
           await updateStatus();
         }
@@ -2064,11 +2097,15 @@
 
     // Unpairing is a trust change, not a delete, so the confirmation says what
     // it revokes, what it does not touch, and whether it is reversible. The
-    // old copy said only "revoke mutual zero-trust encryption".
+    // old copy said only "revoke mutual zero-trust encryption". It also stayed
+    // silent about the other machine - the field report was a peer list that
+    // still showed an unpaired device - so the copy now says how that side
+    // converges.
     function unpairConsequenceText(name) {
       const label = name || 'this peer';
       return 'Unpair from ' + label + '?\n\n' +
         'This revokes the stored identity: the two machines will no longer accept each other, and a new pairing with fresh SAS verification is required before you can send anything again.\n\n' +
+        'The other device is told right away if it is online and its paired list clears; otherwise its next send fails with a clear "you were unpaired" reason instead of a confusing error.\n\n' +
         'Files already received stay on this machine. Nothing is deleted.';
     }
 
@@ -2205,6 +2242,127 @@
       }
     }
 
+    // Initiator-side pairing watch. The session code and this machine's own
+    // confirmation exist in /api/pair/pending exactly like an inbound
+    // request's, but before this existed nothing in the dialog ever looked at
+    // them: the banner holds that row behind this overlay (z-index 9999), so
+    // the initiator stared at "Connecting..." for 60 seconds, never saw the
+    // code to compare, never saw that its confirmation was the missing step,
+    // and the request timed out. The watch polls while the initiate call is
+    // in flight and renders the whole conversation inside the dialog.
+    let pairWatchTimer = null;
+    let pairWatchAddr = '';
+    // null until this machine answers: true = confirmed, false = rejected.
+    let pairWatchLocalDecision = null;
+
+    function stopPairingWatch() {
+      if (pairWatchTimer) {
+        clearInterval(pairWatchTimer);
+        pairWatchTimer = null;
+      }
+      const block = document.getElementById('pairSessionBlock');
+      if (block) block.style.display = 'none';
+    }
+
+    function startPairingWatch(addr) {
+      stopPairingWatch();
+      pairWatchAddr = addr;
+      pairWatchLocalDecision = null;
+      pairWatchTimer = setInterval(async () => {
+        if (pairWatchLocalDecision !== null) {
+          // The pending entry is deleted the moment this machine answers -
+          // the callback returns and the handler removes it - so once
+          // decided, the acknowledgement is what stays on screen while the
+          // initiate call waits for the other side.
+          renderPairWatchState(null);
+          return;
+        }
+        try {
+          const res = await apiFetch('/api/pair/pending');
+          if (!res.ok) return;
+          const list = await res.json();
+          const entry = (list || []).find(function(item) {
+            return item.direction === 'outbound' && item.remote_addr === pairWatchAddr;
+          });
+          if (entry) {
+            renderPairWatchState(entry);
+          }
+        } catch (err) {
+          // Pending poll is non-critical; the initiate call reports the
+          // outcome either way.
+        }
+      }, 1000);
+    }
+
+    function renderPairWatchState(entry) {
+      const block = document.getElementById('pairSessionBlock');
+      const hint = document.getElementById('pairSessionHint');
+      const actions = document.getElementById('pairSessionActions');
+      if (!block || !hint || !actions) return;
+      block.style.display = 'block';
+      if (entry) {
+        document.getElementById('pairSessionSAS').innerText = entry.peer_sas || '---';
+        const approveBtn = actions.querySelector('[data-accept="true"]');
+        const rejectBtn = actions.querySelector('[data-accept="false"]');
+        if (approveBtn) approveBtn.setAttribute('data-value', entry.id || '');
+        if (rejectBtn) rejectBtn.setAttribute('data-value', entry.id || '');
+      }
+      if (pairWatchLocalDecision === true) {
+        actions.style.display = 'none';
+        hint.innerHTML = '✅ Confirmed on this machine. Waiting for <strong>' + escapeHTML(pairWatchAddr) + '</strong> to confirm the same code…';
+      } else if (pairWatchLocalDecision === false) {
+        actions.style.display = 'none';
+        hint.textContent = '✕ You rejected this pairing. Nothing was trusted on either side.';
+      } else {
+        actions.style.display = 'flex';
+        hint.textContent = 'Both machines show the same words. Check the other screen now — approve only if they match.';
+      }
+    }
+
+    // decidePairing is shared between the banner and this dialog; this hook
+    // keeps the dialog's state honest no matter which surface was clicked.
+    function notePairWatchDecision(id, accept) {
+      if (!pairWatchTimer) return;
+      pairWatchLocalDecision = accept;
+      renderPairWatchState(null);
+      const statusMsg = document.getElementById('pairStatusMsg');
+      if (statusMsg) {
+        statusMsg.style.color = accept ? '#4ade80' : '#f87171';
+        statusMsg.innerText = accept
+          ? '✓ Confirmed here — waiting for ' + pairWatchAddr + ' to confirm the same code…'
+          : '✕ You rejected this pairing.';
+      }
+    }
+
+    // Pairing outcomes in plain language. The raw errors cross layers the
+    // user never sees (context deadline exceeded, tls handshake), and the old
+    // rejected copy blamed the remote device even when the missing step was
+    // this machine's own confirmation - or a 60-second timeout nobody had
+    // been told was running.
+    function pairingRejectionMessage(elapsedSeconds) {
+      if (pairWatchLocalDecision === false) {
+        return 'You rejected this pairing. Nothing was trusted on either side.';
+      }
+      if (pairWatchLocalDecision === true) {
+        return 'The other device rejected the pairing, or stopped responding. Nothing was trusted on either side.';
+      }
+      if (elapsedSeconds >= 55) {
+        return 'Timed out after 60 seconds with no confirmation. Reopen this dialog to try again.';
+      }
+      return 'Pairing did not complete. Nothing was trusted on either side.';
+    }
+
+    function pairingFailureMessage(addr, errText) {
+      const raw = String(errText || 'unknown error');
+      if (/context deadline|timed out|timeout/i.test(raw)) {
+        return 'Handshake with ' + addr + ' timed out. Check that tantu is running there and reachable on port 9877.';
+      }
+      if (/connection refused|no route|unreachable|dial tcp/i.test(raw)) {
+        return 'Could not reach ' + addr + ' — is tantu running there? (' + raw + ')';
+      }
+      return 'Pairing failed: ' + raw;
+    }
+
     async function initiateWebPairing() {
       const input = document.getElementById('pairRemoteAddrInput');
       const addr = (input.value || '').trim();
@@ -2219,6 +2377,8 @@
       btn.innerText = 'Pairing...';
       statusMsg.style.color = '#38bdf8';
       statusMsg.innerText = 'Connecting to ' + addr + ' for in-band pairing handshake...';
+      startPairingWatch(addr);
+      const startedAt = Date.now();
 
       try {
         const res = await apiFetch('/api/pair/initiate', {
@@ -2234,15 +2394,16 @@
           updateStatus();
         } else if (data.status === 'rejected' || data.accepted === false) {
           statusMsg.style.color = '#f87171';
-          statusMsg.innerText = '❌ Pairing was rejected by the remote device.';
+          statusMsg.innerText = '❌ ' + pairingRejectionMessage((Date.now() - startedAt) / 1000);
         } else {
           statusMsg.style.color = '#f87171';
-          statusMsg.innerText = '❌ Pairing failed: ' + (data.error || res.statusText);
+          statusMsg.innerText = '❌ ' + pairingFailureMessage(addr, data.error || res.statusText);
         }
       } catch (err) {
         statusMsg.style.color = '#f87171';
         statusMsg.innerText = '❌ Network error: ' + err.message;
       } finally {
+        stopPairingWatch();
         btn.disabled = false;
         btn.innerText = 'Pair Device';
       }

@@ -134,10 +134,25 @@ func (h *Hub) requestHasDashboardCapability(r *http.Request) bool {
 			return true
 		}
 	}
-	if cookie, err := r.Cookie("tantu_dashboard_session"); err == nil && h.dashboardSessionValid(cookie.Value) {
+	if cookie, err := r.Cookie(dashboardSessionCookieName(h.WebAddr())); err == nil && h.dashboardSessionValid(cookie.Value) {
 		return true
 	}
 	return false
+}
+
+// dashboardSessionCookieName scopes the session cookie to the Hub's web port.
+// Browsers key cookies by name, domain and path - never by port - so two
+// Hubs sharing a loopback host would otherwise fight over one cookie slot:
+// the second Hub's login would replace the first Hub's session value, and
+// that dashboard would then poll 401 forever ("session not established")
+// while its Hub was perfectly healthy. A per-port name gives every Hub its
+// own slot in the shared jar; stale cookies from dead ports are distinct
+// names and simply never selected as this Hub's session.
+func dashboardSessionCookieName(webAddr string) string {
+	if _, port, ok := splitAuthority(webAddr); ok && port != "" {
+		return "tantu_dashboard_session_" + port
+	}
+	return "tantu_dashboard_session"
 }
 
 func (h *Hub) consumeDashboardBootstrap(r *http.Request) bool {
@@ -216,7 +231,7 @@ func (h *Hub) securityMiddleware(next http.Handler) http.Handler {
 					return
 				}
 				http.SetCookie(w, &http.Cookie{
-					Name:     "tantu_dashboard_session",
+					Name:     dashboardSessionCookieName(h.WebAddr()),
 					Value:    sessionID,
 					Path:     "/",
 					MaxAge:   int(dashboardSessionTTL.Seconds()),
@@ -1318,6 +1333,7 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 				LocalSAS:   localSAS,
 				PeerName:   "Remote Device",
 				CreatedAt:  time.Now(),
+				Direction:  "outbound",
 				decisionCh: decisionCh,
 			}
 			h.pendingPairingsMu.Lock()
@@ -1590,12 +1606,20 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"status": "error", "message": "peer store not available"})
 			return
 		}
+		// Capture the peer before removal: after RemovePeer the address the
+		// notice will be dialled at is gone from the store. The notice itself
+		// runs async - unpairing is done the moment the store changes, and a
+		// slow or offline peer must not delay the answer.
+		removedPeer, hadPeer := h.store.GetPeer(req.Fingerprint)
 		if err := h.store.RemovePeer(req.Fingerprint); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"status": "error", "message": err.Error()})
 			return
 		}
 		if h.GetActivePeer() == req.Fingerprint {
 			_ = h.SetActivePeer("")
+		}
+		if hadPeer {
+			h.notifyPeerUnpairedAsync(removedPeer)
 		}
 		writeJSON(w, http.StatusOK, map[string]string{
 			"status":  "success",

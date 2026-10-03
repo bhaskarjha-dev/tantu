@@ -317,6 +317,16 @@ func classifyRejection(reason string) (code, plain, nextAction string, retrySafe
 			"The receiver declined this transfer because it is full or busy. Nothing was saved.",
 			"Free space or wait a moment on the receiver, then retry. Check `tantu doctor` there for its limits.",
 			true, false, true
+	case strings.Contains(lower, "not paired or trusted") || strings.Contains(lower, "unauthorized"):
+		// The receiver's dispatcher states this exact reason when the sender is
+		// not in its trusted peer store - the shape a transfer takes after the
+		// receiver unpaired this machine. The generic branch hid the only
+		// actionable fact behind "read the reason in the details"; this is the
+		// reason, named.
+		return "untrusted_peer",
+			"The receiver no longer trusts this machine - it was removed from the receiver's paired devices (or pairing was never completed there). Nothing was saved.",
+			"On the receiver, open the dashboard, go to Peers, and pair again; both machines confirm a fresh code. Only pair if you still recognise that machine.",
+			true, false, true
 	default:
 		return "receiver_rejected",
 			"The receiver refused this transfer and saved nothing.",

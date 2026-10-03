@@ -96,6 +96,13 @@ type DispatcherConfig struct {
 	OnASideDone       func(err error)
 	OnPairing         func(conn transport.Conn, firstEnv *protocol.Envelope)
 	IsPeerTrusted     func(fingerprint string) bool // Optional authorization callback to verify peer identity
+	// OnPeerUnpaired fires when a peer this machine still trusts reports, over
+	// its own authenticated certificate, that it has removed us from its
+	// trusted store. The fingerprint passed is always the certificate-derived
+	// one, never the payload's claim, so a notice can only ever remove the
+	// machine that actually sent it. Called synchronously on the connection
+	// goroutine; it must return quickly.
+	OnPeerUnpaired func(fingerprint string)
 	// Registry tracks in-flight OAuth sign-ins so they can be listed and, on
 	// the owning peer's request, released. NewDispatcher creates one when this
 	// is nil, so the field only needs setting to share one across dispatchers.
@@ -347,6 +354,31 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn transport.Conn) {
 			return
 		}
 		d.handleBridgeCancel(ctx, conn, prefetched, peerFP, firstEnv)
+
+	case firstEnv.Type == protocol.TypePeerUnpaired:
+		// One machine telling another that it has just been removed from the
+		// sender's trusted peer store - the acknowledgement that keeps the
+		// removed side from believing a dead pair is still live. It is gated
+		// like every operation that matters: only a peer this machine still
+		// trusts may trigger convergence, and the payload's self-declared
+		// fingerprint must match the certificate the handshake actually
+		// authenticated. Acting on it can only ever remove trust (never grant
+		// it), and only for the sender itself, so the worst case of a spoofed
+		// or replayed notice is an over-eager unpair that pairing again fixes.
+		var notice protocol.PeerUnpaired
+		_ = firstEnv.DecodePayload(&notice)
+		if notice.ByFingerprint != "" && !strings.EqualFold(notice.ByFingerprint, peerFP) {
+			d.logf("⚠️ Ignoring unpair notice from %s: payload claims %s, certificate says %s",
+				conn.RemoteAddr(), notice.ByFingerprint, peerFP)
+			return
+		}
+		if d.cfg.IsPeerTrusted != nil && !d.cfg.IsPeerTrusted(peerFP) {
+			d.logf("Ignoring stale unpair notice from untrusted peer %s (fp: %s)", conn.RemoteAddr(), peerFP)
+			return
+		}
+		if d.cfg.OnPeerUnpaired != nil {
+			d.cfg.OnPeerUnpaired(peerFP)
+		}
 
 	case strings.HasPrefix(firstEnv.Type, "pair_"):
 		d.logf("🔀 Multiplexer: routing connection from %s to In-Band Pairing", conn.RemoteAddr())

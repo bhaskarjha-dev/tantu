@@ -206,6 +206,12 @@ type PendingPairing struct {
 	PeerFingerprint string    `json:"peer_fingerprint"`
 	PeerName        string    `json:"peer_name"`
 	CreatedAt       time.Time `json:"created_at"`
+	// Direction says who started this pairing: "inbound" (the peer asked us)
+	// or "outbound" (we initiated). The dashboard renders different copy for
+	// each - the initiator must be told to compare the code with the *other*
+	// device's screen and that its own confirmation is the missing step - and
+	// without it every request reads as if the local user were the responder.
+	Direction string `json:"direction"`
 	// decisionCh is closed exactly once when the request reaches a terminal
 	// decision. decision is read under pendingPairingsMu after the channel is
 	// closed, avoiding the send/timeout race of a buffered decision channel.
@@ -2001,6 +2007,7 @@ func (h *Hub) Start(parent context.Context) (err error) {
 			_, ok := store.GetPeer(fp)
 			return ok
 		},
+		OnPeerUnpaired: h.applyPeerUnpaired,
 		OnPairing: func(conn transport.Conn, firstEnv *protocol.Envelope) {
 			h.logger.Action(DomainPeer, fmt.Sprintf("Incoming pairing handshake from %s", conn.RemoteAddr()))
 			res, err := pairing.HandleInboundPairingWithOptions(ctx, conn, firstEnv, h.store, func(peerSAS, localSAS string) bool {
@@ -2028,6 +2035,7 @@ func (h *Hub) Start(parent context.Context) (err error) {
 					PeerFingerprint: peerFP,
 					PeerName:        peerName,
 					CreatedAt:       time.Now(),
+					Direction:       "inbound",
 					decisionCh:      decisionCh,
 				}
 

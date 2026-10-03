@@ -105,6 +105,30 @@ func TestClassifyTransferError_LostAcknowledgementStaysUnknown(t *testing.T) {
 	}
 }
 
+// A receiver that no longer trusts the sender says so with the dispatcher's
+// exact words: "unauthorized: peer certificate not paired or trusted". This is
+// what an unpaired peer hears when it tries to send after the other machine
+// removed it, and it is the one refusal the sender can actually act on — the
+// generic "receiver refused" message hid the only useful fact, that the pair
+// relationship is gone and re-pairing is the fix.
+func TestClassifyTransferError_UntrustedPeerExplainsUnpair(t *testing.T) {
+	reason := "unauthorized: peer certificate not paired or trusted"
+	err := &drop.RejectionError{Reason: reason, BytesReceived: 100}
+	code, plain, next, retrySafe, duplicateRisk, dataSafe := ClassifyTransferError(err, 100, 100, false)
+	if code != "untrusted_peer" {
+		t.Fatalf("code = %q, want untrusted_peer (the receiver stated the sender is not trusted)", code)
+	}
+	if !strings.Contains(strings.ToLower(plain), "no longer trust") {
+		t.Errorf("message must name the real cause (no longer trusted), got %q", plain)
+	}
+	if !strings.Contains(strings.ToLower(next), "pair again") {
+		t.Errorf("next action must say to pair again, got %q", next)
+	}
+	if !retrySafe || duplicateRisk || !dataSafe {
+		t.Errorf("flags wrong: retry=%v dup=%v dataSafe=%v (nothing was saved)", retrySafe, duplicateRisk, dataSafe)
+	}
+}
+
 // Wrapped rejections must still be recognised: the error crosses several
 // layers on its way to the classifier, and losing the type on the way would
 // silently restore the old misreport.

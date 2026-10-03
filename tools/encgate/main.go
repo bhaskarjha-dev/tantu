@@ -14,7 +14,10 @@
 //     the check that generalises: it caught damage whose mangled characters had no
 //     U+00C2/C3/E2 lead byte and therefore matched no mojibake signature.
 //   - Mojibake signatures. The lead-byte-plus-high-byte shapes a CP1252
-//     mis-decode produces.
+//     mis-decode produces, plus the OEM console pages (CP850, CP437): a
+//     PowerShell console round trip decodes as the OEM page, not CP1252, and
+//     four such arrows shipped in internal/protocol/protocol.go before this
+//     reverse existed.
 //
 // Invalid UTF-8 fails on its own, before either count is meaningful.
 package main
@@ -133,7 +136,7 @@ func inspect(name string, data []byte) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("%s: %s - CP1252 round-trip damage", name, strings.Join(parts, " and "))
+	return fmt.Sprintf("%s: %s - encoding damage", name, strings.Join(parts, " and "))
 }
 
 func firstInvalid(data []byte) (line, col int) {
@@ -225,7 +228,84 @@ func init() {
 		cp1252High[r] = true
 		cp1252Byte[r] = b
 	}
+	for b, r := range cp850Table {
+		cp850Byte[r] = b
+	}
+	for b, r := range cp437Table {
+		cp437Byte[r] = b
+	}
 }
+
+// cp850Table and cp437Table are the OEM console code pages - the pages a
+// Windows console or a PowerShell Get-Content/Set-Content round trip applies.
+// They are stated as byte -> rune, like the CP1252 table, and inverted into
+// the reverse maps at init. Both pages are bijective over 0x80-0xFF (no
+// character appears twice), so the inversion is exact; a duplicate would make
+// a reverse table quietly wrong for one of its two bytes.
+//
+// Like the CP1252 table above, these are rune literals with the gate's own
+// damage shapes in them, and the gate scans this file like any other. What
+// keeps it clean is structural: every glyph sits between ASCII characters
+// (quote, colon, comma), so no run of high-Latin characters forms here and
+// reversing a lone glyph plus its ASCII surroundings can never produce valid
+// UTF-8.
+var cp850Table = map[byte]rune{
+	0x80: 'Ç', 0x81: 'ü', 0x82: 'é', 0x83: 'â', 0x84: 'ä', 0x85: 'à',
+	0x86: 'å', 0x87: 'ç', 0x88: 'ê', 0x89: 'ë', 0x8A: 'è', 0x8B: 'ï',
+	0x8C: 'î', 0x8D: 'ì', 0x8E: 'Ä', 0x8F: 'Å', 0x90: 'É', 0x91: 'æ',
+	0x92: 'Æ', 0x93: 'ô', 0x94: 'ö', 0x95: 'ò', 0x96: 'û', 0x97: 'ù',
+	0x98: 'ÿ', 0x99: 'Ö', 0x9A: 'Ü', 0x9B: 'ø', 0x9C: '£', 0x9D: 'Ø',
+	0x9E: '×', 0x9F: 'ƒ', 0xA0: 'á', 0xA1: 'í', 0xA2: 'ó', 0xA3: 'ú',
+	0xA4: 'ñ', 0xA5: 'Ñ', 0xA6: 'ª', 0xA7: 'º', 0xA8: '¿', 0xA9: '®',
+	0xAA: '¬', 0xAB: '½', 0xAC: '¼', 0xAD: '¡', 0xAE: '«', 0xAF: '»',
+	0xB0: '░', 0xB1: '▒', 0xB2: '▓', 0xB3: '│', 0xB4: '┤', 0xB5: 'Á',
+	0xB6: 'Â', 0xB7: 'À', 0xB8: '©', 0xB9: '╣', 0xBA: '║', 0xBB: '╗',
+	0xBC: '╝', 0xBD: '¢', 0xBE: '¥', 0xBF: '┐', 0xC0: '└', 0xC1: '┴',
+	0xC2: '┬', 0xC3: '├', 0xC4: '─', 0xC5: '┼', 0xC6: 'ã', 0xC7: 'Ã',
+	0xC8: '╚', 0xC9: '╔', 0xCA: '╩', 0xCB: '╦', 0xCC: '╠', 0xCD: '═',
+	0xCE: '╬', 0xCF: '¤', 0xD0: 'ð', 0xD1: 'Ð', 0xD2: 'Ê', 0xD3: 'Ë',
+	0xD4: 'È', 0xD5: 'ı', 0xD6: 'Í', 0xD7: 'Î', 0xD8: 'Ï', 0xD9: '┘',
+	0xDA: '┌', 0xDB: '█', 0xDC: '▄', 0xDD: '¦', 0xDE: 'Ì', 0xDF: '▀',
+	0xE0: 'Ó', 0xE1: 'ß', 0xE2: 'Ô', 0xE3: 'Ò', 0xE4: 'õ', 0xE5: 'Õ',
+	0xE6: 'µ', 0xE7: 'þ', 0xE8: 'Þ', 0xE9: 'Ú', 0xEA: 'Û', 0xEB: 'Ù',
+	0xEC: 'ý', 0xED: 'Ý', 0xEE: '¯', 0xEF: '´', 0xF0: '\u00AD', 0xF1: '±',
+	0xF2: '‗', 0xF3: '¾', 0xF4: '¶', 0xF5: '§', 0xF6: '÷', 0xF7: '¸',
+	0xF8: '°', 0xF9: '¨', 0xFA: '·', 0xFB: '¹', 0xFC: '³', 0xFD: '²',
+	0xFE: '■', 0xFF: '\u00A0',
+}
+
+var cp437Table = map[byte]rune{
+	0x80: 'Ç', 0x81: 'ü', 0x82: 'é', 0x83: 'â', 0x84: 'ä', 0x85: 'à',
+	0x86: 'å', 0x87: 'ç', 0x88: 'ê', 0x89: 'ë', 0x8A: 'è', 0x8B: 'ï',
+	0x8C: 'î', 0x8D: 'ì', 0x8E: 'Ä', 0x8F: 'Å', 0x90: 'É', 0x91: 'æ',
+	0x92: 'Æ', 0x93: 'ô', 0x94: 'ö', 0x95: 'ò', 0x96: 'û', 0x97: 'ù',
+	0x98: 'ÿ', 0x99: 'Ö', 0x9A: 'Ü', 0x9B: '¢', 0x9C: '£', 0x9D: '¥',
+	0x9E: '₧', 0x9F: 'ƒ', 0xA0: 'á', 0xA1: 'í', 0xA2: 'ó', 0xA3: 'ú',
+	0xA4: 'ñ', 0xA5: 'Ñ', 0xA6: 'ª', 0xA7: 'º', 0xA8: '¿', 0xA9: '⌐',
+	0xAA: '¬', 0xAB: '½', 0xAC: '¼', 0xAD: '¡', 0xAE: '«', 0xAF: '»',
+	0xB0: '░', 0xB1: '▒', 0xB2: '▓', 0xB3: '│', 0xB4: '┤', 0xB5: '╡',
+	0xB6: '╢', 0xB7: '╖', 0xB8: '╕', 0xB9: '╣', 0xBA: '║', 0xBB: '╗',
+	0xBC: '╝', 0xBD: '╜', 0xBE: '╛', 0xBF: '┐', 0xC0: '└', 0xC1: '┴',
+	0xC2: '┬', 0xC3: '├', 0xC4: '─', 0xC5: '┼', 0xC6: '╞', 0xC7: '╟',
+	0xC8: '╚', 0xC9: '╔', 0xCA: '╩', 0xCB: '╦', 0xCC: '╠', 0xCD: '═',
+	0xCE: '╬', 0xCF: '╧', 0xD0: '╨', 0xD1: '╤', 0xD2: '╥', 0xD3: '╙',
+	0xD4: '╘', 0xD5: '╒', 0xD6: '╓', 0xD7: '╫', 0xD8: '╪', 0xD9: '┘',
+	0xDA: '┌', 0xDB: '█', 0xDC: '▄', 0xDD: '▌', 0xDE: '▐', 0xDF: '▀',
+	0xE0: 'α', 0xE1: 'ß', 0xE2: 'Γ', 0xE3: 'π', 0xE4: 'Σ', 0xE5: 'σ',
+	0xE6: 'µ', 0xE7: 'τ', 0xE8: 'Φ', 0xE9: 'Θ', 0xEA: 'Ω', 0xEB: 'δ',
+	0xEC: '∞', 0xED: 'φ', 0xEE: 'ε', 0xEF: '∩', 0xF0: '≡', 0xF1: '±',
+	0xF2: '≥', 0xF3: '≤', 0xF4: '⌠', 0xF5: '⌡', 0xF6: '÷', 0xF7: '≈',
+	0xF8: '°', 0xF9: '∙', 0xFA: '·', 0xFB: '√', 0xFC: 'ⁿ', 0xFD: '²',
+	0xFE: '■', 0xFF: '\u00A0',
+}
+
+// cp850Byte and cp437Byte are the inverted OEM tables: character -> the byte
+// a mis-decode consumed. Built at init alongside the CP1252 maps so every
+// direction comes from one statement of each code page.
+var (
+	cp850Byte = map[rune]byte{}
+	cp437Byte = map[rune]byte{}
+)
 
 // isLatinLead reports whether r is one of the U+00C0..U+00FF characters that a
 // UTF-8 mis-decode leaves behind. × and ÷ are excluded: they are real
@@ -235,35 +315,75 @@ func isLatinLead(r rune) bool {
 }
 
 // misdecodes reports whether a run of text is the result of decoding UTF-8
-// bytes as CP1252, and does so by construction rather than by guessing.
+// bytes as one of the code pages this gate knows, and does so by construction
+// rather than by guessing.
 //
 // The question a shape heuristic keeps getting wrong is "could this be real
 // text?". A letter with an acute accent followed by an em dash is a perfectly
 // good sentence, and no character pair distinguishes it from the damage those
-// same three characters produce when they arrive from a CP1252 mis-decode. So
-// the test does not guess: it reverses the operation. Each run is recoded back to the
-// bytes a CP1252 mis-decode would have consumed, and the run counts as damage
-// only if those bytes are valid UTF-8 *and* decode to something different from
-// what is actually in the file. Legitimate text either fails to recode or
-// recodes to itself, so it is never counted; real damage always recodes to a
-// shorter, different, valid UTF-8 string, because that is literally what
-// happened to it.
+// same three characters produce when they arrive from a mis-decode. So the
+// test does not guess: it reverses the operation, under each code page in
+// turn. A run counts as damage only if some page recodes it to bytes that are
+// valid UTF-8 *and* decode to something different from what is actually in
+// the file. Legitimate text either fails to recode or recodes to itself, so
+// it is never counted; real damage always recodes to a shorter, different,
+// valid UTF-8 string, because that is literally what happened to it.
 //
-// This is why the em dash, curly quotes, and emoji the shape heuristic missed
-// are now caught: their reverse round trip is exact, and no clean text can
-// produce one.
+// Trying only CP1252 misses damage done by the OEM console pages: CP850
+// turns an em-dash arrow into three Latin-1 letters whose CP1252 reverse is
+// not valid UTF-8. That shape shipped in internal/protocol/protocol.go, so
+// every page the project's toolchains can apply is reversed here.
 func misdecodes(run string) bool {
-	if len(run) < 2 {
-		return false
+	for _, page := range pages {
+		recoded, ok := page.recode(run)
+		if !ok {
+			continue
+		}
+		if !utf8.Valid(recoded) {
+			continue
+		}
+		if string(recoded) != run {
+			return true
+		}
 	}
-	recoded, ok := recodeCP1252(run)
-	if !ok {
-		return false
+	return false
+}
+
+// page is one code page the gate can reverse: its name for diagnostics and
+// the recode function that maps characters back to the bytes a mis-decode
+// consumed.
+type page struct {
+	name   string
+	recode func(string) ([]byte, bool)
+}
+
+// pages are the code pages reversed by the gate, in the order they are
+// tried. CP1252 first because it caused the original damage; the OEM console
+// pages follow because a console round trip applies them instead.
+var pages = []page{
+	{"CP1252", recodeCP1252},
+	{"CP850", recodeOEM(cp850Byte)},
+	{"CP437", recodeOEM(cp437Byte)},
+}
+
+// recodeOEM builds a recoder for an OEM console page. Bytes 0x00-0x7F are
+// ASCII in every page; everything above must be present in the reverse map.
+func recodeOEM(byteOf map[rune]byte) func(string) ([]byte, bool) {
+	return func(run string) ([]byte, bool) {
+		out := make([]byte, 0, len(run))
+		for _, r := range run {
+			if r < 0x80 {
+				out = append(out, byte(r))
+				continue
+			}
+			b, ok := byteOf[r]
+			if !ok {
+				return nil, false
+			}
+			out = append(out, b)
+		}
+		return out, true
 	}
-	if !utf8.Valid(recoded) {
-		return false
-	}
-	return string(recoded) != run
 }
 
 // recodeCP1252 maps each character back to the single CP1252 byte a mis-decode
@@ -291,9 +411,12 @@ func recodeCP1252(run string) ([]byte, bool) {
 }
 
 // countMojibake counts mis-decoded runs, where a run is a maximal span of
-// characters that all recode to CP1252 bytes and start with a Latin lead.
-// Splitting on lead characters keeps the comparison local, so one damaged
-// region in a long line cannot be masked by legitimate text elsewhere in it.
+// characters that all recode to bytes under some known page and start with a
+// Latin lead. Splitting on lead characters keeps the comparison local, so one
+// damaged region in a long line cannot be masked by legitimate text elsewhere
+// in it. Growth accepts any page; the misdecode test then has to reverse the
+// whole run under a single page, which is what keeps permissive growth from
+// inventing damage.
 func countMojibake(s string) int {
 	rs := []rune(s)
 	n := 0
@@ -301,11 +424,11 @@ func countMojibake(s string) int {
 		if !isLatinLead(rs[i]) {
 			continue
 		}
-		// Grow the run: the lead plus every following character that still
-		// recodes to a CP1252 byte. A real sequence is 2-3 characters wide.
+		// Grow the run: the lead plus every following character that some
+		// page can map back to a byte. A real sequence is 2-3 characters wide.
 		j := i
 		for j < len(rs) {
-			if _, ok := recodeCP1252(string(rs[j : j+1])); !ok {
+			if !recodableRune(rs[j]) {
 				break
 			}
 			j++
@@ -316,6 +439,24 @@ func countMojibake(s string) int {
 		}
 	}
 	return n + countMojibakeRuns(s)
+}
+
+// recodableRune reports whether some known page maps r to a byte: ASCII, the
+// CP1252-representable set, or either OEM reverse table.
+func recodableRune(r rune) bool {
+	if r < 0x80 {
+		return true
+	}
+	if _, ok := recodeCP1252(string(r)); ok {
+		return true
+	}
+	if _, ok := cp850Byte[r]; ok {
+		return true
+	}
+	if _, ok := cp437Byte[r]; ok {
+		return true
+	}
+	return false
 }
 
 // isHighLatin reports whether r is one of the U+00A0-U+00FF characters a

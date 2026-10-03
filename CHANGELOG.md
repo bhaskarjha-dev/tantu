@@ -8,6 +8,24 @@ rollback procedures.
 ## Unreleased
 
 ### Added
+- **The pairing conversation is now visible on the machine that starts it.**
+  The Pair dialog shows the session code to compare and this machine's own
+  Approve/Reject for the whole handshake, with a live "confirmed here,
+  waiting for the other device" state — previously the code and the approval
+  row lived only in the banner *behind* the dialog's overlay, so the initiator
+  watched "Connecting..." for 60 seconds with nothing to compare and no button
+  to press, and every attempt timed out. The pending banner also says which
+  direction a request came from ("You started this pairing…" vs "Compare this
+  code with the code shown on the remote screen"), and the confirm dialog
+  names the address for outgoing requests instead of "Remote Device".
+- **Unpair now tells the other machine.** Removing a paired peer (dashboard
+  Unpair or `tantu unpair`) sends a best-effort, certificate-authenticated
+  notice over the encrypted channel, so the removed side clears it from its
+  paired list within milliseconds instead of staying paired forever. If the
+  notice cannot be delivered (peer offline), the removal still stands and the
+  peer's next send is refused with an honest "the receiver no longer trusts
+  this machine" explanation instead of a generic error. The unpair
+  confirmation says exactly this before you commit.
 - `docs/DEPENDENCIES.md` — the complete dependency inventory (two pinned
   `golang.org/x` modules), the reasoning behind the `CGO_ENABLED=0`
   static-build invariant, the demonstrated cost of that constraint, and four
@@ -234,6 +252,36 @@ rollback procedures.
   token remains as a legacy fallback.
 
 ### Fixed
+- **Two Hubs in one browser no longer log each other out.** Dashboard session
+  cookies were named identically regardless of port, and browsers key cookies
+  by name/domain/path but never by port — so a second Hub's login REPLACED the
+  first Hub's session value, and that dashboard then failed every poll with
+  "Dashboard session not established" while its Hub was perfectly healthy (a
+  permanent dead state, found by driving a live two-Hub pairing run). Session
+  cookies are now scoped to their Hub's web port; a gate models the shared
+  browser jar across two Hubs and requires both to keep working after both
+  logins.
+- **Rejection messages now say who rejected.** The dashboard used to answer
+  every failed pairing with "Pairing was rejected by the remote device" —
+  even when *this* machine had not answered yet, had rejected it locally, or
+  the handshake had simply timed out after 60 seconds. Outcomes are now
+  distinguished: "You rejected this pairing", "The other device rejected the
+  pairing, or stopped responding", and a timeout that says so, with
+  unreachable-Hub and handshake-timeout errors mapped to plain language
+  instead of raw `context deadline exceeded` text.
+- **The identity SAS is no longer labeled as the pairing code.** The Pair
+  dialog showed this machine's identity fingerprint SAS under the heading
+  "Local SAS Verification Code" — inviting a comparison against the other
+  screen's session words that can never match. It is now labeled "This
+  machine's identity SAS — shown on other devices after pairing; NOT the
+  pairing code".
+- **Sending to a machine that unpaired you explains itself.** The transfer
+  classifier had no branch for the refusal reason the pairing layer actually
+  produces (`unauthorized: peer certificate not paired or trusted`), so the
+  user got a generic "receiver rejected" with no cause and no next step. It
+  now reports that the receiver no longer trusts this machine and that
+  pairing again is the fix. (`TestClassifyTransferError_UntrustedPeerExplainsUnpair`,
+  red against the previous classifier.)
 - **The relay-listing integration test no longer races a phase the product
   deliberately exposes.** `TestWebDashboard_RelayActiveListsInFlightRelay`
   asserted an operation id on the *first* entry its poll saw, but an
