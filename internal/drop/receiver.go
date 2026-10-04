@@ -173,6 +173,36 @@ func validateDropMetadata(meta DropSend) error {
 			return errors.New("head_hash must be a SHA-256 hex digest")
 		}
 	}
+	if meta.RelPath != "" {
+		if len(meta.RelPath) > MaxRelPathLength {
+			return fmt.Errorf("rel_path exceeds %d bytes", MaxRelPathLength)
+		}
+		if strings.HasPrefix(meta.RelPath, "/") || strings.HasPrefix(meta.RelPath, "\\") {
+			return errors.New("rel_path must be relative")
+		}
+		if len(meta.RelPath) >= 2 && meta.RelPath[1] == ':' {
+			return errors.New("rel_path must not name a drive")
+		}
+		for _, r := range meta.RelPath {
+			if r < 0x20 || r == 0x7f {
+				return errors.New("rel_path contains a control character")
+			}
+		}
+		// A relative path becomes a place on disk, so the segments that decide
+		// *where* are rejected here, at acknowledgement, before any payload is
+		// staged. Depth is bounded as well: a peer must not be able to force a
+		// thousand directories into someone's downloads folder.
+		normalized := strings.ReplaceAll(meta.RelPath, "\\", "/")
+		segments := strings.Split(normalized, "/")
+		if len(segments) > MaxRelPathDepth {
+			return fmt.Errorf("rel_path is deeper than %d levels", MaxRelPathDepth)
+		}
+		for _, segment := range segments {
+			if segment == "" || segment == "." || segment == ".." {
+				return errors.New("rel_path must not contain empty, . or .. segments")
+			}
+		}
+	}
 	return nil
 }
 

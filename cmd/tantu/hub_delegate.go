@@ -91,10 +91,10 @@ func decodeDelegatedResult(body []byte) *delegatedSendResult {
 // name for JSON text drops and derives file names from the multipart filename,
 // so using this helper avoids losing an explicit label in delegation mode.
 func delegateSendWithName(webAddr, filePath, text, name, targetPeer string, timeout time.Duration, key string) (*delegatedSendResult, error) {
-	return delegateSendWithNameFromStore("", webAddr, filePath, text, name, targetPeer, timeout, key)
+	return delegateSendWithNameFromStore("", webAddr, filePath, text, name, targetPeer, timeout, key, "")
 }
 
-func delegateSendWithNameFromStore(storeDir, webAddr, filePath, text, name, targetPeer string, timeout time.Duration, key string) (*delegatedSendResult, error) {
+func delegateSendWithNameFromStore(storeDir, webAddr, filePath, text, name, targetPeer string, timeout time.Duration, key, relPath string) (*delegatedSendResult, error) {
 	if webAddr == "" {
 		webAddr = hub.DefaultWebAddr
 	}
@@ -115,7 +115,7 @@ func delegateSendWithNameFromStore(storeDir, webAddr, filePath, text, name, targ
 	defer client.CloseIdleConnections()
 
 	if filePath != "" {
-		return delegateFileWithName(client, storeDir, webAddr, filePath, name, targetPeer, key)
+		return delegateFileWithName(client, storeDir, webAddr, filePath, name, targetPeer, key, relPath)
 	}
 
 	bodyMap := map[string]string{"text": text}
@@ -143,7 +143,14 @@ func delegateSendWithNameFromStore(storeDir, webAddr, filePath, text, name, targ
 	return doDelegationRequest(client, req)
 }
 
-func delegateFileWithName(client *http.Client, storeDir, webAddr, filePath, name, targetPeer, key string) (*delegatedSendResult, error) {
+// delegateFileWithName streams one file to the Hub's upload endpoint.
+//
+// relPath is the file's path inside the directory tree being sent, or "" for a
+// single-file send. It travels as a multipart field beside the file so the Hub
+// can put the byte stream and its place in the tree on the same request; an
+// empty value is omitted entirely, which is what every pre-existing caller
+// does and therefore what every pre-existing peer receives.
+func delegateFileWithName(client *http.Client, storeDir, webAddr, filePath, name, targetPeer, key, relPath string) (*delegatedSendResult, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("open file for delegation: %w", err)
@@ -169,6 +176,16 @@ func delegateFileWithName(client *http.Client, storeDir, webAddr, filePath, name
 			writeErr <- pipeErr
 		}()
 
+		if relPath != "" {
+			// The path inside the tree being sent, so the receiver can rebuild
+			// the directory structure instead of folding it into the filename.
+			// Empty for every single-file send, which keeps the wire shape of
+			// the overwhelmingly common case unchanged.
+			if err := writer.WriteField("rel_path", relPath); err != nil {
+				pipeErr = err
+				return
+			}
+		}
 		if targetPeer != "" {
 			if err := writer.WriteField("peer", targetPeer); err != nil {
 				pipeErr = err

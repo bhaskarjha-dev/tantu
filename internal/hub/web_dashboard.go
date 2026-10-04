@@ -997,6 +997,21 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			writeTransferError(w, http.StatusBadRequest, "invalid idempotency key", "invalid_input", "The idempotency key was not a valid identifier. Nothing was sent.", "invalid idempotency key", false, false, true, "Use 1-128 identifier characters (letters, digits, -, _, .) or omit it.", "", "", "", "")
 			return
 		}
+		// rel_path is the file's place inside a directory being sent. It is
+		// validated here, before the peer is dialled and before any byte is
+		// staged, so a hostile value costs nothing: the sender gets a plain
+		// refusal instead of a transfer that streams in full and then fails to
+		// publish.
+		relPath := strings.TrimSpace(r.FormValue("rel_path"))
+		relComponents, relErr := SanitizeRelPath(relPath)
+		if relErr != nil {
+			writeTransferError(w, http.StatusBadRequest, "invalid relative path: "+relErr.Error(), "invalid_input",
+				"Refused: the path inside the tree is not a safe relative path. Nothing was sent.",
+				"invalid relative path: "+relErr.Error(), false, false, true,
+				"Rename the offending folder or file on this machine and send again. Absolute paths, \"..\", empty segments, Windows device names and names ending in a dot or space are all refused.", "", "", "", "")
+			return
+		}
+		relPath = JoinRelComponents(relComponents)
 		opID := newOperationID()
 		dropID := newOutboundDropID()
 		opCreated := time.Now()
@@ -1025,6 +1040,7 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			IdempotencyKey: wireKey,
 			Kind:           drop.DropKindFile,
 			Name:           fileName,
+			RelPath:        relPath,
 			Size:           header.Size,
 			MIMEType:       mimeType,
 		}

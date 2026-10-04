@@ -110,7 +110,7 @@ func TestFinalizePartFileVerifiesDigestAndReturnsFullPath(t *testing.T) {
 	t.Run("a mismatched digest is refused", func(t *testing.T) {
 		f, part, desired := stagePayload(t, payload)
 		wrong := sha256Sum("different bytes")
-		if _, err := finalizePartFile(f, part, desired, wrong, int64(len(payload))); err == nil {
+		if _, err := finalizePartFile(f, part, desired, filepath.Dir(desired), wrong, int64(len(payload))); err == nil {
 			t.Fatal("publication succeeded with a mismatched digest")
 		}
 		if _, err := os.Stat(desired); !os.IsNotExist(err) {
@@ -120,7 +120,7 @@ func TestFinalizePartFileVerifiesDigestAndReturnsFullPath(t *testing.T) {
 
 	t.Run("the published path is the full path", func(t *testing.T) {
 		f, part, desired := stagePayload(t, payload)
-		published, err := finalizePartFile(f, part, desired, sha256Sum(string(payload)), int64(len(payload)))
+		published, err := finalizePartFile(f, part, desired, filepath.Dir(desired), sha256Sum(string(payload)), int64(len(payload)))
 		if err != nil {
 			t.Fatalf("finalizePartFile failed: %v", err)
 		}

@@ -1587,6 +1587,7 @@ func (h *Hub) Start(parent context.Context) (err error) {
 				f := openedFiles[res.Meta.DropID]
 				partPath := partPaths[res.Meta.DropID]
 				desiredPath := savedPaths[res.Meta.DropID]
+				outRoot := outputDirs[res.Meta.DropID]
 				releaseActivity := activityReleases[res.Meta.DropID]
 				dropMu.Unlock()
 				if owner == "" || owner != res.Meta.AttemptID {
@@ -1598,7 +1599,7 @@ func (h *Hub) Start(parent context.Context) (err error) {
 				if partPath == "" || desiredPath == "" {
 					return errors.New("completed file has no staging path")
 				}
-				published, err := finalizePartFile(f, partPath, desiredPath, res.SHA256, res.Meta.Size, releaseActivity)
+				published, err := finalizePartFile(f, partPath, desiredPath, outRoot, res.SHA256, res.Meta.Size, releaseActivity)
 				if err != nil {
 					// The bytes are on disk and verified; only the staging
 					// cleanup failed. Treat it as a completed transfer with a
@@ -1654,13 +1655,33 @@ func (h *Hub) Start(parent context.Context) (err error) {
 					if err := os.MkdirAll(outDir, 0700); err != nil {
 						return nil, fmt.Errorf("create output directory: %w", err)
 					}
+					// A directory send arrives one file at a time, each carrying
+					// its path inside the tree. The path is resolved first and
+					// refused here - before any payload is staged - if it is not
+					// provably inside the output directory.
+					relComponents, relErr := SanitizeRelPath(meta.RelPath)
+					if relErr != nil {
+						return nil, fmt.Errorf("refuse relative path %q: %w", meta.RelPath, relErr)
+					}
+					relDest := JoinRelComponents(relComponents)
 					destPath := filepath.Join(outDir, fileName)
+					if relDest != "" {
+						destPath = filepath.Join(outDir, relDest)
+					}
 					if _, err := os.Lstat(destPath); err == nil {
 						ext := filepath.Ext(fileName)
 						base := strings.TrimSuffix(fileName, ext)
+						// The disambiguated name replaces the *leaf*, so the
+						// directory component is kept and only the leaf is
+						// re-derived. Appending to the whole path instead -
+						// outDir/project/README.md/README (1).md - makes the
+						// delivered file a parent directory of itself, which
+						// fails at publication for every re-send of a
+						// preserved tree.
+						relDir := filepath.Dir(relDest)
 						idx := 1
 						for {
-							cand := filepath.Join(outDir, fmt.Sprintf("%s (%d)%s", base, idx, ext))
+							cand := filepath.Join(outDir, relDir, fmt.Sprintf("%s (%d)%s", base, idx, ext))
 							_, statErr := os.Lstat(cand)
 							if os.IsNotExist(statErr) {
 								destPath = cand
@@ -2486,7 +2507,16 @@ func (b *boundedBuffer) String() string {
 // open descriptor without reopening the source pathname. This prevents a
 // local path replacement from substituting different bytes between the final
 // checksum and publication.
-func finalizePartFile(source *os.File, partPath, desiredPath, expectedSHA string, expectedSize int64, releaseActivity ...func()) (string, error) {
+// finalizePartFile publishes one verified staging file to its final name.
+//
+// outputRoot is the receiver's Tantu output directory. It is required so a
+// destination inside a reconstructed tree can still be published by a
+// same-filesystem rename: the staging partial lives in
+// <outputRoot>/.tantu-staging, so the rename has to start from the root that
+// contains both ends. Without it, a nested destination would fall back to a
+// full second copy of the payload - correct, but it doubles peak disk and
+// payload I/O for exactly the case that already has the most data.
+func finalizePartFile(source *os.File, partPath, desiredPath, outputRoot, expectedSHA string, expectedSize int64, releaseActivity ...func()) (string, error) {
 	if source == nil || strings.TrimSpace(partPath) == "" || strings.TrimSpace(desiredPath) == "" {
 		return "", errors.New("missing open staging file or destination path")
 	}
@@ -2514,7 +2544,7 @@ func finalizePartFile(source *os.File, partPath, desiredPath, expectedSHA string
 		_ = source.Close()
 		return "", fmt.Errorf("rewind staging file: %w", err)
 	}
-	published, renamedInPlace, err := publishPartFile(source, partPath, desiredPath, expectedSHA, expectedSize)
+	published, renamedInPlace, err := publishPartFile(source, partPath, desiredPath, outputRoot, expectedSHA, expectedSize)
 	closeErr := source.Close()
 	if err != nil {
 		return published, err
@@ -2568,13 +2598,15 @@ var ErrPublishedCleanupIncomplete = errors.New("published file but could not rem
 // Either way a crash mid-publication leaves a hidden .tantu-publish-*
 // temporary that SweepPublicationTemps reclaims, never a truncated file under
 // the name the user would open.
-func publishPartFile(source *os.File, partPath, desiredPath, expectedSHA string, expectedSize int64) (string, bool, error) {
-	outputDir, err := drop.OpenStagingDirectory(filepath.Dir(desiredPath))
-	if err != nil {
-		return "", false, fmt.Errorf("open output directory: %w", err)
-	}
-	defer outputDir.Close()
-
+// The two publication shapes below are deliberately separate functions rather
+// than one function with a branch, because only one of them is on the
+// single-file path that everything else in the product depends on. Flat
+// publication opens the destination directory directly, exactly as it always
+// has. Nested publication goes through the output root, because that is the
+// only directory that contains both the staging partial and the destination -
+// and an os.Root anchored there is what makes "create the parents, then rename
+// into place" safe against a planted symlink.
+func publishPartFile(source *os.File, partPath, desiredPath, outputRoot, expectedSHA string, expectedSize int64) (string, bool, error) {
 	sourceInfo, err := source.Stat()
 	if err != nil {
 		return "", false, fmt.Errorf("inspect staging file: %w", err)
@@ -2586,6 +2618,38 @@ func publishPartFile(source *os.File, partPath, desiredPath, expectedSHA string,
 	if err := drop.VerifyStagedDigest(source, expectedSHA); err != nil {
 		return "", false, err
 	}
+
+	destDir := filepath.Dir(desiredPath)
+	if outputRoot != "" && sameDirectory(destDir, outputRoot) {
+		return publishFlat(source, partPath, desiredPath, expectedSHA, expectedSize)
+	}
+	return publishNested(source, partPath, desiredPath, outputRoot, expectedSHA, expectedSize)
+}
+
+// sameDirectory reports whether two paths name the same directory, comparing
+// cleaned absolute forms. It is a routing decision, not a security boundary:
+// the security boundary is the os.Root opened inside publishNested.
+func sameDirectory(a, b string) bool {
+	if a == b {
+		return true
+	}
+	absA, errA := filepath.Abs(a)
+	absB, errB := filepath.Abs(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return filepath.Clean(absA) == filepath.Clean(absB)
+}
+
+// publishFlat is the original single-file publication path, unchanged: open the
+// destination directory, rename the verified partial into it, fall back to a
+// verified copy through a hidden temporary.
+func publishFlat(source *os.File, partPath, desiredPath, expectedSHA string, expectedSize int64) (string, bool, error) {
+	outputDir, err := drop.OpenStagingDirectory(filepath.Dir(desiredPath))
+	if err != nil {
+		return "", false, fmt.Errorf("open output directory: %w", err)
+	}
+	defer outputDir.Close()
 
 	ext := filepath.Ext(desiredPath)
 	base := strings.TrimSuffix(desiredPath, ext)
@@ -2627,6 +2691,111 @@ func publishPartFile(source *os.File, partPath, desiredPath, expectedSHA string,
 		return candidate, false, nil
 	}
 	return "", false, errors.New("too many existing file candidates")
+}
+
+// publishNested publishes into a reconstructed directory tree.
+//
+// Three properties, in order of how much they matter:
+//
+//  1. Everything is addressed through an os.Root opened on the output
+//     directory. A relative path that escapes the root is rejected by the
+//     kernel-level confinement, not by our arithmetic.
+//  2. Parent directories are created only after each component has been proven
+//     to be a real directory rather than a symlink, so a link planted inside
+//     the output directory cannot redirect the write.
+//  3. The published name is never overwritten; a taken name gets the same " (n)"
+//     disambiguator the flat path has always used, so re-sending a directory
+//     twice produces a second tree rather than a merge.
+func publishNested(source *os.File, partPath, desiredPath, outputRoot, expectedSHA string, expectedSize int64) (string, bool, error) {
+	if outputRoot == "" {
+		return "", false, errors.New("nested publication requires the output directory")
+	}
+	root, err := drop.OpenStagingDirectory(outputRoot)
+	if err != nil {
+		return "", false, fmt.Errorf("open output directory: %w", err)
+	}
+	defer root.Close()
+
+	relDest, err := filepath.Rel(filepath.Clean(outputRoot), filepath.Clean(desiredPath))
+	if err != nil || relDest == "." || strings.HasPrefix(relDest, "..") {
+		// Unreachable for a path this receiver built from validated
+		// components; refused anyway because publication is the last place a
+		// path can be wrong.
+		return "", false, fmt.Errorf("destination %q is not inside the output directory", desiredPath)
+	}
+	relStage, err := filepath.Rel(filepath.Clean(outputRoot), filepath.Clean(partPath))
+	if err != nil || relStage == "." || strings.HasPrefix(relStage, "..") {
+		return "", false, fmt.Errorf("staging path %q is not inside the output directory", partPath)
+	}
+	if err := EnsureRelDirs(root, relDest); err != nil {
+		return "", false, err
+	}
+
+	ext := filepath.Ext(relDest)
+	base := strings.TrimSuffix(relDest, ext)
+	for i := 0; i < 10000; i++ {
+		candidate := relDest
+		if i > 0 {
+			candidate = filepath.Join(filepath.Dir(relDest), fmt.Sprintf("%s (%d)%s", filepath.Base(base), i, ext))
+		}
+		if _, err := root.Lstat(candidate); err == nil {
+			continue // a name is already taken; never overwrite
+		} else if !os.IsNotExist(err) {
+			return "", false, err
+		}
+
+		// Fast path: a same-filesystem rename inside the root. Both names are
+		// root-relative and neither can escape it.
+		//
+		// Any failure other than "the name is taken" falls through to the
+		// verified copy below, for the same reason the flat path does. Two cases
+		// reach it in practice: the staging area is on another filesystem, and
+		// on Windows the kernel refuses to rename a file this process still has
+		// open - which is always true here, because the published bytes are the
+		// bytes read back through the descriptor that verified them. Refusing
+		// instead of falling back would mean a directory send simply cannot work
+		// on Windows, so the copy is not a fallback for an edge case; it is half
+		// the platforms' normal path.
+		if err := root.Rename(relStage, candidate); err != nil {
+			if os.IsExist(err) {
+				continue
+			}
+		} else {
+			return filepath.Join(outputRoot, candidate), true, nil
+		}
+
+		// Fallback: verified copy through a hidden temporary in the same
+		// directory, so the reader still never sees a partial file.
+		if _, err := source.Seek(0, io.SeekStart); err != nil {
+			return "", false, fmt.Errorf("rewind staging file: %w", err)
+		}
+		if err := publishNestedViaTemp(root, source, candidate, expectedSHA, expectedSize); err != nil {
+			if os.IsExist(err) {
+				continue
+			}
+			return "", false, err
+		}
+		return filepath.Join(outputRoot, candidate), false, nil
+	}
+	return "", false, errors.New("too many existing file candidates")
+}
+
+// publishNestedViaTemp is publishViaTemp for a nested destination. The
+// temporary is created in the destination's own directory so the final rename
+// stays inside one directory and stays atomic.
+//
+// The sub-directory handle is obtained through the output root rather than
+// from the path, and EnsureRelDirs has already proved the component is a real
+// directory rather than a symlink, so this cannot be redirected.
+func publishNestedViaTemp(root *drop.StagingDirectory, source *os.File, relDest, expectedSHA string, expectedSize int64) error {
+	dir := filepath.Dir(relDest)
+	subRoot, err := root.OpenRoot(dir)
+	if err != nil {
+		return fmt.Errorf("open destination directory %s: %w", dir, err)
+	}
+	sub := drop.NewStagingDirectory(subRoot, filepath.Join(root.Path(), dir))
+	defer sub.Close()
+	return publishViaTemp(sub, source, filepath.Base(relDest), expectedSHA, expectedSize)
 }
 
 // publishViaTemp writes source into a hidden temporary inside the destination

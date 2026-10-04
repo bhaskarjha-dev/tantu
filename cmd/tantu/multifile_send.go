@@ -42,11 +42,16 @@ type batchOptions struct {
 	Timeout    time.Duration
 	JSONOut    bool
 	Verbose    bool
+	// Flatten drops the directory structure instead of preserving it. It is the
+	// opt-out from the default, not the default: "send this folder" means the
+	// folder, and a peer who wants the contents flat can ask for that
+	// explicitly.
+	Flatten bool
 }
 
 // runDirectorySend is the entry point for `tantu send <directory>`.
-func runDirectorySend(root, sendKey string, storeDir, bridgeAddr, peerAddr string, timeout time.Duration, _ bool, _ string, jsonOut, verbose bool) {
-	files, expErr := expandDirectory(root)
+func runDirectorySend(root, sendKey string, storeDir, bridgeAddr, peerAddr string, timeout time.Duration, flatten bool, _ string, jsonOut, verbose bool) {
+	files, expErr := expandDirectory(root, !flatten)
 	if expErr != nil {
 		if jsonOut {
 			emitSendJSON(sendJSONResult{Status: "error", Code: expErr.Code, Message: expErr.Message, NextAction: expErr.NextAction}, sendExitUsage)
@@ -58,7 +63,7 @@ func runDirectorySend(root, sendKey string, storeDir, bridgeAddr, peerAddr strin
 		os.Exit(sendExitUsage)
 	}
 
-	opts := batchOptions{StoreDir: storeDir, BridgeAddr: bridgeAddr, PeerAddr: peerAddr, Timeout: timeout, JSONOut: jsonOut, Verbose: verbose}
+	opts := batchOptions{StoreDir: storeDir, BridgeAddr: bridgeAddr, PeerAddr: peerAddr, Timeout: timeout, JSONOut: jsonOut, Verbose: verbose, Flatten: flatten}
 
 	var totalBytes int64
 	for _, f := range files {
@@ -171,8 +176,8 @@ func (s *hubBatchSender) destination() string { return s.dest }
 func (s *hubBatchSender) close() {}
 
 func (s *hubBatchSender) SendFile(_ context.Context, f expandedFile, idemKey string) (sendBatchFile, error) {
-	out := sendBatchFile{Name: f.Name, Path: f.Path, Size: f.Size}
-	res, err := delegateSendWithNameFromStore(s.storeDir, s.webAddr, f.Path, "", f.Name, s.peer, s.timeout, idemKey)
+	out := sendBatchFile{Name: f.Name, Path: f.Path, RelPath: f.RelPath, Size: f.Size}
+	res, err := delegateSendWithNameFromStore(s.storeDir, s.webAddr, f.Path, "", f.Name, s.peer, s.timeout, idemKey, f.RelPath)
 	if err != nil {
 		he := hubFailureFields(err)
 		out.Code, out.Message = he.code, he.message
@@ -223,7 +228,7 @@ func (s *directBatchSender) destination() string { return s.dest }
 func (s *directBatchSender) close() {}
 
 func (s *directBatchSender) SendFile(ctx context.Context, f expandedFile, idemKey string) (sendBatchFile, error) {
-	out := sendBatchFile{Name: f.Name, Path: f.Path, Size: f.Size}
+	out := sendBatchFile{Name: f.Name, Path: f.Path, RelPath: f.RelPath, Size: f.Size}
 	conn, err := transport.DialPinned(s.tr, s.dialTarget, s.fingerprint)
 	if err != nil {
 		code, plain, _, retrySafe, duplicateRisk, _ := hub.ClassifyTransferError(err, 0, f.Size, false)
@@ -248,6 +253,7 @@ func (s *directBatchSender) SendFile(ctx context.Context, f expandedFile, idemKe
 		DropID:   dropID,
 		Kind:     drop.DropKindFile,
 		Name:     f.Name,
+		RelPath:  f.RelPath,
 		Size:     f.Size,
 		MIMEType: mimeTypeFor(f.Name),
 		// A caller-supplied key applies to the whole batch, so each file
@@ -293,7 +299,7 @@ func (s *failingBatchSender) close()              {}
 
 func (s *failingBatchSender) SendFile(_ context.Context, f expandedFile, _ string) (sendBatchFile, error) {
 	return sendBatchFile{
-		Name: f.Name, Path: f.Path, Size: f.Size,
+		Name: f.Name, Path: f.Path, RelPath: f.RelPath, Size: f.Size,
 		Code: "config_error", Message: s.err.Error(),
 		RetrySafe: true, ExitCode: sendExitFailed,
 	}, s.err
@@ -399,7 +405,14 @@ func sendBatchFiles(sender batchSender, files []expandedFile, root, sendKey stri
 
 	for _, f := range files {
 		if opts.Verbose || !opts.JSONOut {
-			line := fmt.Sprintf("  → %s (%s)\n", f.Name, formatSize(f.Size))
+			// The path inside the tree, not the bare leaf: with two files
+			// called notes.txt in different folders, a list of leaf names
+			// cannot tell the user which one failed.
+			shown := f.Name
+			if f.RelPath != "" {
+				shown = f.RelPath
+			}
+			line := fmt.Sprintf("  → %s (%s)\n", shown, formatSize(f.Size))
 			if opts.JSONOut {
 				fmt.Fprint(os.Stderr, line)
 			} else {
@@ -496,7 +509,11 @@ func printBatchResult(res sendBatchJSONResult, opts batchOptions) {
 			if f.DuplicateRisk {
 				marker = "⚠️ "
 			}
-			fmt.Printf("  %s %s — %s\n", marker, f.Name, f.Message)
+			shown := f.Name
+			if f.RelPath != "" {
+				shown = f.RelPath
+			}
+			fmt.Printf("  %s %s — %s\n", marker, shown, f.Message)
 		}
 	}
 	if res.NextAction != "" {

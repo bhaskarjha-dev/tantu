@@ -35,7 +35,7 @@ func TestExpandDirectoryCollectsFilesRecursively(t *testing.T) {
 	writeFile(t, filepath.Join(root, "docs", "b.md"), "bb")
 	writeFile(t, filepath.Join(root, "docs", "api", "c.md"), "ccc")
 
-	files, err := expandDirectory(root)
+	files, err := expandDirectory(root, false)
 	if err != nil {
 		t.Fatalf("expandDirectory: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestExpandDirectoryNamesCannotCollideOnReceiver(t *testing.T) {
 	writeFile(t, filepath.Join(root, "two", "notes.txt"), "2")
 	writeFile(t, filepath.Join(root, "notes.txt"), "3")
 
-	files, err := expandDirectory(root)
+	files, err := expandDirectory(root, false)
 	if err != nil {
 		t.Fatalf("expandDirectory: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestExpandDirectoryRefusesSymlinks(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(root, "link-dir")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	files, err := expandDirectory(root)
+	files, err := expandDirectory(root, false)
 	if err == nil {
 		t.Fatalf("a symlink must be refused, got %d files: %+v", len(files), files)
 	}
@@ -120,7 +120,7 @@ func TestExpandDirectoryRefusesSelfReferentialSymlink(t *testing.T) {
 	var files []expandedFile
 	var expErr *directoryExpansionError
 	go func() {
-		files, expErr = expandDirectory(root)
+		files, expErr = expandDirectory(root, false)
 		close(done)
 	}()
 	select {
@@ -142,7 +142,7 @@ func TestExpandDirectoryRejectsEmptyDirectory(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "nested", "deeper"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	files, err := expandDirectory(root)
+	files, err := expandDirectory(root, false)
 	if err == nil {
 		t.Fatalf("an empty directory must be refused, got %d files", len(files))
 	}
@@ -156,7 +156,7 @@ func TestExpandDirectoryRejectsNonDirectory(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "f.txt")
 	writeFile(t, path, "x")
-	_, err := expandDirectory(path)
+	_, err := expandDirectory(path, false)
 	if err == nil {
 		t.Fatal("expanding a plain file must be refused")
 	}
@@ -166,7 +166,7 @@ func TestExpandDirectoryRejectsNonDirectory(t *testing.T) {
 }
 
 func TestExpandDirectoryRejectsMissingPath(t *testing.T) {
-	_, err := expandDirectory(filepath.Join(t.TempDir(), "nope"))
+	_, err := expandDirectory(filepath.Join(t.TempDir(), "nope"), false)
 	if err == nil {
 		t.Fatal("a missing path must be refused")
 	}
@@ -185,7 +185,7 @@ func TestExpandDirectoryEnforcesFileCountBound(t *testing.T) {
 	for i := 0; i <= maxExpandedFiles; i++ {
 		writeFile(t, filepath.Join(root, "f"+pad(i)+".txt"), "x")
 	}
-	_, err := expandDirectory(root)
+	_, err := expandDirectory(root, false)
 	if err == nil {
 		t.Fatal("exceeding the file bound must be refused")
 	}

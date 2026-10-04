@@ -19,6 +19,16 @@ const (
 	MaxDropIDLength   = 128
 	MaxDropNameLength = 4096
 	MaxMIMETypeLength = 255
+
+	// MaxRelPathLength and MaxRelPathDepth bound a sender-supplied relative
+	// path. The wire layer checks the cheap, load-bearing properties (relative,
+	// no absolute prefix, no control characters, no empty/"."/".." segment,
+	// bounded depth) and refuses anything else at acknowledgement, so a hostile
+	// path never reaches a filesystem call. The receiver then re-validates each
+	// component against the platform's own naming rules before creating
+	// anything; see internal/hub.SanitizeRelPath.
+	MaxRelPathLength = 1024
+	MaxRelPathDepth  = 24
 )
 
 // DropKind identifies what type of content is being dropped.
@@ -49,6 +59,22 @@ type DropSend struct {
 	// instead of republishing, and reuse with different metadata or a
 	// differing digest is refused outright.
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	// RelPath is the sender's path for this drop relative to the root of the
+	// directory being sent, slash-separated on every platform so a Windows
+	// sender and a Linux receiver describe the same tree. It is empty for every
+	// single-file transfer and for text, which is what makes this strictly
+	// additive: a peer that does not understand the field publishes the file
+	// flat, exactly as before.
+	//
+	// Receivers treat it as untrusted. It is validated component by component
+	// (no absolute path, no "." or "..", no empty component, no control
+	// character, no ":" or Windows-illegal character, no trailing dot or
+	// space, no reserved device name, bounded depth and length) and any parent
+	// directory is created inside the output directory without traversing a
+	// symlink. A path that fails validation is refused at acknowledgement, not
+	// rewritten: a sanitiser that silently produced a different name would
+	// publish a file the sender never agreed to.
+	RelPath string `json:"rel_path,omitempty"`
 	// AttemptID is local dispatcher state and is never serialized on the wire.
 	// It lets receiver callbacks distinguish concurrent attempts that reuse a
 	// DropID, so cleanup for one attempt cannot tear down another.

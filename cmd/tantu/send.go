@@ -97,8 +97,12 @@ type sendBatchJSONResult struct {
 // second contract: an ambiguous outcome is still reported as an ambiguous
 // outcome, and a refused transfer is still reported as safe to retry.
 type sendBatchFile struct {
-	Name        string `json:"name"`
-	Path        string `json:"path"`
+	Name string `json:"name"`
+	Path string `json:"path"`
+	// RelPath is the file's place inside the sent tree, or "" for a flattened
+	// send. It is additive: a consumer that ignores it sees exactly the
+	// shape it always did.
+	RelPath     string `json:"rel_path,omitempty"`
 	Size        int64  `json:"size"`
 	OperationID string `json:"operation_id,omitempty"`
 	Verified    bool   `json:"verified,omitempty"`
@@ -189,6 +193,7 @@ func runSend(args []string) {
 	jsonOut := fs.Bool("json", false, "Print machine-readable JSON result (never includes payload content)")
 	keyFlag := fs.String("idempotency-key", "", "Caller-supplied idempotency key for duplicate-safe retry (1-128 identifier chars); default: per-attempt ID")
 	textFlag := fs.Bool("text", false, "Send the argument as a text snippet even if it looks like a path")
+	flattenFlag := fs.Bool("flatten", false, "Send a directory's files flat, folding the tree into their names (default: preserve the directory structure)")
 	_ = fs.Parse(args)
 
 	transportExplicit := false
@@ -290,8 +295,10 @@ func runSend(args []string) {
 			// (decision D-13). It is not archived: silently repackaging a
 			// directory would change what the peer receives in a way the user
 			// did not ask for, and would make a partial failure unreportable.
+			//
+			// Each file also carries its path inside the tree, so the peer receives the directory that was pointed at rather than its contents flattened into one folder (D-28). --flatten opts out.
 			runDirectorySend(cleanPath, sendKey, *storeDir, *bridgeAddr, *peerAddr,
-				*timeout, *textFlag, *nameFlag, *jsonOut, *verbose)
+				*timeout, *flattenFlag, *nameFlag, *jsonOut, *verbose)
 			return
 		}
 		if err == nil && !stat.IsDir() {
@@ -393,7 +400,7 @@ func runSend(args []string) {
 			} else if *verbose {
 				fmt.Printf("Delegating text transfer to local Hub...\n")
 			}
-			delegRes, err := delegateSendWithNameFromStore(*storeDir, delegateAddr, delegatedFilePath, textContent, meta.Name, *peerAddr, *timeout, sendKey)
+			delegRes, err := delegateSendWithNameFromStore(*storeDir, delegateAddr, delegatedFilePath, textContent, meta.Name, *peerAddr, *timeout, sendKey, meta.RelPath)
 			if err != nil {
 				if *jsonOut {
 					res := sendFailureJSON(err)

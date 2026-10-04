@@ -199,6 +199,29 @@ func (d *StagingDirectory) Lstat(name string) (os.FileInfo, error) {
 	return d.root.Lstat(name)
 }
 
+// Mkdir creates one directory relative to this root. It exists so a caller that
+// is rebuilding a directory tree can stay inside the same anchored handle
+// rather than falling back to a path-based MkdirAll, which cannot guarantee
+// where the directories it creates end up.
+func (d *StagingDirectory) Mkdir(name string, perm os.FileMode) error {
+	return d.root.Mkdir(name, perm)
+}
+
+// OpenRoot opens a sub-directory of this root as its own anchored handle. A
+// handle obtained this way cannot be redirected by a symlink planted after the
+// parent was inspected, which is what makes it safe to use as the destination
+// of a copy-and-rename publication into a nested directory.
+func (d *StagingDirectory) OpenRoot(name string) (*os.Root, error) {
+	return d.root.OpenRoot(name)
+}
+
+// NewStagingDirectory wraps an already-open os.Root. The caller is responsible
+// for having obtained the root safely - through OpenStagingDirectory or
+// OpenRoot, never by constructing one from an unverified path.
+func NewStagingDirectory(root *os.Root, path string) *StagingDirectory {
+	return &StagingDirectory{root: root, path: path}
+}
+
 func (d *StagingDirectory) Remove(name string) error {
 	return d.root.Remove(name)
 }

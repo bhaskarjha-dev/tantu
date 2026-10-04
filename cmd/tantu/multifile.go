@@ -21,6 +21,11 @@ import (
 	"strings"
 )
 
+// dropBinName is the fallback name used when a path component carries nothing
+// that could survive sanitisation. It matches the receiver's own fallback so
+// the sender's idea of an unusable name and the receiver's agree.
+const dropBinName = "dropBinName"
+
 // Bounds on a single directory expansion. Without them, `tantu send .` in a
 // home directory or a node_modules tree would attempt thousands of transfers
 // and hold them open against the receiver's concurrency budget, failing
@@ -36,15 +41,20 @@ const (
 	maxExpandedTotalBytes int64 = 5 * 1024 * 1024 * 1024
 )
 
-// expandedFile is one file in a directory expansion: where it is on disk, and
-// the name the peer should receive it under.
+// expandedFile is one file in a directory expansion: where it is on disk, the
+// name the peer should receive it under, and where it sat in the tree.
 type expandedFile struct {
 	// Path is the absolute-or-relative path to open locally.
 	Path string
-	// Name is the name the peer will see. Directory components are folded
-	// into the name so two files with the same basename in different
-	// subdirectories do not collide on the receiver.
+	// Name is the base name the peer will see. With structure preserved the
+	// receiver rebuilds the tree from RelPath and uses this only for the leaf;
+	// with --flatten the path components are folded into it instead, so two
+	// files with the same basename in different subdirectories cannot collide.
 	Name string
+	// RelPath is the path inside the tree being sent, slash-separated, with the
+	// sent directory as its first component. Empty when flattening, which is
+	// what makes the wire shape identical to a single-file send.
+	RelPath string
 	// Size is the file's size in bytes at walk time.
 	Size int64
 }
@@ -72,10 +82,12 @@ func (e *directoryExpansionError) Error() string { return e.Message }
 //     looks exactly like a directory that fully sent.
 //   - The order is sorted, so a run is reproducible and a failure names the
 //     same file every time.
-//   - Names are derived from the path relative to root, with separators
-//     replaced, so `a/b/notes.txt` and `c/notes.txt` stay distinct on the
-//     receiver's flat downloads folder.
-func expandDirectory(root string) ([]expandedFile, *directoryExpansionError) {
+//   - Each file carries its path inside the tree, so the receiver can rebuild
+//     the directory the user pointed at. The flattened name is kept as the
+//     leaf name, and is still derived from the full relative path when
+//     flattening is asked for, so `a/b/notes.txt` and `c/notes.txt` stay
+//     distinct in a flat downloads folder.
+func expandDirectory(root string, preservePaths bool) ([]expandedFile, *directoryExpansionError) {
 	info, err := os.Stat(root)
 	if err != nil {
 		return nil, &directoryExpansionError{
@@ -154,11 +166,28 @@ func expandDirectory(root string) ([]expandedFile, *directoryExpansionError) {
 			return filepath.SkipAll
 		}
 		totalBytes += fi.Size()
-		files = append(files, expandedFile{
+		file := expandedFile{
 			Path: path,
-			Name: flattenedTransferName(root, path),
+			Name: filepath.Base(path),
 			Size: fi.Size(),
-		})
+		}
+		if preservePaths {
+			// The sent directory is the first component, so a project arrives
+			// as a project rather than as its contents scattered into whatever
+			// else happens to be in the downloads folder.
+			file.RelPath = transferRelPath(root, path)
+			if file.RelPath == "" {
+				walkErr = &directoryExpansionError{
+					Code:       "invalid_input",
+					Message:    fmt.Sprintf("cannot express %s as a path inside %s", path, root),
+					NextAction: "Send the files individually, or move the directory somewhere it can be named.",
+				}
+				return filepath.SkipAll
+			}
+		} else {
+			file.Name = flattenedTransferName(root, path)
+		}
+		files = append(files, file)
 		return nil
 	})
 	if walkErr != nil {
@@ -183,7 +212,75 @@ func expandDirectory(root string) ([]expandedFile, *directoryExpansionError) {
 	}
 
 	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
+	if preservePaths {
+		// A deterministic order is worth more than alphabetical-by-leaf here:
+		// re-sending the same directory must produce the same sequence, so a
+		// failure names the same file every time and a retry reproduces the run.
+		sort.Slice(files, func(i, j int) bool { return files[i].RelPath < files[j].RelPath })
+	}
 	return files, nil
+}
+
+// transferRelPath expresses a walked path as the receiver should place it:
+// slash-separated, relative, with the sent directory itself as the first
+// component.
+//
+// The directory's own name is sanitised rather than refused. A directory named
+// "my project (2024)" is ordinary, and refusing to send it because of a space
+// would be worse than adjusting the name; but the adjustment is bounded and
+// only ever applied to the top-level component, where it cannot hide where a
+// file came from.
+func transferRelPath(root, path string) string {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return ""
+	}
+	rel = filepath.ToSlash(rel)
+	top := sanitizeRelPathComponent(filepath.Base(filepath.Clean(root)))
+	if top == "" {
+		return ""
+	}
+	if top == dropBinName {
+		// An unnamed or unusable root would silently become "dropBinName" for
+		// every file, which reads as a single file called drop.bin repeated.
+		return ""
+	}
+	return top + "/" + rel
+}
+
+// sanitizeRelPathComponent applies the portable-name rules to one path
+// component. It is a sender-side convenience, not a security boundary: the
+// receiver re-validates everything, so a sender that gets this wrong produces a
+// clear refusal, never an unsafe write.
+func sanitizeRelPathComponent(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r < 32 || r == 0x7f:
+		case strings.ContainsRune(`<>:"/\|?*`, r):
+			b.WriteRune('_')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	out := strings.Trim(b.String(), ". ")
+	if out == "" {
+		return dropBinName
+	}
+	const maxComponent = 200
+	if len(out) > maxComponent {
+		ext := filepath.Ext(out)
+		keep := maxComponent - len(ext)
+		if keep < 8 {
+			keep = maxComponent - 8
+		}
+		if ext != "" && len(ext) < maxComponent-8 {
+			out = out[:keep] + ext
+		} else {
+			out = out[:maxComponent]
+		}
+	}
+	return out
 }
 
 // flattenedTransferName derives a receiver-safe, collision-resistant name from
@@ -214,7 +311,7 @@ func flattenedTransferName(root, path string) string {
 	}
 	name := strings.Trim(b.String(), "-. ")
 	if name == "" {
-		name = "drop.bin"
+		name = "dropBinName"
 	}
 	// Bound the name to the same limit the receiver enforces, so a deep path
 	// cannot produce a name the receiver would have to truncate (and thereby

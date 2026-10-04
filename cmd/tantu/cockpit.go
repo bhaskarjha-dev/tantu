@@ -138,7 +138,7 @@ func RunCockpit(ctx context.Context, h *hub.Hub, cancel context.CancelFunc, init
 						// accepting it in the CLI would be an inconsistency
 						// the user has to learn rather than remember.
 						fmt.Printf("📁 Directory: sending each file separately to %s...\n", cockpitDestinationName(h, targetPeer))
-						files, expErr := expandDirectory(filePath)
+						files, expErr := expandDirectory(filePath, true)
 						if expErr != nil {
 							fmt.Printf("❌ %s\n", expErr.Message)
 							if expErr.NextAction != "" {
