@@ -220,21 +220,32 @@ jobs:
       - name: Run acceptance harness across engines
         # Same reasoning as the test step: the harness's diagnostics are the
         # only diagnosis available for this job, and a log nobody can read
-        # turns "exit 3" into a mystery. Every engine runs even when an
-        # earlier one fails — one gate, three engines, one annotation each —
+        # turns "exit 3" into a mystery. Every run executes even when an
+        # earlier one fails — one gate, six runs, one annotation each —
         # because "chromium failed, so firefox was never looked at" wastes
         # the only run you get.
+        #
+        # Both topologies per engine since Batch Z31: peerless is the default
+        # rig, while --peers seeds three trusted peers so the multi-peer
+        # layout (destination pills, per-peer send preview, populated store)
+        # is exercised on every push. The pair was validated locally in
+        # Batch Z28; without this loop a peerless-only CI could never notice
+        # a regression that only appears once peers are listed.
         run: |
           status=0
-          for engine in chromium firefox webkit; do
-            echo "::group::dashboard-acceptance $engine"
-            engine_status=0
-            node tools/uxtest/run.mjs --browser="$engine" 2>&1 | tee "harness-$engine.log" || engine_status=$?
-            if [ "$engine_status" -ne 0 ]; then
-              status="$engine_status"
-              detail=$(tail -n 60 "harness-$engine.log")
-              printf '::error::dashboard-acceptance (%s) failed: %s\n' "$engine" "${detail//$'\n'/%0A}"
-            fi
-            echo "::endgroup::"
+          for mode in "" "--peers"; do
+            for engine in chromium firefox webkit; do
+              label="$engine${mode:+ peers}"
+              slug="$engine${mode:+-peers}"
+              echo "::group::dashboard-acceptance $label"
+              run_status=0
+              node tools/uxtest/run.mjs --browser="$engine" $mode 2>&1 | tee "harness-$slug.log" || run_status=$?
+              if [ "$run_status" -ne 0 ]; then
+                status="$run_status"
+                detail=$(tail -n 60 "harness-$slug.log")
+                printf '::error::dashboard-acceptance (%s) failed: %s\n' "$label" "${detail//$'\n'/%0A}"
+              fi
+              echo "::endgroup::"
+            done
           done
           exit "$status"
