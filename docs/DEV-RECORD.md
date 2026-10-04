@@ -2676,3 +2676,68 @@ every time. This defect was found by running the product, not by reading it.
   the wrong size.
 - Responding-side timeouts and local rejection on the initiator are covered
   by honest copy; the 60-second window itself is unchanged.
+
+### Post-push: CI run #37 failed on machine-quietness, not on a product defect
+
+Z30 shipped as `a6777bd` and CI run #37 came back red on
+`Test (ubuntu-latest)` — macOS, Windows, Quality-gates and
+Dashboard-acceptance all green — with:
+
+```
+--- FAIL: TestEngine_SelfFiltering
+    self-filtering failed: found self in discovered nodes:
+    [{InstanceName:runnervm8df0l Address:10.1.0.186:41491 Port:41491 ...}]
+```
+
+The failing assertion was `len(nodes) != 0`. Nothing about *self* showed up:
+the recorded node was the runner's own hostname (`runnervm8df0l`), which is
+the `NodeName` a `cmd/tantu` lan-hub test's engine advertises. The cause is
+structural and predates Z30: **every** discovery engine joins the same mDNS
+group `224.0.0.251:5353` (and the shared broadcast port is a separate,
+smaller vector), and CI runs package test binaries in parallel, so a
+concurrent package's beacons arrive on this engine's listeners and are
+recorded — correctly. Z30 merely added the first lan-hub tests to
+`cmd/tantu`, which put a second discovery engine on the runner for the first
+time and exposed it.
+
+The three count-sensitive tests (`TestEngine_SelfFiltering`,
+`TestEngine_MalformedPacket`, `TestEngine_SelfFilterEndToEndUDP`) were
+therefore asserting *machine quietness*, which is not a property any test
+can promise on a shared host. Each was red-proven locally before rewriting —
+and the proof had to be built, because Windows broadcast/multicast loopback
+does not reproduce CI's interference:
+
+- multicast cross-process ✗ (PS→PS same-process only; Go→Go silent),
+- broadcast loopback ✗,
+- **self-unicast ✓** — a flood from the interface IP straight at the test
+  port reaches the engine's broadcast listener and rides the same
+  `listenLoop`; source ≠ 127.0.0.1 keeps it off the loopback probes'
+  rate-limiter bucket.
+
+Under that injection all three old tests failed in exactly the CI shape:
+SelfFiltering ("found self… parallel-instance"), MalformedPacket
+("expected 0 nodes… got 1"), SelfFilterEndToEndUDP ("unexpected nodes").
+
+The rewrites assert the **contract**, not the crowd:
+
+1. `TestEngine_SelfFiltering` — our own name must never appear (checked at
+   three stages: broadcast echo, an own-nonce replay unicast at the
+   listener so the filter is exercised even where broadcast never loops
+   back, and throughout), foreign nodes are tolerated; then a `probe-peer`
+   beacon must still be recorded, so an engine that filters everything (or
+   hears nothing) cannot pass vacuously.
+2. `TestEngine_MalformedPacket` — coordinate scan instead of `len == 0`:
+   error only on coordinates the three malformed packets could uniquely
+   produce (port out of range, empty or control-bearing name). The
+   self-contained `{"v":1,"port":-1}` send keeps the teeth.
+3. `TestEngine_SelfFilterEndToEndUDP` — `foreign` must be present and
+   `self-node` must be absent; other entries are fair game.
+
+Red/green cycles: old tests red under injection (3) → rewrites green under
+injection (3) → teeth sabotage: `isSelfBeacon`→`false` made SelfFiltering
+red at the broadcast-echo stage, `validBeacon`→`true` made MalformedPacket
+red on `Port:-1` — both reverted byte-exact (`git diff` on
+`discovery.go` empty). Full suite, staticcheck@v0.8.1, `go vet`, encgate all
+green on the final tree. No product code changed: the discovery *behavior*
+was correct on CI (it recorded a legitimate foreign beacon); only the
+tests' expectations were wrong.

@@ -318,6 +318,24 @@ rollback procedures.
   the neighboring receive tests already use. Product ordering is unchanged
   and intentional: a drop is durable and acknowledged before it becomes a
   dashboard "recent drop".
+- **Three discovery tests asserted that the machine was silent, and CI run
+  #37 failed a correct product for hearing a neighbour.** Every discovery
+  engine joins the same mDNS group by design, and CI runs package test
+  binaries in parallel, so a concurrent test's beacons arrive on the shared
+  listeners and are recorded — correctly. `TestEngine_SelfFiltering`,
+  `TestEngine_MalformedPacket` and `TestEngine_SelfFilterEndToEndUDP`
+  required the node table to be *empty* (or exactly one entry) and so failed
+  on any foreign beacon, with `runnervm8df0l` — the runner's own hostname,
+  advertised by a `cmd/tantu` lan-hub test — reported as "found self". They
+  now assert the actual contract: our own name is never recorded (with a
+  replayed own-nonce beacon at the listener, so the check cannot pass
+  because nothing arrived), malformed packets produce no *invalid
+  coordinates* (out-of-range port, empty or control-bearing name), and a
+  foreign probe beacon must still be recorded, so a deaf or over-filtering
+  engine cannot pass. Red-proven under local packet injection in both
+  directions: the old assertions fail on foreign nodes, the new ones fail
+  when `isSelfBeacon` or `validBeacon` is disabled. No product code
+  changed.
 - **The SSH listener wedged instead of failing when its accept loop died.**
   A listener-level `Accept` error was published once into the results queue
   and `serve()` returned: the first caller saw the error, every later

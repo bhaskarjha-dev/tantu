@@ -33,11 +33,63 @@ func TestEngine_SelfFiltering(t *testing.T) {
 	}
 	defer e.Close()
 
+	// The contract is that OUR beacon is never recorded - not that the
+	// machine is quiet. Discovery is shared by design (every engine joins
+	// the same group), and CI runs package test binaries in parallel: run
+	// #37 failed this test's old zero-nodes assertion because a concurrent
+	// lan-hub test's beacons (the runner's hostname) were discovered
+	// correctly. Foreign instances may legitimately appear; our own name
+	// must not.
+	assertOwnNotRecorded := func(stage string) {
+		t.Helper()
+		for _, n := range e.ListNodes() {
+			if n.InstanceName == "test-node-self" {
+				t.Fatalf("%s: own beacon recorded as a peer: %+v", stage, n)
+			}
+		}
+	}
+
 	// Wait for multiple broadcast cycles so our own echo returns to us.
 	time.Sleep(250 * time.Millisecond)
+	assertOwnNotRecorded("broadcast echo")
 
-	if nodes := e.ListNodes(); len(nodes) != 0 {
-		t.Errorf("self-filtering failed: found self in discovered nodes: %+v", nodes)
+	// Deterministic teeth: replay a beacon carrying the engine's own nonce
+	// straight at its listener, so the filter stays exercised on hosts
+	// where broadcast never loops back to the sender (and so the check
+	// cannot pass vacuously because nothing was received).
+	conn, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 19879})
+	if err != nil {
+		t.Fatalf("DialUDP failed: %v", err)
+	}
+	defer conn.Close()
+	send := func(b beaconPayload) {
+		t.Helper()
+		payload, _ := json.Marshal(b)
+		if _, err := conn.Write(append([]byte(BeaconPrefix), payload...)); err != nil {
+			t.Fatalf("Write failed: %v", err)
+		}
+	}
+	send(beaconPayload{Version: 1, Name: "test-node-self", Port: 9877, BeaconNonce: e.beaconNonce})
+	// Delivery time, and it leaves the 50ms per-source rate window clear
+	// for the probe below: self beacons are dropped before the limiter, so
+	// only spacing against real traffic matters here.
+	time.Sleep(120 * time.Millisecond)
+	assertOwnNotRecorded("own-nonce replay")
+
+	// Non-vacuous: a foreign beacon must still be recorded, so an engine
+	// that filters everything (or never receives anything) cannot pass.
+	send(beaconPayload{Version: 1, Name: "probe-peer", Port: 9877, BeaconNonce: "probe"})
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		for _, n := range e.ListNodes() {
+			if n.InstanceName == "probe-peer" {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("foreign beacon not recorded; the self-filter checks above prove nothing: %+v", e.ListNodes())
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
@@ -158,8 +210,17 @@ func TestEngine_MalformedPacket(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	if nodes := e.ListNodes(); len(nodes) != 0 {
-		t.Errorf("expected 0 nodes from malformed packets, got %d", len(nodes))
+	// The contract is that the malformed packets created no nodes - not
+	// that the table is empty: other instances on this machine are
+	// legitimately discovered (discovery is shared by design; CI runs
+	// package tests in parallel). Only coordinates that broken validation
+	// could have accepted - out-of-range port, empty or control-bearing
+	// name - can come from the three malformed packets sent above; every
+	// other node in the table arrived as a valid beacon.
+	for _, n := range e.ListNodes() {
+		if n.Port < 1 || n.Port > 65535 || n.InstanceName == "" || containsControl(n.InstanceName) {
+			t.Errorf("malformed packet was recorded as a node: %+v", n)
+		}
 	}
 }
 
@@ -399,20 +460,26 @@ func TestEngine_SelfFilterEndToEndUDP(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		nodes := e.ListNodes()
-		if len(nodes) == 1 && nodes[0].InstanceName == "foreign" {
-			return
-		}
-		if len(nodes) > 1 {
-			t.Fatalf("unexpected nodes: %+v", nodes)
-		}
-		for _, n := range nodes {
+		// Name-based contract: the foreign peer must be recorded and our own
+		// name must not appear. Other instances on this machine are fair
+		// game for the table (discovery is shared by design; CI runs package
+		// test binaries in parallel), so counting entries is not this
+		// machine's contract - run #37's failures were all count assertions
+		// hit by legitimate foreign beacons.
+		foundForeign := false
+		for _, n := range e.ListNodes() {
 			if n.InstanceName == "self-node" {
-				t.Fatalf("own broadcast echo recorded as a peer: %+v", n)
+				t.Fatalf("own beacon recorded as a peer: %+v", n)
+			}
+			if n.InstanceName == "foreign" {
+				foundForeign = true
 			}
 		}
+		if foundForeign {
+			return
+		}
 		if time.Now().After(deadline) {
-			t.Fatalf("foreign peer not discovered: %+v", nodes)
+			t.Fatalf("foreign peer not discovered: %+v", e.ListNodes())
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
