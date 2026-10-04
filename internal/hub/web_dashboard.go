@@ -328,6 +328,12 @@ type statusResponse struct {
 	Peers           []peerStatus   `json:"peers"`
 	PID             int            `json:"pid,omitempty"`
 	StartedAt       time.Time      `json:"started_at,omitempty"`
+	// Discovery explains what the discovery engine is doing and whether it can
+	// see anything at all. It rides on /api/status rather than its own endpoint
+	// because the dashboard already polls this one every three seconds: a
+	// separate poll would add a request per cycle to carry a status line, and
+	// the two would then be able to disagree.
+	Discovery *discovery.Health `json:"discovery,omitempty"`
 }
 
 type probeStatusResponse struct {
@@ -588,6 +594,10 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 				Fingerprint: identitySnapshot.Fingerprint,
 				SAS:         pairing.SASCode(identitySnapshot.Fingerprint),
 			}
+		}
+		if engine != nil {
+			health := engine.Health()
+			resp.Discovery = &health
 		}
 
 		writeJSON(w, http.StatusOK, resp)

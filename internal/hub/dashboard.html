@@ -950,6 +950,97 @@
     border-color: var(--error);
     color: var(--error-text);
   }
+  /* ---- Notifications ----
+     Every outcome the product cannot put next to its own control arrives here
+     instead of in a native alert(). alert() is modal, unstyled, ignores the
+     OS theme, blocks the whole page until dismissed, and is invisible to a
+     screen-reader user as anything but an interruption - so a failed alias
+     edit looked like the browser itself had broken. Toasts are non-modal,
+     themed, announced through a live region, and carry the same
+     next-action vocabulary the rest of the product uses. */
+  .toast-region {
+    position: fixed;
+    right: 1rem;
+    bottom: 1rem;
+    z-index: 10050;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    width: min(380px, calc(100vw - 2rem));
+    pointer-events: none;
+  }
+  .toast {
+    pointer-events: auto;
+    background: var(--card-bg);
+    border: 1px solid var(--border-light);
+    border-left: 4px solid var(--accent);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-lg);
+    padding: 0.8rem 0.9rem;
+    color: var(--text);
+    animation: toastIn var(--dur-med) var(--ease-out);
+  }
+  .toast.success { border-left-color: var(--success); }
+  .toast.warn { border-left-color: var(--warning); }
+  .toast.error { border-left-color: var(--error); }
+  @keyframes toastIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .toast-body { display: flex; gap: 0.5rem; align-items: flex-start; }
+  .toast-text { flex: 1; min-width: 0; font-size: 0.88rem; line-height: 1.45; overflow-wrap: anywhere; }
+  .toast-next {
+    display: block;
+    margin-top: 0.3rem;
+    font-size: 0.82rem;
+    color: var(--text-muted);
+  }
+  .toast-actions { display: flex; gap: 0.5rem; margin-top: 0.6rem; flex-wrap: wrap; }
+  .toast-dismiss {
+    background: none;
+    border: 1px solid transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 1.05rem;
+    line-height: 1;
+    padding: 0;
+    min-width: 32px;
+    min-height: 32px;
+    border-radius: var(--radius-sm);
+    flex: none;
+  }
+  .toast-dismiss:hover { color: var(--text); border-color: var(--border-light); }
+  .toast-dismiss:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  /* ---- One dialog for every confirmation and prompt ----
+     Replaces confirm()/prompt(). Same modal contract as the pairing dialog -
+     Escape closes, Tab is trapped, focus returns to the opener - so there is
+     one focus-management rule in the page instead of three. */
+  .dialog-text { font-size: 0.88rem; color: var(--text-muted); line-height: 1.5; }
+  .dialog-text p { margin: 0 0 0.6rem; }
+  .dialog-text p:last-child { margin-bottom: 0; }
+  .dialog-text strong { color: var(--text); }
+  .dialog-lead { color: var(--text); font-weight: 600; }
+  .dialog-input {
+    width: 100%;
+    box-sizing: border-box;
+    margin-top: 0.75rem;
+    font-size: 0.85rem;
+    padding: 0.5rem 0.75rem;
+  }
+  .btn-danger {
+    background: var(--error);
+    border: 1px solid var(--error);
+    color: #ffffff;
+    font-weight: 600;
+    min-height: 44px;
+    padding: 0.5rem 1.1rem;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+  }
+  .btn-danger:hover:not(:disabled) { background: var(--error-hover, #dc2626); }
+  @media (max-width: 640px) {
+    .toast-region { right: 0.5rem; left: 0.5rem; bottom: 0.5rem; width: auto; }
+  }
 </style>
 </head>
 <body>
@@ -1089,7 +1180,14 @@
             <button class="btn-sm" data-action="load-recent">🔄 Refresh</button>
           </div>
           <div id="receivedDropsList" style="flex: 1; overflow-y: auto; max-height: 580px; display: flex; flex-direction: column; gap: 0.75rem;">
-            <p style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 2rem 0;">No received items yet.<br>Snippets and files sent by your peer appear here in real-time.<br>Session items — cleared when the Hub restarts. Sent transfers live under Transfers.</p>
+            <div class="empty-state">
+              <strong>Nothing received yet</strong>
+              Snippets and files your peer sends appear here in real time.<br>Items are session-only and clear when the Hub restarts.
+              <div style="margin-top:0.9rem; display:flex; gap:0.5rem; justify-content:center; flex-wrap:wrap;">
+                <button type="button" class="btn-sm" data-action="load-recent">Refresh inbox</button>
+                <button type="button" class="btn-sm" data-action="goto-peers">Check the peer is paired</button>
+              </div>
+            </div>
           </div>
           <p id="inboxStatus" class="sr-only" role="status" aria-live="polite"></p>
         </div>
@@ -1127,7 +1225,14 @@
         </div>
         <p class="hint-text" style="margin-top: 0; margin-bottom: 0.75rem;">Origin hosts only — URLs, codes, and tokens are never stored. Kept 30 days (last 50).</p>
         <div id="authorizationsList" style="display: flex; flex-direction: column; gap: 0.75rem;">
-          <p style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 2rem 0;">No authorizations yet.<br>Relay a login above to record its outcome here.</p>
+          <div class="empty-state">
+            <strong>No authorizations recorded</strong>
+            Every login you relay is recorded here with its peer and origin host - never the URL, code, or token.
+            <div style="margin-top:0.9rem; display:flex; gap:0.5rem; justify-content:center; flex-wrap:wrap;">
+              <button type="button" class="btn-sm" data-action="goto-relay">Relay a login URL</button>
+              <button type="button" class="btn-sm" data-action="load-authorizations">Refresh</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -1141,6 +1246,20 @@
           <span style="font-size: 0.75rem; color: var(--text-muted); background: var(--surface-hover); padding: 0.2rem 0.5rem; border-radius: 4px;">Zero-Typing Discovery</span>
         </div>
         <div id="discoveredHubsList" style="display: flex; flex-direction: column; gap: 0.5rem;"></div>
+      </div>
+
+      <!-- DISCOVERY HEALTH. An empty Nearby list used to be the only thing a
+           user could see whether discovery was working, blocked by a firewall,
+           or simply had no second machine to find - three very different
+           problems with three different next actions. The engine's own report
+           is rendered here so the question has an answer. -->
+      <div id="discoveryHealth" class="card" style="margin-bottom: 1.5rem; padding: 0.85rem 1.25rem; display: none;">
+        <div style="display: flex; align-items: flex-start; gap: 0.75rem; flex-wrap: wrap;">
+          <span class="status-chip neutral" id="discoveryHealthChip" style="margin-top: 0.15rem;">Discovery</span>
+          <span id="discoveryHealthText" style="flex: 1; min-width: 240px; font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;"></span>
+          <button type="button" class="btn-sm" data-action="refresh-discovery">Recheck</button>
+        </div>
+        <p class="hint-text" style="margin-top: 0.5rem; margin-bottom: 0;">Discovery finds hubs on this network automatically. Pairing by address always works, even when discovery cannot.</p>
       </div>
 
       <div class="grid-2">
@@ -1174,7 +1293,18 @@
             <button class="btn-sm" data-action="open-pair-modal">+ Pair New Device</button>
           </div>
           <div id="peersList">
-            <p style="color: var(--text-muted); font-size: 0.9rem;">Loading peer status...</p>
+            <!-- First paint mirrors the rendered empty state rather than a bare
+                 "Loading" line: a page whose first status poll is slow, or that
+                 is opened against a restarting Hub, otherwise shows an
+                 indefinite placeholder instead of the next action. -->
+            <div class="empty-state">
+              <strong>No paired peers yet</strong>
+              Pairing establishes mutual TLS trust between two machines. Do it once per machine pair; it needs a verification code that matches on both screens.
+              <div style="margin-top:0.9rem; display:flex; gap:0.5rem; justify-content:center; flex-wrap:wrap;">
+                <button type="button" class="btn-sm" data-action="open-pair-modal">+ Pair a device</button>
+                <button type="button" class="btn-sm" data-action="refresh-discovery">Look for nearby hubs</button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -1250,7 +1380,14 @@
         </div>
         <p class="hint-text" style="margin-top: 0; margin-bottom: 0.75rem;">Sender-side truth, kept 30 days (last 50). Received items stay under QuickDrop.</p>
         <div id="transfersList" style="display: flex; flex-direction: column; gap: 0.75rem;">
-          <p style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 2rem 0;">No transfers yet.<br>Send text, an image, or a file from QuickDrop.</p>
+          <div class="empty-state">
+            <strong>No transfers yet</strong>
+            This tab is the sender-side truth for this Hub: destination, state, and whether a retry is safe.
+            <div style="margin-top:0.9rem; display:flex; gap:0.5rem; justify-content:center; flex-wrap:wrap;">
+              <button type="button" class="btn-sm" data-action="goto-drop">Send something</button>
+              <button type="button" class="btn-sm" data-action="load-transfers">Refresh</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -1295,6 +1432,32 @@
     </div>
   </main>
 
+  <!-- NOTIFICATIONS. Two regions, not one: success and progress updates are
+       polite so they never interrupt, while a failure is assertive because the
+       user's action produced nothing and needs to be noticed. Mixing both in a
+       single live region is how "spoken loudly, then ignored" happens. -->
+  <div class="toast-region" id="toastRegionPolite" role="status" aria-live="polite" aria-label="Notifications"></div>
+  <div class="toast-region" id="toastRegionAssertive" role="alert" aria-live="assertive" aria-label="Errors"></div>
+
+  <!-- GENERIC ACTION DIALOG: the one confirm/prompt surface. Present in the
+       document at all times and only made visible when asked for, so a poll
+       re-render can never leave a half-open dialog behind. -->
+  <div id="actionDialog" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="actionDialogTitle" aria-describedby="actionDialogBody" style="display:none; position:fixed; inset:0; z-index:10060; align-items:center; justify-content:center;">
+    <div class="modal-box" style="width:92%; max-width:460px; padding:1.5rem; box-shadow:var(--shadow-lg); border-radius:16px;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:0.75rem; margin-bottom:0.75rem;">
+        <h2 id="actionDialogTitle" class="pair-title">Confirm</h2>
+        <button type="button" data-action="dialog-cancel" aria-label="Close dialog" class="pair-close">&times;</button>
+      </div>
+      <div id="actionDialogBody" class="dialog-text"></div>
+      <label id="actionDialogInputLabel" for="actionDialogInput" class="pair-opt-label" style="display:none; margin-top:1rem;">Value</label>
+      <input type="text" id="actionDialogInput" class="dialog-input" style="display:none;" autocomplete="off" spellcheck="false">
+      <div style="display:flex; justify-content:flex-end; gap:0.5rem; margin-top:1.25rem; flex-wrap:wrap;">
+        <button type="button" class="btn-sm" data-action="dialog-cancel" id="actionDialogCancel">Cancel</button>
+        <button type="button" class="btn-primary" data-action="dialog-confirm" id="actionDialogConfirm">Confirm</button>
+      </div>
+    </div>
+  </div>
+
   <script nonce="{{NONCE}}">
     // The server tells the page whether the HttpOnly session cookie is already
     // present. This lets an unauthenticated/stale bookmark render a clear
@@ -1337,6 +1500,239 @@
       }
     }
     let dashboardReady = bootstrapDashboard();
+
+    // ---- Notifications -------------------------------------------------
+    // Every outcome that cannot be rendered next to the control that produced
+    // it arrives here. Before this existed each of those paths called
+    // alert(): a modal, unthemed, OS-owned interruption that blocked the page,
+    // ignored the app's own light/dark palette, and told a screen-reader user
+    // only that "something" happened. Toasts are non-modal, themed, announced
+    // through a live region, and carry the same "Next:" vocabulary the CLI and
+    // the operation records already use.
+    const TOAST_TIMEOUT_MS = { info: 6000, success: 6000, warn: 10000, error: 0 };
+    const TOAST_MAX_PER_REGION = 4;
+    const toastActions = Object.create(null);
+    let toastSequence = 0;
+
+    // notify() reports one outcome. `next` is the single safe next step in the
+    // product's own language; `actionLabel`/`actionId` offer the one control
+    // that performs it, so a message never dead-ends. `error` keeps its toast
+    // until the user dismisses it - a failure that vanishes on its own is a
+    // failure the user never learns about.
+    function notify(kind, message, options) {
+      options = options || {};
+      const region = document.getElementById(kind === 'error' ? 'toastRegionAssertive' : 'toastRegionPolite');
+      if (!region) return;
+      const toast = document.createElement('div');
+      toast.className = 'toast ' + (kind === 'success' || kind === 'warn' || kind === 'error' ? kind : 'info');
+
+      const body = document.createElement('div');
+      body.className = 'toast-body';
+      const text = document.createElement('div');
+      text.className = 'toast-text';
+      // textContent, never innerHTML: message and next come from the Hub and
+      // from peer-supplied failure text.
+      text.textContent = String(message == null ? '' : message);
+      if (options.next) {
+        const nextLine = document.createElement('span');
+        nextLine.className = 'toast-next';
+        nextLine.textContent = 'Next: ' + options.next;
+        text.appendChild(nextLine);
+      }
+      body.appendChild(text);
+
+      const dismiss = document.createElement('button');
+      dismiss.type = 'button';
+      dismiss.className = 'toast-dismiss';
+      dismiss.setAttribute('aria-label', 'Dismiss notification');
+      dismiss.textContent = '\u00d7';
+      body.appendChild(dismiss);
+      toast.appendChild(body);
+
+      if (options.actionLabel && options.actionId) {
+        const row = document.createElement('div');
+        row.className = 'toast-actions';
+        const action = document.createElement('button');
+        action.type = 'button';
+        action.className = 'btn-sm';
+        action.setAttribute('data-action', 'toast-action');
+        action.setAttribute('data-value', options.actionId);
+        action.textContent = options.actionLabel;
+        row.appendChild(action);
+        toast.appendChild(row);
+      }
+
+      region.appendChild(toast);
+      while (region.children.length > TOAST_MAX_PER_REGION) {
+        region.removeChild(region.children[0]);
+      }
+
+      const id = 'toast-' + (++toastSequence);
+      toast.dataset.toastId = id;
+      toastActions[id] = function() { return options.onAction ? options.onAction() : undefined; };
+      dismiss.addEventListener('click', function() { dismissToast(id); });
+
+      let timer = null;
+      const schedule = function() {
+        const delay = options.timeout != null ? options.timeout : TOAST_TIMEOUT_MS[kind];
+        if (!delay) return;
+        timer = setTimeout(function() { dismissToast(id); }, delay);
+      };
+      const pause = function() { if (timer) { clearTimeout(timer); timer = null; } };
+      // WCAG 2.2.1 Timing Adjustable: a notification must not disappear while
+      // the user is reading it or operating its action button.
+      toast.addEventListener('mouseenter', pause);
+      toast.addEventListener('focusin', pause);
+      toast.addEventListener('mouseleave', schedule);
+      toast.addEventListener('focusout', schedule);
+      schedule();
+      return id;
+    }
+
+    function dismissToast(id) {
+      for (const region of [document.getElementById('toastRegionPolite'), document.getElementById('toastRegionAssertive')]) {
+        if (!region) continue;
+        const node = region.querySelector('[data-toast-id="' + id + '"]');
+        if (node) region.removeChild(node);
+      }
+      delete toastActions[id];
+    }
+
+    function runToastAction(id) {
+      const action = toastActions[id];
+      if (!action) return;
+      dismissToast(id);
+      try {
+        action();
+      } catch (err) {
+        notify('error', 'That action could not start: ' + err.message);
+      }
+    }
+
+    // ---- One dialog for every confirmation and prompt ------------------
+    // Replaces confirm() and prompt(). The contract matches the pairing
+    // dialog exactly - Escape cancels, Tab is trapped, focus returns to the
+    // opener - so there is one focus rule in the page rather than three, and a
+    // native dialog can no longer appear with none of that behaviour.
+    let dialogResolve = null;
+    let dialogReturnFocus = null;
+    let dialogOpenerSelector = null;
+
+    function dialogFocusables() {
+      const modal = document.getElementById('actionDialog');
+      if (!modal) return [];
+      return Array.prototype.slice.call(modal.querySelectorAll('button, input, a[href], select, textarea'))
+        .filter(function(el) { return el.style.display !== 'none' && !el.disabled; });
+    }
+
+    function closeActionDialog(result) {
+      const modal = document.getElementById('actionDialog');
+      if (!modal || modal.style.display === 'none') return;
+      modal.style.display = 'none';
+      const input = document.getElementById('actionDialogInput');
+      if (input) input.style.display = 'none';
+      const label = document.getElementById('actionDialogInputLabel');
+      if (label) label.style.display = 'none';
+      const resolve = dialogResolve;
+      dialogResolve = null;
+      if (resolve) resolve(result);
+      // Never dump a keyboard user on <body>. The opener is remembered as a
+      // selector too, because a node re-rendered by the 3s poll between open
+      // and close is no longer connected.
+      const candidates = [dialogReturnFocus];
+      if (dialogOpenerSelector) candidates.push(document.querySelector(dialogOpenerSelector));
+      candidates.push(document.getElementById('main'));
+      for (const el of candidates) {
+        if (!el || el === document.body || typeof el.focus !== 'function' || !el.isConnected) continue;
+        el.focus();
+        break;
+      }
+      dialogReturnFocus = null;
+      dialogOpenerSelector = null;
+    }
+
+    // openActionDialog is the shared implementation behind askConfirm and
+    // askPrompt. `value` non-null turns it into a prompt. A dialog already open
+    // is resolved as cancelled rather than stacked: two overlapping
+    // confirmations are how a user ends up approving the wrong request.
+    function openActionDialog(spec) {
+      const modal = document.getElementById('actionDialog');
+      if (!modal) return Promise.resolve(spec.value != null ? null : false);
+      if (dialogResolve) closeActionDialog(spec.value != null ? null : false);
+
+      dialogReturnFocus = document.activeElement;
+      dialogOpenerSelector = null;
+      if (dialogReturnFocus && dialogReturnFocus.getAttribute) {
+        const ownAction = dialogReturnFocus.getAttribute('data-action');
+        if (ownAction) dialogOpenerSelector = '[data-action="' + ownAction + '"]';
+      }
+
+      document.getElementById('actionDialogTitle').textContent = spec.title;
+      const body = document.getElementById('actionDialogBody');
+      body.textContent = '';
+      const paragraphs = (spec.paragraphs || []).filter(function(p) { return String(p || '').trim() !== ''; });
+      paragraphs.forEach(function(text, index) {
+        const p = document.createElement('p');
+        p.textContent = String(text);
+        // The first paragraph names what is about to happen, so it carries the
+        // weight; the rest is the consequence detail.
+        if (index === 0 && spec.lead) p.className = 'dialog-lead';
+        body.appendChild(p);
+      });
+
+      const input = document.getElementById('actionDialogInput');
+      const label = document.getElementById('actionDialogInputLabel');
+      const isPrompt = spec.value != null;
+      if (isPrompt) {
+        if (label) {
+          label.textContent = spec.inputLabel || 'Value';
+          label.style.display = 'block';
+        }
+        input.style.display = 'block';
+        input.value = spec.value == null ? '' : String(spec.value);
+        input.placeholder = spec.inputPlaceholder || '';
+      } else {
+        if (label) label.style.display = 'none';
+        input.style.display = 'none';
+      }
+
+      const confirmBtn = document.getElementById('actionDialogConfirm');
+      confirmBtn.textContent = spec.confirmLabel || (isPrompt ? 'Save' : 'Confirm');
+      confirmBtn.className = spec.danger ? 'btn-danger' : 'btn-primary';
+
+      modal.style.display = 'flex';
+      if (isPrompt) {
+        input.focus();
+        if (input.value) input.select();
+      } else {
+        confirmBtn.focus();
+      }
+
+      return new Promise(function(resolve) {
+        dialogResolve = function(result) {
+          if (result && result.confirmed && isPrompt) {
+            resolve(input.value);
+            return;
+          }
+          resolve(result && result.confirmed ? true : (isPrompt ? null : false));
+        };
+      });
+    }
+
+    function askConfirm(spec) {
+      return openActionDialog(spec || {});
+    }
+
+    function askPrompt(spec) {
+      return openActionDialog(Object.assign({ value: '' }, spec || {}));
+    }
+
+    function submitActionDialog() {
+      const modal = document.getElementById('actionDialog');
+      if (!modal || modal.style.display === 'none') return;
+      closeActionDialog({ confirmed: true });
+    }
+
     function apiFetch(path, options) {
       options = options || {};
       return dashboardReady.then((ready) => {
@@ -1368,6 +1764,29 @@
       }
       const action = target.getAttribute('data-action');
       switch (action) {
+        case 'dialog-cancel':
+          closeActionDialog({ confirmed: false });
+          break;
+        case 'dialog-confirm':
+          submitActionDialog();
+          break;
+        case 'toast-action':
+          runToastAction(target.getAttribute('data-value') || '');
+          break;
+        case 'goto-drop':
+          switchTab('tab-drop');
+          document.getElementById('textPayload').focus();
+          break;
+        case 'goto-relay':
+          switchTab('tab-relay');
+          document.getElementById('oauthUrlInput').focus();
+          break;
+        case 'goto-peers':
+          switchTab('tab-peers');
+          break;
+        case 'refresh-discovery':
+          loadDiscoveredHubs(true);
+          break;
         case 'choose-file':
           document.getElementById('fileInput').click();
           break;
@@ -1505,6 +1924,20 @@
         return;
       }
       const modal = document.getElementById('pairModal');
+      const actionDialog = document.getElementById('actionDialog');
+      // The action dialog owns Escape first: it is the outermost thing open, so
+      // a nested pairing dialog cannot leave a confirmation un-cancellable.
+      if (event.key === 'Escape' && actionDialog && actionDialog.style.display !== 'none') {
+        event.preventDefault();
+        closeActionDialog({ confirmed: false });
+        return;
+      }
+      if (event.key === 'Enter' && actionDialog && actionDialog.style.display !== 'none'
+        && event.target && event.target.id === 'actionDialogInput') {
+        event.preventDefault();
+        submitActionDialog();
+        return;
+      }
       if (event.key === 'Escape' && modal && modal.style.display !== 'none') {
         event.preventDefault();
         closePairModal();
@@ -1516,6 +1949,24 @@
         // so focus can never leak out of an open modal.
         const focusables = Array.prototype.slice.call(modal.querySelectorAll('button, input'))
           .concat(Array.prototype.slice.call(modal.querySelectorAll('a[href], select, textarea, [tabindex]')));
+        if (focusables.length > 0) {
+          const first = focusables[0];
+          const last = focusables[focusables.length - 1];
+          if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+          } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+          }
+        }
+        return;
+      }
+      if (actionDialog && actionDialog.style.display !== 'none' && event.key === 'Tab') {
+        // Same trap contract as the pairing dialog: focus cannot leak out of an
+        // open confirmation, so a keyboard user cannot tab into a page that is
+        // visually covered and start changing things behind the dialog.
+        const focusables = dialogFocusables();
         if (focusables.length > 0) {
           const first = focusables[0];
           const last = focusables[focusables.length - 1];
@@ -1663,7 +2114,8 @@
       try {
         const res = await apiFetch('/api/logs');
         if (!res.ok) {
-          alert('Failed to fetch logs: ' + res.statusText);
+          notify('error', 'Could not read the log feed (HTTP ' + res.status + ').',
+            { next: 'The Hub may be restarting. Retry in a moment; if it persists, check Live Logs for the reason.' });
           return;
         }
         const data = await res.json();
@@ -1677,8 +2129,11 @@
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
+        notify('success', 'Log feed exported as tantu-logs.json.',
+          { next: 'The file is in your browser downloads folder. It is metadata only - no payload, URL, or token.' });
       } catch (err) {
-        alert('Error exporting logs: ' + err.message);
+        notify('error', 'Export failed: ' + err.message,
+          { next: 'The Hub did not answer the export request. Check the Hub is still running, then retry.' });
       }
     }
 
@@ -1700,13 +2155,20 @@
     // Clearing the visible console was unconfirmed and unlabelled, while the
     // two sibling Clear buttons (transfers, authorizations) both explain what
     // is removed. Same rule applies here: say what this does and does not do.
-    function clearLogs() {
-      if (!confirm('Clear the visible log feed?\n\n' +
-        'This only empties what is shown in this tab. The Hub keeps its own log, and transfer and authorization history are untouched. ' +
-        'Use Export Logs first if you want a copy.')) {
-        return;
-      }
+    async function clearLogs() {
+      const ok = await askConfirm({
+        title: 'Clear the visible log feed?',
+        lead: true,
+        paragraphs: [
+          'This only empties what is shown in this tab.',
+          'The Hub keeps its own log, and transfer and authorization history are untouched. Export first if you want a copy.'
+        ],
+        confirmLabel: 'Clear this tab'
+      });
+      if (!ok) return;
       document.getElementById('logConsole').innerHTML = '';
+      notify('info', 'This tab\'s log view was cleared.',
+        { next: 'The Hub still holds its log. Reload to hydrate it again from the ring buffer.' });
     }
 
     let selectedPeerTarget = '';
@@ -1813,6 +2275,7 @@
         const peers = data.peers || [];
         lastPeers = peers;
         lastTransport = data.transport || 'loopback';
+        renderDiscoveryHealth(data.discovery);
         // "via mTLS" was asserted unconditionally, but mTLS is only the LAN
         // transport. Name the transport actually in use instead.
         const transportNote = document.getElementById('dropZoneTransportNote');
@@ -1849,7 +2312,10 @@
         if (peers.length === 0) {
           peerLabel.innerText = 'No trusted peers yet';
           peerDot.className = 'status-dot offline';
-          peersList.innerHTML = '<p style="color: var(--text-muted); font-size: 0.9rem;">No paired LAN peers yet. Run <code>tantu pair</code> to connect another machine.</p>';
+          peersList.innerHTML = emptyStateHTML(
+            'No paired peers yet',
+            'Pairing establishes mutual TLS trust between two machines. Do it once per machine pair; it needs a verification code that matches on both screens.',
+            [{ action: 'open-pair-modal', label: '+ Pair a device' }, { action: 'refresh-discovery', label: 'Look for nearby hubs' }]);
           if (dropSelector) dropSelector.style.display = 'none';
         } else if (peers.length === 1) {
           const p = peers[0];
@@ -1897,18 +2363,40 @@
       updateNextAction();
 
       // Query discovered LAN peers
-      try {
-        const discRes = await apiFetch('/api/discovery/peers');
-        if (discRes.ok) {
-          const discPeers = await discRes.json();
-          renderDiscoveredHubs(discPeers);
-        }
-      } catch (err) {
-        // Discovery endpoint non-critical
-      }
+      await loadDiscoveredHubs();
 
       // Check for incoming pairing approvals
       await loadPendingPairings();
+    }
+
+    // Discovery is unauthenticated and best-effort, so its failure has to be
+    // explainable: an empty "Nearby" list with no reason is indistinguishable
+    // from "no second machine on this network", which is the difference between
+    // pairing by address and buying a second hub.
+    let discoverySignature = '';
+    // Signature of the last rendered nearby-hub set, so a 3s poll does not
+    // rebuild the card (and its Pair buttons) under a keyboard user's hands.
+    function discoveryRenderingSignature(list) {
+      return JSON.stringify((list || []).map(function(d) { return [d.address, d.name, d.is_paired]; }));
+    }
+    async function loadDiscoveredHubs(announce) {
+      try {
+        const discRes = await apiFetch('/api/discovery/peers');
+        if (!discRes.ok) {
+          if (announce) {
+            notify('warn', 'The Hub did not answer the nearby-hub lookup.',
+              { next: 'Retry in a moment, or pair by entering the other machine\'s address directly.' });
+          }
+          return;
+        }
+        const discPeers = await discRes.json();
+        renderDiscoveredHubs(discPeers);
+      } catch (err) {
+        if (announce) {
+          notify('warn', 'Cannot reach discovery: ' + err.message,
+            { next: 'Pair by entering the other machine\'s address in the pairing dialog - it does not need discovery.' });
+        }
+      }
     }
 
     // Signature of the last rendered pending-pairing set. loadPendingPairings
@@ -1938,7 +2426,7 @@
         }));
         if (signature === lastPendingPairingsSignature) return;
         lastPendingPairingsSignature = signature;
-        // Only the first request is nameable in a single confirm() dialog; a
+        // Only the first request is nameable in the approval confirmation; a
         // queue of several still requires the user to read the banner. For a
         // request this machine started, "Remote Device" says nothing the user
         // typed - the address does.
@@ -1980,15 +2468,22 @@
     // Approving an inbound request grants permanent mutual trust on a single
     // click, which is inconsistent with confirming an unpair. The name and
     // SAS are named back so the user confirms the right request.
-    function approvePairingConsequenceText(name) {
-      return 'Approve pairing with ' + (name || 'this device') + '?\n\n' +
-        'This saves its identity as trusted. You can send files, text and OAuth authorizations to it, and it can do the same to you, without asking again.\n\n' +
-        'Only approve if the SAS code matches the one shown on that device. If it does not, reject it instead.';
+    function approvePairingConsequence(name) {
+      return {
+        title: 'Approve pairing with ' + (name || 'this device') + '?',
+        lead: true,
+        paragraphs: [
+          'This saves its identity as trusted. You can send files, text and OAuth authorizations to it, and it can do the same to you, without asking again.',
+          'Only approve if the SAS code matches the one shown on that device. If it does not, reject it instead.'
+        ],
+        confirmLabel: 'Approve and trust'
+      };
     }
 
     async function decidePairing(id, accept) {
-      if (accept && !confirm(approvePairingConsequenceText(lastPendingPairingName))) {
-        return;
+      if (accept) {
+        const ok = await askConfirm(approvePairingConsequence(lastPendingPairingName));
+        if (!ok) return;
       }
       try {
         const res = await apiFetch('/api/pair/decision', {
@@ -1998,12 +2493,76 @@
         });
         if (res.ok) {
           notePairWatchDecision(id, accept);
+          if (accept) {
+            notify('success', 'Pairing approved. ' + (lastPendingPairingName || 'The device') + ' is now a trusted peer.',
+              { next: 'Send it a file or text from QuickDrop to confirm the path works end to end.' });
+          } else {
+            notify('info', 'Pairing rejected. Nothing was trusted.');
+          }
           await loadPendingPairings();
           await updateStatus();
+        } else {
+          const d = await res.json().catch(function() { return {}; });
+          notify('error', 'Pairing decision was not recorded: ' + (d.message || res.statusText),
+            { next: 'The request may have expired. Ask the other device to start pairing again.' });
         }
       } catch (err) {
-        console.error('Pairing decision failed', err);
+        notify('error', 'Pairing decision failed: ' + err.message,
+          { next: 'The Hub did not answer. Check it is still running, then decide again.' });
       }
+    }
+
+    // renderDiscoveryHealth shows what the discovery engine reports about
+    // itself. It is always rendered when the engine is running, including in
+    // the healthy case: "running, nothing found yet" and "running, but its
+    // beacons cannot leave this machine" are different answers to the same
+    // user question, and only one of them can be inferred from the Nearby list.
+    function renderDiscoveryHealth(health) {
+      const card = document.getElementById('discoveryHealth');
+      if (!card) return;
+      if (!health || !health.running) {
+        // Not running is not a fault: several documented configurations
+        // (SSH-only transport, a loopback test rig) start the Hub with no
+        // discovery engine at all, and a red card would be a lie there.
+        card.style.display = 'none';
+        return;
+      }
+      card.style.display = 'block';
+      const chip = document.getElementById('discoveryHealthChip');
+      const text = document.getElementById('discoveryHealthText');
+      let label = 'Discovery';
+      let cls = 'status-chip neutral';
+      if (health.degraded) {
+        label = 'Discovery unavailable';
+        cls = 'status-chip err';
+      } else if (health.nodes > 0) {
+        label = 'Discovery working';
+        cls = 'status-chip ok';
+      } else if (health.send_errors > 0) {
+        label = 'Discovery blocked';
+        cls = 'status-chip warn';
+      } else if (health.nodes === 0 && health.beacons_received > 0) {
+        // Peers were heard once and have since aged out. Worth its own state:
+        // the network works and the other Hub has stopped.
+        label = 'Discovery idle';
+        cls = 'status-chip warn';
+      } else {
+        label = 'Discovery listening';
+        cls = 'status-chip info';
+      }
+      if (chip) {
+        chip.textContent = label;
+        chip.className = cls;
+      }
+      if (!text) return;
+      text.textContent = health.detail || '';
+      const parts = [];
+      parts.push(health.beacons_sent + ' beacon(s) sent');
+      parts.push(health.beacons_received + ' received');
+      parts.push(health.nodes + ' nearby');
+      if (health.family) parts.push(health.family);
+      if (health.last_error) parts.push('last error: ' + health.last_error);
+      text.title = parts.join(' · ');
     }
 
     function renderDiscoveredHubs(discovered) {
@@ -2012,12 +2571,16 @@
       if (!card || !list) return;
 
       const unpaired = (discovered || []).filter(d => !d.is_paired);
+      const signature = discoveryRenderingSignature(unpaired);
       if (unpaired.length === 0) {
         card.style.display = 'none';
+        discoverySignature = signature;
         return;
       }
 
       card.style.display = 'block';
+      if (signature === discoverySignature) return;
+      discoverySignature = signature;
       list.innerHTML = unpaired.map(function(d) {
         return '<div style="display: flex; justify-content: space-between; align-items: center; background: var(--surface); padding: 0.6rem 0.85rem; border-radius: 6px; border: 1px solid var(--border);">' +
           '<div>' +
@@ -2065,12 +2628,15 @@
         if (res.ok) {
           selectedPeerTarget = fp;
           updateStatus();
+          notify('success', 'Destination switched.');
         } else {
-          const d = await res.json();
-          alert('Failed to switch active peer: ' + (d.message || res.statusText));
+          const d = await res.json().catch(function() { return {}; });
+          notify('error', 'Could not switch destination: ' + (d.message || res.statusText),
+            { next: 'Reload the peer list. If the peer is gone, pair with it again.' });
         }
       } catch (err) {
-        alert('Error switching active peer: ' + err.message);
+        notify('error', 'Could not switch destination: ' + err.message,
+          { next: 'The Hub did not answer. Check it is still running, then try again.' });
       }
     }
 
@@ -2109,16 +2675,31 @@
     // silent about the other machine - the field report was a peer list that
     // still showed an unpaired device - so the copy now says how that side
     // converges.
-    function unpairConsequenceText(name) {
+    function unpairConsequence(name) {
       const label = name || 'this peer';
-      return 'Unpair from ' + label + '?\n\n' +
-        'This revokes the stored identity: the two machines will no longer accept each other, and a new pairing with fresh SAS verification is required before you can send anything again.\n\n' +
-        'The other device is told right away if it is online and its paired list clears; otherwise its next send fails with a clear "you were unpaired" reason instead of a confusing error.\n\n' +
-        'Files already received stay on this machine. Nothing is deleted.';
+      return {
+        title: 'Unpair from ' + label + '?',
+        lead: true,
+        paragraphs: [
+          'This revokes the stored identity: the two machines will no longer accept each other, and a new pairing with fresh SAS verification is required before you can send anything again.',
+          'The other device is told right away if it is online and its paired list clears; otherwise its next send fails with a clear "you were unpaired" reason instead of a confusing error.',
+          'Files already received stay on this machine. Nothing is deleted.'
+        ],
+        confirmLabel: 'Unpair',
+        danger: true
+      };
     }
 
     async function promptEditAlias(fp, currentAlias) {
-      const newAlias = prompt('Enter friendly nickname / alias for this peer:', currentAlias || '');
+      const newAlias = await askPrompt({
+        title: 'Name this peer',
+        lead: true,
+        paragraphs: ['A nickname is what the destination, transfer history and send buttons call this machine. It changes nothing about the connection.'],
+        inputLabel: 'Nickname',
+        inputPlaceholder: 'e.g. devbox',
+        value: currentAlias || '',
+        confirmLabel: 'Save nickname'
+      });
       if (newAlias === null) return;
       try {
         const res = await apiFetch('/api/peers/alias', {
@@ -2128,12 +2709,15 @@
         });
         if (res.ok) {
           updateStatus();
+          notify('success', 'Nickname saved.');
         } else {
-          const d = await res.json();
-          alert('Failed to update alias: ' + (d.message || res.statusText));
+          const d = await res.json().catch(function() { return {}; });
+          notify('error', 'Could not save the nickname: ' + (d.message || res.statusText),
+            { next: 'Check the peer is still paired, then try again.' });
         }
       } catch (err) {
-        alert('Error updating alias: ' + err.message);
+        notify('error', 'Could not save the nickname: ' + err.message,
+          { next: 'The Hub did not answer. Check it is still running, then try again.' });
       }
     }
 
@@ -2146,19 +2730,21 @@
         });
         if (res.ok) {
           updateStatus();
+          notify('success', 'Default peer updated.');
         } else {
-          const d = await res.json();
-          alert('Failed to set default peer: ' + (d.message || res.statusText));
+          const d = await res.json().catch(function() { return {}; });
+          notify('error', 'Could not set the default peer: ' + (d.message || res.statusText),
+            { next: 'Check the peer is still paired, then try again.' });
         }
       } catch (err) {
-        alert('Error setting default peer: ' + err.message);
+        notify('error', 'Could not set the default peer: ' + err.message,
+          { next: 'The Hub did not answer. Check it is still running, then try again.' });
       }
     }
 
     async function confirmUnpair(fp, name) {
-      if (!confirm(unpairConsequenceText(name))) {
-        return;
-      }
+      const ok = await askConfirm(unpairConsequence(name));
+      if (!ok) return;
       try {
         const res = await apiFetch('/api/peers/remove', {
           method: 'POST',
@@ -2167,12 +2753,16 @@
         });
         if (res.ok) {
           updateStatus();
+          notify('warn', 'Unpaired from ' + (name || 'that peer') + '.',
+            { next: 'Pair again to send anything to it. Files already received are untouched.' });
         } else {
-          const d = await res.json();
-          alert('Failed to unpair: ' + (d.message || res.statusText));
+          const d = await res.json().catch(function() { return {}; });
+          notify('error', 'Could not unpair: ' + (d.message || res.statusText),
+            { next: 'The peer may already be gone from the store. Reload the peer list.' });
         }
       } catch (err) {
-        alert('Error unpairing: ' + err.message);
+        notify('error', 'Could not unpair: ' + err.message,
+          { next: 'The Hub did not answer. Nothing was removed - check the peer list, then try again.' });
       }
     }
 
@@ -2246,7 +2836,8 @@
         btn.innerText = '✅ Copied!';
         setTimeout(() => { btn.innerText = oldText; }, 2000);
       } catch (e) {
-        alert('Failed to copy: ' + e.message);
+        notify('error', 'Could not copy the command: ' + e.message,
+          { next: 'Select the command text and copy it manually, then run it on the other machine.' });
       }
     }
 
@@ -2721,11 +3312,37 @@
       return when.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + time;
     }
 
+    // Each empty state is rendered from one function so the markup, the copy and
+    // the next action cannot drift apart between the server-rendered first paint
+    // and a later re-render.
+    function emptyStateHTML(title, body, actions) {
+      const buttons = (actions || []).map(function(a) {
+        return '<button type="button" class="btn-sm" data-action="' + a.action + '">' + escapeHTML(a.label) + '</button>';
+      }).join('');
+      return '<div class="empty-state"><strong>' + escapeHTML(title) + '</strong>' + body +
+        '<div style="margin-top:0.9rem; display:flex; gap:0.5rem; justify-content:center; flex-wrap:wrap;">' + buttons + '</div></div>';
+    }
+
+    const EMPTY_TRANSFERS_HTML = emptyStateHTML(
+      'No transfers yet',
+      'This tab is the sender-side truth for this Hub: destination, state, and whether a retry is safe.',
+      [{ action: 'goto-drop', label: 'Send something' }, { action: 'load-transfers', label: 'Refresh' }]);
+
+    const EMPTY_AUTHORIZATIONS_HTML = emptyStateHTML(
+      'No authorizations recorded',
+      'Every login you relay is recorded here with its peer and origin host - never the URL, code, or token.',
+      [{ action: 'goto-relay', label: 'Relay a login URL' }, { action: 'load-authorizations', label: 'Refresh' }]);
+
+    const EMPTY_INBOX_HTML = emptyStateHTML(
+      'Nothing received yet',
+      'Snippets and files your peer sends appear here in real time. Items are session-only and clear when the Hub restarts.',
+      [{ action: 'load-recent', label: 'Refresh inbox' }, { action: 'goto-peers', label: 'Check the peer is paired' }]);
+
     function renderTransfers(items) {
       const list = document.getElementById('transfersList');
       if (!list) return;
       if (!items || items.length === 0) {
-        list.innerHTML = '<p style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 2rem 0;">No transfers yet.<br>Send text, an image, or a file from QuickDrop.</p>';
+        list.innerHTML = EMPTY_TRANSFERS_HTML;
         return;
       }
       const reversed = items.slice().reverse();
@@ -2760,7 +3377,7 @@
       const list = document.getElementById('authorizationsList');
       if (!list) return;
       if (!items || items.length === 0) {
-        list.innerHTML = '<p style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 2rem 0;">No authorizations yet.<br>Relay a login above to record its outcome here.</p>';
+        list.innerHTML = EMPTY_AUTHORIZATIONS_HTML;
         return;
       }
       const reversed = items.slice().reverse();
@@ -2852,19 +3469,30 @@
     }
 
     async function clearAuthorizations() {
-      if (!confirm('Clear authorization history? This removes sender-side metadata only (peers, origins, states). Received files and transfer history are kept. This cannot be undone.')) {
-        return;
-      }
+      const ok = await askConfirm({
+        title: 'Clear authorization history?',
+        lead: true,
+        paragraphs: [
+          'This removes sender-side metadata only: which peer, which origin host, and the state of each sign-in.',
+          'Received files and transfer history are kept. This cannot be undone.'
+        ],
+        confirmLabel: 'Clear history',
+        danger: true
+      });
+      if (!ok) return;
       try {
         const res = await apiFetch('/api/relay/recent', { method: 'DELETE' });
         const data = await res.json();
         if (res.ok && data.status === 'success') {
           addLog('OAUTH', 'Authorization history cleared.');
+          notify('info', 'Authorization history cleared.');
         } else {
-          addLog('ERROR', 'Failed to clear authorizations: ' + (data.message || 'Unknown error'));
+          notify('error', 'Could not clear authorization history: ' + (data.message || 'Unknown error'),
+            { next: 'The Hub did not accept the delete. Retry in a moment.' });
         }
       } catch (err) {
-        addLog('ERROR', 'Failed to clear authorizations: ' + err.message);
+        notify('error', 'Could not clear authorization history: ' + err.message,
+          { next: 'The Hub did not answer. Nothing was removed - retry in a moment.' });
       }
       loadAuthorizations();
     }
@@ -2879,19 +3507,30 @@
     }
 
     async function clearTransfers() {
-      if (!confirm('Clear transfer history? This removes sender-side metadata only (destinations, states, times). Received files are kept. This cannot be undone.')) {
-        return;
-      }
+      const ok = await askConfirm({
+        title: 'Clear transfer history?',
+        lead: true,
+        paragraphs: [
+          'This removes sender-side metadata only: destination, state and time for each send.',
+          'Received files are kept. This cannot be undone.'
+        ],
+        confirmLabel: 'Clear history',
+        danger: true
+      });
+      if (!ok) return;
       try {
         const res = await apiFetch('/api/transfers/recent', { method: 'DELETE' });
         const data = await res.json();
         if (res.ok && data.status === 'success') {
           addLog('DROP', 'Transfer history cleared.');
+          notify('info', 'Transfer history cleared.');
         } else {
-          addLog('ERROR', 'Failed to clear transfers: ' + (data.message || 'Unknown error'));
+          notify('error', 'Could not clear transfer history: ' + (data.message || 'Unknown error'),
+            { next: 'The Hub did not accept the delete. Retry in a moment.' });
         }
       } catch (err) {
-        addLog('ERROR', 'Failed to clear transfers: ' + err.message);
+        notify('error', 'Could not clear transfer history: ' + err.message,
+          { next: 'The Hub did not answer. Nothing was removed - retry in a moment.' });
       }
       loadTransfers();
     }
@@ -3267,17 +3906,30 @@
         const res = await apiFetch('/api/open-folder', { method: 'POST' });
         const data = await res.json();
         if (!res.ok || data.status !== 'success') {
-          alert('Failed to open folder: ' + (data.message || 'unknown error'));
+          notify('error', 'Could not open the downloads folder: ' + (data.message || 'unknown error'),
+            { next: 'Open the path shown above it in your file manager instead.' });
         }
       } catch (err) {
-        alert('Error opening folder: ' + err.message);
+        notify('error', 'Could not open the downloads folder: ' + err.message,
+          { next: 'Open the path shown above it in your file manager instead.' });
       }
     }
 
     async function promptChangeDownloadDir() {
       const current = document.getElementById('downloadDirPath').innerText;
-      const newDir = prompt('Enter new downloads directory path:', current);
-      if (!newDir || newDir.trim() === '' || newDir.trim() === current) return;
+      const newDir = await askPrompt({
+        title: 'Change the downloads folder',
+        lead: true,
+        paragraphs: [
+          'New files your peer sends will be written here.',
+          'Files already received stay in their previous location, and this Hub keeps the change until you change it back.'
+        ],
+        inputLabel: 'Folder path',
+        inputPlaceholder: '/Users/you/Downloads/tantu',
+        value: current || '',
+        confirmLabel: 'Save folder'
+      });
+      if (newDir === null || newDir.trim() === '' || newDir.trim() === current) return;
       try {
         const res = await apiFetch('/api/config', {
           method: 'POST',
@@ -3288,12 +3940,15 @@
         if (res.ok && data.status === 'success') {
           document.getElementById('downloadDirPath').innerText = data.output_dir || newDir.trim();
           addLog('DROP', 'Downloads directory changed. Previously received files stay where they were.');
-          alert('Downloads directory updated. Files received earlier stay in their previous location.');
+          notify('success', 'Downloads folder set to ' + (data.output_dir || newDir.trim()) + '.',
+            { next: 'Files received earlier are still in their previous location.' });
         } else {
-          alert('Failed to update directory: ' + (data.message || 'unknown error'));
+          notify('error', 'Could not change the downloads folder: ' + (data.message || 'unknown error'),
+            { next: 'Pick a folder you can write to. On Linux and macOS a path under your home directory is usually right.' });
         }
       } catch (err) {
-        alert('Error updating directory: ' + err.message);
+        notify('error', 'Could not change the downloads folder: ' + err.message,
+          { next: 'The Hub did not answer. Nothing was changed - retry in a moment.' });
       }
     }
 
@@ -3355,7 +4010,7 @@
       const previousCount = list.querySelectorAll('.received-item').length;
       receivedActionValues = Object.create(null);
       if (!items || items.length === 0) {
-        list.innerHTML = '<p style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 2rem 0;">No received items yet.<br>Snippets and files sent by your peer appear here in real-time.<br>Session items — cleared when the Hub restarts. Sent transfers live under Transfers.</p>';
+        list.innerHTML = EMPTY_INBOX_HTML;
         announceInboxArrival(0, previousCount);
         return;
       }

@@ -2190,6 +2190,9 @@ func (h *Hub) Start(parent context.Context) (err error) {
 					h.logger.Action(DomainNet, fmt.Sprintf("Discovery engine network warning: %v", err))
 				}
 			}()
+			// Watch discovery health for the life of the Hub: without this, a
+			// failed engine is indistinguishable from an empty network. See
+			// discovery_health.go for why it is transition-driven.
 		}
 	}
 

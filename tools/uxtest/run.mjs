@@ -167,6 +167,17 @@ async function main() {
     // Console hygiene feed: uncaught exceptions and console.error output,
     // replacing CDP's Runtime.exceptionThrown and Log.entryAdded.
     const consoleErrors = [];
+    // Native dialogs (alert/confirm/prompt/beforeunload) are a product defect,
+    // not harness noise: they are OS-owned, ignore the app's themes, block the
+    // page, and tell a screen-reader user nothing actionable. This harness used
+    // to *stub* window.alert/prompt/confirm during the action sweep, which is
+    // precisely why twenty-odd alert() call sites went unnoticed. Now every
+    // native dialog is recorded and dismissed, and the run fails on it.
+    const nativeDialogs = [];
+    page.on('dialog', async (d) => {
+      nativeDialogs.push(d.type() + ': ' + String(d.message()).slice(0, 160));
+      try { await d.dismiss(); } catch (_) { /* already handled */ }
+    });
     // Set while the staleness check deliberately cuts /api/status: the browser
     // logs each blocked poll as a resource error. That is the harness's own
     // interference, not dashboard noise — CDP's setBlockedURLs produced no
@@ -505,9 +516,11 @@ async function main() {
         e.preventDefault();
       });
 
-      keep(window, 'alert', function () {});
-      keep(window, 'prompt', function () { return null; });   // "cancelled": the handler stops before mutating
-      keep(window, 'confirm', function () { return false; });  // same
+      // NOTE: window.alert/prompt/confirm are deliberately NOT stubbed. A
+      // native dialog is a defect (see the page.on('dialog') guard above), and
+      // stubbing them is what let the product ship one on every failure path.
+      // Playwright dismisses any that appear, so the sweep still completes and
+      // the dedicated "no native dialog opened" check reports them.
       keep(window, 'open', function () { return null; });      // no new windows
       keep(document, 'execCommand', function () { return true; });
       keep(navigator.clipboard || {}, 'writeText', function () { return Promise.resolve(); });
@@ -569,6 +582,7 @@ async function main() {
       }
       var modal = document.getElementById('pairModal');
       if (modal) modal.style.display = 'none';
+      if (typeof closeActionDialog === 'function') closeActionDialog({ confirmed: false });
       var banner = document.getElementById('pendingPairingsBanner');
       if (banner) banner.style.display = 'none';
       var list2 = document.getElementById('pendingPairingsList');
@@ -583,7 +597,143 @@ async function main() {
     check('no delegated action leaves an unhandled rejection',
       !!(sweep && (!sweep.rejections || sweep.rejections.length === 0)),
       JSON.stringify((sweep && sweep.rejections) || ['no result']));
+    check('no native dialog opened', nativeDialogs.length === 0, JSON.stringify(nativeDialogs.slice(0, 3)));
     await sleep(300);
+
+    // --- the in-page confirmation (replaces confirm()) ---
+    // Measured, not asserted from source: the modal contract a native dialog
+    // does not have is exactly what a screenshot or a keyboard trace can show
+    // and a marker test can only claim.
+    await tab('tab-logs');
+    const confirmFlow = await js(`(async function(){
+      var opener = document.querySelector('[data-action="clear-logs"]');
+      opener.focus();
+      var focusedOpener = document.activeElement === opener;
+      opener.click();
+      await new Promise(function(r){setTimeout(r,120);});
+      var d = document.getElementById('actionDialog');
+      var opened = getComputedStyle(d).display !== 'none';
+      var role = d.getAttribute('role'), modal = d.getAttribute('aria-modal');
+      var titled = d.getAttribute('aria-labelledby') === 'actionDialogTitle'
+        && (document.getElementById('actionDialogTitle').textContent || '').trim().length > 0;
+      var body = (document.getElementById('actionDialogBody').textContent || '').trim();
+      var focusOnConfirm = document.activeElement === document.getElementById('actionDialogConfirm');
+      var focusOnCancel = document.activeElement === document.getElementById('actionDialogCancel');
+      // Escape must cancel and hand focus back to the control that opened it.
+      document.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true, cancelable:true}));
+      await new Promise(function(r){setTimeout(r,120);});
+      var closed = getComputedStyle(d).display === 'none';
+      var restored = document.activeElement === opener;
+      return {opened:opened, role:role, modal:modal, titled:titled, bodyLen:body.length,
+              focusOnConfirm:focusOnConfirm, focusOnCancel:focusOnCancel,
+              closed:closed, restored:restored, focusedOpener:focusedOpener,
+              explains: /own log|transfer and authorization history are untouched/i.test(body)};
+    })()`);
+    check('confirmation is an in-page modal dialog',
+      !!(confirmFlow && confirmFlow.opened && confirmFlow.role === 'dialog' && confirmFlow.modal === 'true' && confirmFlow.titled),
+      JSON.stringify(confirmFlow));
+    check('confirmation takes focus and names its consequence',
+      !!(confirmFlow && confirmFlow.focusOnConfirm && confirmFlow.explains && confirmFlow.bodyLen > 40),
+      JSON.stringify(confirmFlow));
+    check('Escape cancels and restores focus to the opener',
+      !!(confirmFlow && confirmFlow.closed && confirmFlow.restored && confirmFlow.focusedOpener),
+      JSON.stringify(confirmFlow));
+
+    // --- the in-page prompt (replaces prompt()) and its wiring to the Hub ---
+    // /api/config is intercepted so the rig's output directory is never
+    // mutated; what is asserted is that the value typed into the dialog is the
+    // value the product sends. The QuickDrop tab is activated first: its
+    // controls are display:none on any other tab, and focus() on a hidden
+    // control is a no-op, which would make the focus assertions vacuous.
+    await tab('tab-drop');
+    let configPost = null;
+    await context.route('**/api/config', async (route) => {
+      if (route.request().method() === 'POST') {
+        try { configPost = route.request().postData(); } catch (_) { configPost = ''; }
+        await route.fulfill({ status: 200, contentType: 'application/json',
+          body: JSON.stringify({ status: 'success', output_dir: 'C:\\uxtest\\out' }) });
+        return;
+      }
+      await route.continue();
+    });
+    const promptFlow = await js(`(async function(){
+      document.querySelector('[data-action="change-download-dir"]').click();
+      await new Promise(function(r){setTimeout(r,120);});
+      var input = document.getElementById('actionDialogInput');
+      var shown = getComputedStyle(input).display !== 'none';
+      var focused = document.activeElement === input;
+      var labelled = document.getElementById('actionDialogInputLabel').style.display !== 'none';
+      input.value = 'C:\\\\uxtest\\\\prompts';
+      document.querySelector('#actionDialog [data-action="dialog-confirm"]').click();
+      await new Promise(function(r){setTimeout(r,400);});
+      return {shown:shown, focused:focused, labelled:labelled,
+              closed:getComputedStyle(document.getElementById('actionDialog')).display === 'none'};
+    })()`);
+    check('prompt is an in-page labelled input',
+      !!(promptFlow && promptFlow.shown && promptFlow.focused && promptFlow.labelled && promptFlow.closed),
+      JSON.stringify(promptFlow));
+    check('prompted value reaches the Hub',
+      !!configPost && /uxtest/.test(configPost) && /prompts/.test(configPost),
+      'POST /api/config body ' + JSON.stringify(configPost));
+    await context.unroute('**/api/config');
+
+    // --- a failure is reported, announced, persistent, and non-blocking ---
+    // Answered 200 with an error body rather than 500: it drives the same
+    // product branch (the handler reports whenever the body is not a success)
+    // without adding a network-level console error to the hygiene check, which
+    // would otherwise be asserting against the harness's own injection.
+    await context.route('**/api/open-folder', (route) => route.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({ status: 'error', message: 'uxtest: injected failure' }) }));
+    const toastFlow = await js(`(async function(){
+      var opener = document.querySelector('[data-action="open-folder"]');
+      opener.focus();
+      opener.click();
+      await new Promise(function(r){setTimeout(r,500);});
+      var region = document.getElementById('toastRegionAssertive');
+      var t = region.querySelector('.toast');
+      var polite = document.getElementById('toastRegionPolite').querySelectorAll('.toast').length;
+      var text = t ? t.textContent : '';
+      var role = region.getAttribute('role'), live = region.getAttribute('aria-live');
+      // An error must not vanish on a timer the user cannot control.
+      await new Promise(function(r){setTimeout(r,1200);});
+      var still = !!region.querySelector('.toast');
+      // Non-modal: the control that failed is still focused, so a keyboard or
+      // screen-reader user is not thrown to the top of the document.
+      var keptFocus = document.activeElement === opener;
+      var dismiss = t && t.querySelector('.toast-dismiss');
+      if (dismiss) dismiss.click();
+      await new Promise(function(r){setTimeout(r,120);});
+      return {has:!!t, text:text, role:role, live:live, polite:polite,
+              still:still, keptFocus:keptFocus,
+              next:/Next:/.test(text), afterDismiss:!!region.querySelector('.toast'),
+              dismissLabelled: !!(dismiss && /dismiss/i.test(dismiss.getAttribute('aria-label') || ''))};
+    })()`);
+    check('a failure is announced as an alert with a next step',
+      !!(toastFlow && toastFlow.has && toastFlow.role === 'alert' && toastFlow.live === 'assertive' && toastFlow.next),
+      JSON.stringify(toastFlow));
+    check('an error notification persists until dismissed',
+      !!(toastFlow && toastFlow.still && toastFlow.dismissLabelled && !toastFlow.afterDismiss),
+      JSON.stringify(toastFlow));
+    check('a notification is not modal and does not steal focus',
+      !!(toastFlow && toastFlow.keptFocus),
+      JSON.stringify(toastFlow));
+    await context.unroute('**/api/open-folder');
+
+    // --- an empty list offers a way forward ---
+    await tab('tab-transfers');
+    await js('renderTransfers([]); "ok"');
+    await sleep(150);
+    const emptyFlow = await js(`(function(){
+      var list = document.getElementById('transfersList');
+      var es = list.querySelector('.empty-state');
+      var btns = es ? es.querySelectorAll('button[data-action]') : [];
+      return {has:!!es, title:es?(es.querySelector('strong')||{}).textContent:'',
+              actions:Array.prototype.map.call(btns,function(b){return b.getAttribute('data-action');})};
+    })()`);
+    check('an empty list offers a next action, not a dead end',
+      !!(emptyFlow && emptyFlow.has && emptyFlow.actions.length >= 1),
+      JSON.stringify(emptyFlow));
 
     // --- console hygiene ---
     // Three classes are harness/browser noise, each narrowly scoped:

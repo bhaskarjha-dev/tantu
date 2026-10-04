@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 )
@@ -97,11 +98,22 @@ type Engine struct {
 
 	startMu     sync.Mutex
 	started     bool
+	startedAt   time.Time
 	lifecycleMu sync.Mutex
 	mu          sync.RWMutex
 	nodes       map[string]*DiscoveredNode
 	callbacks   []func(DiscoveredNode)
 	lastBeacons map[string]time.Time
+
+	// stats is the Health counter block; lastError/lastErrorAt are guarded by
+	// statsMu. See health.go.
+	stats     engineStats
+	statsMu   sync.Mutex
+	lastError string
+	// lastErrorAt is diagnostic only: it is not rendered, because a timestamp
+	// for "the last socket error" reads as a cause the user can act on when
+	// what they need is the explanation, not the clock.
+	lastErrorAt time.Time
 
 	udpLn    *net.UDPConn
 	mcastLn  *net.UDPConn
@@ -209,6 +221,7 @@ func (e *Engine) Start(parent context.Context) error {
 		return errors.New("discovery engine is closed")
 	}
 	e.started = true
+	e.startedAt = time.Now()
 	e.startMu.Unlock()
 
 	ctx, cancel := context.WithCancel(parent)
@@ -227,18 +240,29 @@ func (e *Engine) Start(parent context.Context) error {
 	e.closeMu.Lock()
 	e.udpLn = udpLn
 	e.closeMu.Unlock()
+	atomic.StoreInt32(&e.stats.broadcastBound, 1)
 
-	// 2. Best-effort mDNS multicast listener on 224.0.0.251:5353
+	// 2. Multicast listener on 224.0.0.251:5353.
+	//
+	// This was a silent best-effort fallback: a bind failure was discarded, so
+	// a network or firewall that blocks mDNS left the Hub reporting working
+	// discovery with no explanation of why nothing was being found. The error
+	// is now recorded and reported through Health, and the bind state is
+	// tracked so Health can name the one engine that is actually working.
 	mcastAddr, mErr := net.ResolveUDPAddr("udp4", DefaultMulticastAddr)
-	if mErr == nil {
-		mcastLn, mListenErr := net.ListenMulticastUDP("udp4", nil, mcastAddr)
-		if mListenErr == nil {
-			e.closeMu.Lock()
-			e.mcastLn = mcastLn
-			e.closeMu.Unlock()
-			e.wg.Add(1)
-			go e.listenLoop(mcastLn)
-		}
+	if mErr != nil {
+		e.stats.mcastBindError.Store(truncateError("resolve mDNS group: " + mErr.Error()))
+		e.noteError(fmt.Errorf("resolve mDNS group %s: %w", DefaultMulticastAddr, mErr))
+	} else if mcastLn, mListenErr := net.ListenMulticastUDP("udp4", nil, mcastAddr); mListenErr != nil {
+		e.stats.mcastBindError.Store(truncateError("mDNS unavailable: " + mListenErr.Error()))
+		e.noteError(fmt.Errorf("listen mDNS on %s: %w", DefaultMulticastAddr, mListenErr))
+	} else {
+		e.closeMu.Lock()
+		e.mcastLn = mcastLn
+		e.closeMu.Unlock()
+		atomic.StoreInt32(&e.stats.multicastBound, 1)
+		e.wg.Add(1)
+		go e.listenLoop(mcastLn, listenMulticast)
 	}
 
 	// 3. Create outbound UDP socket for transmission
@@ -255,7 +279,7 @@ func (e *Engine) Start(parent context.Context) error {
 
 	// 4. Start listener on primary broadcast socket
 	e.wg.Add(1)
-	go e.listenLoop(e.udpLn)
+	go e.listenLoop(e.udpLn, listenBroadcast)
 
 	// 5. Start advertising and pruning loop
 	e.wg.Add(1)
@@ -272,7 +296,15 @@ func (e *Engine) Start(parent context.Context) error {
 	return nil
 }
 
-func (e *Engine) listenLoop(conn *net.UDPConn) {
+// listenLoop names the socket it is reading so a give-up can be attributed.
+// Two loops share this code, and "discovery stopped working" without saying
+// which socket is the exact ambiguity Health exists to remove.
+const (
+	listenBroadcast = "broadcast"
+	listenMulticast = "multicast"
+)
+
+func (e *Engine) listenLoop(conn *net.UDPConn, which string) {
 	defer e.wg.Done()
 	buf := make([]byte, 2048)
 	var consecutiveErrs int
@@ -286,11 +318,24 @@ func (e *Engine) listenLoop(conn *net.UDPConn) {
 			// Transient UDP errors (notably ICMP ECONNRESET on some
 			// platforms, which any LAN host can trigger) must not kill the
 			// loop permanently with no signal. Back off briefly and keep
-			// listening; only a sustained failure (50 consecutive errors)
-			// gives up so a genuinely broken socket cannot hot-spin.
-			// Stale nodes age out via TTL in the meantime.
+			// listening; only a sustained failure gives up so a genuinely
+			// broken socket cannot hot-spin. Stale nodes age out via TTL in the
+			// meantime.
+			//
+			// Giving up used to be silent, so a dead socket looked exactly like
+			// a quiet network. Both are now counted, and the give-up is recorded
+			// so Health can name the engine that stopped.
+			e.countListenError()
+			if consecutiveErrs == 1 || consecutiveErrs%25 == 0 {
+				e.noteError(fmt.Errorf("%s discovery read failed %d times: %w", which, consecutiveErrs, err))
+			}
 			consecutiveErrs++
 			if consecutiveErrs > 50 {
+				if which == listenBroadcast {
+					e.listenLoopGaveUp()
+				} else {
+					e.mcastListenStopped()
+				}
 				return
 			}
 			time.Sleep(100 * time.Millisecond)
@@ -332,6 +377,7 @@ func (e *Engine) listenLoop(conn *net.UDPConn) {
 			LastSeen:     time.Now(),
 		}
 
+		e.countReceive()
 		e.recordNode(node)
 	}
 }
@@ -524,20 +570,44 @@ func (e *Engine) broadcastBeacon() {
 		return
 	}
 
+	// A beacon that is written nowhere is why a hub is invisible, and this
+	// function used to discard every error it produced. Each destination is
+	// now attempted and the outcome recorded, so a network that silently drops
+	// broadcast is reported as such instead of looking like a quiet LAN.
+	//
+	// "Sent" means this write to this address returned without error. It does
+	// not mean a peer received it - UDP gives no such guarantee - which is why
+	// Health.Detail speaks of hubs "in reach" rather than "connected".
+	sent, failures := 0, 0
+	send := func(target *net.UDPAddr) {
+		_ = conn.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
+		if _, writeErr := conn.WriteToUDP(packet, target); writeErr != nil {
+			failures++
+			e.noteError(fmt.Errorf("beacon to %s: %w", target, writeErr))
+			return
+		}
+		sent++
+	}
+
 	// 1. Broadcast to 255.255.255.255:port
-	globalBcast := &net.UDPAddr{IP: net.IPv4bcast, Port: e.cfg.BroadcastPort}
-	_ = conn.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
-	_, _ = conn.WriteToUDP(packet, globalBcast)
+	send(&net.UDPAddr{IP: net.IPv4bcast, Port: e.cfg.BroadcastPort})
 
 	// 2. Broadcast to each interface's directed subnet broadcast address
 	ifaces, err := net.Interfaces()
-	if err == nil {
+	if err != nil {
+		// Interface enumeration failing means the directed broadcasts are
+		// skipped entirely. Previously silent, and the reason a hub behind a
+		// /16 or an unusual netmask was invisible to itself.
+		e.noteError(fmt.Errorf("enumerate interfaces for directed broadcast: %w", err))
+		e.countSendError()
+	} else {
 		for _, iface := range ifaces {
 			if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
 				continue
 			}
 			addrs, aErr := iface.Addrs()
 			if aErr != nil {
+				e.countSendError()
 				continue
 			}
 			for _, addr := range addrs {
@@ -547,24 +617,30 @@ func (e *Engine) broadcastBeacon() {
 				}
 				ip4 := ipnet.IP.To4()
 				mask := ipnet.Mask
-				if len(mask) == 4 {
-					bcastIP := net.IPv4(
-						ip4[0]|^mask[0],
-						ip4[1]|^mask[1],
-						ip4[2]|^mask[2],
-						ip4[3]|^mask[3],
-					)
-					subnetBcast := &net.UDPAddr{IP: bcastIP, Port: e.cfg.BroadcastPort}
-					_, _ = conn.WriteToUDP(packet, subnetBcast)
+				if len(mask) != 4 {
+					continue
 				}
+				bcastIP := net.IPv4(
+					ip4[0]|^mask[0],
+					ip4[1]|^mask[1],
+					ip4[2]|^mask[2],
+					ip4[3]|^mask[3],
+				)
+				send(&net.UDPAddr{IP: bcastIP, Port: e.cfg.BroadcastPort})
 			}
 		}
 	}
 
 	// 3. Also multicast to 224.0.0.251:5353 if mDNS is open
-	mcastAddr, mErr := net.ResolveUDPAddr("udp4", DefaultMulticastAddr)
-	if mErr == nil {
-		_, _ = conn.WriteToUDP(packet, mcastAddr)
+	if mcastAddr, mErr := net.ResolveUDPAddr("udp4", DefaultMulticastAddr); mErr == nil {
+		send(mcastAddr)
+	} else {
+		e.noteError(fmt.Errorf("resolve mDNS group for beacon: %w", mErr))
+	}
+
+	atomic.AddInt64(&e.stats.sendErrors, int64(failures))
+	if sent > 0 {
+		e.countSend()
 	}
 }
 
@@ -601,6 +677,11 @@ func (e *Engine) closeSockets() {
 		e.outConn = nil
 	}
 	e.closeMu.Unlock()
+	// Clear the bound flags with the sockets. A later Health() call must not
+	// report sockets that have been closed, or a stopped engine would look
+	// usable.
+	atomic.StoreInt32(&e.stats.broadcastBound, 0)
+	atomic.StoreInt32(&e.stats.multicastBound, 0)
 }
 
 // Close gracefully stops the Engine and closes all network sockets.
@@ -612,6 +693,13 @@ func (e *Engine) Close() error {
 		e.closed = true
 		cancel := e.cancel
 		e.closeMu.Unlock()
+		// Clear the started flag with the sockets. A closed engine that still
+		// answers Health() with Running=true is a Hub that claims to be
+		// discovering peers while holding nothing to discover them with, which
+		// is the exact class of silent lie this surface removes.
+		e.startMu.Lock()
+		e.started = false
+		e.startMu.Unlock()
 		if cancel != nil {
 			cancel()
 		}

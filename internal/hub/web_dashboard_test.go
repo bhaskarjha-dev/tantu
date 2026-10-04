@@ -410,11 +410,11 @@ func TestWebDashboard_UserLanguageStateVocabulary(t *testing.T) {
 		// Unconditional mTLS claim removed.
 		"Direct encrypted ' + lastTransport + ' streaming",
 		// Consequence-stating confirmations.
-		"function unpairConsequenceText(",
-		"function approvePairingConsequenceText(",
+		"function unpairConsequence(",
+		"function approvePairingConsequence(",
 		"new pairing with fresh SAS verification is required",
 		"Only approve if the SAS code matches",
-		"function clearLogs()",
+		"async function clearLogs()",
 		"Clear the visible log feed?",
 		"btn-destructive",
 	} {
