@@ -1199,6 +1199,10 @@
       <div class="bookmarklet-box">
         <a class="bookmarklet-btn" href="{{BOOKMARKLET_HREF}}">⚡ Tantu</a>
         <div class="hint-text">Drag this button to your browser Bookmarks Bar. When logging in on any OAuth tab, click it, confirm in the popup, and the authorization is relayed back to your dev terminal. The saved bookmark never expires.</div>
+        <!-- The single-pointer alternative belongs next to the drag-only
+             affordance, not on a different tab: a user who cannot drag a button
+             should not have to go looking for the replacement. -->
+        <div class="hint-text" style="margin-top: 0.75rem;">Can&rsquo;t drag? Paste the URL in the forwarder below &mdash; it does the same thing.</div>
       </div>
 
       <div class="card">

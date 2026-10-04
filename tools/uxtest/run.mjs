@@ -271,10 +271,29 @@ async function main() {
     await js(`(function(){var b='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
       var bin=atob(b), arr=new Uint8Array(bin.length); for(var i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
       stageFileForSend(new File([arr],'uxtest-shot.png',{type:'image/png'})); return 'ok';})()`);
-    await sleep(1200);
-    const thumb = await js('(function(){var t=document.getElementById("filePreviewThumb");return {nw:t.naturalWidth, loaded:t.classList.contains("loaded"), op:getComputedStyle(t).opacity, dest:document.getElementById("filePreviewDest").textContent};})()');
+    // Wait for the fade to settle rather than sampling once. The transition is
+    // 250ms, so a single read at 1200ms cannot legitimately catch it mid-fade
+    // - unless the blob's decode finished late, which is exactly what happens on
+    // a cold browser. This check has now cost two runs on that race (once as a
+    // documented collateral failure in Batch Z31, once in this batch), so the
+    // measurement waits for the state it is asserting, with a bounded deadline:
+    // a thumbnail that never becomes visible still resolves to -1 and fails.
+    const thumb = await js(`(function(){return new Promise(function(resolve){
+      var t=document.getElementById('filePreviewThumb');
+      var dest=document.getElementById('filePreviewDest');
+      var t0=performance.now();
+      (function tick(){
+        var op=Number(getComputedStyle(t).opacity);
+        if(op>=0.99){ resolve({nw:t.naturalWidth, loaded:t.classList.contains('loaded'), op:String(op),
+                              settleMs:Math.round(performance.now()-t0), dest:dest.textContent}); return; }
+        if(performance.now()-t0>4000){ resolve({nw:t.naturalWidth, loaded:t.classList.contains('loaded'), op:String(op),
+                              settleMs:-1, dest:dest.textContent}); return; }
+        setTimeout(tick,25);
+      })();
+    });})()`);
+    console.log('uxtest: preview thumbnail settled in ' + (thumb && thumb.settleMs) + 'ms');
     check('preview thumbnail decodes (CSP allows blob:)', thumb && thumb.nw > 0, JSON.stringify(thumb));
-    check('preview thumbnail is visible', thumb && thumb.loaded && Number(thumb.op) > 0.9, JSON.stringify(thumb));
+    check('preview thumbnail is visible', thumb && thumb.loaded && Number(thumb.op) > 0.9 && thumb.settleMs >= 0, JSON.stringify(thumb));
     check('preview names its destination', thumb && /Destination: /.test(thumb.dest || ''), thumb && thumb.dest);
     await js('cancelPendingSend(); "ok"');
 

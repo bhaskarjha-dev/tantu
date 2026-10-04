@@ -245,6 +245,52 @@ The embedded HTTP server on `127.0.0.1:9876*` provides a dark-mode Web UI served
 6. **Activity Logs Tab:** Live diagnostic explorer with domain filtering pills (`ALL`, `OAUTH`, `DROP`, `PEER`, `NET`, `DEBUG`, `ERROR`), real-time query search bar, structured metadata inspection (`<details>`), and one-click JSON export (`/api/logs`).
 7. **Event Bus & RingBuffer:** Circular 200-event in-memory buffer streaming structured JSON events via Server-Sent Events (`/api/events`); reconnects use `Last-Event-ID` to replay buffered events before live delivery.
 8. **Authenticated Local Control Plane (`securityMiddleware`):** Validates the exact loopback authority (including port), Origin, and Referer, requires an IPC capability or one-time browser session for every sensitive `/api/*` read and mutation, disables caching, caps concurrent multipart uploads (4, with 503 + Retry-After), and serves the ticket-free bookmarklet confirmation shell that authorizes nothing without a click and a valid session at POST time. The long-lived IPC token is never embedded in dashboard HTML. The root page advertises its server-side session state so stale bookmarks do not generate a burst of doomed API probes; a nonce authorizes the dashboard script and all actions are delegated from JavaScript rather than inline HTML handlers. (Scope note: this describes the Hub dashboard. The legacy standalone `tantu relay` page renders per-request one-time tickets with a per-process token fallback; the legacy standalone `tantu drop` page uses a per-process header token documented under THREAT-MODEL SR16.)
+9. **Notification Surface (`notify`, one dialog):** Every outcome the page cannot render next to its own control goes to one themed, non-modal toast region pair — `role="status"`/`aria-live="polite"` for progress and success, `role="alert"`/`aria-live="assertive"` for failure — carrying an optional "Next:" line and an optional action button. Error toasts have no auto-dismiss timer and pause while hovered or focused (WCAG 2.2.1). Every confirmation and prompt is one `role="dialog"` overlay with Escape-to-cancel, a Tab trap, focus moved to the safe control and returned to the opener on close. There is no native `alert()`, `confirm()` or `prompt()` in the page; this is enforced by a gate over the served source *and* by the browser acceptance harness, which fails the run if the browser reports a native dialog. (D-29.)
+10. **Discovery Health:** `/api/status` carries a `discovery` block when an engine is running — socket state, beacon counters, and one plain sentence (`Engine.Health`). The Peers tab renders it, so an empty Nearby list always has a stated reason. The Hub samples it every 10 s and logs *transitions* only. (D-30.)
+
+---
+
+### 3.5a Directory Transfers (`internal/drop`, `internal/hub/relpath.go`)
+
+A directory send is a batch of independent single-file transfers (D-13), one per
+file, each with its own operation ID, idempotency key, and outcome. Nothing is
+archived, so a partial failure stays reportable: 40 of 50 files arriving is 40
+of 50, not one failed blob nobody can reason about.
+
+Since D-28 each file also carries `drop_send.rel_path` — its path inside the sent
+tree, slash-separated on every platform, rooted at the directory the user
+pointed at. The field is `omitempty` and empty for every single-file transfer
+and for text, so:
+
+- a single-file send's wire bytes are unchanged;
+- a peer that does not understand the field publishes a directory send flat,
+  exactly as it did before;
+- `tantu send <dir> --flatten` restores the folded-filename expansion on the
+  sender side, for a peer that wants the old behaviour.
+
+This is the first point in the protocol where a peer chooses a *place* on disk
+rather than a name, so the validation is refusal-only and split by cost:
+
+| Layer | Refuses | When |
+|---|---|---|
+| `drop.validateDropMetadata` | absolute, drive prefix, control characters, empty / `.` / `..` segment, over-long, over-deep | at acknowledgement, before any payload is staged |
+| `hub.SanitizeRelPath` | the above plus Win32-illegal characters, trailing dot or space, reserved DOS device names, NTFS alternate streams, per-component length | before the output directory is touched |
+| `hub.EnsureRelDirs` | any parent component that already exists as a symlink or a non-directory | through an `os.Root` anchored on the output directory |
+
+Nothing is rewritten into a "close enough" name: a sanitiser that turned
+`../../etc/passwd` into `etc-passwd` would publish a file the sender never agreed
+to, and on Windows a trailing dot is stripped rather than rejected, which would
+merge two transfers the user meant to keep apart.
+
+Publication splits into two functions rather than branching once, because the
+flat path carries essentially every transfer the product performs and must keep
+the exact code it has always run. The nested path takes the output root as a
+parameter — the only directory containing both the staging partial and the
+destination — so a reconstructed tree is still published by a same-filesystem
+rename. Any rename failure falls through to the verified copy; on Windows that is
+not an edge case but half the normal path, because the kernel refuses to rename a
+file this process still has open and the staging descriptor is deliberately open
+(the published bytes are the bytes read back through it).
 
 ---
 

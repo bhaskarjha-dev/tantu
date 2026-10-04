@@ -59,19 +59,28 @@ cannot produce, and is claimed nowhere in product copy.
 
 ### P2 — after the core is proven
 
-**One shipped:** multi-file-as-separate transfers (`tantu send <directory>`).
-It was the highest-value item on this list — the most common reason a
-developer points a file-send at a folder — and it is bounded, honest about
-partial delivery, and reuses the existing single-file wire path with no
-protocol change. Recording the exception matters more than the exception: the
-stop rule (D-12) gates P2 behind a proven core, and the core was proven before
-this was started.
+**Two shipped:** multi-file-as-separate transfers (`tantu send <directory>`),
+and then directory *structure* preservation (D-28). The first was the
+highest-value item on this list — the most common reason a developer points a
+file-send at a folder — and it is bounded, honest about partial delivery, and
+reuses the existing single-file wire path with no protocol change. Recording the
+exception matters more than the exception: the stop rule (D-12) gates P2 behind a
+proven core, and the core was proven before this was started.
+
+The second fixed what the first left behind. Flattening a tree into filenames is
+visible but lossy — a project arrives as name soup, and two files that differed
+only by directory cannot be told apart in a failure report. D-28 keeps every
+property of D-13 (one transfer per file, no archiving, honest partial failure)
+and adds `rel_path`, `omitempty` and empty for single-file sends, so it is
+strictly additive on the wire. The cost is concentrated in one place: a
+peer-supplied relative path is the first thing in this protocol that lets a
+remote machine choose a *place* on disk rather than a name, so every unsafe
+shape is refused rather than rewritten, and parents are created through a root
+handle that cannot be redirected by a planted symlink.
 
 Still **not started**: forwarding, desktop notifications, QR pairing, browser
 extension, OS clipboard-image CLI, true pause/resume, advanced history search,
-WAN transport, signed artifacts, and directory *structure* preservation (the
-sender folds paths into filenames; it does not rebuild the tree on the
-receiver). Gated by D-12 as before.
+WAN transport, and signed artifacts. Gated by D-12 as before.
 
 ### Explicit "not now" (§14)
 

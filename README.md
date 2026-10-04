@@ -44,7 +44,7 @@ Tantu eliminates this friction. It stretches an invisible, encrypted thread acro
 You're running a CLI on a remote dev server (`gcloud`, `gh`, `az`, or any OAuth app) that opens a browser for authentication. The redirect targets `localhost`, which fails because your browser is on your laptop. Tantu intercepts the OAuth URL, opens it on the right machine, and forwards the callback back — transparently.
 
 **2. Cross-Machine Sharing Friction**
-Moving tokens, error logs, code snippets, and large files between machines means insecure pastebins, chat apps, or cloud storage. Tantu provides encrypted, resumable-when-reusing-a-DropID, direct peer-to-peer transfer up to 5GB — a single file, or a whole directory sent as independent per-file transfers.
+Moving tokens, error logs, code snippets, and large files between machines means insecure pastebins, chat apps, or cloud storage. Tantu provides encrypted, resumable-when-reusing-a-DropID, direct peer-to-peer transfer up to 5GB — a single file, or a whole directory that arrives as a directory.
 
 ---
 
@@ -88,16 +88,18 @@ Both machines run identical symmetric hubs. No server/client distinction. No clo
 
 - **Zero-Argument Startup** — `./tantu` boots the complete hub, self-heals identity, opens cockpit
 - **Headless Recovery** — `tantu hub --headless` prints a one-time authenticated dashboard link; `tantu dashboard` mints a fresh link from any terminal
-- **Zero-Config LAN Discovery** — mDNS (`224.0.0.251:5353`) + UDP broadcast (`port 9879`) find nearby hubs automatically
+- **Zero-Config LAN Discovery** — mDNS (`224.0.0.251:5353`) + UDP broadcast (`port 9879`) find nearby hubs automatically. The engine reports its own health, so a blocked multicast socket or a silent socket failure is stated on the Peers tab and in Live Logs rather than looking like an empty network. Discovery is IPv4-only; pairing by address always works regardless
 - **Resumable QuickDrop** — interrupted transfers resume only when the sender deliberately reuses the same DropID; built-in one-shot commands generate a new ID per attempt. Re-run a send with the same `--idempotency-key` for a duplicate-safe retry (the receiver re-acknowledges instead of publishing twice, and the sender is told the delivery was suppressed). Private manifests bind transfer metadata and the first 64 KiB, chunks are synced before their offset is reused, and final SHA-256 is verified
+- **Directories arrive as directories** — every file in `tantu send <dir>` carries its path inside the tree, and the receiver rebuilds it under the sent directory's name. A peer-supplied path is refused, never rewritten, if it is absolute, contains `..`, names a reserved Windows device, or would land on a symlink — and it is refused before any payload is staged. `--flatten` restores the folded-filename behaviour
 - **Bounded Transfers** — each long-lived receiver process caps aggregate active transfer reservations and separately trims Tantu-owned failed partials to an 8 GiB / 1,024-file retained-partial budget; unmarked legacy `.part` files are preserved for manual review rather than risking user data
 - **Smart Default LAN Transport** — binds to `0.0.0.0:9877` by default for instant local discovery, pairing, and transfers without `--transport` or `--peer` flags
 - **Single-Page Web Dashboard** (`http://127.0.0.1:9876`, falling back to 9875/9874/9873 if the port is taken) — dark-mode browser UI with 5 workspaces:
   - **QuickDrop:** Drag-and-drop, file-picker, or clipboard-paste send (up to 5GB, preview + confirm by default, real progress + cancel), text snippets, live received items feed with 1-click clipboard copying and folder opening
   - **OAuth Relay:** 1-click draggable bookmarklet, manual URL submission
   - **Transfers:** Sender-side operation truth for this Hub session (destination, state, retry/duplicate safety, next action)
-  - **Peers & Network:** Discovered nearby hubs (1-click pairing), in-band pairing wizard, paired peer cards (alias, default toggle, unpair)
+  - **Peers & Network:** Discovered nearby hubs (1-click pairing), a discovery health line that says whether discovery is working and why a Nearby list is empty, in-band pairing wizard, paired peer cards (alias, default toggle, unpair)
   - **Activity Logs:** Live filtered log explorer with JSON export and Server-Sent Events (SSE)
+- **One notification surface** — every outcome the dashboard cannot put next to its own control arrives as a themed, non-modal toast announced through a live region, carrying the same single "Next:" step the CLI uses. Failures persist until dismissed and pause while you are reading or operating them. There is no native `alert()`, `confirm()` or `prompt()` anywhere in the page, and every confirmation is a real dialog: Escape cancels, Tab stays inside, and focus returns to the control you opened it from
 - **Interactive Developer Cockpit** - terminal dashboard with streaming logs, discovery badge, and hotkeys:
   - `[o]` Open Web Dashboard · `[s]` Send file or directory · `[t]` Send text · `[l]` List/release in-flight sign-ins · `[c]` Clear
   - `[p]` Peer switcher · `[v]` Toggle verbose · `[q]` Graceful shutdown
@@ -156,14 +158,23 @@ Pairing establishes mutual cryptographic trust. Choose whichever method is easie
 tantu send report.pdf
 ```
 
-**Send a whole directory** (each file becomes its own transfer):
+**Send a whole directory** (each file becomes its own transfer, and the tree arrives as sent):
 ```bash
 tantu send ./project/
 # 📁 Sending 4 file(s) from ./project (1.2 MB)
+#   → project/README.md (8 B)
+#   → project/docs/api/openapi.yaml (16 B)
+#   → project/docs/api/notes.txt (12 B)
+#   → project/src/main.go (14 B)
 # ✅ Sent 4 of 4 file(s) (1.2 MB) to devbox
 ```
-A failure names the files that did not arrive, and the exit code reflects the
-worst outcome, so a partial send is never mistaken for a complete one.
+The receiver gets `project/…` with its structure intact. A failure names the
+files by their path in the tree — not by a bare leaf name, which cannot tell two
+files called `notes.txt` apart — and the exit code reflects the worst outcome, so
+a partial send is never mistaken for a complete one. Sending the same directory
+again produces a second tree (`README (1).md`) rather than merging into the
+first. Use `--flatten` for the old behaviour, where paths are folded into the
+filenames.
 
 **Send text, API tokens, or logs:**
 ```bash
@@ -251,9 +262,11 @@ go build -o tantu ./cmd/tantu
 Tantu's encrypted thread currently connects machines on a local network. The architecture is designed to extend further:
 
 - **Internet (WAN) Transport** — E2EE relay with STUN hole-punching for cross-network pairing
-- **Directory Structure Preservation** — `tantu send <dir>` now sends each file separately with its path folded into the name; recreating the tree on the receiving side is the natural next step
+- **IPv6 discovery** — every discovery socket is `udp4` today, so peers on an IPv6-only network do not appear in Nearby (pairing by address still works). The health surface now states the limitation instead of implying coverage it does not have
 - **OS-Native Notifications** — desktop alerts for incoming drops and OAuth requests
 - **Pluggable Protocol Extensions** — clipboard sync, terminal sharing, and beyond
+
+Already done, and previously listed here: directory structure preservation.
 
 ---
 

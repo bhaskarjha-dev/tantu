@@ -2859,3 +2859,235 @@ anchor and passes on the new one, on every engine, every run.
   staticcheck@v0.8.1, `go vet`, encgate — all green.
 - Red-proof restores verified by SHA256 (harness + dashboard) and empty
   `git diff` (all Go product files).
+
+## Batch Z32 — one notification surface, and empty states that act (2026-10-05)
+
+D-29. The finding is old and recorded; the fix is new. Every failure path in
+the dashboard called `alert()`. Twenty-odd call sites: alias editing, default
+peer, unpair, peer switching, log export, log clear, both history Clears,
+opening the downloads folder, changing the downloads folder, copying the pair
+command. `alert()` is modal, unthemed, ignores both app themes, blocks the
+whole page until dismissed, and reaches a screen reader as nothing but an
+interruption — so a *refused* alias edit looked like the browser had broken.
+
+The reason it survived several audits is the part worth recording: the browser
+acceptance harness **stubbed** `window.alert`, `window.prompt` and
+`window.confirm` during its delegated-action sweep. The stub was there to stop
+native dialogs from hanging the run, and in doing so it made every native dialog
+invisible to the one tool built to find them.
+
+### What replaced it
+
+`notify(kind, message, {next, actionLabel, onAction})` renders a themed,
+non-modal toast. Two regions, not one: `role="status"` / `aria-live="polite"`
+for progress and success, `role="alert"` / `aria-live="assertive"` for failure.
+Mixing both in a single region is how "spoken loudly, then ignored" happens.
+Error toasts have **no** auto-dismiss timer and pause on `mouseenter` /
+`focusin` (WCAG 2.2.1) — a failure that vanishes on a timer the user cannot
+control is a failure they repeat.
+
+One dialog replaces `confirm` and `prompt`: `role="dialog"`, `aria-modal`,
+labelled and described, Escape cancels, Tab is trapped, focus moves to the safe
+control (Confirm, or the input for a prompt) and returns to the opener on close.
+Opening a second dialog resolves the first as cancelled rather than stacking,
+because two open confirmations are how a user approves the wrong request.
+
+Every empty state — received items, authorizations, transfers, peers — now
+renders a real action from one `emptyStateHTML()` function, used by both the
+server-side first paint and every JavaScript re-render, so the affordance cannot
+drift or vanish on the next 3 s poll.
+
+### Gates
+
+Five Go gates over the comment-stripped served source: no native dialog call
+anywhere (a regex with a word boundary, so `askConfirm` and
+`promptChangeDownloadDir` are not matches); two announced regions and the
+timeout table; the dialog's modal contract including focus restoration and the
+no-stacking rule; an action inside every `.empty-state` region *and* inside
+every re-render constant, with the legacy text-only placeholders asserted gone;
+and every peer-management function carrying a `notify('error', ...)`.
+
+Eight measured browser checks replace the stubs: a native dialog now **fails**
+the run; the confirmation is a real labelled modal; it takes focus and states
+its consequence; Escape restores focus to the opener; the prompt is a labelled
+in-page input whose value provably reaches the Hub (intercepted
+`/api/config`, so the rig's output directory is never mutated); a failure lands
+in the assertive region with a "Next:"; an error notification survives 1.2 s and
+is dismissible; and a notification does not steal focus.
+
+### One harness defect found by running it
+
+Two of the new focus assertions failed on the first run — because the checks
+ran on the Logs tab, where the QuickDrop controls are `display:none`, and
+`focus()` on a hidden control is a no-op. The assertions were vacuous rather
+than the product wrong, which is the more dangerous failure: a vacuous
+assertion passes forever. Fixed by activating the tab first, and the reason is
+in the comment so the next person does not "simplify" it away.
+
+### Evidence
+
+- uxtest chromium / firefox / webkit, peerless **and** `--peers`: 49/49 on all
+  six. One 48/49 occurred on the first chromium run of the batch — the
+  already-documented mid-fade `preview thumbnail` race, which has now cost two
+  runs. Rather than document it a third time, the check was changed to wait for
+  the fade to *settle* (bounded 4 s, still `-1` and failing if it never does).
+  Four follow-up chromium runs plus a webkit run: settled in 232-242 ms, 49/49.
+- `gofmt`, `go build ./...`, `go vet ./...`, `go test -count=1 ./...` (13
+  packages): green.
+
+## Batch Z33 — discovery that says when it is broken (2026-10-05)
+
+D-30. `KNOWN-LIMITATIONS.md` 3.13 recorded that discovery failure was silent,
+with the mechanism: broadcast write errors were ignored, the mDNS bind error was
+discarded, and the receive loop gave up after 50 consecutive errors by simply
+returning. The product's answer to "discovery is blocked here" and "there is no
+second machine" was the *identical* empty Nearby list, so a user whose firewall
+ate multicast had no way to tell them apart and no next action to take.
+
+`Engine.Health()` now counts what the engine does (beacons sent, beacons
+received, send errors, listen errors), tracks which sockets are actually bound,
+and renders one sentence naming the condition. The counters are atomics because
+the advertise and listen loops are hot paths and a mutex there would make health
+reporting a contention source in exactly the code that must not be slowed down.
+
+### Three defects the gates found, none of which was the one I was fixing
+
+1. **A closed engine still claimed to be usable.** `closeSockets` cleared the
+   socket pointers but not the bound flags, and `Close` never cleared
+   `started`. A stopped Hub answered `Health()` with `Running: true` and both
+   engines live — the same class of silent lie the type exists to remove, in the
+   new code.
+2. **`describeHealth` trusted a derived field.** It branched on `h.Usable`,
+   which only `Health()` populated, so a caller that forgot it got a sentence
+   describing a state it was not in. It now derives usability from the socket
+   state a caller can actually observe, which is what makes it a pure function
+   and therefore testable.
+3. **`truncateError` overshot its own bound.** `msg[:199] + "..."` is 202 bytes,
+   because the ellipsis is three bytes in UTF-8. Now rune-safe and byte-bounded.
+
+### The calibration decision, which matters more than the mechanism
+
+A blocked mDNS socket on a network where subnet broadcast works perfectly is
+**normal** — corporate Wi-Fi and Windows firewalls do it routinely. Calling that
+"degraded" would put a permanent red card in front of users whose discovery is
+fine, and a warning that is always there is a warning nobody reads. So
+`Degraded` is true only when the engine is running and *nothing* is bound, or a
+listen loop has stopped; "broadcast only" is rendered as a plain statement, and
+`TestDescribeHealthNeverClaimsAFaultForANormalNetwork` pins that.
+
+`Hub.watchDiscoveryHealth` samples every 10 s and logs **transitions** only:
+degraded (with the pairing-by-address fallback named), recovered, and — the case
+that was previously invisible and most confusing — the engine working while its
+own beacons fail to leave this machine, which is precisely why no peer can see
+this hub. The decision is a pure function (`discoveryHealthEvent`) so all eight
+transitions are tested without a Hub and a ten-second clock, including "degraded
+twice logs once".
+
+### Evidence
+
+Six gates in `internal/discovery/health_test.go` (running engine, closed engine,
+nil engine, ten wording states, the calibration rule, error truncation) and four
+in `internal/hub/discovery_health_test.go` (the block reaches `/api/status`; it
+is *absent* when no engine is configured, so a loopback rig does not publish a
+zeroed "running, nothing found"; eight transitions; the send-failure message
+invents no cause and quotes only a recorded one; the page renders it). Full
+suite green; the harness's 3 s status poll exercises the `/api/status` field on
+every run.
+
+## Batch Z34 — a sent directory arrives as a directory (2026-10-05)
+
+D-28, closing the remaining half of limitation 3.2. `tantu send ./project/`
+folded every path into the filename. That was a deliberate narrowing under D-13
+and it had a real cost: a project arrived as two hundred name-soup files in one
+folder, and two files that differed only by directory could not be told apart in
+a failure report.
+
+Each file now carries `drop_send.rel_path` — `omitempty`, empty for every
+single-file send and for text, so ordinary transfers are byte-identical and a
+peer that ignores the field still publishes flat. The receiver rebuilds the tree
+under the sent directory's name. `--flatten` restores the old expansion exactly.
+
+### Why this is the one additive change that is not merely additive
+
+`idempotency_key` is a name the receiver stores. `rel_path` is a **place on
+disk** a peer asks for. For the first time in this protocol a remote machine can
+influence where bytes land, so the "old peers ignore it" argument does not carry
+the whole weight and the validation is refusal-only, in three cost-ordered
+layers:
+
+| Layer | Refuses | Cost of refusing |
+|---|---|---|
+| `drop.validateDropMetadata` | absolute, drive prefix, control char, empty / `.` / `..`, over-long, over-deep | free — at acknowledgement, before a byte is staged |
+| `hub.SanitizeRelPath` | the above plus Win32-illegal chars, trailing dot/space, reserved DOS device names, NTFS ADS, per-component length | free — before the output directory is touched |
+| `hub.EnsureRelDirs` | a parent component that already exists as a symlink or a non-directory | one empty directory may be created |
+
+Rewriting rather than refusing was considered and rejected: a sanitiser that
+turned `../../etc/passwd` into `etc-passwd` publishes a file the sender never
+agreed to, and on Windows a trailing dot is *stripped*, so a rewrite would merge
+two transfers the user meant to keep apart. A first draft did exactly that —
+`strings.TrimSpace` on the whole path before validating — and
+`TestSanitizeRelPathRefusesEveryEscape`'s `trailing space` / `leading space` rows
+caught it. Refusing turned out to be the simpler code as well as the safer one.
+
+### Publication is split, not branched
+
+`publishPartFile` routes to `publishFlat` or `publishNested`. The flat path is
+the code that carried essentially every transfer the product performs and is
+unchanged; the nested path takes the output root as a parameter, because that is
+the only directory containing both the staging partial and the destination, and
+that is what keeps a reconstructed tree on the same-filesystem rename instead of
+a full second copy of the payload.
+
+### A Windows behaviour that is not an edge case
+
+The kernel refuses to rename a file this process still has open, and the
+staging descriptor is deliberately open — the published bytes are the bytes
+read back through the descriptor that verified them. So on Windows **every**
+publication takes the verified-copy path, nested or not; that is pre-existing
+behaviour, not something this batch introduced, and it is why the nested path
+falls through to the copy on any rename failure rather than only on a
+cross-device one. My first draft returned the error, which would have made
+directory sends simply not work on Windows. Found by a test that opened the
+partial read-only — which is exactly why
+`TestPublishNestedKeepsEverythingInsideTheOutputDirectory` now asserts the
+*outcome* and logs which path ran instead of asserting a platform property.
+
+### The defect only running the product found
+
+Sending the same directory twice made all four files fail with
+"project\README.md exists and is not a directory". The collision disambiguator
+was appended to the whole destination path — `outDir/project/README.md` plus
+`README (1).md` — so the delivered file became its own parent directory, and
+`EnsureRelDirs` correctly refused to create a directory where a file was.
+
+No publication-level test could see it: those tests are handed an
+already-chosen destination, and the disambiguating happens earlier, in the
+receiver's metadata handler. `TestHub_ResendingADirectoryProducesASecondTree`
+drives the Hub instead, and is red-proven — reintroducing the one-line change
+(byte-verified restore) makes it fail with the same message.
+
+### Evidence
+
+- 31 refusal shapes and 9 legitimate trees at the `SanitizeRelPath` layer,
+  including the shapes Windows itself normalises away.
+- The symlink refusal is asserted against a **scripted root** so it runs on
+  every platform, plus a real filesystem link wherever the OS permits one.
+  Windows without developer mode cannot create an unprivileged symlink, so a
+  filesystem-only test would have left the single most important property in
+  this batch unevidenced on two of three CI platforms — where it now *skips*
+  with the reason printed and points at the test that covers the logic.
+- Nesting modes, idempotence, private modes (Unix only, since Windows reports
+  0777 for every directory), containment, refusal of an out-of-root destination,
+  no-overwrite, and the rename path proven reachable with the descriptor
+  released so it is not dead code.
+- Wire layer: 10 refused shapes, 8 accepted ones, `rel_path` omitted for
+  single-file sends, and an envelope round-trip.
+- End-to-end over a real loopback Hub: a six-file tree delivered intact with
+  nothing published flat; a **crafted frame** (not `drop.SendDrop`, which runs
+  the same validator locally and would refuse before the Hub saw it) refused
+  with a reason and nothing written outside; the sender-side local refusal
+  separately; a single-file send unchanged, byte for byte and directory for
+  directory; a re-send producing `README (1).md` beside `README.md`.
+- Real binary, two sends and a `--flatten`: correct tree, correct second tree,
+  correct flat expansion.
+- `gofmt`, `go build ./...`, `go vet ./...`, `go test -count=1 ./...`: green.

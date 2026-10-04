@@ -3,8 +3,9 @@
 > **Status:** Phases 1–2 implemented (emit + validate + receiver tombstone);
 > phase 3 (idempotent retry UX) partially addressed: `transfer retry` still
 > refuses blind retry but now teaches duplicate-safe key-reuse, since the Hub
-> keeps no payload to resend.
-> **Date:** 2026-09-25
+> keeps no payload to resend. `rel_path` (directory structure) added as a
+> fourth additive field — see §3b.
+> **Date:** 2026-09-25 (revised 2026-10-05)
 
 ## 1. Problem
 
@@ -43,6 +44,41 @@ framework, changing the same-release supported topology.
    side lacks (e.g. idempotent retry against a v0 receiver), fail fast with
    a named code (`incompatible_peer`) plus the existing upgrade guidance,
    reusing the CLI/Hub skew warnings.
+
+### 3b. `rel_path` — the first additive field a peer could use against itself
+   **Added 2026-10-05 (D-28).** `drop_send` gained `rel_path` (`omitempty`):
+   the file's path inside the directory being sent, slash-separated on every
+   platform. It is empty for every single-file transfer and for text, so a
+   single-file send's wire bytes are unchanged and an old receiver publishes a
+   directory send flat exactly as it always did.
+
+   The field is purely additive in the JSON sense and **not** purely additive in
+   the security sense, and that distinction is the whole point of writing it
+   down here. `idempotency_key` is a name the receiver stores; `rel_path` is a
+   *place on disk* a peer asks for. For the first time in this protocol a remote
+   machine can influence where bytes land, so the additive-only reasoning from
+   §4 does not transfer unchanged:
+
+   - The wire layer refuses the cheap structural properties at acknowledgement —
+     relative, no drive prefix, no control character, no empty / `.` / `..`
+     segment, bounded length and depth — so a hostile value costs nothing and
+     never reaches a staging write.
+   - The receiver then re-validates every component against the platform's own
+     naming rules (trailing dot or space, Windows-illegal characters, reserved
+     DOS device names, NTFS alternate streams) and **refuses** rather than
+     rewriting. A sanitiser that turned `../../etc/passwd` into `etc-passwd`
+     would publish a file the sender never agreed to.
+   - Parent directories are created through an `os.Root` anchored on the output
+     directory, and each component must already be a real directory rather than
+     a symlink. Without that check, a link planted inside the downloads folder
+     would redirect every later file in that branch with no error and no trace.
+
+   The gates are split accordingly: `TestEnsureRelDirsRefusesAPlantedSymlink`
+   asserts the decision against a scripted root so it runs on every platform,
+   and `TestEnsureRelDirsRefusesARealPlantedSymlink` repeats it against a real
+   link wherever the OS permits an unprivileged test to create one — Windows
+   without developer mode cannot, which is exactly why one test would have left
+   this unevidenced on two of three CI platforms.
 
 ## 4. Why this shape
 

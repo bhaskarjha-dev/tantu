@@ -8,6 +8,60 @@ rollback procedures.
 ## Unreleased
 
 ### Added
+- **A sent directory arrives as a directory.** `tantu send ./project/` used to
+  fold every path into the filename, so a project landed in one flat folder as
+  `project-docs-api-readme.md` and two files that differed only by directory
+  became indistinguishable. Each file now carries its path inside the tree and
+  the receiver rebuilds it under the sent directory's name. Per-file progress
+  and failure lines show the path rather than the bare leaf, because a list of
+  leaf names cannot tell two `notes.txt` files apart. Sending the same
+  directory again produces a second tree (`README (1).md`) rather than merging.
+  `tantu send <dir> --flatten` restores the previous behaviour exactly.
+- **The dashboard reports discovery's health.** An empty "Nearby" list used to
+  mean either "no second machine on this network" or "discovery is blocked
+  here", and nothing on screen distinguished them — every failure signal inside
+  the engine had been discarded. The Peers tab now shows what discovery is
+  actually doing and, when it is not doing it, why: multicast or subnet
+  broadcast (or both), how many hubs are in reach, and the last socket error.
+  The Hub logs discovery *transitions* — degraded, recovered, beacons not
+  leaving this machine — so Live Logs has the reason without a wall of
+  repetition. A blocked multicast socket on a network where broadcast works is
+  reported as "broadcast only", not as a fault: a warning that is always there
+  is a warning nobody reads. Discovery is still IPv4-only, and now says so.
+- **A real notification surface, and empty states that act.** The dashboard no
+  longer calls `alert()`, `confirm()` or `prompt()` anywhere. Every outcome it
+  cannot put next to its own control arrives as a themed, non-modal
+  notification announced through a live region, carrying the same single "Next:"
+  step the CLI uses; failures persist until dismissed and pause while you are
+  reading or operating them, and they never take focus. Every confirmation and
+  prompt is one real dialog: Escape cancels, Tab stays inside, and focus
+  returns to the control you opened it from. All four empty states — received
+  items, authorizations, transfers, peers — now offer an action instead of
+  describing a dead end.
+- `docs/DEPENDENCIES.md` — the complete dependency inventory (two pinned
+  `golang.org/x` modules), the reasoning behind the `CGO_ENABLED=0`
+  static-build invariant, the demonstrated cost of that constraint, and four
+  conditions any new module must satisfy.
+- `docs/DECISIONS.md` — the v6.0 decision record (D-01 … D-30), extracted so
+  that decision IDs cited by three tracked documents resolve for anyone
+  cloning the repository. The original plan lives under gitignored `temp/`.
+
+### Changed
+- Directory sends are larger on the wire: each file's `drop_send` carries an
+  optional `rel_path`. It is absent for every single-file send and for text, so
+  ordinary transfers are byte-identical to before, and a peer that does not
+  understand the field still publishes a directory send flat.
+- `tantu send --flatten` is new, and is the opt-out rather than the default:
+  "send this folder" means the folder.
+- The browser acceptance harness now **fails a run** if the browser reports any
+  native dialog. It previously stubbed `window.alert/prompt/confirm` during its
+  action sweep, which is why the alert sites above survived several audits.
+- The acceptance harness's preview-thumbnail check now waits for the fade to
+  settle instead of sampling once at a fixed moment. The transition is 250 ms,
+  so a single sample could not legitimately catch it mid-fade — but a cold
+  browser's blob decode finished late twice, and the race cost two runs
+  (Batch Z31 and this one) for a check that was measuring the wrong instant.
+- `docs/DECISIONS.md` — the v6.0 decision record (D-01 … D-30), extracted so
 - **The plan's user-perceived performance budgets are enforced in CI.** All
   §12.1 rows that a peerless test rig can honestly measure now have gates: 7
   Go gates (dashboard document serve, action acknowledgement with a real disk
@@ -40,18 +94,12 @@ rollback procedures.
   `golang.org/x` modules), the reasoning behind the `CGO_ENABLED=0`
   static-build invariant, the demonstrated cost of that constraint, and four
   conditions any new module must satisfy.
-- `docs/DECISIONS.md` — the v6.0 decision record (D-01 … D-27), extracted so
-  that decision IDs cited by three tracked documents resolve for anyone
-  cloning the repository. The original plan lives under gitignored `temp/`.
-- **Multi-file sends.** `tantu send <directory>` now sends every file under a
+- **Multi-file sends.** `tantu send <directory>` sends every file under a
   directory as an independent transfer, following the recorded decision D-13
   ("multi-select becomes multiple logical transfers"). It is not archived: each
   file gets its own operation ID, its own idempotency key, and its own outcome,
   so 40 of 50 arriving is reported as 40 of 50 rather than as one failure
-  nobody can reason about. Files are named from their path relative to the
-  directory (`docs/api/reference.md` arrives as `docs-api-reference.md`), so
-  two files with the same basename in different subdirectories do not collide
-  on the receiver's flat downloads folder. Symlinks are refused rather than
+  nobody can reason about. Symlinks are refused rather than
   followed or silently skipped, because a link could otherwise pull in files
   outside the directory — and a silently shortened batch is indistinguishable
   from a complete one. Expansion is bounded at 2,000 files and 5 GiB total, and
@@ -731,6 +779,25 @@ rollback procedures.
   attempts (4) capped with 503 + Retry-After.
 
 ### Security notes
+- **Directory sends introduce the first peer-chosen location on disk.** A
+  sender-supplied relative path is validated in three layers and every failure
+  is a refusal rather than a rewrite: the wire layer rejects absolute paths,
+  drive prefixes, control characters and empty / `.` / `..` segments *at
+  acknowledgement*, before any payload is staged; the receiver then rejects
+  Windows-illegal characters, trailing dots or spaces, reserved DOS device
+  names, NTFS alternate streams and over-long or over-deep components; and
+  parent directories are created through a root handle anchored on the output
+  directory, with every component required to be a real directory rather than a
+  symlink. Rewriting instead of refusing was rejected deliberately: turning
+  `../../etc/passwd` into `etc-passwd` would publish a file the sender never
+  agreed to, and on Windows a trailing dot is stripped rather than rejected, so
+  a rewrite would merge two transfers the user meant to keep apart.
+- Re-sending a directory now produces a second tree with `(1)` disambiguators
+  rather than failing. The first implementation appended the disambiguator to
+  the whole destination path, which turned the delivered file into its own
+  parent directory and made **every** file in a re-sent directory fail; it was
+  found by running the real binary, not by testing, and the gate that now
+  covers it drives the Hub rather than the publication helper.
 - Security & integrity audit (batch Z29): dashboard route/authorization,
   pairing identity binding, and QuickDrop resume integrity were each traced
   to the implementing line and now have enumerated, red-proven gates — every

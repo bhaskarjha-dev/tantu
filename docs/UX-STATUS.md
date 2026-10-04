@@ -1,15 +1,17 @@
 # Tantu UX Status — v6.0 Plan Tracking
 
 > **Status:** Living implementation record (agent-maintained)
-> **Last Updated:** 2026-09-29
+> **Last Updated:** 2026-10-05
 > **Plan:** v6.0. Decision IDs resolve in [`docs/DECISIONS.md`](DECISIONS.md);
 > the original plan document is under `temp/` and is gitignored.
 >
-> **Review note (2026-09-29):** the P0/P1 evidence ladder below is unchanged
-> and no E4/E5 evidence was produced. The P2 section was updated: multi-file
-> sends shipped, and the cockpit gained in-flight sign-in visibility. Claims in
-> this file that are not re-verified on each audit should be treated as
-> unconfirmed — see `docs/KNOWN-LIMITATIONS.md` §"How to use this register".
+> **Review note (2026-10-05):** no E4/E5 evidence was produced, and the ladder
+> below is unchanged on that axis. Three batches landed since the last review
+> and each is recorded under its own heading rather than folded into the P0/P1
+> rows: Z32 (one notification surface, real empty states), Z33 (discovery
+> health), Z34 (directories arrive as directories). Claims in this file that are
+> not re-verified on each audit should be treated as unconfirmed — see
+> `docs/KNOWN-LIMITATIONS.md` §"How to use this register".
 
 This file maps every P0/P1 item to its implementation state and evidence
 level. It exists so a "UX-complete" claim can never outrun its evidence.
@@ -60,17 +62,68 @@ E5 cross-platform/accessibility/failure evidence.
 
 ## P2 — after the core is proven
 
-**Shipped:** multi-file-as-separate transfers. `tantu send <directory>` sends
-each file as an independent transfer with its own operation ID, idempotency
-key, and outcome, bounded at 2,000 files / 5 GiB, with symlinks refused and
-per-file reporting. A partial batch exits non-zero and names the files that did
-not arrive; a batch that delivered nothing says so rather than claiming the
-rest arrived. Structure is not recreated on the receiver — paths are folded
-into filenames (`pkg/util/notes.txt` → `pkg-util-notes.txt`).
+**Shipped:** multi-file-as-separate transfers, and then **directory structure
+preservation** (D-28). `tantu send <directory>` sends each file as an
+independent transfer with its own operation ID, idempotency key, and outcome,
+bounded at 2,000 files / 5 GiB, with symlinks refused and per-file reporting
+naming each file by its **path in the tree** — a list of leaf names cannot tell
+two files called `notes.txt` apart. A partial batch exits non-zero and names the
+files that did not arrive; a batch that delivered nothing says so rather than
+claiming the rest arrived. The receiver rebuilds the tree under the sent
+directory's name; `--flatten` restores the folded-name expansion.
 
 Still not started, per the plan's own stop rule (D-12, D-20): forwarding,
-notifications, QR, extension, pause/resume, WAN transport, directory structure
-preservation, signed artifacts.
+notifications, QR, extension, pause/resume, WAN transport, signed artifacts.
+
+## Z32 — one notification surface, and empty states that act
+
+Every failure path in the dashboard called `alert()`. That is a modal,
+unthemed, page-blocking, OS-owned interruption, and it is invisible to a screen
+reader as anything but an interruption — twenty-odd call sites across alias
+edits, folder opens, downloads-folder changes, log export, both Clear buttons
+and both unpair confirmations. The acceptance harness had been *stubbing*
+`window.alert/prompt/confirm` during its action sweep, which is exactly why
+several audits passed over them.
+
+Now: `notify()` renders a themed, non-modal toast in one of two live regions
+(polite for progress, assertive for failure), carries the product's own "Next:"
+vocabulary, persists error toasts until dismissed, and pauses its timer on hover
+or focus. One accessible dialog replaces `confirm`/`prompt` — Escape cancels, Tab
+is trapped, focus moves to the safe control and returns to the opener. All four
+empty states offer a real action, and the server-side first paint matches the
+JavaScript re-render so the affordance cannot vanish on the next poll.
+
+Evidence: five Go gates plus eight measured browser checks; the harness now
+**fails the run** on any native dialog. Closes limitations 4.1 and 4.3, and 4.2
+partly (the single-pointer alternative is now visible next to the drag-only
+bookmarklet).
+
+## Z33 — discovery that says when it is broken
+
+Every discovery failure signal was discarded: broadcast write errors ignored, the
+mDNS bind error dropped, a receive loop that gave up after 50 errors simply
+returning. The product's answer to "discovery is broken" and "there is no second
+machine" was the identical empty Nearby list.
+
+`Engine.Health()` now counts sends, receives, errors and socket state, and
+renders one sentence naming the condition; the Hub logs *transitions* rather
+than samples; `/api/status` carries the block and the Peers tab renders it. The
+calibration matters as much as the mechanism: a blocked mDNS socket on a network
+where subnet broadcast works is normal, and is reported as "broadcast only", not
+as degraded — a warning that is always there is a warning nobody reads. Closes
+limitation 3.13. Limitation 3.14 (IPv4-only) is unchanged in substance but is now
+*stated* by the health surface rather than implied.
+
+## Z34 — a sent directory arrives as a directory
+
+See `docs/DEV-RECORD.md` (Batch Z34) and `docs/ARCHITECTURE.md` §3.5a. The
+product-level finding is worth repeating here because it is the kind of defect
+only running the product finds: the collision disambiguator was appended to the
+whole destination path instead of its leaf, so re-sending a directory made every
+file fail with the delivered file turned into its own parent directory. No
+publication-level test could see it, because those tests are handed an
+already-chosen destination. The gate now drives the Hub instead, and is
+red-proven by reintroducing the one-line bug.
 
 ## Z15 — frontend audit: what changed and what did not
 
@@ -98,8 +151,9 @@ environment and is claimed nowhere.
 ## Where the plan stands
 
 `docs/UX-PLAN-MAP.md` maps the v6.0 plan to shipped state item by item: P0
-13/14, P1 8 done / 4 partial / 1 not started, P2 now 1 shipped (multi-file
-sends) with the remainder still gated by the stop rule, release
+13/14, P1 8 done / 4 partial / 1 not started, P2 now 2 shipped (multi-file
+sends, then directory structure preservation) with the remainder still gated by
+the stop rule, release
 gates A/B/E/F green and C/D red, 8 of 10 stop-rule conditions met, and which of
 the nineteen §21 artifacts exist. `docs/KNOWN-LIMITATIONS.md` holds every
 admitted limitation with severity and where it is visible;
