@@ -2741,3 +2741,121 @@ red on `Port:-1` — both reverted byte-exact (`git diff` on
 green on the final tree. No product code changed: the discovery *behavior*
 was correct on CI (it recorded a legitimate foreign beacon); only the
 tests' expectations were wrong.
+
+## Batch Z31 — performance budgets: the plan's numbers, with teeth (2026-10-04)
+
+Scope item 2 of the user-selected round (plan §2.5 / KNOWN-LIMITATIONS 2.5:
+"user-perceived budgets are not gated"). Eleven gates — 7 Go, 4 browser —
+take the §12.1 table from aspiration to CI. Every number asserted is the
+plan's, not a measured-and-relaxed one; measured reality has 14–440×
+headroom, and the timing gates assert **p95**, so a shared runner's hiccup
+cannot redden a healthy path while a structural regression (a sync disk or
+network call added to a request, a lock held across I/O, an unbounded scan)
+always does. Every gate was red-proven by sabotaging the product it watches,
+then restored byte-exact. No tag.
+
+### The budgets and what watches them
+
+| §12.1 row | Gate | Measured (dev box, this batch) |
+|---|---|---|
+| Dashboard first useful render < 1 s — server share 250 ms | hub `TestPerfBudget_DashboardDocumentServesWithinFirstRenderBudget` (GET / p95, 30 samples) | p95 548 µs, max 560 µs |
+| Local action acknowledgement < 250 ms | hub `TestPerfBudget_LocalActionAcknowledgement` (alias POST incl. real peer-store write, p95) | p95 8.0 ms |
+| Peer-state refresh < 2 s online | hub `TestPerfBudget_PeerStateRefresh` (store change → dashboard's own `/api/status` poll) | 17.9 ms |
+| Active upload progress ≥ every 250 ms — *hub's half* | hub `TestPerfBudget_LiveEventDelivery` (emit → SSE subscriber, p95) | p95 709 µs |
+| Event/history memory bounded | hub `TestPerfBudget_RecentDropsHistoryMemoryBounded` (byte budget; 4 KiB test bound — item capacity alone cannot catch many large items) | 3 items, 3129 B of 4096 |
+| CLI first status < 500 ms | cmd `TestPerfBudget_CLIStatusResponse` (`runStatus` timed whole: flags, probe, identity, per-peer SAS, output; n=8) | p95 20.6 ms |
+| `tantu doctor` < 2 s excluding network probes | cmd `TestPerfBudget_CLIDoctorLocalWork` (`buildHealthReport` — the exact local work the plan excludes network from) | p95 33.1 ms |
+| First useful render < 1 s — browser half | uxtest: init script stamps the instant `idTransport` first holds a real value instead of the `-` placeholder, measured from the document's own navigation start | chromium 34–43 ms, firefox 108–130 ms, webkit 34–42 ms (bootstrap hop logged separately: 64–339 ms) |
+| Paste/drop preview feedback < 100 ms | uxtest: synthetic `ClipboardEvent` carrying a `DataTransfer` image → preview card visible; engines that cannot construct the event fall back to the same product function *and say so in the detail* | 1–3 ms; chromium/webkit `paste-event`, firefox `stage-fn fallback` |
+| Ordinary UI freeze never > 100 ms | uxtest: 4 s timer-gap sampling — a 4 s window always contains ≥ 1 status poll at the 3 s cadence, so state updates are inside the measurement | worst gap: chromium 18 ms, firefox 18–24 ms, webkit 33 ms |
+| Reconnect snapshot reconciliation < 2 s | uxtest: release the `/api/status` block with **no manual retry**, poll banner-clear at 50 ms, 5 s in-page deadline (a dashboard with no auto-recovery resolves `-1`, so the gate cannot pass by luck) | 527–670 ms |
+
+**Deferred with reason:** *active upload progress* (client half) and
+*cancel acknowledgement* need a live peer — `/api/drop/upload` requires
+`DialPeer`, which the peerless rig cannot provide. 2.5 is recorded **partly
+closed** with these two named, not quietly closed.
+
+### The clock artifact — measured before trusting the percentiles
+
+Sub-millisecond `time.Now()` spans on this Windows box can read **identical
+across a real round trip**: a 112 µs busy loop returns `0` in 43–91% of
+samples, back-to-back reads are identical 99 999/100 000 times, reproduced
+standalone (not a testing artifact); QPF is 10 MHz and the Go runtime has no
+coarse-clock cache. Decision: **zeros are kept, never filtered** — a zero can
+only *lower* a percentile, and any span ≥ 1 ms measured truthfully every
+time, so a frozen reading certifies "faster than the clock can see", orders
+of magnitude inside every budget. Both test-file headers carry the full
+reasoning and every log line prints the zero count and the max, so the
+evidence reads honestly. (The SSE gate's `p50=0s` is this artifact, not a
+measurement gap.)
+
+### The product change behind the reconnect gate
+
+`setInterval(updateStatus, 3000)` became a self-rescheduling timer: 1000 ms
+while `dashboardStale`, 3000 ms live, cadence re-read on every arm, the
+attempt's promise `.catch`-guarded so a rejection cannot break the chain (and
+cannot trip the console-hygiene check). Recovery after the block is released
+is therefore ≤ ~1.1 s + poll work, well inside the 2 s budget; before the
+change it was up to 3 s plus a manual retry click. `retry-status` keeps its
+coverage in the delegated-action sweep.
+
+### Red proofs
+
+**Go — 7/7, each injection reverted byte-exact (`git diff` empty on all
+product files):**
+
+| Injection | Gate that went red |
+|---|---|
+| 300 ms sleep in the root document handler + 300 ms in the alias handler | dashboard-document + local-action-ack budgets |
+| Frozen `Alias: "frozen-by-red-proof"` in the status handler | peer-state freshness FAIL |
+| 300 ms pre-broadcast sleep in `EventLogger.Log` | SSE delivery FAIL |
+| `RecentDropsBuffer.Add` truncation/eviction disabled | both memory assertions FAIL |
+| 600 ms sleep in `runStatus` | CLI status FAIL (644 ms > 500 ms) |
+| 2100 ms sleep in `buildHealthReport` | doctor FAIL (2.139 s > 2 s) |
+
+**Browser — one sabotaged run, five injections, all red in a single pass**
+(harness `dashboard.html` + `run.mjs` SHA256-verified back to pre-sabotage
+copies; clean rerun 39/39):
+
+| Injection | Result |
+|---|---|
+| First status fill delayed to 1.4 s (`setTimeout(updateStatus, 1400)`) | `first useful render under 1s` FAIL |
+| `stageFileForSend(image)` removed from the paste listener | `paste/drop preview feedback under 100ms` FAIL (`ms:-1, preview never appeared`, honest `paste-event` path) |
+| 250 ms busy-wait at the top of `updateStatus` | `no UI freeze over 100ms` FAIL (max 250 ms) |
+| `STATUS_POLL_STALE_MS = 600000` | `reconnect snapshot reconciliation under 2s` FAIL (`-1`) + `staleness clears on recovery` cascade |
+| Noise-filter anchor reverted to end-of-entry `$` | `console noise filter matches its documented scope` FAIL (`want:true, got:false`) |
+
+One **collateral** failure in the sabotaged run — `preview thumbnail is
+visible` read mid-fade (`op=0.49999`) — aligned with the injected 1.4 s
+status delay; absent from every clean run (3 engines × 9 runs this batch).
+Recorded rather than explained away: the product was deliberately broken,
+and the tree was restored byte-exact before rerunning.
+
+### The harness's own noise filter was broken — found by a webkit flake
+
+A webkit run failed `zero unexpected console errors` on the known engine
+phrasing (`/api/pair/pending due to access control checks`, baseline 2
+occurrences/~10 webkit runs per Z28, never on chromium/firefox). Static
+analysis confirmed the product side: `loadPendingPairings` is try/caught in
+full (dashboard 1922–1977), so no JS path can emit it — it is WebKit
+cancelling a fetch while the bootstrap reload is pending (Z28's cited
+mechanism). The real defect was in the harness: the noise filter anchored
+`checks\.$` at the **end of the entry**, but the `pageerror` handler appends
+` @ <first 3 stack lines>` — so entries *with* a stack never matched, and
+the filter only ever worked on stackless occurrences. Fixed by requiring the
+phrase to terminate a segment (end of entry, ` @ ` before the stack, ` | `
+between its lines) — same scope, no widening: a message that merely mentions
+"access control checks" mid-sentence still fails. The gate for the fix is a
+7-sample **self-check of the filter** (the batch's 39th check): the exact
+stacked entry, the stackless shape, chromium's real CORS phrasing, an
+unrelated pageerror, and three documented noise classes — it fails on the old
+anchor and passes on the new one, on every engine, every run.
+
+### Evidence
+
+- uxtest chromium / firefox / webkit × peerless: **39/39 each** on the final
+  tree (this batch added 4 budget checks + the filter self-check to 34).
+- `gofmt`, `go build ./...`, `go test -count=1 ./...` (13 packages),
+  staticcheck@v0.8.1, `go vet`, encgate — all green.
+- Red-proof restores verified by SHA256 (harness + dashboard) and empty
+  `git diff` (all Go product files).

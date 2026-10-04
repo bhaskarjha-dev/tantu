@@ -8,6 +8,16 @@ rollback procedures.
 ## Unreleased
 
 ### Added
+- **The plan's user-perceived performance budgets are enforced in CI.** All
+  §12.1 rows that a peerless test rig can honestly measure now have gates: 7
+  Go gates (dashboard document serve, action acknowledgement with a real disk
+  write, peer-state refresh, SSE delivery, history byte bound, `tantu status`,
+  `tantu doctor` local work — every number the plan's, asserted on p95 with
+  14–440× headroom) and 4 browser gates (first useful render under 1 s,
+  paste/drop preview feedback under 100 ms, no UI freeze over 100 ms,
+  reconnect reconciliation under 2 s). Upload-progress cadence and cancel
+  acknowledgement stay ungated — they need a live peer (`docs/KNOWN-LIMITATIONS.md`
+  2.5).
 - **The pairing conversation is now visible on the machine that starts it.**
   The Pair dialog shows the session code to compare and this machine's own
   Approve/Reject for the whole handshake, with a live "confirmed here,
@@ -162,6 +172,13 @@ rollback procedures.
   received files stay in their former location.
 
 ### Changed
+- **A returning Hub is noticed in about a second, not up to three.** While the
+  dashboard can't reach the Hub it polls every second instead of every three,
+  so the reconnecting machine's state reconciles inside the plan's 2-second
+  budget (§12.1); the moment the Hub answers again the cadence relaxes back to
+  the quiet 3-second poll. The gate measures recovery with **no manual retry
+  click** — releasing the block, the staleness banner must clear on its own
+  (measured 527–670 ms across chromium, firefox and webkit).
 - **The dashboard acceptance harness runs on Playwright across three engines.**
   `tools/uxtest` now drives chromium, firefox and webkit (Playwright 1.63.0,
   pinned, dev-only) instead of raw CDP against a system Chrome, and CI's

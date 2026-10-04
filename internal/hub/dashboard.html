@@ -1733,6 +1733,14 @@
     // were live. Two consecutive failures are required before declaring
     // staleness, so one dropped poll does not flash a warning.
     const STALE_AFTER_POLLS = 2;
+    // Status poll cadence: quiet 3s while live, 1s while stale. The stale
+    // cadence is what keeps "reconnect snapshot reconciliation" inside the
+    // plan's 2s budget (section 12.1) — waiting out the live interval would
+    // reconcile a returning Hub at up to 3s. The cadence is re-read on every
+    // arm, so it speeds up on the second failed poll and relaxes on the
+    // first success.
+    const STATUS_POLL_LIVE_MS = 3000;
+    const STATUS_POLL_STALE_MS = 1000;
     let lastStatusOkAt = 0;
     let consecutiveStatusFailures = 0;
     let dashboardStale = false;
@@ -3498,7 +3506,17 @@
         sse.onerror = () => { /* reconnects automatically */ };
       }
 
-      setInterval(updateStatus, 3000);
+      // Re-armed after every attempt instead of a fixed interval (see
+      // STATUS_POLL_* above): a stale dashboard retries every second until
+      // the Hub answers, then settles back to the quiet 3s cadence.
+      let statusPollTimer = null;
+      function scheduleStatusPoll() {
+        clearTimeout(statusPollTimer);
+        statusPollTimer = setTimeout(() => {
+          Promise.resolve(updateStatus()).catch(() => {}).then(scheduleStatusPoll);
+        }, dashboardStale ? STATUS_POLL_STALE_MS : STATUS_POLL_LIVE_MS);
+      }
+      scheduleStatusPoll();
       // Poll the in-flight list alongside the status: a sign-in the user cannot
       // see is a sign-in they cannot cancel, and a cancel they cannot reach is
       // the same as no cancel at all.

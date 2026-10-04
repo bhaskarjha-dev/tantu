@@ -143,6 +143,27 @@ async function main() {
     context = await browser.newContext({ viewport: { width: 800, height: 600 } });
     page = await context.newPage();
 
+    // First-useful-render timestamp. Runs in every document this page loads,
+    // so the final (post-bootstrap) document records the instant its own
+    // status slots first hold a real value instead of the "-" placeholder.
+    // Only code running inside the document can observe that instant —
+    // polling from here would measure the harness, not the render.
+    await page.addInitScript(() => {
+      window.__tantuFirstUsefulMs = undefined;
+      let elapsed = 0;
+      const probe = () => {
+        const el = document.getElementById('idTransport');
+        const v = el && el.innerText ? el.innerText.trim() : '';
+        if (document.readyState !== 'loading' && v && v !== '-') {
+          window.__tantuFirstUsefulMs = Math.round(performance.now());
+          return;
+        }
+        elapsed += 25;
+        if (elapsed <= 6000) setTimeout(probe, 25);
+      };
+      setTimeout(probe, 25);
+    });
+
     // Console hygiene feed: uncaught exceptions and console.error output,
     // replacing CDP's Runtime.exceptionThrown and Log.entryAdded.
     const consoleErrors = [];
@@ -206,6 +227,7 @@ async function main() {
     // Navigate, then wait for the bootstrap exchange to settle rather than
     // assuming four seconds is enough: the exchange POSTs, strips the fragment
     // and reloads, so "the fragment is gone" means the page is done booting.
+    const navWallStart = Date.now();
     await page.goto(`http://127.0.0.1:${WEB_PORT}/#tantu_bootstrap=${token}`);
     let settled = false;
     for (let i = 0; i < 60 && !settled; i++) {
@@ -213,7 +235,21 @@ async function main() {
       settled = typeof hash === 'string' && hash === '';
       if (!settled) await sleep(250);
     }
+    const bootstrapWallMs = Date.now() - navWallStart;
     await sleep(500);
+
+    // --- performance budgets (plan section 12.1, "user-perceived budgets") ---
+    // First useful render under 1 second: the init script above stamped the
+    // moment this document's status slots first held a real value, measured
+    // from its own navigation start. The bootstrap POST + reload is a separate
+    // document, so its wall time is measured here and logged as evidence —
+    // only the render instant is gated, because the settle loop's 250ms poll
+    // granularity is harness latency, not product behaviour.
+    const firstUseful = await js('window.__tantuFirstUsefulMs');
+    console.log('uxtest: first useful render ' + firstUseful + 'ms (bootstrap hop ' + bootstrapWallMs + 'ms)');
+    check('first useful render under 1s',
+      typeof firstUseful === 'number' && firstUseful >= 0 && firstUseful < 1000,
+      'render ' + firstUseful + 'ms, bootstrap ' + bootstrapWallMs + 'ms');
 
     // --- session and the send preview (the CSP regression) ---
     const sess = await js('(function(){return {banner:getComputedStyle(document.getElementById("sessionBanner")).display, dest:document.getElementById("destinationSummary").textContent, url:location.href};})()');
@@ -230,6 +266,61 @@ async function main() {
     check('preview thumbnail is visible', thumb && thumb.loaded && Number(thumb.op) > 0.9, JSON.stringify(thumb));
     check('preview names its destination', thumb && /Destination: /.test(thumb.dest || ''), thumb && thumb.dest);
     await js('cancelPendingSend(); "ok"');
+
+    // --- paste/drop preview feedback under 100ms (plan section 12.1) ---
+    // Dispatches a real 'paste' event carrying an image file — the path the
+    // dashboard documents ("pasting an image anywhere stages it") — and
+    // measures until the preview card is shown, which stageFileForSend does
+    // synchronously: the budget is that the user's paste is acknowledged with
+    // visible feedback inside 100ms, not that the image decodes. Engines that
+    // cannot construct a ClipboardEvent carrying DataTransfer fall back to
+    // calling the same product function directly, and the detail says which
+    // path was measured rather than pretending the event worked.
+    const pasteFb = await js(`(function(){return new Promise(function(resolve){
+      var card=document.getElementById('filePreviewCard');
+      if(!card || !card.hidden){ resolve({ms:-1, why:'preview card not reset before the test'}); return; }
+      var png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+      var bin=atob(png), arr=new Uint8Array(bin.length); for(var i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
+      var t0=performance.now(), path='stage-fn fallback';
+      try{
+        var dt=new DataTransfer();
+        dt.items.add(new File([arr],'uxtest-paste.png',{type:'image/png'}));
+        var ev=new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true});
+        if(ev.clipboardData && ev.clipboardData.files && ev.clipboardData.files.length===1){
+          document.dispatchEvent(ev); path='paste-event';
+        } else { throw new Error('clipboardData not carried'); }
+      }catch(e){ stageFileForSend(new File([arr],'uxtest-paste.png',{type:'image/png'})); }
+      (function tick(){
+        if(!card.hidden){ resolve({ms:Math.round(performance.now()-t0), path:path}); return; }
+        if(performance.now()-t0>3000){ resolve({ms:-1, path:path, why:'preview never appeared'}); return; }
+        setTimeout(tick,8);
+      })();
+    });})()`);
+    console.log('uxtest: paste/drop preview feedback ' + (pasteFb && pasteFb.ms) + 'ms via ' + (pasteFb && pasteFb.path));
+    check('paste/drop preview feedback under 100ms',
+      pasteFb && pasteFb.ms >= 0 && pasteFb.ms < 100, JSON.stringify(pasteFb));
+    await js('cancelPendingSend(); "ok"');
+
+    // --- ordinary UI freeze never over 100ms during state updates (plan
+    // section 12.1) --- Sample the main thread for 4s: that window spans at
+    // least one status poll and the periodic loads, i.e. real state updates.
+    // A gap between timer ticks is exactly what a freeze is — the loop cannot
+    // run while the thread is blocked — so the longest gap is the longest
+    // freeze the user would have seen.
+    const freeze = await js(`(function(){return new Promise(function(resolve){
+      var gaps=[], last=performance.now(), start=last, n=0;
+      (function tick(){
+        var now=performance.now();
+        if(n>0) gaps.push(now-last);
+        last=now; n++;
+        if(now-start<4000){ setTimeout(tick,16); return; }
+        var max=0; for(var i=0;i<gaps.length;i++) if(gaps[i]>max) max=gaps[i];
+        resolve({max:Math.round(max), samples:gaps.length});
+      })();
+    });})()`);
+    console.log('uxtest: worst UI freeze ' + (freeze && freeze.max) + 'ms over ' + (freeze && freeze.samples) + ' samples');
+    check('no UI freeze over 100ms during state updates',
+      freeze && typeof freeze.max === 'number' && freeze.max < 100, JSON.stringify(freeze));
 
     // --- text composer reports its outcome inline ---
     await js('(function(){document.getElementById("textPayload").value="uxtest";document.querySelector("[data-action=\'send-text\']").click();return "ok";})()');
@@ -287,10 +378,27 @@ async function main() {
     check('unreachable Hub raises a staleness banner', stale && stale.b === 'block', JSON.stringify(stale));
     check('banner says last-known and offers a retry', stale && /last known/i.test(stale.t) && /retry/i.test(stale.t), stale && stale.t);
     check('destination is labelled, never hidden', stale && stale.a === 'true' && stale.dest, JSON.stringify(stale));
+    // Reconnect snapshot reconciliation under 2s (plan section 12.1).
+    // Release the block with NO manual retry: recovery must come from the
+    // dashboard's own polling (1s cadence while stale), so what is measured
+    // is the product's reconnection, not the button's — retry-status stays
+    // covered by the delegated-action sweep below. The 9s block leaves the
+    // poll phase arbitrary, which is safe in the passing direction (recovery
+    // is bounded by the 1s stale cadence, not by phase) while a dashboard
+    // with no auto-recovery resolves to -1 on a fixed deadline: the gate
+    // cannot pass or fail by luck.
     await context.unroute('**/api/status*');
-    await sleep(300);
-    await js('(function(){var b=document.querySelector(\'[data-action="retry-status"]\');if(b)b.click();return "ok";})()');
-    await sleep(2500);
+    const recMs = await js(`(function(){return new Promise(function(resolve){
+      var start=performance.now();
+      (function tick(){
+        if(getComputedStyle(document.getElementById('staleBanner')).display==='none'){ resolve(Math.round(performance.now()-start)); return; }
+        if(performance.now()-start>5000){ resolve(-1); return; }
+        setTimeout(tick,50);
+      })();
+    });})()`);
+    console.log('uxtest: reconnect snapshot reconciliation ' + recMs + 'ms');
+    check('reconnect snapshot reconciliation under 2s',
+      typeof recMs === 'number' && recMs >= 0 && recMs < 2000, 'banner cleared in ' + recMs + 'ms');
     const live2 = await js('(function(){return {b:document.getElementById("staleBanner").style.display, a:document.getElementById("destinationSummary").getAttribute("data-stale")};})()');
     check('staleness clears on recovery', live2 && live2.b === 'none' && live2.a === null, JSON.stringify(live2));
     // Only now, with the Hub answering again, does a /api/status console
@@ -493,10 +601,41 @@ async function main() {
     // CORS defect would still be reported by chromium and firefox — whose
     // CORS messages are not filtered — and the check stays a pageerror-only
     // exception, so any other uncaught exception fails regardless of engine.
+    // The pageerror clause reads "the phrase terminates a segment": it was
+    // first written as an end-of-entry anchor, which the stack suffix added
+    // above defeats — a webkit run failed on exactly this entry while the
+    // same phrase without a stack was filtered. The suffix alternatives ("
+    // @ " before the stack, " | " between its lines, end of entry when there
+    // is none) restore the documented scope without widening it: the exact
+    // phrasing still has to terminate, so a message that merely mentions
+    // "access control checks" mid-sentence still fails.
     const noise = (x) => /favicon\.ico/.test(x) || /javascript%3Aalert/.test(x)
       || (/api\/drop\/upload/.test(x) && /50[023]/.test(x))
-      || (/^pageerror: /.test(x) && / due to access control checks\.$/.test(x));
+      || (/^pageerror: /.test(x) && / due to access control checks\.( @ | \| |$)/.test(x));
     const errs = consoleErrors.filter((x) => !noise(x));
+    // The filter decides what counts as noise, so it is under test itself:
+    // an anchor that stops matching fails runs on known engine phrasing, and
+    // one "fixed" too loosely hides a real CORS defect from the only place it
+    // can surface. Samples are built the way the handlers above build them.
+    const noiseSamples = [
+      // The exact webkit cancellation entry, stack suffix included.
+      ['pageerror: /api/pair/pending due to access control checks. @ Fetch API cannot load http://127.0.0.1:9876/api/pair/pending due to access control checks. |     at unknown (http://127.0.0.1:9876/dashboard)', true],
+      // The same phrase with no stack (e.stack absent) — the shape the
+      // filter was originally written against.
+      ['pageerror: /api/pair/pending due to access control checks.', true],
+      // A real CORS defect in chromium's phrasing must never be filtered.
+      ['pageerror: Blocked by CORS policy: No \'Access-Control-Allow-Origin\' header is present on the resource.', false],
+      // Any other uncaught exception must never be filtered.
+      ['pageerror: Uncaught TypeError: this.getAttribute is not a function', false],
+      // The other documented noise classes keep matching.
+      ['console: Not found @ http://127.0.0.1:9876/favicon.ico', true],
+      ['console: Failed to load resource: the server responded with a status of 503 @ http://127.0.0.1:9876/api/drop/upload', true],
+      // An unrelated console error must never be filtered.
+      ['console: Unhandled rejection: something else entirely', false],
+    ];
+    const noiseWrong = noiseSamples.filter(([s, want]) => noise(s) !== want)
+      .map(([s, want]) => ({ entry: s.slice(0, 120), want, got: noise(s) }));
+    check('console noise filter matches its documented scope', noiseWrong.length === 0, JSON.stringify(noiseWrong));
     check('zero unexpected console errors', errs.length === 0, JSON.stringify(errs.slice(0, 2)));
 
     fs.writeFileSync(path.join(out, 'uxtest-report.json'), JSON.stringify({ head, engine: ENGINE, peers: WITH_PEERS, checks }, null, 1));
