@@ -44,11 +44,38 @@ checksum:
   name_template: "checksums.txt"
 
 # SBOM generation needs no secrets and ships with every release artifact,
-# so auditors can verify the (tiny) dependency surface. Artifact signing
-# (cosign) is deliberately NOT configured here: it requires key material
-# that must never live in the repo; see docs/RELEASE.md.
+# so auditors can verify the (tiny) dependency surface.
 sboms:
   - artifacts: archive
+
+# Keyless signing. Every archive, its SBOM, and the checksum file get a
+# detached signature plus the Fulcio certificate that vouches for the
+# signing identity, so a downloader can prove an artifact came from this
+# repository's release workflow without trusting the file it just fetched.
+#
+# Keyless is the only acceptable mode here, and the reason is a rule rather
+# than a preference: a signing key must never live in this repository, and a
+# keyless signature leaves nothing behind to leak. The trade is that the
+# signature is only as good as the workflow's OIDC identity, which is why the
+# workflow grants `id-token: write` and nothing else, and why verification
+# pins the expected issuer and repository below rather than accepting any
+# certificate that happens to validate.
+signs:
+  - id: cosign
+    cmd: cosign
+    certificate: '${artifact}.pem'
+    signature: '${artifact}.sig'
+    args:
+      - sign-blob
+      - '--yes'
+      - '--output-signature=${signature}'
+      - '--output-certificate=${certificate}'
+      - '${artifact}'
+    # "all" covers archives, the checksum file and the SBOMs. An SBOM is what
+    # an auditor reads, so leaving it unsigned while signing the binary it
+    # describes would be signed-adjacent evidence about unsigned software.
+    artifacts: all
+
 
 changelog:
   sort: asc

@@ -43,6 +43,13 @@ In scope:
   `docs/DEPENDENCIES.md`. A vulnerability in a dependency that this code
   actually calls is in scope; a hypothetical in a dependency it does not is
   not.
+- the release pipeline's signing: anything that lets a modified or unsigned
+  artifact be published, or that makes a valid signature attest to a different
+  artifact, workflow, or repository than it appears to. Signatures are keyless
+  (Fulcio + the Sigstore transparency log), so the identity being asserted is
+  the release workflow's OIDC identity — `docs/RELEASE.md` has the verification
+  recipe, and it pins the expected workflow identity and issuer rather than
+  accepting any certificate that happens to validate.
 
 Out of scope:
 

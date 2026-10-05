@@ -3091,3 +3091,75 @@ drives the Hub instead, and is red-proven — reintroducing the one-line change
 - Real binary, two sends and a `--flatten`: correct tree, correct second tree,
   correct flat expansion.
 - `gofmt`, `go build ./...`, `go vet ./...`, `go test -count=1 ./...`: green.
+
+## Batch Z35 — signed releases, and a version pin that only running found (2026-10-05)
+
+Limitation 1.4 was a Gap, and the reason it had stayed open was not
+inspiration: keyless signing needs cosign in the release workflow, and nothing
+had verified that GoReleaser's `signs` integration and cosign agree on what a
+keyless signature *is*. Given this project's own record — a release pipeline that
+had never been executed once, and a past batch whose lesson was "run the
+pipeline instead of reading it" — the work here was to run every part of it that
+a local machine can supply, and to name precisely what it cannot.
+
+### What was run, and what each run established
+
+| Property | How |
+|---|---|
+| Config validates | `goreleaser check` with the pinned v2.18.2 → "1 configuration file(s) validated" |
+| syft install step is correct | downloaded 1.52.0, checksum `de787a37…` matched the published one, `syft version` reported 1.52.0 |
+| Every artifact gets signed | snapshot run with a stub cosign on `PATH`: **13** invocations — 6 archives, 6 SBOMs, `checksums.txt` — each producing a `.sig` and a `.pem` |
+| The wiring is what we think | the stub logged its argv; asserted `sign-blob --yes --output-signature=… --output-certificate=… <artifact>`, once per artifact, and **no signature over another signature** |
+| The verify recipe works | real cosign 2.6.1 signed a blob (exit 0, transparency-log entry written), `verify-blob` returned "Verified OK" (exit 0), and a **modified** blob failed verification (exit 1) |
+| Keyless reaches the identity step | keyless signing got as far as Sigstore's OIDC device flow, then failed on `retrieving ID token: … expired_token` — for want of a CI identity, which is the one part a laptop cannot supply |
+| The release is complete | the workflow's new post-publish step, run verbatim against the snapshot output: 13 artifacts checked, 0 missing |
+
+The tamper check matters more than the success check. A verification recipe that
+always passes is worse than no recipe, because it converts "I verified this" into
+a habit rather than a fact.
+
+### The defect: cosign 3.x ignores the flags
+
+The first real run was against **cosign 3.0.4**, and it failed in a way
+`goreleaser check` cannot see:
+
+```
+WARNING: --output-signature is deprecated when using --new-bundle-format and will be ignored
+WARNING: --output-certificate is deprecated when using --new-bundle-format and will be ignored
+```
+
+cosign 3.x defaults keyless signing to a single `.bundle` file containing both
+the signature and the certificate. GoReleaser's `signs` integration expects two
+separate outputs at the paths it names, so the release would have signed nothing
+where the release page expects a signature — and `goreleaser check` passes on
+that configuration. This is the second time in this repository that reading a
+config would have shipped a broken pipeline (the first was `archives.format`).
+
+cosign is therefore pinned to **2.6.1**, and the workflow's install step carries
+that reasoning in a comment so the next person who runs `cosign version`, sees a
+3.x, and "helpfully" bumps the pin has to read why first.
+
+### The negative findings, recorded so nobody re-litigates them
+
+- **On Windows, publication always takes the verified-copy path**, nested or not:
+  the kernel refuses to rename a file this process still has open, and the
+  staging descriptor is deliberately open because the published bytes are the
+  bytes read back through the descriptor that verified them. That is pre-existing
+  behaviour (Batch Z34), and it means the "peak disk at N rather than 2N" claim
+  holds on Unix and not on Windows. The *delivered bytes* are verified on every
+  platform, so the integrity claim is unaffected; only the disk-usage claim is.
+- **A `--key`-based probe signs into the public Sigstore transparency log.** The
+  keypair used for the local sign/verify round trip was throwaway and its entry
+  is immutable. Worth knowing before anyone runs a local probe and wonders.
+
+### Evidence
+
+- `.goreleaser.yaml` validates; the snapshot release exits 0.
+- 13 artifacts, 13 `.sig`, 13 `.pem`, 13 captured cosign invocations.
+- The workflow's own completeness step run verbatim: 13 checked, 0 missing.
+- syft and cosign download checksums re-verified against the published
+  `checksums.txt` files before either binary was executed.
+
+Still unproven, and named as such in `docs/RELEASE.md` and KNOWN-LIMITATIONS
+1.4/1.5: **no signature has ever been produced by CI**, because no tag has ever
+been pushed. Everything up to the OIDC identity step has been exercised.

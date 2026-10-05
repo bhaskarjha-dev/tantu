@@ -7,6 +7,11 @@ on:
 
 permissions:
   contents: write
+  # Keyless signing needs an OIDC identity, and nothing else here does. This is
+  # the narrowest grant that makes the signature meaningful: it proves *which
+  # workflow in which repository* signed the artifact, so it is worth granting
+  # deliberately rather than by broadening `contents`.
+  id-token: write
 
 jobs:
   goreleaser:
@@ -56,6 +61,38 @@ jobs:
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
           "${HOME}/.local/bin/syft" version
 
+      - name: Install cosign (pinned)
+        # GoReleaser's `signs` step shells out to cosign for the same reason
+        # syft is needed for SBOMs: without it the release builds, archives,
+        # catalogues and checksums everything and *then* fails.
+        #
+        # The pin is on the 2.x line and the reason is measured, not
+        # preference: cosign 3.x deprecates `--output-signature` and
+        # `--output-certificate` for keyless signing in favour of a single
+        # `.bundle` file, and GoReleaser's `signs` integration expects the two
+        # separate outputs. Verified locally on 2026-10-05 against cosign
+        # 3.0.4, which printed
+        #   "WARNING: --output-signature is deprecated ... and will be ignored"
+        # and wrote no file at the requested path. `goreleaser check` passes on
+        # that configuration, so reading the config would not have found it.
+        #
+        # Checksum-verified like syft: this step also downloads and executes
+        # code from outside go.mod's pinned surface.
+        env:
+          COSIGN_VERSION: 2.6.1
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          base="https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}"
+          asset="cosign-linux-amd64"
+          curl -sSfL --retry 3 -o "${work}/cosign" "${base}/${asset}"
+          curl -sSfL --retry 3 -o "${work}/checksums.txt" "${base}/cosign_checksums.txt"
+          grep " ${asset}\$" "${work}/checksums.txt" > "${work}/expected"
+          (cd "${work}" && sed "s| ${asset}\$| cosign|" expected | sha256sum -c -)
+          install -m 0755 "${work}/cosign" "${HOME}/.local/bin/cosign"
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+          cosign version
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
@@ -64,3 +101,33 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Every published artifact has a signature
+        # GoReleaser reports success even when an individual signature fails in
+        # some configurations, and "the release looks signed" is exactly the
+        # claim this step exists to make false when it is not true. It counts
+        # rather than trusting the publisher: every archive, every SBOM and the
+        # checksum file must have both a .sig and a .pem beside it.
+        run: |
+          set -euo pipefail
+          missing=0
+          total=0
+          for artifact in dist/*.tar.gz dist/*.zip dist/*.sbom.json dist/checksums.txt; do
+            [ -e "$artifact" ] || continue
+            total=$((total + 1))
+            for suffix in .sig .pem; do
+              if [ ! -s "${artifact}${suffix}" ]; then
+                echo "::error::missing signature file ${artifact}${suffix}"
+                missing=$((missing + 1))
+              fi
+            done
+          done
+          echo "checked ${total} artifact(s)"
+          if [ "$total" -eq 0 ]; then
+            echo "::error::no artifacts found to check; the release produced nothing"
+            exit 1
+          fi
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::${missing} signature file(s) missing"
+            exit 1
+          fi

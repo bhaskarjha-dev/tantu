@@ -12,9 +12,10 @@
   release: Go `1.27.1` in both workflows (a security decision as much as a
   reproducibility one — `govulncheck` judges the standard library against the
   toolchain that builds it, and 1.26.3 carried 9 reachable stdlib
-  vulnerabilities), GoReleaser `v2.18.2`, syft `1.52.0`, staticcheck
-  `v0.8.1`. `go.mod` declares language version `1.26.3`; that is the language
-  the module requires, not the toolchain CI builds with.
+  vulnerabilities), GoReleaser `v2.18.2`, syft `1.52.0`, cosign `2.6.1`
+  (2.x deliberately — see "Artifacts"), staticcheck `v0.8.1`. `go.mod` declares
+  language version `1.26.3`; that is the language the module requires, not the
+  toolchain CI builds with.
 - The version is embedded at link time (`-X main.version` and
   `-X .../internal/hub.HubVersion`); `tantu version` and the dashboard
   report it. A local `go build` without ldflags reports
@@ -48,18 +49,64 @@
 
 Per release (see `.goreleaser.yaml`): 6 archives
 (linux/darwin/windows × amd64/arm64, CGO_ENABLED=0), `checksums.txt`, and an
-SBOM per archive. There is currently **no artifact signing** (no cosign
-configuration — signing keys must never live in this repo). Until signing
-lands, verify downloads against `checksums.txt` from the GitHub release page.
+SBOM per archive. **Every one of those 13 artifacts is signed**, keyless, with
+cosign.
 
-The pipeline is verified rather than assumed: on 2026-09-30 `goreleaser check`
-and `goreleaser release --snapshot --clean` were run with the pinned
-GoReleaser and syft, producing all 6 archives, 6 SPDX-2.3 SBOMs and
-`checksums.txt` — every hash re-checked, the archives confirmed to hold the
-single binary plus README and LICENSE, an SBOM inspected for its pinned
-modules, and `tantu version` reporting the link-time-injected version. What
-that run cannot exercise is the publishing half: creating the GitHub release
-and fetching the artifacts back from it, which a tag push does.
+Keyless is the only acceptable mode here, and the reason is a rule rather than a
+preference: a signing key must never live in this repository, and a keyless
+signature leaves nothing behind to leak. The trade is that the signature is
+exactly as trustworthy as the workflow's OIDC identity, which is why the release
+workflow grants `id-token: write` and nothing more, and why verification below
+pins the expected issuer and repository rather than accepting any certificate
+that happens to validate.
+
+## Verifying a download
+
+```sh
+# 1. the signature must name this project's release workflow
+cosign verify-blob \
+  --certificate tantu_0.1.0_linux_amd64.tar.gz.pem \
+  --signature   tantu_0.1.0_linux_amd64.tar.gz.sig \
+  --certificate-identity      "https://github.com/bhaskarjha-dev/tantu/.github/workflows/release.yml@refs/tags/v0.1.0" \
+  --certificate-oidc-issuer   "https://token.actions.githubusercontent.com" \
+  tantu_0.1.0_linux_amd64.tar.gz
+
+# 2. and the archive must be the one that was published
+grep "  tantu_0.1.0_linux_amd64.tar.gz$" checksums.txt | sha256sum -c -
+```
+
+Verify `checksums.txt` **through its signature too** — it is signed like every
+other artifact — otherwise step 2 only proves the archive matches a file the
+attacker could also have replaced. The pinning in step 1 is what makes this a
+check rather than a formality: without `--certificate-identity` any Fulcio
+certificate validates.
+
+### Verifying the release pipeline itself
+
+The pipeline is verified rather than assumed, and this is what has actually been
+run (2026-10-05, pinned GoReleaser v2.18.2, syft 1.52.0, cosign 2.6.1):
+
+| Property | How it was established |
+|---|---|
+| Config validates | `goreleaser check` exits 0 |
+| Every artifact is signed | snapshot run: **13** cosign invocations — 6 archives, 6 SBOMs, `checksums.txt` — each with a `.sig` and a `.pem`, and no signature over another signature |
+| The wiring is what we think it is | the cosign argv was captured and asserted: `sign-blob --yes --output-signature=… --output-certificate=… <artifact>`, once per artifact |
+| The verify recipe works | signed a blob with cosign 2.6.1 (exit 0, transparency-log entry written), verified it (`Verified OK`), then modified the blob and confirmed verification **fails** (exit 1) |
+| Keyless reaches the identity step | keyless signing got as far as Sigstore's OIDC device flow and failed only on `retrieving ID token … expired_token`, i.e. for want of a CI identity — which is the one part a local machine cannot supply |
+| The release is complete | the workflow's own post-publish step, run verbatim against the snapshot output: 13 artifacts checked, 0 missing |
+
+**cosign is pinned to the 2.x line for a measured reason.** cosign 3.x
+deprecates `--output-signature` and `--output-certificate` for keyless signing in
+favour of a single `.bundle` file, and GoReleaser's `signs` integration expects
+the two separate outputs. Verified against cosign 3.0.4 on 2026-10-05, which
+printed `WARNING: --output-signature is deprecated … and will be ignored` and
+wrote nothing at the requested path. `goreleaser check` passes on that
+configuration, so reading the config could not have found it — it took running
+the real binary.
+
+What none of this exercises is the publishing half: creating the GitHub release
+and fetching the artifacts back from it, which only a tag push does. That is
+KNOWN-LIMITATIONS 1.5 and is unchanged.
 
 ## Supply chain
 
@@ -80,7 +127,9 @@ GOTOOLCHAIN=go1.27.1 go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
 ## Install
 
-1. Download the archive for your OS/arch and verify its checksum.
+1. Download the archive for your OS/arch, and verify it with the recipe above
+   (signature first, then the checksum). A checksum alone is not enough: it
+   proves the file matches `checksums.txt`, not that `checksums.txt` is ours.
 2. Extract the single `tantu` binary to a directory on PATH.
 3. Run `tantu hub --headless` once (or `tantu` for the cockpit); identity,
    peer, and active-peer state are created under `~/.config/tantu/`
@@ -113,7 +162,11 @@ preserved for manual review.
 
 ## Known release limitations
 
-- No signed artifacts yet (see above).
+- Signing is configured, wired and verified locally, but **no signature has ever
+  been produced by CI**: that needs a tag push, which needs a release
+  (KNOWN-LIMITATIONS 1.5). Everything up to the identity step has been exercised
+  — see "Verifying the release pipeline itself" for exactly what, and the
+  3.0.4 deprecation that forced the cosign pin.
 - `-race` runs on Linux/macOS in CI, and on Windows locally once a C toolchain
   is on `PATH` (verified 2026-09-30 with mingw-w64 gcc 16.2.0: all 13
   packages green). On a stock Windows install without gcc the local evidence

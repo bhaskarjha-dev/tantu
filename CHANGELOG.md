@@ -8,6 +8,20 @@ rollback procedures.
 ## Unreleased
 
 ### Added
+- **Release artifacts are signed, keyless.** Every archive, every SBOM and
+- **Release artifacts are now signed, keyless.** Every archive, every SBOM and
+  `checksums.txt` gets a detached cosign signature and the Fulcio certificate
+  that vouches for the signing identity, so a downloader can prove an artifact
+  came from this repository's release workflow without trusting the file they
+  just fetched. Keyless is deliberate: a signing key must never live in this
+  repository. `docs/RELEASE.md` has the verification recipe, and it pins the
+  expected workflow identity and OIDC issuer — a checksum alone only proves a
+  file matches `checksums.txt`, not that `checksums.txt` is ours. cosign is
+  pinned to **2.6.1**: cosign 3.x deprecates the two output flags GoReleaser's
+  signing integration uses and writes a single bundle instead, which
+  `goreleaser check` does not catch. That was found by running cosign 3.0.4,
+  not by reading the config.
+
 - **A sent directory arrives as a directory.** `tantu send ./project/` used to
   fold every path into the filename, so a project landed in one flat folder as
   `project-docs-api-readme.md` and two files that differed only by directory
