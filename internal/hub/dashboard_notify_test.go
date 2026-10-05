@@ -260,6 +260,22 @@ func TestWebDashboard_EmptyStatesOfferANextAction(t *testing.T) {
 			t.Errorf("legacy text-only empty state %q is still present", gone)
 		}
 	}
+
+	// emptyStateHTML builds markup from strings. Every caller passes a literal
+	// today, so an unescaped interpolation would be harmless right now and a
+	// hole the first time someone writes an empty state that names a peer or a
+	// file. Escaping by construction removes that whole sequence.
+	body := functionBody(t, stripDashboardComments(dashboardHTML), "emptyStateHTML")
+	for _, want := range []string{
+		"escapeHTML(title)",
+		"escapeHTML(body)",
+		"escapeHTML(a.action)",
+		"escapeHTML(a.label)",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("emptyStateHTML does not escape %s; a future caller passing peer-supplied text would be an XSS", want)
+		}
+	}
 }
 
 // TestWebDashboard_PeerActionsAreConfirmedInPage documents the specific

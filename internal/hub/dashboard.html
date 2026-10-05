@@ -3319,11 +3319,20 @@
     // Each empty state is rendered from one function so the markup, the copy and
     // the next action cannot drift apart between the server-rendered first paint
     // and a later re-render.
+    // Every empty state is rendered from here, so the markup, the copy and the
+    // next action cannot drift between the server-rendered first paint and a
+    // later re-render.
+    //
+    // All three parameters are escaped even though every caller passes a
+    // hardcoded literal. Escaping-by-construction is the point: the moment a
+    // future caller wants an empty state that names a peer or a file, the safe
+    // version already works and the unsafe version is not reachable. An HTML
+    // builder that trusts its callers is one refactor away from being a hole.
     function emptyStateHTML(title, body, actions) {
       const buttons = (actions || []).map(function(a) {
-        return '<button type="button" class="btn-sm" data-action="' + a.action + '">' + escapeHTML(a.label) + '</button>';
+        return '<button type="button" class="btn-sm" data-action="' + escapeHTML(a.action) + '">' + escapeHTML(a.label) + '</button>';
       }).join('');
-      return '<div class="empty-state"><strong>' + escapeHTML(title) + '</strong>' + body +
+      return '<div class="empty-state"><strong>' + escapeHTML(title) + '</strong><span>' + escapeHTML(body) + '</span>' +
         '<div style="margin-top:0.9rem; display:flex; gap:0.5rem; justify-content:center; flex-wrap:wrap;">' + buttons + '</div></div>';
     }
 

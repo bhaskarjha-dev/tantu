@@ -2914,6 +2914,11 @@ in-page input whose value provably reaches the Hub (intercepted
 `/api/config`, so the rig's output directory is never mutated); a failure lands
 in the assertive region with a "Next:"; an error notification survives 1.2 s and
 is dismissible; and a notification does not steal focus.
+One further check was added after a review pass on this batch: `the empty-state
+action navigates and moves focus`. A button that switches tabs without moving
+focus leaves a keyboard user stranded on a pane they can no longer see, which
+is the same class of defect the empty states were added to fix. 50/50 on all six
+runs afterwards.
 
 ### One harness defect found by running it
 
@@ -2927,7 +2932,8 @@ in the comment so the next person does not "simplify" it away.
 ### Evidence
 
 - uxtest chromium / firefox / webkit, peerless **and** `--peers`: 49/49 on all
-  six. One 48/49 occurred on the first chromium run of the batch — the
+  six at the time of this batch, and 50/50 on all six after the empty-state
+  navigation check below was added. One 48/49 occurred on the first chromium run of the batch — the
   already-documented mid-fade `preview thumbnail` race, which has now cost two
   runs. Rather than document it a third time, the check was changed to wait for
   the fade to *settle* (bounded 4 s, still `-1` and failing if it never does).

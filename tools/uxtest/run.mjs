@@ -754,6 +754,26 @@ async function main() {
       !!(emptyFlow && emptyFlow.has && emptyFlow.actions.length >= 1),
       JSON.stringify(emptyFlow));
 
+    // ...and the action actually gets you somewhere: it switches to the tab that
+    // holds the control, and that control takes focus. A button that navigates
+    // without moving focus leaves a keyboard user stranded on a pane they can no
+    // longer see.
+    const emptyNav = await js(`(function(){
+      var btn = document.querySelector('#transfersList .empty-state button[data-action="goto-drop"]');
+      if (!btn) return {missing:true};
+      btn.click();
+      var pane = document.getElementById('tab-drop');
+      var ta = document.getElementById('textPayload');
+      return {paneVisible:getComputedStyle(pane).display !== 'none',
+              tabSelected:document.querySelector('[data-tab="tab-drop"]').getAttribute('aria-selected') === 'true',
+              focused:document.activeElement === ta,
+              focusedId:document.activeElement ? document.activeElement.id : ''};
+    })()`);
+    check('the empty-state action navigates and moves focus',
+      !!(emptyNav && !emptyNav.missing && emptyNav.paneVisible && emptyNav.tabSelected && emptyNav.focused),
+      JSON.stringify(emptyNav));
+    await tab('tab-transfers');
+
     // --- console hygiene ---
     // Three classes are harness/browser noise, each narrowly scoped:
     // favicon, the javascript: URL the sanitization test deliberately feeds,
