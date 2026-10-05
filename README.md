@@ -181,6 +181,9 @@ filenames.
 tantu send "sk-abc123-secret-token"
 # Or pipe from stdin:
 cat error.log | tantu send -
+# If your string looks like a path (a token that starts "./", say), send it as
+# text anyway rather than being asked to disambiguate:
+tantu send --text "./not-a-path"
 ```
 
 **Transparent OAuth (any CLI tool):**
@@ -216,6 +219,7 @@ tantu wrap -- az login
 | `tantu serve` | Start the A-side bridge listener |
 | `tantu node` | Start unified peer node (OAuth + QuickDrop) |
 | `tantu relay` | Start local HTTP relay with Web UI |
+| `tantu version` | Print the build version and commit (a local build reports `1.0.0-dev+<sha>`, which means "unreleased") |
 
 ---
 
@@ -254,6 +258,28 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full system architectur
 ```bash
 go build -o tantu ./cmd/tantu
 ```
+
+### Quality gates you can run locally
+
+Everything CI runs that has no third-party dependency:
+
+```bash
+go test ./...                 # 14 packages, including -race on Linux/macOS
+go vet ./... && gofmt -l .
+go run ./tools/encgate         # no encoding damage in tracked text files
+go run ./tools/docgate         # documented claims still match the code
+```
+
+Two more need a one-time download and are worth running before a release rather
+than on every change:
+
+```bash
+cd tools/uxtest && npm ci && npx playwright install chromium firefox webkit
+node run.mjs --browser=chromium            # drives the real dashboard, 49 checks
+goreleaser release --snapshot --clean      # builds and signs all 13 artifacts
+```
+
+`docs/DEV-RECORD.md` records what each gate has actually caught.
 
 ---
 

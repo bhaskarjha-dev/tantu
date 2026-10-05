@@ -3163,3 +3163,96 @@ that reasoning in a comment so the next person who runs `cosign version`, sees a
 Still unproven, and named as such in `docs/RELEASE.md` and KNOWN-LIMITATIONS
 1.4/1.5: **no signature has ever been produced by CI**, because no tag has ever
 been pushed. Everything up to the OIDC identity step has been exercised.
+## Batch Z36 — a gate for the claims that had nothing checking them (2026-10-05)
+
+Limitation 5.5, partly closed. It is the last open item on the register that a
+machine can close, and it is the one with the longest tail: three separate false
+claims shipped in a single session, each a *stated* property with nothing
+checking it — the encoding gate that could not detect its own damage, a comment
+describing a test that did not exist, and "zero external dependencies".
+
+`tools/docgate` checks the class that is mechanically decidable, and nothing
+else. Being explicit about what it does not check matters more than the list of
+what it does: it does not decide whether a sentence is true, whether a caveat is
+still the right caveat, or whether an example transcript matches today's output.
+A gate that guesses at prose is a gate people learn to bypass, and a bypassed
+gate is worse than no gate because it leaves a green tick where there should be a
+question.
+
+### What it checks
+
+| Claim | Direction |
+|---|---|
+| The CLI command surface | **both**: a subcommand that exists and is undocumented, and a documented subcommand that no longer exists. Plus: the table must still document the bare `tantu` default, and the parser must find at least ten commands or it reports that *it* is broken |
+| Flags the documentation tells a user to type | the flag is declared in the named source **and** the document mentions it |
+| Eight numeric limits | the code still holds the value **and** the document still states it |
+| Ports, the config directory, the multicast group, environment variables | the document's phrase **and** the identifier it points at |
+
+### The self-verification is the load-bearing part
+
+The encoding gate in this repository shipped unable to detect its own damage,
+which is the exact failure mode worth designing against: a gate that reports
+green forever is worse than no gate, because it converts "the docs were checked"
+into an assumption. So every predicate is exercised against fabricated input in
+`tools/docgate/main_test.go` and must fail, and the gate refuses to report
+success against an empty directory.
+
+That was not ceremony. On its first run it found:
+
+1. **A shift the evaluator could not parse.** `1 << 30` normalised to `1*2^30`,
+   then the suffix test looked for the marker at the *end* of the factor instead
+   of the start, so every shift expression reported "unresolvable". Only
+   `TestEvalIntExpression` caught it.
+2. **`go run` resolved against the wrong working directory.** The gate parses
+   `tantu --help`, and its own tests run from `tools/docgate`, where
+   `./cmd/tantu` does not exist. It correctly refused to pass — reporting
+   "0 subcommands parsed, the gate's parser is wrong and would pass vacuously" —
+   which is the behaviour you want and the bug you do not.
+3. **A predicate that could not be shown to fail.** `checkDocumentedFlags` read
+   the package-level table directly, so there was no way to test it against
+   fabricated input at all. The signature now takes the table, which is the
+   same discipline every other check here already had.
+
+### What it found in this repository
+
+Four real drifts, on a tree that had just passed every other gate in the
+project:
+
+- `tantu version` is a real command that the README's CLI Reference table did
+  not mention.
+- `docs/ARCHITECTURE.md` stated no text-size ceiling at all, although 10 MiB is
+  enforced in four places.
+- `tantu send --text` — the escape hatch for a string that looks like a path —
+  was documented nowhere outside a code comment.
+- `X-Tantu-IPC-Token`, the loopback control plane's capability header, was named
+  nowhere in the documentation despite being the thing a reviewer auditing that
+  plane would look for.
+
+The first draft of the gate produced six false positives before those, each of
+which was a bug in the gate rather than in the docs: it read only the first
+factor of `5 * 1024 * 1024 * 1024` as `5`; it parsed the Usage block as a command
+list; it required two-or-more spaces before a subcommand's description, which
+`open <url>` does not have; it treated the `|---|---|` table rule as a command
+row; it rejected the table's prose-shaped cells (`` `tantu send <content>` ``,
+`` `tantu wrap -- <cmd>` ``); and one claim in its own table named a
+`--auto-accept` flag that does not exist, which is a good illustration of why a
+gate needs a negative test: without one, that entry would have read as a
+finding rather than as a mistake.
+
+### Red proofs against the real tree
+
+| Injection | Result |
+|---|---|
+| `DefaultMaxDropSize` 5 GiB → 10 GiB, README unchanged | red: `drop.DefaultMaxDropSize is 10737418240 but the documentation states 5368709120` |
+| `tantu version` renamed to `tantu teleport` in the README table | red: `1 subcommand(s) exist but are not in the CLI Reference table: version` |
+
+Both injections reverted, byte-verified (`git diff` clean on the source file; the
+README diff carries only this batch's intended additions).
+
+### Evidence
+
+`go run ./tools/docgate` green on the committed tree, reporting what it actually
+checked: 8 constant claims, 4 documented phrases, the CLI command surface, 11
+documented flags, 4 environment variables. 14 tests in `tools/docgate`,
+`gofmt`, `go vet ./...` and `go test -count=1 ./...` green. Wired into the
+quality job beside the encoding gate.

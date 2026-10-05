@@ -91,6 +91,19 @@ jobs:
         # at all - which is how docs/ARCHITECTURE.md was missed.
         run: go run ./tools/encgate
 
+      - name: Documentation claims match the code
+        # The register's own gap 5.5: three separate false claims shipped in one
+        # session, each a *stated* property with nothing checking it. This checks
+        # the class that is mechanically decidable - the CLI surface in both
+        # directions, the flags the docs tell a user to type, the limits, the
+        # ports, the config directory and the environment variables - and refuses
+        # to report success if its own inputs are missing or unparseable.
+        #
+        # It is only trustworthy because it is itself tested against
+        # deliberately broken input (tools/docgate/main_test.go), which is the
+        # lesson from the encoding gate that could not detect its own damage.
+        run: go run ./tools/docgate
+
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

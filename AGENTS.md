@@ -7,6 +7,16 @@
 - Run `go build ./...` and `go test ./...` after making changes
 - Never hardcode API keys or credentials — use environment variables
 - Keep all existing tests passing when modifying code
+- **Verify a claim rather than asserting it.** Run the tool (`node
+  tools/uxtest/run.mjs`, `goreleaser release --snapshot`, `go run ./tools/encgate`,
+  `go run ./tools/docgate`), not just the code that claims to work. Several
+  defects in this repository's history — a CSP-blocked image, a missing release
+  tool, an unusable encoding gate, a cosign flag that silently does nothing —
+  were invisible to reading and obvious to running.
+- **A new gate must be able to fail.** Every checker here is exercised against
+  deliberately broken input, and refuses to report success when its own inputs
+  are missing or unparseable. A check that always passes is worse than no
+  check.
 
 ## Architecture Invariants
 
@@ -44,11 +54,14 @@
 cmd/tantu/          CLI entrypoint and subcommand handlers
 internal/bridge/    OAuth callback dispatcher (multiplexed)
 internal/browser/   Cross-platform URL launcher with sanitization
-internal/discovery/ Zero-config LAN peer discovery (mDNS + broadcast)
+internal/discovery/ Zero-config LAN peer discovery (mDNS + broadcast) + health
 internal/drop/      QuickDrop file/text transfer (chunked, resumable, SHA-256)
 internal/hub/       Symmetric Hub lifecycle, Web Dashboard, IPC, Cockpit
 internal/pairing/   Cryptographic identity, SAS verification, peer store
 internal/protocol/  Wire protocol envelope encoding/decoding
 internal/testutil/  Test helpers (SSH server, OAuth mocks)
 internal/transport/ Pluggable transport layer (LAN/mTLS, SSH, loopback)
+tools/encgate/      Gate: no encoding damage in tracked text files
+tools/docgate/      Gate: documented claims still match the code
+tools/uxtest/       Browser acceptance harness (Playwright, 3 engines)
 ```

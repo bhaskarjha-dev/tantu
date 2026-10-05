@@ -52,6 +52,20 @@ rollback procedures.
   returns to the control you opened it from. All four empty states — received
   items, authorizations, transfers, peers — now offer an action instead of
   describing a dead end.
+- **A gate for documented claims.** `tools/docgate` checks the class of
+  documentation claim that is mechanically decidable, and refuses to report
+  success if its own inputs are missing or unparseable: the CLI surface in both
+  directions (a documented command that no longer exists, and a command that
+  exists and is not documented), the flags the docs tell a user to type, eight
+  numeric limits against the constants that enforce them, the ports, the config
+  directory, and the environment variables. It does not decide whether a
+  sentence is true — that stays with a reviewer. It found four real drifts the
+  moment it ran honestly: `tantu version` missing from the CLI reference table,
+  the 10 MiB text ceiling stated nowhere in the architecture doc, `tantu send
+  --text` documented nowhere, and the `X-Tantu-IPC-Token` header named nowhere.
+  It is trusted only because it is itself tested against deliberately broken
+  input, which immediately found two real bugs in the gate and one design flaw
+  that made a check impossible to test.
 - `docs/DEPENDENCIES.md` — the complete dependency inventory (two pinned
   `golang.org/x` modules), the reasoning behind the `CGO_ENABLED=0`
   static-build invariant, the demonstrated cost of that constraint, and four
@@ -104,6 +118,20 @@ rollback procedures.
   peer's next send is refused with an honest "the receiver no longer trusts
   this machine" explanation instead of a generic error. The unpair
   confirmation says exactly this before you commit.
+- **A gate for documented claims.** `tools/docgate` checks the class of
+  documentation claim that is mechanically decidable, and refuses to report
+  success if its own inputs are missing or unparseable: the CLI surface in both
+  directions (a documented command that no longer exists, and a command that
+  exists and is not documented), the flags the docs tell a user to type, eight
+  numeric limits against the constants that enforce them, the ports, the config
+  directory, and the environment variables. It does not decide whether a
+  sentence is true — that stays with a reviewer. It found four real drifts the
+  moment it ran honestly: `tantu version` missing from the CLI reference table,
+  the 10 MiB text ceiling stated nowhere in the architecture doc, `tantu send
+  --text` documented nowhere, and the `X-Tantu-IPC-Token` header named nowhere.
+  It is trusted only because it is itself tested against deliberately broken
+  input, which immediately found two real bugs in the gate and one design flaw
+  that made a check impossible to test.
 - `docs/DEPENDENCIES.md` — the complete dependency inventory (two pinned
   `golang.org/x` modules), the reasoning behind the `CGO_ENABLED=0`
   static-build invariant, the demonstrated cost of that constraint, and four
