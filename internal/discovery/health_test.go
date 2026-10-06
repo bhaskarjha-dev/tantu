@@ -104,6 +104,62 @@ func TestEngine_HealthAfterCloseIsNotUsable(t *testing.T) {
 	}
 }
 
+// TestEngine_HealthAfterContextCancelIsNotDegraded covers the other way an
+// engine stops, and it is the case that matters to the Hub.
+//
+// Close() is not how a running Hub shuts down: it cancels the context the engine
+// was started with, and the engine's own cancellation goroutine closes the
+// sockets. That path used to clear the bound flags without clearing `started`,
+// so Health() answered Running=true with nothing bound — which describeHealth
+// renders as "Discovery cannot reach this network: neither multicast nor subnet
+// broadcast could be opened".
+//
+// Nothing looked wrong until the Hub actually started the watcher that reports
+// these transitions (Batch Z37): it shares the engine's context, so it sampled
+// that window and logged a discovery fault on every normal shutdown. A fault
+// invented by our own shutdown teaches a user to ignore the line that would have
+// been real. Close()'s own comment already stated the rule this violated.
+func TestEngine_HealthAfterContextCancelIsNotDegraded(t *testing.T) {
+	engine, err := NewEngine(DiscoveryConfig{NodeName: "ctx-cancel", WirePort: 9877, BroadcastPort: 19884})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := engine.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !engine.Health().Usable {
+		t.Fatal("engine is not usable before cancellation")
+	}
+
+	cancel()
+	// The cancellation goroutine is asynchronous, so poll rather than assume a
+	// fixed sleep is long enough; a flaky timing assertion here would be noise.
+	deadline := time.Now().Add(5 * time.Second)
+	var health Health
+	for time.Now().Before(deadline) {
+		health = engine.Health()
+		if !health.Running {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	defer engine.Close()
+
+	if health.Running {
+		t.Fatalf("an engine whose context was cancelled still reports running: %+v", health)
+	}
+	if health.Degraded {
+		t.Errorf("a cancelled engine reports a discovery fault it did not have: %q", health.Detail)
+	}
+	if health.Broadcast || health.Multicast {
+		t.Errorf("a cancelled engine still reports bound sockets: %+v", health)
+	}
+	if !strings.Contains(health.Detail, "not running") {
+		t.Errorf("a cancelled engine does not say it is not running: %q", health.Detail)
+	}
+}
+
 // TestNilEngineHealthIsHonest covers the shape a caller actually holds: an
 // interface or pointer that may be nil because the Hub was configured without
 // discovery. Returning zero values there would render as "running, nothing

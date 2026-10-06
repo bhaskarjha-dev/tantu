@@ -286,10 +286,21 @@ func (e *Engine) Start(parent context.Context) error {
 	go e.advertiseLoop(ctx)
 
 	// Context cancellation must close sockets as well as stop advertising.
+	//
+	// It must also clear `started`, and that is not bookkeeping for its own
+	// sake: clearing the bound flags alone leaves an engine reporting
+	// Running=true with nothing bound, which describeHealth renders as
+	// "Discovery cannot reach this network". A cancelled context is the engine
+	// stopping, so Health has to say so — the same reasoning Close() applies,
+	// and the same class of silent lie. Without this, a Hub that shut down
+	// normally could log a discovery fault it never had.
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
 		<-ctx.Done()
+		e.startMu.Lock()
+		e.started = false
+		e.startMu.Unlock()
 		e.closeSockets()
 	}()
 

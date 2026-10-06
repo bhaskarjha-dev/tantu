@@ -3411,3 +3411,59 @@ failed broadcast bind non-fatal changes `Start`'s error contract: it is a design
 decision with a real trade-off (a machine with one working discovery path would
 report degraded rather than dead), not a repair, and it was left for a decision
 rather than taken silently in a bug-fix batch.
+### The defect starting the watcher immediately created
+
+Turning the watcher on is not the same as the watcher being correct, and the
+first thing CI could not tell me was whether it now lies. So I probed the
+shutdown path directly: start an engine with a cancellable context, cancel it,
+do not call `Close()`, then ask it how it is.
+
+    after ctx cancel, no Close: running=true bcast=false mcast=false
+    degraded=true detail="Discovery cannot reach this network: neither
+    multicast nor subnet broadcast could be opened. Pair by entering the other
+    machine's address instead."
+
+That is a fault invented by our own shutdown. `Start`'s cancellation goroutine
+called `closeSockets()`, which clears the bound flags, but nothing cleared
+`started` on that path -- only `Close()` did. So the engine reported itself
+running while holding nothing, and `describeHealth` did the only thing it could
+with those inputs: named a network fault.
+
+It was invisible until this batch. Nothing read Health() during a Hub shutdown,
+so the contradiction had no consumer. The watcher does read it, it shares the
+engine's context, and it samples every ten seconds -- so a Hub that stopped
+normally could log "Discovery degraded" on the way out. A fault manufactured by
+our own shutdown is worse than the silence this feature removed: it teaches a
+user to ignore the one line that would have been real.
+
+The fix is four lines, and `Close()` had already written the rule:
+
+    e.startMu.Lock()
+    e.started = false
+    e.startMu.Unlock()
+    e.closeSockets()
+
+Its comment said a closed engine answering `Running=true` "is a Hub that claims
+to be discovering peers while holding nothing to discover them with, which is
+the exact class of silent lie this surface removes". Cancellation is the engine
+stopping too, so it gets the same treatment. The principle was already written
+down; the second path just never applied it.
+
+Gate: `TestEngine_HealthAfterContextCancelIsNotDegraded`, which polls for the
+state rather than sleeping a fixed interval, because a timing assertion here
+would flake on a loaded machine and a flaky gate gets ignored. Red-proven by
+stashing the four-line fix, which produces the block quoted above.
+
+### The lesson worth keeping
+
+This is the second defect in a row that only appeared once something was
+actually running. The dead watcher was invisible because every gate tested the
+decision function instead of the loop. The false warning was invisible because
+every gate called `Close()` instead of cancelling a context.
+
+In both cases the gate that would have caught it was cheap to write, and in both
+cases it was not written because the thing under test could not be reached. A
+feature that is off cannot be observed, so its correctness is not a property of
+its tests -- it is a property of whether anything calls it. Turning it on is
+what made it possible to be wrong about it, and that is the point at which the
+shutdown path deserved the same scrutiny as the startup path.
