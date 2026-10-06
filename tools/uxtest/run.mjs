@@ -39,9 +39,26 @@ const ENGINE = (() => {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const checks = [];
+// Set when the Hub under test exits. Every check afterwards would otherwise fail
+// for one reason -- there is no server -- and each would report it in its own
+// vocabulary, which is how a killed Hub previously presented as four unrelated
+// product defects. Recorded once, here, so the run can say so instead.
+let hubDeath = null;
+let lastHubOut = '';
 function check(name, ok, detail) {
-  checks.push({ name, ok: !!ok, detail: String(detail ?? '').slice(0, 240) });
-  if (!ok) console.log('  FAIL  ' + name + '  ' + String(detail ?? '').slice(0, 200));
+  const suffix = (!ok && hubDeath) ? ' [HUB DIED: ' + hubDeath + ']' : '';
+  checks.push({ name, ok: !!ok, detail: String(detail ?? '').slice(0, 240) + suffix });
+  if (!ok) console.log('  FAIL  ' + name + '  ' + String(detail ?? '').slice(0, 200) + suffix);
+}
+// hubDied is where a red run is classified as an infrastructure failure rather
+// than a product result. It is a hard stop: continuing would bury the cause
+// under dozens of consequential failures, which is what made the previous
+// occurrence expensive to diagnose.
+function hubDied(context) {
+  throw new Error('the Hub under test exited during ' + context + ' (' + hubDeath + ').\n'
+    + 'Everything after that point fails for one reason only, so this is an\n'
+    + 'environment problem rather than a product result. Last Hub output:\n'
+    + (lastHubOut.trim() || '(none)'));
 }
 function go(args, opts = {}) {
   return execFileSync('go', args, { cwd: REPO, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts });
@@ -71,7 +88,16 @@ async function main() {
   }
   const store = path.join(WORK, 'store');
   const out = path.join(WORK, 'out');
-  const exe = path.join(WORK, 'tantu' + (process.platform === 'win32' ? '.exe' : ''));
+  // The binary is deliberately NOT named "tantu". This harness spawns a real
+  // Hub, and a developer with their own Hub running will restart it with
+  // something like `Stop-Process -Name tantu` -- which, when this exe carried
+  // the same name, silently killed the harness's Hub mid-run. The failure did
+  // not look like what it was: four scattered dashboard checks failed with a
+  // staleness sentinel, a still-visible banner and "could not connect to
+  // server", i.e. it read as product flakiness. It was misdiagnosed twice
+  // before the cause was found. A distinct process identity means that command
+  // cannot reach this process at all.
+  const exe = path.join(WORK, 'tantu-uxtest' + (process.platform === 'win32' ? '.exe' : ''));
   fs.mkdirSync(store, { recursive: true }); fs.mkdirSync(out, { recursive: true });
   if (WITH_PEERS) seedPeers(store);
 
@@ -93,8 +119,15 @@ async function main() {
     // or another Tantu already holding one of these ports. Probe until it
     // answers, and if it never does, say exactly what happened.
     let hubOut = '';
-    hub.stdout.on('data', (d) => { hubOut += d; });
-    hub.stderr.on('data', (d) => { hubOut += d; });
+    hub.stdout.on('data', (d) => { hubOut += d; lastHubOut = hubOut; });
+    hub.stderr.on('data', (d) => { hubOut += d; lastHubOut = hubOut; });
+    // Registered before the readiness probe so a Hub that dies during startup
+    // is classified rather than merely reported.
+    hub.on('exit', (code, signal) => {
+      if (hubDeath === null) {
+        hubDeath = 'exit code ' + code + (signal ? ', signal ' + signal : '');
+      }
+    });
 
     let probe = null, lastProbeError = '';
     const readyBy = Date.now() + 30000;
@@ -905,7 +938,23 @@ async function main() {
     fs.writeFileSync(path.join(out, 'uxtest-report.json'), JSON.stringify({ head, engine: ENGINE, peers: WITH_PEERS, checks }, null, 1));
     const pass = checks.filter((c) => c.ok).length;
     console.log('\nuxtest: ' + pass + '/' + checks.length + ' checks passed (' + ENGINE + '; screenshots in ' + out + ')');
-    process.exitCode = pass === checks.length ? 0 : 1;
+    // A run that went red only because the Hub vanished is not a product
+    // result, and reporting it as 47/51 checks passed would be a false claim
+    // about the product's behaviour.
+    //
+    // Exit 4 is assigned in the same statement as the pass/fail code, because an
+    // earlier version set it in a block *above* this line and the plain
+    // pass/fail assignment then overwrote it -- verified only by reading the
+    // exit code back, since the summary text looked correct either way.
+    const productFailed = pass !== checks.length;
+    const infraFailed = hubDeath !== null && productFailed;
+    if (infraFailed) {
+      console.error('\nuxtest: NOT A PRODUCT RESULT - ' + hubDeath + '\n'
+        + 'The Hub under test exited mid-run, so the remaining checks had no\n'
+        + 'server to talk to. Re-run on a quiet machine. Last Hub output:\n'
+        + (lastHubOut.trim() || '(none)'));
+    }
+    process.exitCode = infraFailed ? 4 : (productFailed ? 1 : 0);
   } catch (e) {
     console.error('uxtest ERROR: ' + e.message);
     process.exitCode = 3;

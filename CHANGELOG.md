@@ -75,6 +75,16 @@ rollback procedures.
   cloning the repository. The original plan lives under gitignored `temp/`.
 
 ### Changed
+- **The browser acceptance harness now tells you when a red run means nothing.**
+  When the Hub it tests dies mid-run — and it could, because it was built as
+  `tantu.exe`, so restarting your own Hub with `Stop-Process -Name tantu` killed
+  it — the run reported four scattered check failures and a summary reading
+  "47/51 checks passed". That is indistinguishable from a regression, and it was
+  misdiagnosed twice while chasing it. The harness binary is now `tantu-uxtest`,
+  so that command cannot reach it, and Hub death is reported as such: every
+  later failure is tagged and the harness exits `4`, which CI surfaces as "this
+  run proves nothing either way" rather than a product failure. Codes are
+  documented in `tools/uxtest/README.md`.
 - **A busy port no longer costs you discovery on both paths.** Discovery binds
   two independent transports — subnet broadcast on `9879` and mDNS on `5353` —
   and a failure in one used to disable the other, because the broadcast bind

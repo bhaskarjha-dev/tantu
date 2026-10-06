@@ -33,6 +33,27 @@ does not conflict; a second copy of this harness does. A Hub that cannot start
 is reported with its own output rather than as a bare `fetch failed`, so a port
 clash is distinguishable from a slow machine.
 
+The harness's own Hub is built as **`tantu-uxtest`**, not `tantu`, on purpose.
+Restarting your own Hub with `Stop-Process -Name tantu` used to kill the Hub
+under test mid-run, and the failure did not look like what it was: four scattered
+dashboard checks failed with a staleness sentinel, a still-visible banner and
+`ERR_CONNECTION_REFUSED`, which reads as product flakiness rather than "your Hub
+was killed". A distinct process name means that command cannot reach it.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Every check passed. |
+| `1` | A check genuinely failed. **This is a product result.** |
+| `3` | The harness itself failed — build, browser launch, or a Hub that never became ready. |
+| `4` | **Not a product result.** The Hub under test exited mid-run, so every later check failed for want of a server. Re-run on a quiet machine. |
+
+Code `4` exists because a red run caused by a dead Hub is otherwise
+indistinguishable from a real regression, and the pass count printed alongside it
+(`47/51`) invites exactly that misreading. Every check that failed after the Hub
+died is tagged `[HUB DIED: …]`, and the last Hub output is printed.
+
 | Variable | Purpose |
 |---|---|
 | `TANTU_TEST_BROWSER` | Engine to drive: `chromium` (default), `firefox`, `webkit` |

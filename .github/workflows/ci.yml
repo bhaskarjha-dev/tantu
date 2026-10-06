@@ -246,6 +246,7 @@ jobs:
         # a regression that only appears once peers are listed.
         run: |
           status=0
+          infra=0
           for mode in "" "--peers"; do
             for engine in chromium firefox webkit; do
               label="$engine${mode:+ peers}"
@@ -253,11 +254,32 @@ jobs:
               echo "::group::dashboard-acceptance $label"
               run_status=0
               node tools/uxtest/run.mjs --browser="$engine" $mode 2>&1 | tee "harness-$slug.log" || run_status=$?
-              if [ "$run_status" -ne 0 ]; then
-                status="$run_status"
-                detail=$(tail -n 60 "harness-$slug.log")
-                printf '::error::dashboard-acceptance (%s) failed: %s\n' "$label" "${detail//$'\n'/%0A}"
-              fi
+              # Exit 4 is the harness telling us its Hub died mid-run, which is
+              # not a product result: every later check failed for want of a
+              # server. Reporting it in the same bucket as a real regression
+              # would train everyone to ignore the job, so it is surfaced as a
+              # distinct warning while still failing the run.
+              case "$run_status" in
+                4)
+                  infra=1
+                  # status is set too, deliberately. An earlier version only set
+                  # `infra`, and `exit "$status"` then reported success for a
+                  # run in which the Hub under test died -- a false green, which
+                  # is the exact failure this classification exists to prevent.
+                  # Verified by simulating exit 0, 1 and 4 through the same
+                  # case statement: 4 must not exit 0.
+                  [ "$status" -eq 0 ] && status=4
+                  detail=$(tail -n 40 "harness-$slug.log")
+                  printf '::warning::dashboard-acceptance (%s) was NOT A PRODUCT RESULT: %s\n' "$label" "${detail//$'\n'/%0A}"
+                  printf '::error::dashboard-acceptance (%s): the Hub under test exited mid-run (exit 4). This run proves nothing either way - re-run.\n' "$label"
+                  ;;
+                0) ;;
+                *)
+                  status="$run_status"
+                  detail=$(tail -n 60 "harness-$slug.log")
+                  printf '::error::dashboard-acceptance (%s) failed: %s\n' "$label" "${detail//$'\n'/%0A}"
+                  ;;
+              esac
               echo "::endgroup::"
             done
           done

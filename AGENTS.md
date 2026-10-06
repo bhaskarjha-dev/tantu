@@ -28,6 +28,27 @@
   because each tested the pure decision function it calls. When a document says
   the product does something, the gate has to exercise the thing that does it,
   not just the part of it that is easy to reach.
+- **Know which kind of gate you are writing, because they fail differently.**
+  A *pure-function* gate feeds constructed values to a function and asserts on
+  its output — `describeHealth(Health{...})`, `discoveryHealthEvent(prev, cur)`
+  — and that is the correct and complete way to test wording and decision
+  logic, because the input *is* the whole domain. Do not "fix" one of these by
+  forcing a real socket.
+  A *behaviour* gate asserts something a running system does. Those are the ones
+  that lie: three defects in a row here had green pure-function gates and no
+  behaviour gate at all — a watcher never called, a watcher reporting the wrong
+  transition, and a `Health.Degraded` state the engine could not enter. When the
+  claim is "the product does X", ask what runs during the test. If the answer is
+  "only a pure function", the gate cannot fail for the reason it exists, and it
+  will pass against a product that does not do X at all.
+- **Prefer a produced condition over a constructed one.** To assert the engine
+  reports a taken broadcast port, occupy the port and let the operating system
+  reject the bind. Asserting `Health{Broadcast:false}` instead proves
+  `describeHealth` has words for that state, not that the engine can reach it —
+  which is the difference that went undetected for three batches. When a
+  condition can only be produced by an occupied port, a redirected route or a
+  cancelled context, produce it. Where that is impossible, say so in the gate's
+  comment rather than implying the coverage is behavioural.
 - **A new gate must be able to fail.** Every checker here is exercised against
   deliberately broken input, and refuses to report success when its own inputs
   are missing or unparseable. A check that always passes is worse than no

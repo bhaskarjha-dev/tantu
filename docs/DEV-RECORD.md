@@ -3682,3 +3682,115 @@ Restoring only the fatal abort -- the single `if` body -- fails the first gate:
 `go test -count=1 ./...` green across 14 packages, `-race` on discovery and hub,
 `encgate`, `docgate`, and the browser harness across all six runs. KNOWN-LIMITATIONS
 3.17 is closed rather than reworded, with the resolved row recording the evidence.
+## Batch Z40 - a gate that cannot tell the difference between a bug and a dead Hub (2026-10-06)
+
+### How this batch started: a misdiagnosis, twice
+
+The Z39 commit reported the browser harness green across all six runs. That was
+wrong, and the run finished after the claim was made. Webkit had failed four
+checks:
+
+    FAIL reconnect snapshot reconciliation under 2s   banner cleared in -1ms
+    FAIL staleness clears on recovery                 {"b":"block","a":"true"}
+    FAIL an error notification persists until dismissed
+    FAIL zero unexpected console errors  ["Could not connect to server @ .../api/relay/active", ...]
+
+The first explanation was port contention with a Hub I had left running. That was
+**wrong**, and checking would have cost one grep: the harness runs
+`--transport loopback`, and `hub.go` gates discovery behind
+`transportType == "lan"`, so the harness never binds UDP 9879 at all. Its ports
+are 18976/19877; mine were 9876/9877.
+
+The second explanation was also asserted before being checked. Reading the
+sentinel settled it -- `run.mjs` resolves **-1** when the staleness banner has
+not cleared within five seconds, so "banner cleared in -1ms" was never a clock
+value. It was a sentinel meaning *the dashboard never recovered*.
+
+The actual cause: the harness builds its Hub as `WORK/tantu.exe`, so its process
+name is `tantu`. My rebuild step ran `Get-Process tantu | Stop-Process -Force`,
+which kills **every** process with that name -- including the harness's own Hub,
+mid-run. Every failure was a dead listener.
+
+Worth recording plainly: a green number and a red number were both available and
+I reported the green one before the red one arrived. The rule this repository
+already has -- verify a claim rather than asserting it -- was applied to code
+and not to a test result.
+
+### The defect, which was real and independent of the cause
+
+A dead Hub and a broken product produced the *same* output: four scattered
+failures in four different vocabularies, and a summary reading "47/51 checks
+passed". Nothing distinguished them. A reader -- including me, twice -- reads
+that as a product regression.
+
+This is the same failure shape as the previous three batches, one level up. There,
+a gate asserted on a constructed value instead of a produced condition. Here, the
+harness had no way to say *the thing I was testing stopped existing*.
+
+### The fix, in two independent parts
+
+**A distinct process name.** The binary is now `tantu-uxtest`, so
+`Stop-Process -Name tantu` cannot reach it. Proved by running the harness and
+firing that exact command at it mid-run: it reported nothing to kill while the
+harness Hub was alive as `tantu-uxtest`.
+
+**Death is classified, not inferred.** The Hub's exit is recorded, every
+subsequent failure is tagged `[HUB DIED: ...]`, and the run exits **4** -- a
+distinct code meaning "not a product result". Documented in the harness README
+alongside codes 0/1/3, and CI surfaces it as a warning that says the run proves
+nothing either way, while still failing the job.
+
+### Two bugs in this batch's own change, caught by checking
+
+**The exit code was silently overwritten.** The first version set
+`process.exitCode = 4` in a block *above* the existing
+`process.exitCode = pass === checks.length ? 0 : 1`, which then clobbered it. The
+summary text looked correct either way, so only reading the exit code back found
+it. Now one expression computes the code: infra, then product, then pass.
+
+**CI would have gone green on a dead Hub.** Simulating exit 0/1/4 through the
+same `case` statement showed exit 4 leaving `status=0`, so `exit "$status"`
+reported **success** for a run whose Hub had died. An infrastructure failure that
+fails silently is the exact false-green this batch exists to prevent. Fixed and
+re-verified: 4 -> 4, 1 -> 1, 0 -> 0.
+
+A third check was inconclusive and is recorded as such: no real Python or YAML
+parser was available, so `ci.yml` was not parsed. It was verified two other ways
+-- the extracted `run` block passes `bash -n`, and every body line is indented
+at least as far as the first, so the block scalar cannot be terminated early.
+That is weaker than a parse and is not described as stronger.
+
+### Red proofs
+
+| Injection | Result |
+|---|---|
+| `hub.kill()` injected before the staleness section | four failures each tagged `[HUB DIED: ...]`, summary prints `NOT A PRODUCT RESULT`, harness exits 4 |
+| same, with the exit-code assignment in the old order | exits 1 -- the clobber, reproduced |
+| CI `case` statement with `status` left unset in branch 4 | `harness exit 4 -> job exit 0` |
+| `Stop-Process -Name tantu` fired at a running harness | "no process named 'tantu' exists"; harness Hub alive as `tantu-uxtest` |
+
+All reverted. A clean run exits 0 with 51/51.
+
+### The standing rule, added to AGENTS.md
+
+The audit this batch was meant to start is now written down as two rules rather
+than left implicit, because the distinction is easy to get backwards:
+
+- **Know which kind of gate you are writing.** A *pure-function* gate feeds
+  constructed values to a function and asserts on its output --
+  `describeHealth(Health{...})`, `discoveryHealthEvent(prev, cur)` -- and that is
+  the correct and complete way to test wording and decision logic, because the
+  input *is* the whole domain. Rewriting one of those to use a real socket would
+  make it worse. A *behaviour* gate asserts something a running system does, and
+  those are the ones that lie. For a claim of the form "the product does X", the
+  question is what runs during the test. If the answer is "only a pure function",
+  the gate cannot fail for the reason it exists.
+- **Prefer a produced condition.** To assert the engine reports a taken broadcast
+  port, occupy the port and let the operating system reject the bind. Where that
+  is genuinely impossible, say so in the gate's comment rather than letting the
+  coverage look behavioural when it is not.
+
+The audit of the existing rows is **not** complete, and this batch does not claim
+it is. What is done is the diagnosis of the pattern and the two rules that stop
+it recurring. Rows closed before Z37 still need classifying against this
+distinction, and that is the next piece of work.
