@@ -337,10 +337,23 @@ type statusResponse struct {
 }
 
 type probeStatusResponse struct {
-	Status    string    `json:"status"`
-	Version   string    `json:"version"`
-	Transport string    `json:"transport"`
-	WebAddr   string    `json:"web_addr"`
+	Status    string `json:"status"`
+	Version   string `json:"version"`
+	Transport string `json:"transport"`
+	WebAddr   string `json:"web_addr"`
+	// P2PAddr is the live wire address, included because the CLI needs it to
+	// avoid colliding with the port this Hub already owns. `tantu pair` starts a
+	// dedicated pairing listener and has to know which port is taken; without
+	// this it could only compare against the literal default 9877, so a Hub on
+	// any other port had its port silently reused. That defect survived a full
+	// test suite, because the comparison was correct in isolation and had never
+	// been given a real value.
+	//
+	// It is the same class of data the response already carries -- a bound
+	// local port, discoverable from the runtime descriptor -- and it is not
+	// identity, peer or content material, so it does not weaken what the probe
+	// deliberately omits.
+	P2PAddr   string    `json:"p2p_addr"`
 	PID       int       `json:"pid"`
 	StartedAt time.Time `json:"started_at"`
 }
@@ -517,6 +530,7 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 		h.mu.RLock()
 		webAddr := h.actualWeb
 		transportName := h.cfg.TransportType
+		p2pAddr := h.P2PAddr().String()
 		pid := os.Getpid()
 		startedAt := h.startTime
 		h.mu.RUnlock()
@@ -525,6 +539,7 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			Version:   HubVersion,
 			Transport: transportName,
 			WebAddr:   webAddr,
+			P2PAddr:   p2pAddr,
 			PID:       pid,
 			StartedAt: startedAt,
 		})

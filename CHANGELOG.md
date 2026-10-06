@@ -75,6 +75,17 @@ rollback procedures.
   cloning the repository. The original plan lives under gitignored `temp/`.
 
 ### Changed
+- **`tantu pair` no longer reuses the port your Hub already owns, or hangs
+  silently when it does.** The collision guard compared the requested port against
+  the literal default `9877` rather than against the port the running Hub
+  actually holds, so a Hub on a configured `p2p_port` — or a second Hub, which is
+  exactly what the loopback transport is for — got no adjustment. Observed with a
+  Hub on `19702`: the responder announced "Waiting for peer connection on
+  0.0.0.0:19702..." and then printed nothing at all, while the other machine's
+  connection reached the Hub's p2p listener and came back as `wsarecv: An existing
+  connection was forcibly closed by the remote host`. It now moves to the next port
+  and says so. `/api/probe` reports `p2p_addr` so the CLI can know which port is
+  taken; the endpoint still omits identity, peer and content data.
 - **The browser acceptance harness now tells you when a red run means nothing.**
   When the Hub it tests dies mid-run — and it could, because it was built as
   `tantu.exe`, so restarting your own Hub with `Stop-Process -Name tantu` killed

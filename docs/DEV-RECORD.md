@@ -3794,3 +3794,101 @@ The audit of the existing rows is **not** complete, and this batch does not clai
 it is. What is done is the diagnosis of the pattern and the two rules that stop
 it recurring. Rows closed before Z37 still need classifying against this
 distinction, and that is the next piece of work.
+## Batch Z41 - a port collision the CLI could not see (2026-10-06)
+
+### Found by running two Hubs, not by reading
+
+Limitation 2.6 records that a second live machine had been dialled, with the
+evidence explicitly noted as one-directional. So this batch ran two real Hubs on
+one machine over the loopback transport -- the configuration that exists
+precisely for this -- and paired them.
+
+The pairing handshake itself behaved correctly and repeatedly: both sides derived
+the identical SAS (`WEED-HEAT-EACH-SIGN-CLAY-LENS`, then
+`FUEL-LEFT-DISH-FILL-TOOL-PINK`), and with no input both refused, which is correct
+fail-closed behaviour. Completing the pairing non-interactively was not
+achievable through a piped stdin on Windows; that is a limitation of the harness
+used here, not a finding about the product, and `confirmWithContext` is sound
+(the goroutine is deliberate and cancellation-safe).
+
+The real defect surfaced when the responder asked for the port the Hub already
+owned. `cmd/tantu/pair.go` had:
+
+    pairingPort := *port
+    if pairingPort == 9877 {
+        pairingPort = 9878
+    }
+
+That compares against the **literal default**, not against the port the Hub
+actually holds. With Hub B on 19702, `tantu pair -port 19702` got no adjustment.
+Observed behaviour:
+
+    stdout: Waiting for peer connection on 0.0.0.0:19702...   (and then nothing)
+    stderr: (empty)
+    initiator: wsarecv: An existing connection was forcibly closed by the remote host
+
+The responder logged nothing, ever. The initiator's connection reached the Hub's
+p2p listener, which correctly rejected it as a non-TLS handshake, so the pairing
+listener never saw it. From the user's side this is a hang with no error, and the
+only clue is a message telling them to wait.
+
+### The fix, and a mistake inside it
+
+The guard now compares against the Hub's real port. `hubP2PAddr`/`hubP2PPort` and
+`choosePairingPort` were extracted as pure functions specifically so the rule
+could be gated, rather than left inline in the middle of the responder.
+
+That extraction produced its own mistake, and it is the most instructive one in
+this batch. The first fix read `status.P2PAddr` and passed **all** its tests --
+while the defect was completely unfixed. The reason: `/api/probe` returns
+`probeStatusResponse`, which had no `P2PAddr` field at all. So the comparison
+was correct and had never been given a real value. The gate tested
+`hubP2PPort("127.0.0.1:19702")` and got a pass; production supplied `""`.
+
+This is the hand-constructed-value mistake from the previous three batches, one
+level down. Batching Z40 wrote the rule down -- a gate that only exercises a pure
+function cannot fail for the reason it exists -- and then the very next batch
+committed a milder version of it: a real function, correctly tested, wired to
+nothing.
+
+The real fix was to make the wire carry the value, and then to gate **the wire**
+rather than the parser:
+
+- `probeStatusResponse` gains `p2p_addr`, populated from `h.P2PAddr()`.
+- `TestProbeReportsTheWireAddressTheCLIDependsOn` fetches `/api/probe` and fails
+  if the field is absent.
+- `TestProbeStillOmitsWhatItPromisedToOmit` asserts the endpoint still omits
+  identity, peers and content, so adding a field cannot quietly turn the probe
+  into a second `/api/status`.
+
+Had the first gate existed from the start, the inert fix would have failed
+immediately.
+
+### Red proofs
+
+| Injection | Result |
+|---|---|
+| Restore `if requested != 9877` | two gates fail: `TestChoosePairingPortMovesOffTheHubPort`, `TestHubPortCollisionIsProducedNotAssumed` |
+| Drop `p2p_addr` from the probe response | `probe_fields_test.go:45: /api/probe omits p2p_addr, so ` + "`tantu pair`" + ` cannot learn which port the Hub owns and will reuse it` |
+
+Both reverted. End-to-end with the rebuilt binary, on the original repro:
+
+    Port 19702 is already used by the local Tantu Hub; using 19703 for the pairing
+    listener instead.
+    Waiting for peer connection on 0.0.0.0:19703...
+
+### Not done, and named
+
+The fix stops the collision being invisible; it does not stop the responder from
+needing a different port at all. Choosing a pairing port that is never the Hub's
+port changes the command printed for the other machine, and is a product decision
+rather than a repair. Recorded in the function's comment so the next reader knows
+the boundary was drawn deliberately.
+
+### What the audit found, at least for this row
+
+This was the row the audit was supposed to find, found instead by running the
+product. The audit of rows closed before Z37 is still not done and is still not
+claimed. What this batch adds to it is a sharper form of the question: not "does
+this gate use a constructed value" but **"is this function ever called with a
+real one"**. `hubP2PPort` was tested thoroughly and called with `""`.

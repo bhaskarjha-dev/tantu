@@ -174,8 +174,28 @@ func runPair(args []string) {
 				}
 			}
 			pairingPort := *port
-			if pairingPort == 9877 {
-				pairingPort = 9878
+			// The guard used to be `if pairingPort == 9877 { pairingPort = 9878`,
+			// comparing against the literal default rather than the port this Hub
+			// is actually on. Any Hub not on 9877 -- a configured p2p_port, or a
+			// second Hub, which is exactly the case the loopback transport exists
+			// for -- got no bump, so the responder announced a port the Hub already
+			// owned. Measured rather than theorised: with the Hub on 19702,
+			// `tantu pair -port 19702` printed "Waiting for peer connection on
+			// 0.0.0.0:19702..." and then hung silently, while the initiator's
+			// connection landed on the Hub's p2p listener and returned
+			// "wsarecv: An existing connection was forcibly closed by the remote
+			// host". Comparing against the real port fixes exactly that.
+			//
+			// Staying off the Hub's port entirely is a deeper question and a
+			// separate decision: it changes the command the user is told to run on
+			// the other machine. This only stops the collision being invisible.
+			if hubPort, ok := hubP2PPort(status.P2PAddr); ok {
+				if chosen, moved := choosePairingPort(pairingPort, hubPort); moved {
+					fmt.Fprintf(os.Stderr,
+						"Port %d is already used by the local Tantu Hub; using %d for the pairing listener instead.\n",
+						hubPort, chosen)
+					pairingPort = chosen
+				}
 			}
 			listenAddr := net.JoinHostPort("0.0.0.0", strconv.Itoa(pairingPort))
 			fmt.Printf("🚀 Local tantu Hub is active. Starting dedicated pairing listener on port %d...\n", pairingPort)
@@ -226,4 +246,51 @@ func runPair(args []string) {
 			os.Exit(1)
 		}
 	}
+}
+
+// hubP2PPort extracts the port number from a Hub's advertised p2p address.
+// It reports false rather than guessing when the address is absent or
+// malformed, because a wrong answer here would move the pairing listener off a
+// port that was never in conflict.
+func hubP2PPort(p2pAddr string) (int, bool) {
+	if p2pAddr == "" {
+		return 0, false
+	}
+	_, portStr, err := net.SplitHostPort(p2pAddr)
+	if err != nil {
+		return 0, false
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 || port > 65535 {
+		return 0, false
+	}
+	return port, true
+}
+
+// choosePairingPort keeps the dedicated pairing listener off the port the local
+// Hub already owns.
+//
+// It was written as `if pairingPort == 9877 { pairingPort = 9878 }`, comparing
+// against the literal default instead of the Hub's real port. Every Hub not on
+// 9877 therefore got no adjustment: a configured p2p_port, or a second Hub,
+// which is exactly what the loopback transport exists for. Measured, with a Hub
+// on 19702: `tantu pair -port 19702` announced "Waiting for peer connection on
+// 0.0.0.0:19702..." and then produced no further output, while the initiator's
+// connection reached the Hub's p2p listener and came back as "wsarecv: An
+// existing connection was forcibly closed by the remote host". The responder
+// logged nothing at all.
+//
+// Extracted as a pure function so it can be gated directly. An earlier version of
+// the gate defined this rule *inside the test* and asserted on it, which proved
+// only that the test's own arithmetic worked -- the same mistake as asserting on
+// a hand-built value, one level down.
+//
+// Staying off the Hub's port entirely is a separate, deeper decision: it changes
+// the command the user is told to run on the other machine. This only stops the
+// collision from being invisible.
+func choosePairingPort(requested, hubPort int) (int, bool) {
+	if hubPort <= 0 || requested != hubPort {
+		return requested, false
+	}
+	return requested + 1, true
 }
