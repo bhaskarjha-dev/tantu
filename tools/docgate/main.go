@@ -280,9 +280,6 @@ func checkConstant(c constantClaim, files map[string]file) (failure, bool) {
 	return failure{}, true
 }
 
-// intFactor matches one integer factor of a constant expression.
-var intFactor = regexp.MustCompile(`\d+`)
-
 // evalIntExpression multiplies the integer factors of a declaration's
 // right-hand side. It accepts only `a * b * c` and `a << b`, which is what the
 // size constants in this repository are written as; anything else is reported

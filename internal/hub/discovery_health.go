@@ -34,14 +34,48 @@ type discoveryHealthState struct {
 	observed bool
 }
 
-// watchDiscoveryHealth samples discovery and reports state transitions.
+// discoveryHealthSampleInterval is how often the watcher samples. Ten seconds
+// is frequent enough that a user who breaks their network sees the consequence
+// while they are still looking at the screen, and rare enough that a healthy
+// Hub does no measurable work.
+const discoveryHealthSampleInterval = 10 * time.Second
+
+// discoveryHealthSource is the single method the watcher needs from the
+// discovery engine.
+//
+// Narrowing the dependency to one method is what makes the loop testable, and
+// that is the whole point: with a concrete *discovery.Engine the only states a
+// test can reach through a real socket are the healthy ones, so every gate on
+// this file passed while the watcher was never started by anything. That is the
+// defect staticcheck found, and it was invisible to the whole test suite.
+type discoveryHealthSource interface {
+	Health() discovery.Health
+}
+
+// watchDiscoveryHealth samples discovery and reports state transitions for the
+// life of the Hub.
 //
 // Transition-driven rather than sample-driven: a permanently degraded engine
 // would otherwise write the same warning every sample, and a log the user
 // learns to scroll past is worth less than no log at all.
-func (h *Hub) watchDiscoveryHealth(ctx context.Context, engine *discovery.Engine) {
-	const sampleInterval = 10 * time.Second
-	ticker := time.NewTicker(sampleInterval)
+//
+// This is started from the one place the Hub creates a discovery engine, and
+// shares that engine's context. Deleting the call without deleting this
+// function is a compile-time no-op but a staticcheck failure, which is
+// deliberate: this function existing is not evidence that anything runs it.
+func (h *Hub) watchDiscoveryHealth(ctx context.Context, src discoveryHealthSource) {
+	h.watchDiscoveryHealthEvery(ctx, src, discoveryHealthSampleInterval)
+}
+
+// watchDiscoveryHealthEvery is the loop, with the sample interval as a
+// parameter so a test can drive transitions in milliseconds instead of waiting
+// out the production clock. A non-positive interval falls back to the
+// production value rather than becoming a busy loop.
+func (h *Hub) watchDiscoveryHealthEvery(ctx context.Context, src discoveryHealthSource, interval time.Duration) {
+	if interval <= 0 {
+		interval = discoveryHealthSampleInterval
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	state := discoveryHealthState{}
@@ -51,7 +85,7 @@ func (h *Hub) watchDiscoveryHealth(ctx context.Context, engine *discovery.Engine
 			return
 		case <-ticker.C:
 		}
-		event, next := discoveryHealthEvent(state, engine.Health())
+		event, next := discoveryHealthEvent(state, src.Health())
 		state = next
 		if event != nil {
 			h.logger.Log(event.Level, DomainNet, event.Message, nil)
@@ -86,13 +120,17 @@ func discoveryHealthEvent(prev discoveryHealthState, cur discovery.Health) (*dis
 		return nil, next
 	}
 	switch {
-	case cur.Degraded && !prev.observed:
+	case cur.Degraded && !prev.degraded:
+		// The transition into the fault, whether or not a sample has been seen
+		// yet. The previous guard here was !prev.observed, which meant a Hub
+		// only ever reported discovery that was already broken before its first
+		// sample: discovery failing *while the Hub runs* - a firewall change, a
+		// laptop changing network, a VPN eating broadcast - produced no line at
+		// all, which is the condition this whole file exists to make visible.
+		// prev.degraded is false on the first sample, so initial breakage is
+		// still reported, and a fault that persists stays silent.
 		return &discoveryLogEvent{Level: LevelWarn, Message: "Discovery degraded: " + cur.Detail +
 			" Pair by address with `tantu pair --peer <ip>:9877` if a hub is known to be running."}, next
-	case cur.Degraded && prev.degraded:
-		// Already reported. A second line every ten seconds is how a log
-		// becomes something users stop reading.
-		return nil, next
 	case !cur.Degraded && prev.degraded:
 		return &discoveryLogEvent{Level: LevelInfo, Message: "Discovery recovered: " + cur.Detail}, next
 	case !prev.observed && cur.SendErrors > 0:

@@ -13,7 +13,9 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/bhaskarjha-dev/tantu/internal/discovery"
 )
@@ -116,6 +118,16 @@ func TestDiscoveryHealthEventNamesEveryTransition(t *testing.T) {
 			wantLog: true, contains: []string{"Discovery degraded", "tantu pair --peer"},
 		},
 		{
+			name: "healthy then degraded warns", prev: discoveryHealthState{degraded: false, observed: true}, cur: degraded,
+			wantLog: true, contains: []string{"Discovery degraded", "tantu pair --peer"},
+			// This is the case the feature exists for. The Hub starts healthy,
+			// then loses discovery while it runs: a firewall rule changes, a
+			// laptop joins a different network, a VPN starts eating broadcast.
+			// Requiring !prev.observed meant only breakage present before the
+			// very first ten-second sample was ever reported, so the transition
+			// that actually happens on a live Hub said nothing.
+		},
+		{
 			name: "degraded twice logs once", prev: discoveryHealthState{degraded: true, observed: true}, cur: degraded,
 			wantLog: false,
 			// The rationale: a warning repeated every ten seconds is a log the
@@ -173,6 +185,145 @@ func TestDiscoveryHealthEventNamesEveryTransition(t *testing.T) {
 				t.Errorf("the returned state records degraded=%v for a sample with degraded=%v", next.degraded, tc.cur.Degraded)
 			}
 		})
+	}
+}
+
+// fakeHealthSource is a discoveryHealthSource whose reported state the test
+// controls. It exists because a real Engine can only be driven into the healthy
+// states from a test: every fault the watcher cares about needs a socket that
+// failed to bind in a specific way, which is not something a unit test can ask
+// the operating system for.
+type fakeHealthSource struct {
+	mu sync.Mutex
+	h  discovery.Health
+}
+
+func (f *fakeHealthSource) Health() discovery.Health {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.h
+}
+
+func (f *fakeHealthSource) set(h discovery.Health) {
+	f.mu.Lock()
+	f.h = h
+	f.mu.Unlock()
+}
+
+// waitForLogLines polls the real activity log until n lines contain substr, and
+// fails the test if that never happens. Polling rather than sleeping a fixed
+// time keeps the gate fast on a healthy machine without becoming flaky on a
+// loaded one.
+func waitForLogLines(t *testing.T, h *Hub, substr string, n int) []LogEvent {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	var got []LogEvent
+	for time.Now().Before(deadline) {
+		got = messagesMatching(readActivityLog(t, h), substr)
+		if len(got) >= n {
+			return got
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("waited 10s for %d log line(s) containing %q, saw %d: %s",
+		n, substr, len(got), summarizeMessages(got))
+	return nil
+}
+
+// TestWatchDiscoveryHealthLogsTransitionsOverTime drives the watcher loop
+// itself, rather than the pure decision function it calls.
+//
+// The reason this gate exists: watchDiscoveryHealth was never started by
+// anything, and every gate on this file still passed, because each of them
+// tested discoveryHealthEvent - a function that is perfectly correct whether or
+// not any goroutine ever calls it. Testing the decision and testing the thing
+// that runs it are different claims, and only the second one caught nothing
+// here. This one exercises the ticker, the state threading between samples, the
+// log call and the cancellation path, and reads the result out of the same
+// /api/logs the dashboard reads.
+func TestWatchDiscoveryHealthLogsTransitionsOverTime(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+
+	healthy := discovery.Health{Running: true, Broadcast: true, Multicast: true, Usable: true, Nodes: 1, Detail: "running"}
+	degraded := discovery.Health{Running: true, Broadcast: false, Multicast: false, Degraded: true, Detail: "Discovery cannot reach this network: neither multicast nor subnet broadcast could be opened."}
+
+	// Starts healthy, as a real Hub does, so the transition this asserts is the
+	// one that happens on a live machine rather than one present before the
+	// first tick.
+	src := &fakeHealthSource{h: healthy}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const interval = 5 * time.Millisecond
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		h.watchDiscoveryHealthEvery(ctx, src, interval)
+	}()
+
+	// A healthy engine is not news: the first sample must say nothing, or every
+	// Hub start would warn about nothing.
+	time.Sleep(20 * interval)
+	if got := messagesMatching(readActivityLog(t, h), "Discovery"); len(got) != 0 {
+		t.Fatalf("a healthy discovery engine produced %d log line(s): %s", len(got), summarizeMessages(got))
+	}
+
+	// The transition into the fault is announced, with the fallback named.
+	src.set(degraded)
+	warns := waitForLogLines(t, h, "Discovery degraded", 1)
+	if warns[0].Level != LevelWarn {
+		t.Errorf("degraded transition logged at %v, want %v", warns[0].Level, LevelWarn)
+	}
+	if !strings.Contains(warns[0].Message, "tantu pair --peer") {
+		t.Errorf("the degraded line does not name the pairing fallback: %q", warns[0].Message)
+	}
+
+	// And it is announced once. Twenty further samples of a persistent fault
+	// must not produce twenty more lines.
+	time.Sleep(20 * interval)
+	if got := messagesMatching(readActivityLog(t, h), "Discovery degraded"); len(got) != 1 {
+		t.Errorf("a persistent fault logged %d times, want 1: %s", len(got), summarizeMessages(got))
+	}
+
+	// Recovery is announced too, so a user who gave up on discovery by address
+	// learns that it works again.
+	src.set(healthy)
+	recovered := waitForLogLines(t, h, "Discovery recovered", 1)
+	if recovered[0].Level != LevelInfo {
+		t.Errorf("recovery logged at %v, want %v", recovered[0].Level, LevelInfo)
+	}
+
+	// A watcher that outlived the Hub would keep sampling and could announce a
+	// recovery that never happened, so cancellation has to actually stop it.
+	cancel()
+	select {
+	case <-returned:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the watcher did not return after its context was cancelled")
+	}
+}
+
+// TestWatchDiscoveryHealthEveryRejectsANonPositiveInterval stops a test helper
+// from becoming a busy loop that starves the rest of the suite.
+func TestWatchDiscoveryHealthEveryRejectsANonPositiveInterval(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+
+	src := &fakeHealthSource{h: discovery.Health{Running: false}}
+	ctx, cancel := context.WithCancel(context.Background())
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		h.watchDiscoveryHealthEvery(ctx, src, 0)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	select {
+	case <-returned:
+	case <-time.After(10 * time.Second):
+		t.Fatal("a non-positive interval fell back to the production interval instead of being ignored")
 	}
 }
 

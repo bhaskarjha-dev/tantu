@@ -73,7 +73,6 @@ func (e *Engine) countSend()          { atomic.AddInt64(&e.stats.beaconsSent, 1)
 func (e *Engine) countReceive()       { atomic.AddInt64(&e.stats.beaconsReceived, 1) }
 func (e *Engine) countSendError()     { atomic.AddInt64(&e.stats.sendErrors, 1) }
 func (e *Engine) countListenError()   { atomic.AddInt64(&e.stats.listenErrors, 1) }
-func (e *Engine) countNodesSeen()     { atomic.AddInt64(&e.stats.nodesSeen, 1) }
 func (e *Engine) listenLoopGaveUp()   { atomic.StoreInt32(&e.stats.listenStopped, 1) }
 func (e *Engine) mcastListenStopped() { atomic.StoreInt32(&e.stats.mcastStopped, 1) }
 
@@ -107,7 +106,6 @@ func truncateError(msg string) string {
 type engineStats struct {
 	beaconsSent     int64
 	beaconsReceived int64
-	nodesSeen       int64
 	sendErrors      int64
 	listenErrors    int64
 	listenStopped   int32

@@ -8,7 +8,6 @@ rollback procedures.
 ## Unreleased
 
 ### Added
-- **Release artifacts are signed, keyless.** Every archive, every SBOM and
 - **Release artifacts are now signed, keyless.** Every archive, every SBOM and
   `checksums.txt` gets a detached cosign signature and the Fulcio certificate
   that vouches for the signing identity, so a downloader can prove an artifact
@@ -37,11 +36,12 @@ rollback procedures.
   the engine had been discarded. The Peers tab now shows what discovery is
   actually doing and, when it is not doing it, why: multicast or subnet
   broadcast (or both), how many hubs are in reach, and the last socket error.
-  The Hub logs discovery *transitions* — degraded, recovered, beacons not
-  leaving this machine — so Live Logs has the reason without a wall of
-  repetition. A blocked multicast socket on a network where broadcast works is
-  reported as "broadcast only", not as a fault: a warning that is always there
-  is a warning nobody reads. Discovery is still IPv4-only, and now says so.
+  The Hub logs discovery *transitions* — beacons not leaving this machine, and
+  (once the watcher is running, see Fixed below) degraded and recovered — so Live
+  Logs has the reason without a wall of repetition. A blocked multicast socket on
+  a network where broadcast works is reported as "broadcast only", not as a fault:
+  a warning that is always there is a warning nobody reads. Discovery is still
+  IPv4-only, and now says so.
 - **A real notification surface, and empty states that act.** The dashboard no
   longer calls `alert()`, `confirm()` or `prompt()` anywhere. Every outcome it
   cannot put next to its own control arrives as a themed, non-modal
@@ -75,6 +75,19 @@ rollback procedures.
   cloning the repository. The original plan lives under gitignored `temp/`.
 
 ### Changed
+- **The Hub now actually watches discovery health.** The watcher that reports
+  discovery transitions existed, was documented as running, and was called by
+  nothing — staticcheck found it on CI's first run after the discovery-health
+  work was pushed. It is now started for the life of the Hub, sharing the
+  discovery engine's context. It also reported the wrong moment even once
+  running: it only announced discovery that was *already* broken before its first
+  ten-second sample, so a Hub that started healthy and later lost discovery said
+  nothing — the one case the feature exists for. It now reports the transition
+  into the fault whenever it happens, stays quiet while a fault persists, and
+  announces recovery. `KNOWN-LIMITATIONS.md` 3.17 records what still cannot fire:
+  a failed broadcast bind aborts engine startup rather than degrading it, so the
+  "cannot reach this network" state remains unreachable in production and is
+  recorded as an open gap rather than presented as working.
 - Directory sends are larger on the wire: each file's `drop_send` carries an
   optional `rel_path`. It is absent for every single-file send and for text, so
   ordinary transfers are byte-identical to before, and a peer that does not

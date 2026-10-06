@@ -13,6 +13,21 @@
   defects in this repository's history — a CSP-blocked image, a missing release
   tool, an unusable encoding gate, a cosign flag that silently does nothing —
   were invisible to reading and obvious to running.
+- **Run the gates CI runs, not a subset you remember.** The quality job is
+  `gofmt -l .`, `go vet ./...`,
+  `go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...`, `go test`, `encgate`,
+  `docgate`. On 2026-10-06 six commits were pushed on a report that every gate
+  was green, and CI was red on the one gate that had never been run locally:
+  staticcheck found a watcher function that nothing called, while both documents
+  describing it claimed it ran. Read `.github/workflows/ci.yml` for the list
+  rather than trusting this summary of it.
+- **A documented claim about behaviour is a claim that something runs.** A
+  function that exists, a comment that explains why it matters, and a document
+  that describes its output are not evidence that any of them are connected.
+  `watchDiscoveryHealth` had all three and was never called; every gate passed
+  because each tested the pure decision function it calls. When a document says
+  the product does something, the gate has to exercise the thing that does it,
+  not just the part of it that is easy to reach.
 - **A new gate must be able to fail.** Every checker here is exercised against
   deliberately broken input, and refuses to report success when its own inputs
   are missing or unparseable. A check that always passes is worse than no

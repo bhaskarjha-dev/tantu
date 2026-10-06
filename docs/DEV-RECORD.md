@@ -2989,6 +2989,13 @@ this hub. The decision is a pure function (`discoveryHealthEvent`) so all eight
 transitions are tested without a Hub and a ten-second clock, including "degraded
 twice logs once".
 
+> **Corrected in Batch Z37.** The watcher described here was never started by
+> anything, so this paragraph described intent rather than behaviour, and its
+> gates all tested the pure decision function rather than the loop that would
+> have called it. Two further corrections came with it: the "healthy, then
+> degraded" transition was missing from the table *and* from the switch, and a
+> ninth case now covers it. See Batch Z37 and KNOWN-LIMITATIONS 3.13 and 3.17.
+
 ### Evidence
 
 Six gates in `internal/discovery/health_test.go` (running engine, closed engine,
@@ -3262,3 +3269,145 @@ checked: 8 constant claims, 4 documented phrases, the CLI command surface, 11
 documented flags, 4 environment variables. 14 tests in `tools/docgate`,
 `gofmt`, `go vet ./...` and `go test -count=1 ./...` green. Wired into the
 quality job beside the encoding gate.
+
+## Batch Z37 - the gate that was never run locally (2026-10-06)
+
+### Why this batch exists
+
+The six Z32-Z36 commits were pushed with a report that every gate was green.
+CI was red, on the one gate that had never been run on this machine:
+
+```
+internal/discovery/health.go:76:18: func (*Engine).countNodesSeen is unused (U1000)
+internal/discovery/health.go:110:2: field nodesSeen is unused (U1000)
+internal/hub/discovery_health.go:42:15: func (*Hub).watchDiscoveryHealth is unused (U1000)
+tools/docgate/main.go:284:5: var intFactor is unused (U1000)
+```
+
+Three were vestigial and deleted. The fourth was not a dead function, it was a
+**feature that was never switched on**, and both documents describing it
+claimed it ran.
+
+### What staticcheck found that reading had not
+
+`Hub.watchDiscoveryHealth` samples discovery every 10 s and logs transitions.
+`hub.go` carried the comment that explains why it must exist -- "Watch
+discovery health for the life of the Hub: without this, a failed engine is
+indistinguishable from an empty network" -- sitting directly above the engine
+start goroutine with no code under it. `docs/KNOWN-LIMITATIONS.md` row 3.13 was
+marked **Closed**, and this record said the watcher "samples every 10 s and logs
+transitions only".
+
+Nothing called it. Ever.
+
+### Why the whole test suite passed
+
+Every gate on discovery health tested `discoveryHealthEvent`, a pure function
+from a previous sample and a current sample to a decision about what to log. That
+function is exactly as correct whether or not any goroutine ever invokes it.
+Testing the decision and testing the thing that runs it are different claims, and
+this repository had only the first kind.
+
+Worse, the second kind was **not available**: the watcher took a concrete
+`*discovery.Engine`, and the only states a test can drive a real engine into are
+the healthy ones. Every fault the watcher exists to report needs a socket that
+failed to bind in a specific way, which is not something a unit test can ask the
+operating system for. So the untestable-by-construction loop sat behind a
+perfectly tested decision function, and the gap between them was invisible.
+
+### The fix, and the change that made it testable
+
+The watcher now depends on a one-method interface instead of the concrete engine:
+
+```go
+type discoveryHealthSource interface {
+	Health() discovery.Health
+}
+```
+
+`*discovery.Engine` satisfies it unchanged, so production behaviour is identical
+and a test can supply any state it needs. The sample interval became a parameter
+with the production 10 s as the default and a floor, so a test drives transitions
+in milliseconds and cannot turn the helper into a busy loop.
+
+It is started from the single site that creates an engine, sharing that engine's
+context -- a watcher that outlived its engine would keep sampling a closed engine
+and could announce a recovery that never happened.
+
+### The second defect, found by reading the decision table
+
+With the loop now testable, the loop test failed -- and not for a timing reason.
+The guard was `cur.Degraded && !prev.observed`, so the watcher announced only
+discovery that was **already broken before its first 10 s sample**:
+
+| case | guard | result |
+|---|---|---|
+| `cur.Degraded && !prev.observed` | observed is true after the first tick | no |
+| `cur.Degraded && prev.degraded` | prev.degraded is false | no |
+| `!cur.Degraded && prev.degraded` | cur is degraded | no |
+| `!prev.observed && SendErrors > 0` | observed is true | no |
+
+A Hub that starts healthy and later loses discovery -- a firewall rule changes, a
+laptop joins a different network, a VPN starts eating broadcast -- produced no log
+line at all. That is the condition the whole file exists to make visible, and the
+table had no case for it, because it tested "first sample degraded" and "degraded
+twice" and never "healthy, then degraded".
+
+The two degraded branches collapse into the transition itself:
+
+```go
+case cur.Degraded && !prev.degraded:
+```
+
+Simpler and correct: `prev.degraded` is false on the first sample, so initial
+breakage is still reported; a fault that persists stays silent; a fault that
+appears later is now announced.
+
+### Red proofs
+
+| Injection | Result |
+|---|---|
+| New table case `healthy then degraded warns` against the old guard | red: `expected a log line, got none` |
+| `!prev.observed && !prev.degraded` added back to the loop, full suite | red: `TestWatchDiscoveryHealthLogsTransitionsOverTime` waited 10 s for a "Discovery degraded" line and saw 0 |
+
+Both reverted. The second matters more: it proves the new gate is sensitive to
+the exact defect it was written for, rather than passing because a log line
+happened to be somewhere.
+
+### Evidence
+
+`gofmt -l .` clean, `go build ./...`, `go vet ./...`,
+`go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...` exit 0,
+`go test -count=1 ./...` green across 14 packages, and the two new loop gates
+green under `-race`. `encgate` and `docgate` green.
+
+### Two rules added to AGENTS.md
+
+The failure was not the dead function, it was the process: a gate list in
+`AGENTS.md` that omitted the gate CI runs, and a report of "all green" built from
+a remembered subset. `AGENTS.md` now names the quality job's actual contents,
+pins staticcheck to the same `v0.8.1` CI uses so the two cannot drift, and states
+the rule this defect illustrates: a function that exists, a comment explaining why
+it matters, and a document describing its output are not evidence that any of them
+are connected.
+
+### Still open, recorded as 3.17 rather than designed away
+
+`Health.Degraded` is `Running && !(Broadcast || Multicast)`, but the only path
+leaving `Broadcast` false is a failed broadcast bind, and `Start` treats that as
+fatal: `markStartFailed()` sets `Running` false and the mDNS socket goes down with
+it. A successful bind sets the flag immediately after. So the two conditions hold
+together only in the few microseconds between `discovery.go` setting
+`started = true` and setting `broadcastBound = 1`.
+
+The user-visible consequence: a machine whose UDP 9879 is occupied -- a second
+tantu instance, or anything else holding that port -- loses mDNS discovery too,
+even though mDNS alone would have worked.
+
+So the degraded and recovered transitions still cannot fire in production, and
+every gate for them drives a `Health` value directly. That is honest about what is
+testable, but it must not be mistaken for evidence that the state occurs. Making a
+failed broadcast bind non-fatal changes `Start`'s error contract: it is a design
+decision with a real trade-off (a machine with one working discovery path would
+report degraded rather than dead), not a repair, and it was left for a decision
+rather than taken silently in a bug-fix batch.

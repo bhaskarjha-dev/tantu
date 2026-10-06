@@ -2214,6 +2214,11 @@ func (h *Hub) Start(parent context.Context) (err error) {
 			// Watch discovery health for the life of the Hub: without this, a
 			// failed engine is indistinguishable from an empty network. See
 			// discovery_health.go for why it is transition-driven.
+			//
+			// Same context as the engine, so stopping one stops the other; a
+			// watcher outliving its engine would keep sampling a closed engine
+			// and could report a "recovery" that never happened.
+			go h.watchDiscoveryHealth(discCtx, discEngine)
 		}
 	}
 
