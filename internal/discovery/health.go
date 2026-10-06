@@ -19,6 +19,7 @@ package discovery
 
 import (
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
@@ -112,6 +113,7 @@ type engineStats struct {
 	mcastStopped    int32
 	broadcastBound  int32
 	multicastBound  int32
+	bcastBindError  atomic.Value // string
 	mcastBindError  atomic.Value // string
 }
 
@@ -137,8 +139,19 @@ func (e *Engine) Health() Health {
 		ListenErrors:    atomic.LoadInt64(&e.stats.listenErrors),
 	}
 	h.Nodes = len(e.ListNodes())
-	if v, ok := e.stats.mcastBindError.Load().(string); ok {
-		h.LastError = v
+	// Bind failures are preferred over the last transient socket error: they
+	// explain why a transport is *absent*, which is the question a user
+	// answering "why is discovery not working" actually has. Both are joined
+	// when both failed, because in the degraded case neither is redundant.
+	var reasons []string
+	if v, ok := e.stats.bcastBindError.Load().(string); ok && v != "" {
+		reasons = append(reasons, v)
+	}
+	if v, ok := e.stats.mcastBindError.Load().(string); ok && v != "" {
+		reasons = append(reasons, v)
+	}
+	if len(reasons) > 0 {
+		h.LastError = strings.Join(reasons, "; ")
 	}
 	e.statsMu.Lock()
 	if e.lastError != "" && h.LastError == "" {

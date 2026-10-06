@@ -3590,3 +3590,95 @@ peerless and with `--peers` - so the new nav gate is not a Chromium-only
 observation. Verified in the live browser at 800px: title is one lock, all
 five labels render on one line, three duplicate Refresh controls gone, banner
 hidden in the idle state.
+## Batch Z39 - every discovery bind is best-effort (2026-10-06)
+
+### What was wrong, and why the vocabulary existed for a state that could not occur
+
+`Engine.Start` made three binds, and they were not equal. A failed mDNS bind was
+recorded and the engine carried on. A failed subnet-broadcast bind called
+`markStartFailed()`, cleared `started` and returned an error -- and because
+broadcast was bound *first*, that return also meant mDNS was never attempted.
+
+So the asymmetry was not "one mechanism is preferred". It was "one mechanism
+unconditionally vetoes the other". Something holding UDP 9879 silenced both, on
+a port that sits below the ephemeral range on every platform, so the realistic
+trigger is a deliberate listener or endpoint security rather than chance.
+
+The consequence was larger than the port conflict. `Degraded` is defined as
+`Running && !(Broadcast || Multicast)`, and tracing it:
+
+- `Start` got past the broadcast bind -> `broadcastBound = 1` -> `Usable` -> not degraded
+- `Start` failed at the broadcast bind -> `started = false` -> not running -> not degraded
+
+There was no path where `Running == true && Broadcast == false` except the few
+microseconds between setting `started` and setting `broadcastBound` -- a race
+window, not a product state. So `Health.Degraded`, the "discovery cannot reach
+this network" sentence, the dashboard's degraded card, and the Hub watcher's
+degraded and recovered log transitions all described something the product could
+never do. Every gate for them drove a `Health` literal directly, which is why
+they were green.
+
+This is the third time in this batch sequence that a green gate was measuring
+something other than the claim. `watchDiscoveryHealth` was never called; the
+watcher reported the wrong transition; now a whole state was unreachable. The
+common shape is a test that constructs the interesting value by hand instead of
+producing the condition.
+
+### The fix, and the two bugs it would have introduced
+
+Binds are now all best-effort. Each failure is recorded and the engine continues
+on whatever opened. Making that change alone would have introduced two defects,
+both of which the gates below exist to catch:
+
+**A nil socket in `listenLoop`.** `listenLoop` was started unconditionally with
+`e.udpLn`. With a best-effort bind that can be nil, and `ReadFromUDP` on a nil
+`*net.UDPConn` returns EINVAL from every read. The loop would burn through its
+50-error give-up threshold, count fifty listen errors and mark the broadcast
+loop stopped -- reporting a fault for a socket that was never opened, which is
+the same class of invented fault as the shutdown bug in the previous batch.
+Guarded.
+
+**Beacons counted for writes that reached nobody.** `broadcastBeacon` sent to
+the subnet broadcast address and to the mDNS group unconditionally. A UDP write
+to a port nobody is listening on *succeeds* -- no error, no delivery. So a hub
+with one transport closed would have counted beacons it never actually sent and
+reported a healthy engine that no peer can see, which is precisely the failure
+`BeaconsSent` was added to expose. It now sends only over bound transports, and
+`BeaconsSent` only rises when something was written.
+
+`Health.LastError` joins both bind reasons. When both transports fail, naming
+only one would leave the user guessing which half of their network is blocked.
+
+### Making the unreachable state reachable in a test
+
+The degraded gate had to stop skipping. Occupying the broadcast port is
+deterministic, but the mDNS group cannot be occupied the same way: a multicast
+listener on 224.0.0.251:5353 is shared by design, and every other mDNS responder
+on the machine already holds it.
+
+Rather than mutate the package-level `DefaultMulticastAddr` -- which is a const,
+so the first attempt did not even compile, and would have leaked a broken address
+into every other test in the package anyway -- `DiscoveryConfig.MulticastAddr`
+was added as an explicit override. The test points the engine at TEST-NET-3
+(203.0.113.255, reserved by RFC 5737, never a real multicast group), which is a
+real bind failure from the engine's point of view. The gate now **runs** instead
+of skipping, and asserts the degraded wording, both reasons in `LastError`, and
+that no beacon was counted.
+
+Asserting this through a hand-built `Health` value would have proved only that
+`describeHealth` has words for the state, not that the engine can reach it. That
+distinction is the whole point of this batch.
+
+### Red proof
+
+Restoring only the fatal abort -- the single `if` body -- fails the first gate:
+
+    binds_test.go:64: engine does not report running after a best-effort
+                     bind failed
+
+### Evidence
+
+`gofmt -l .` clean, `go vet ./...`, staticcheck v0.8.1 exit 0,
+`go test -count=1 ./...` green across 14 packages, `-race` on discovery and hub,
+`encgate`, `docgate`, and the browser harness across all six runs. KNOWN-LIMITATIONS
+3.17 is closed rather than reworded, with the resolved row recording the evidence.

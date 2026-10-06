@@ -70,6 +70,21 @@ type DiscoveryConfig struct {
 	Interval      time.Duration // Default: 3s
 	TTL           time.Duration // Default: 15s
 	BroadcastPort int           // Fallback UDP broadcast port (default: 9879)
+	// MulticastAddr overrides the RFC 6762 mDNS group. Empty means
+	// DefaultMulticastAddr. It exists so the degraded path -- running with
+	// neither transport open -- can be produced for real in a gate, by pointing
+	// the engine at an address this host cannot join. Asserting the state
+	// through a hand-built Health value instead proves only that describeHealth
+	// has words for it, not that the engine can ever get there.
+	MulticastAddr string
+}
+
+// multicastGroup returns the mDNS group this engine should use.
+func (c DiscoveryConfig) multicastGroup() string {
+	if c.MulticastAddr != "" {
+		return c.MulticastAddr
+	}
+	return DefaultMulticastAddr
 }
 
 // beaconPayload is the unauthenticated advertisement. It deliberately carries
@@ -229,18 +244,35 @@ func (e *Engine) Start(parent context.Context) error {
 	e.cancel = cancel
 	e.closeMu.Unlock()
 
-	// 1. Bind UDP broadcast listener (port 9879 or configured)
+	// Every bind below is best-effort, and that is a deliberate reversal.
+	//
+	// They used to be asymmetric: a failed mDNS bind was recorded and the engine
+	// carried on, but a failed subnet-broadcast bind aborted Start outright --
+	// and because broadcast was bound first, that also meant mDNS was never
+	// even attempted, even when 5353 was free and would have worked. Two
+	// independent mechanisms, one unconditionally vetoing the other, so a
+	// process holding UDP 9879 silenced both.
+	//
+	// The engine now binds what it can and reports the rest. Beyond making a
+	// hub discoverable over mDNS when the broadcast port is taken, this is what
+	// makes Health.Degraded reachable at all: Degraded is "running with neither
+	// transport bound", which the old abort-on-broadcast-failure path could
+	// never produce. The "discovery cannot reach this network" wording, the
+	// dashboard's degraded card, and the Hub's degraded/recovered log
+	// transitions were all reachable only in tests.
+
+	// 1. Subnet broadcast listener (port 9879 or configured)
 	bcastAddr := &net.UDPAddr{IP: net.IPv4zero, Port: e.cfg.BroadcastPort}
-	udpLn, err := net.ListenUDP("udp4", bcastAddr)
-	if err != nil {
-		cancel()
-		e.markStartFailed()
-		return fmt.Errorf("listen udp broadcast on %d: %w", e.cfg.BroadcastPort, err)
+	if udpLn, bErr := net.ListenUDP("udp4", bcastAddr); bErr != nil {
+		reason := fmt.Sprintf("subnet broadcast could not open UDP %d: %v", e.cfg.BroadcastPort, bErr)
+		e.stats.bcastBindError.Store(truncateError(reason))
+		e.noteError(fmt.Errorf("listen udp broadcast on %d: %w", e.cfg.BroadcastPort, bErr))
+	} else {
+		e.closeMu.Lock()
+		e.udpLn = udpLn
+		e.closeMu.Unlock()
+		atomic.StoreInt32(&e.stats.broadcastBound, 1)
 	}
-	e.closeMu.Lock()
-	e.udpLn = udpLn
-	e.closeMu.Unlock()
-	atomic.StoreInt32(&e.stats.broadcastBound, 1)
 
 	// 2. Multicast listener on 224.0.0.251:5353.
 	//
@@ -249,13 +281,14 @@ func (e *Engine) Start(parent context.Context) error {
 	// discovery with no explanation of why nothing was being found. The error
 	// is now recorded and reported through Health, and the bind state is
 	// tracked so Health can name the one engine that is actually working.
-	mcastAddr, mErr := net.ResolveUDPAddr("udp4", DefaultMulticastAddr)
+	group := e.cfg.multicastGroup()
+	mcastAddr, mErr := net.ResolveUDPAddr("udp4", group)
 	if mErr != nil {
-		e.stats.mcastBindError.Store(truncateError("resolve mDNS group: " + mErr.Error()))
-		e.noteError(fmt.Errorf("resolve mDNS group %s: %w", DefaultMulticastAddr, mErr))
+		e.stats.mcastBindError.Store(truncateError("mDNS unavailable: " + mErr.Error()))
+		e.noteError(fmt.Errorf("resolve mDNS group %s: %w", group, mErr))
 	} else if mcastLn, mListenErr := net.ListenMulticastUDP("udp4", nil, mcastAddr); mListenErr != nil {
 		e.stats.mcastBindError.Store(truncateError("mDNS unavailable: " + mListenErr.Error()))
-		e.noteError(fmt.Errorf("listen mDNS on %s: %w", DefaultMulticastAddr, mListenErr))
+		e.noteError(fmt.Errorf("listen mDNS on %s: %w", group, mListenErr))
 	} else {
 		e.closeMu.Lock()
 		e.mcastLn = mcastLn
@@ -265,21 +298,35 @@ func (e *Engine) Start(parent context.Context) error {
 		go e.listenLoop(mcastLn, listenMulticast)
 	}
 
-	// 3. Create outbound UDP socket for transmission
-	outConn, outErr := net.ListenUDP("udp4", nil)
-	if outErr != nil {
-		e.closeSockets()
-		cancel()
-		e.markStartFailed()
-		return fmt.Errorf("listen outbound udp: %w", outErr)
+	// 3. Outbound UDP socket for transmission.
+	//
+	// Not fatal either: without it we cannot announce, but we can still listen,
+	// and a half-working engine that says so beats an engine that refuses to
+	// start and takes the healthy listener down with it. broadcastBeacon
+	// already returns early on a nil connection, so nothing is written into the
+	// void.
+	if outConn, outErr := net.ListenUDP("udp4", nil); outErr != nil {
+		e.noteError(fmt.Errorf("listen outbound udp: %w", outErr))
+	} else {
+		e.closeMu.Lock()
+		e.outConn = outConn
+		e.closeMu.Unlock()
 	}
-	e.closeMu.Lock()
-	e.outConn = outConn
-	e.closeMu.Unlock()
 
-	// 4. Start listener on primary broadcast socket
-	e.wg.Add(1)
-	go e.listenLoop(e.udpLn, listenBroadcast)
+	// 4. Start the broadcast listener, but only if that socket exists.
+	//
+	// The guard is required by the change above, not defensive padding: with a
+	// best-effort bind, e.udpLn can now be nil here. listenLoop on a nil
+	// *net.UDPConn returns EINVAL from every read, so it would burn through the
+	// give-up threshold, count fifty listen errors and mark the broadcast loop
+	// stopped -- inventing a fault for a socket that was never opened.
+	e.closeMu.Lock()
+	bcastLn := e.udpLn
+	e.closeMu.Unlock()
+	if bcastLn != nil {
+		e.wg.Add(1)
+		go e.listenLoop(bcastLn, listenBroadcast)
+	}
 
 	// 5. Start advertising and pruning loop
 	e.wg.Add(1)
@@ -601,58 +648,77 @@ func (e *Engine) broadcastBeacon() {
 	}
 
 	// 1. Broadcast to 255.255.255.255:port
-	send(&net.UDPAddr{IP: net.IPv4bcast, Port: e.cfg.BroadcastPort})
+	//
+	// Only over a transport that is actually open. A write to a port nobody is
+	// listening on still succeeds -- UDP gives no delivery guarantee and no
+	// error -- so beaconing a closed transport would count as sent while
+	// reaching nobody, which is precisely the "looks healthy, is invisible"
+	// failure this counter exists to expose.
+	if e.transportBound(&e.stats.broadcastBound) {
+		send(&net.UDPAddr{IP: net.IPv4bcast, Port: e.cfg.BroadcastPort})
 
-	// 2. Broadcast to each interface's directed subnet broadcast address
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		// Interface enumeration failing means the directed broadcasts are
-		// skipped entirely. Previously silent, and the reason a hub behind a
-		// /16 or an unusual netmask was invisible to itself.
-		e.noteError(fmt.Errorf("enumerate interfaces for directed broadcast: %w", err))
-		e.countSendError()
-	} else {
-		for _, iface := range ifaces {
-			if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
-				continue
-			}
-			addrs, aErr := iface.Addrs()
-			if aErr != nil {
-				e.countSendError()
-				continue
-			}
-			for _, addr := range addrs {
-				ipnet, ok := addr.(*net.IPNet)
-				if !ok || ipnet.IP.To4() == nil {
+		// 2. Broadcast to each interface's directed subnet broadcast address
+		ifaces, err := net.Interfaces()
+		if err != nil {
+			// Interface enumeration failing means the directed broadcasts are
+			// skipped entirely. Previously silent, and the reason a hub behind a
+			// /16 or an unusual netmask was invisible to itself.
+			e.noteError(fmt.Errorf("enumerate interfaces for directed broadcast: %w", err))
+			e.countSendError()
+		} else {
+			for _, iface := range ifaces {
+				if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
 					continue
 				}
-				ip4 := ipnet.IP.To4()
-				mask := ipnet.Mask
-				if len(mask) != 4 {
+				addrs, aErr := iface.Addrs()
+				if aErr != nil {
+					e.countSendError()
 					continue
 				}
-				bcastIP := net.IPv4(
-					ip4[0]|^mask[0],
-					ip4[1]|^mask[1],
-					ip4[2]|^mask[2],
-					ip4[3]|^mask[3],
-				)
-				send(&net.UDPAddr{IP: bcastIP, Port: e.cfg.BroadcastPort})
+				for _, addr := range addrs {
+					ipnet, ok := addr.(*net.IPNet)
+					if !ok || ipnet.IP.To4() == nil {
+						continue
+					}
+					ip4 := ipnet.IP.To4()
+					mask := ipnet.Mask
+					if len(mask) != 4 {
+						continue
+					}
+					bcastIP := net.IPv4(
+						ip4[0]|^mask[0],
+						ip4[1]|^mask[1],
+						ip4[2]|^mask[2],
+						ip4[3]|^mask[3],
+					)
+					send(&net.UDPAddr{IP: bcastIP, Port: e.cfg.BroadcastPort})
+				}
 			}
 		}
 	}
 
-	// 3. Also multicast to 224.0.0.251:5353 if mDNS is open
-	if mcastAddr, mErr := net.ResolveUDPAddr("udp4", DefaultMulticastAddr); mErr == nil {
-		send(mcastAddr)
-	} else {
-		e.noteError(fmt.Errorf("resolve mDNS group for beacon: %w", mErr))
+	// 3. Also multicast to 224.0.0.251:5353, which is what carries discovery
+	// when subnet broadcast could not be opened at all.
+	if e.transportBound(&e.stats.multicastBound) {
+		if mcastAddr, mErr := net.ResolveUDPAddr("udp4", e.cfg.multicastGroup()); mErr == nil {
+			send(mcastAddr)
+		} else {
+			e.noteError(fmt.Errorf("resolve mDNS group for beacon: %w", mErr))
+		}
 	}
 
 	atomic.AddInt64(&e.stats.sendErrors, int64(failures))
+	// Counted only when something was actually written. An engine with no
+	// transport open must not accumulate "beacons sent" it never sent.
 	if sent > 0 {
 		e.countSend()
 	}
+}
+
+// transportBound reads a bound flag. It takes the field rather than a bool so
+// the beacon path cannot accidentally consult a stale copy.
+func (e *Engine) transportBound(flag *int32) bool {
+	return atomic.LoadInt32(flag) == 1
 }
 
 func (e *Engine) pruneStaleNodes() {
@@ -665,12 +731,6 @@ func (e *Engine) pruneStaleNodes() {
 			delete(e.nodes, k)
 		}
 	}
-}
-
-func (e *Engine) markStartFailed() {
-	e.startMu.Lock()
-	e.started = false
-	e.startMu.Unlock()
 }
 
 func (e *Engine) closeSockets() {

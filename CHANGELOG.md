@@ -75,6 +75,18 @@ rollback procedures.
   cloning the repository. The original plan lives under gitignored `temp/`.
 
 ### Changed
+- **A busy port no longer costs you discovery on both paths.** Discovery binds
+  two independent transports — subnet broadcast on `9879` and mDNS on `5353` —
+  and a failure in one used to disable the other, because the broadcast bind
+  happened first and aborted startup outright. Anything holding `9879` silenced
+  mDNS too, even though it was free. Every bind is now optional: the engine
+  binds what it can, says why the rest failed, and keeps going, so a hub with a
+  taken broadcast port still finds peers over mDNS. Beacons are also only sent
+  over transports that are actually open, since a UDP write to a port nobody is
+  listening on reports success while delivering nothing — which made a hub
+  look healthy while being invisible. This also unblocks the dashboard's
+  "discovery cannot reach this network" warning and the Hub's degraded/recovered
+  log lines, which described a state the product could not actually reach.
 - **The dashboard no longer shows a broken nav bar, two padlocks, filler copy, or
   duplicate buttons.** All four were visible in normal use while every automated
   check passed. The section tabs wrapped every label onto a second line — five
