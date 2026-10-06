@@ -211,11 +211,17 @@ func TestWebDashboard_ActionDialogMechanics(t *testing.T) {
 // list that only says "nothing here" leaves the user with no route forward;
 // the plan's own rule is one next action per empty state.
 func TestWebDashboard_EmptyStatesOfferANextAction(t *testing.T) {
+	// Each region must name a route FORWARD, not a way to re-read the empty
+	// list. This previously asserted `load-recent` for the inbox, which pinned
+	// a Refresh button that the card header already carries 600px above it --
+	// two identical controls, one of them useless. Re-fetching a list that is
+	// visibly empty is not a next action, so the assertion now names the action
+	// that actually moves the user forward.
 	regions := []struct {
 		id    string
 		needs string
 	}{
-		{"receivedDropsList", "load-recent"},
+		{"receivedDropsList", "goto-peers"},
 		{"authorizationsList", "goto-relay"},
 		{"transfersList", "goto-drop"},
 		{"peersList", "open-pair-modal"},
@@ -228,6 +234,13 @@ func TestWebDashboard_EmptyStatesOfferANextAction(t *testing.T) {
 		}
 		if !strings.Contains(inner, "data-action") {
 			t.Errorf("#%s offers an empty state with no action in it", r.id)
+			continue
+		}
+		// The `needs` column was declared and then never read: this loop only
+		// checked that *some* action existed, so the region could have carried
+		// the wrong one and the gate would still be green. Now it is enforced.
+		if !strings.Contains(inner, `data-action="`+r.needs+`"`) {
+			t.Errorf("#%s empty state does not offer its route forward (%q)", r.id, r.needs)
 		}
 	}
 

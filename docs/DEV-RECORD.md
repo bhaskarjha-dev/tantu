@@ -3467,3 +3467,125 @@ feature that is off cannot be observed, so its correctness is not a property of
 its tests -- it is a property of whether anything calls it. Turning it on is
 what made it possible to be wrong about it, and that is the point at which the
 shutdown path deserved the same scrutiny as the startup path.
+## Batch Z38 - the defects that 50 passing checks did not see (2026-10-06)
+
+### Why this batch exists
+
+A user opened the dashboard and named four things. Three of them were real
+defects; one was a feature request that cannot be built as described. The real
+lesson is not the fixes, it is that **every gate was green while all four were
+present**, so the question worth answering is why the gates were blind.
+
+### What was actually wrong, measured rather than argued
+
+Read the page in a real browser at its default 800px viewport and measure it.
+
+**The nav bar.** All five tab labels had broken onto a second line - the emoji
+above, the words below. Every button measured 64px tall where one line is 46px,
+and the nav was 80px of the page's most valuable vertical space. The cause is
+that a flex item shrinks below its content width by default and `.tab-btn` never
+said otherwise. `.tabs-list` already carried `overflow-x: auto`, so horizontal
+scroll was the design intent all along; it simply never got the chance, because
+the items compressed instead of overflowing. Two declarations fix it.
+
+**Two padlocks.** The favicon is a lock and the title was `` tantu hub``. A
+title glyph is text rather than an icon, so it rendered as a second emoji beside
+the favicon, in the browser tab, above a page whose header shows a third.
+
+**The filler banner.** `Choose text, an image, or a file above. The destination
+is shown before anything is sent.` restates the layout and repeats a safety
+property already visible on screen. It was not an info-icon problem. The honest
+answer to "what is the use of this" is: none, and the fix is for it to be absent.
+It now renders only when it has something to steer.
+
+**Three duplicate Refresh buttons.** Received Items, Recent Authorizations and
+Transfers each carried a "Refresh" in the empty state *and* one in their own card
+header about 600px above it. This arrived with the empty-state work itself: it
+added a next action per empty state without noticing the header already had that
+one. `TestWebDashboard_EmptyStatesOfferANextAction` then pinned the duplicate,
+because it asserted `load-recent` for the inbox - re-fetching a list that is
+visibly empty is not a route forward. The assertion now names `goto-peers`, which
+is what its own comment says it means ("no route forward"). That column was also
+declared and never read: the loop checked that *some* action existed, so the
+region could have carried the wrong one and the gate stayed green.
+
+### Why the harness was blind, which is the real finding
+
+Fifty checks passed over all of it. Three separate reasons, each worth keeping:
+
+1. **No gate asserted a rendered outcome for the nav.** The harness measures
+   contrast, focus, and ARIA state. Nothing asked whether a label fits on one
+   line, so a layout that consumed the space of ten tabs was simply not the
+   subject of any check.
+
+2. **The viewport had drifted.** The zoom section sets 1280x900 and never
+   restores it, so every check after it ran at a width where the nav defect
+   cannot appear. When the new gate was first written it inherited that viewport
+   and reported one rendered line whether or not the bug existed - a gate that
+   could not fail, which is the exact failure mode this repository's own rules
+   warn about. It now sets 800x600 explicitly, measures, and restores the
+   previous viewport.
+
+3. **The wrap detector was wrong twice before it was right.** First it compared
+   `scrollHeight` against `line-height * 1.6`, which flags every tab because
+   `scrollHeight` includes the button's padding. Then it compared the button
+   height against padding + line-height, which flagged every tab because a
+   border and a taller emoji glyph make that arithmetic unreliable. Both versions
+   failed on a correct page. It now counts the rendered lines of the label with a
+   `Range`, which is the direct evidence and depends on no box-model arithmetic.
+
+The red proof is the part that matters: with the CSS removed and the viewport
+pinned, the gate reports two rendered lines for all five labels.
+
+### The contrast floor was load-bearing on the banner
+
+Hiding the banner dropped the contrast sweep from 26 measured targets to 21, and
+the floor of 26 failed. Before adjusting it, the cause was isolated by reverting
+only that one behaviour, which returned the count to 26 with nothing else
+changed.
+
+`#nextActionBanner` sits in the page header, outside the tab panes, so the sweep
+measured it once per tab - five measurements of a single element. Hiding it
+correctly removes five. The floor is now 21, with that reasoning recorded at the
+constant so nobody re-derives it, and the sweep now reports *which* selectors
+failed to render, because "21 of 26" on its own was not diagnosable.
+
+This is the second time a count-based gate turned out to encode an incidental
+property rather than the intended one.
+
+### The feature request: a button that lists the browser's OAuth tabs
+
+The proposal was that a button should list every open tab whose URL qualifies for
+OAuth relay, so the user could click one instead of using the bookmarklet or
+pasting a URL.
+
+**A web page cannot do this**, and that is a platform fact rather than a design
+opinion. Verified rather than asserted, in the live page: `window.chrome` is an
+empty object, `chrome.tabs` and `chrome.runtime` are both `undefined`, and
+`canEnumerate` is false. Tab enumeration exists only to a browser *extension*
+holding the `tabs` permission. The only sanctioned cross-tab signal is
+`document.visibilityState`, which reports whether *this* tab is visible and says
+nothing about any other.
+
+Worth asking what the proposal was actually for, because the answer changes the
+design. The friction is not "which tab is the OAuth one" - it is "copy this long
+URL out of the address bar and paste it somewhere". The bookmarklet already
+removes that entirely: from the OAuth tab itself, one click opens a confirmation
+popup carrying that tab's URL. A tab list would reintroduce the very step
+(bookmarklet) that avoids, while adding a permission surface.
+
+So the honest recommendation is not "tab scanning, but smaller". It is that the
+mechanism is right and **undiscoverable**: one button, a wall of prose, and no
+indication that it is the primary path. If the goal is one-click relaying, the
+work belongs in making the bookmarklet obvious and the manual forwarder
+obviously the fallback. Recorded here rather than built, because it is a product
+decision about emphasis, not a defect.
+
+### Evidence
+
+`gofmt -l .` clean, `go vet ./...`, staticcheck v0.8.1 exit 0,
+`go test -count=1 ./...` green across 14 packages, `encgate`, `docgate`.
+Browser harness 51/51 on chromium in both topologies, with firefox and webkit
+run separately. Verified in the live browser at 800px: title is one lock, all
+five labels render on one line, three duplicate Refresh controls gone, banner
+hidden in the idle state.

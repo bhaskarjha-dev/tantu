@@ -75,6 +75,19 @@ rollback procedures.
   cloning the repository. The original plan lives under gitignored `temp/`.
 
 ### Changed
+- **The dashboard no longer shows a broken nav bar, two padlocks, filler copy, or
+  duplicate buttons.** All four were visible in normal use while every automated
+  check passed. The section tabs wrapped every label onto a second line — five
+  tabs occupied the space of ten, because a flex item shrinks below its content
+  width by default and the tab bar already had the horizontal scroll that was
+  meant to handle narrow widths. The browser tab showed two padlocks, since the
+  favicon is a lock and the page title was also a lock. The next-action banner
+  always showed a sentence that restated the page ("Choose text, an image, or a
+  file above…"); it now appears only when it has something to steer, which is the
+  answer to whether that copy was useful: it was not, so it is gone rather than
+  moved behind an icon. Received Items, Recent Authorizations and Transfers each
+  had a "Refresh" in their empty state *and* in their own card header above it;
+  each empty state now offers exactly one real next action.
 - **The Hub now actually watches discovery health.** The watcher that reports
   discovery transitions existed, was documented as running, and was called by
   nothing — staticcheck found it on CI's first run after the discovery-health

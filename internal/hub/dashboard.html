@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%94%90%3C/text%3E%3C/svg%3E">
-<title>🔐 tantu hub</title>
+<title>tantu hub</title>
 <style>
   :root {
     --bg: #090b10;
@@ -170,6 +170,13 @@
     align-items: center;
     gap: 0.5rem;
     transition: all 0.2s;
+    /* Never let a tab label wrap. .tabs-list already scrolls horizontally, so
+       the intended narrow-screen behaviour was always scroll; without these
+       two the flex items simply shrank instead and every label broke onto a
+       second line, costing ~35px of nav height and making five tabs look like
+       ten. Measured at 800px: each button was 64px tall instead of ~45px. */
+    white-space: nowrap;
+    flex-shrink: 0;
   }
   .tab-btn:hover {
     color: var(--text);
@@ -1184,7 +1191,11 @@
               <strong>Nothing received yet</strong>
               Snippets and files your peer sends appear here in real time.<br>Items are session-only and clear when the Hub restarts.
               <div style="margin-top:0.9rem; display:flex; gap:0.5rem; justify-content:center; flex-wrap:wrap;">
-                <button type="button" class="btn-sm" data-action="load-recent">Refresh inbox</button>
+                <!-- No "Refresh" here: the card header already carries one
+                     directly above, and two identical controls 600px apart read
+                     as two different actions. An empty state earns a button by
+                     offering a route forward, not by re-fetching the nothing
+                     that is already on screen. -->
                 <button type="button" class="btn-sm" data-action="goto-peers">Check the peer is paired</button>
               </div>
             </div>
@@ -1234,7 +1245,6 @@
             Every login you relay is recorded here with its peer and origin host - never the URL, code, or token.
             <div style="margin-top:0.9rem; display:flex; gap:0.5rem; justify-content:center; flex-wrap:wrap;">
               <button type="button" class="btn-sm" data-action="goto-relay">Relay a login URL</button>
-              <button type="button" class="btn-sm" data-action="load-authorizations">Refresh</button>
             </div>
           </div>
         </div>
@@ -1389,7 +1399,6 @@
             This tab is the sender-side truth for this Hub: destination, state, and whether a retry is safe.
             <div style="margin-top:0.9rem; display:flex; gap:0.5rem; justify-content:center; flex-wrap:wrap;">
               <button type="button" class="btn-sm" data-action="goto-drop">Send something</button>
-              <button type="button" class="btn-sm" data-action="load-transfers">Refresh</button>
             </div>
           </div>
         </div>
@@ -3150,12 +3159,21 @@
       } else if (pendingFile) {
         html = 'Review the file preview below, confirm the destination, then Send.';
       } else {
-        html = 'Choose text, an image, or a file above. The destination is shown before anything is sent.';
+        // Nothing to steer, so say nothing. This branch used to render
+        // "Choose text, an image, or a file above. The destination is shown
+        // before anything is sent.", which restated the layout and repeated a
+        // safety property the user can already see on screen. A banner that is
+        // always populated is a banner nobody reads, and the states that DO
+        // need it (no peer paired, a file waiting) would be indistinguishable
+        // from it. An info icon or tooltip would have been worse still: the
+        // same filler, now hidden behind a control nobody opens.
+        html = '';
       }
       if (html === lastNextActionHTML) return;
       lastNextActionHTML = html;
       banner.innerHTML = html;
-      banner.style.display = 'block';
+      // An empty banner must not stay as a padded strip of dead space.
+      banner.style.display = html ? 'block' : 'none';
     }
 
     // The sticky header plus tab bar is 129px at desktop width and taller on
@@ -3339,17 +3357,17 @@
     const EMPTY_TRANSFERS_HTML = emptyStateHTML(
       'No transfers yet',
       'This tab is the sender-side truth for this Hub: destination, state, and whether a retry is safe.',
-      [{ action: 'goto-drop', label: 'Send something' }, { action: 'load-transfers', label: 'Refresh' }]);
+      [{ action: 'goto-drop', label: 'Send something' }]);
 
     const EMPTY_AUTHORIZATIONS_HTML = emptyStateHTML(
       'No authorizations recorded',
       'Every login you relay is recorded here with its peer and origin host - never the URL, code, or token.',
-      [{ action: 'goto-relay', label: 'Relay a login URL' }, { action: 'load-authorizations', label: 'Refresh' }]);
+      [{ action: 'goto-relay', label: 'Relay a login URL' }]);
 
     const EMPTY_INBOX_HTML = emptyStateHTML(
       'Nothing received yet',
       'Snippets and files your peer sends appear here in real time. Items are session-only and clear when the Hub restarts.',
-      [{ action: 'load-recent', label: 'Refresh inbox' }, { action: 'goto-peers', label: 'Check the peer is paired' }]);
+      [{ action: 'goto-peers', label: 'Check the peer is paired' }]);
 
     function renderTransfers(items) {
       const list = document.getElementById('transfersList');

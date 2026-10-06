@@ -444,15 +444,28 @@ async function main() {
     // tab, in both themes (visibility must not depend on the theme). It is
     // also the canary for the machinery itself — if tab activation breaks,
     // whole panes go display:none and the count drops below it.
-    const CONTRAST_MIN_MEASURED = 26;
+    //
+    // This was 26 and is now 21 for one specific reason, so that nobody has to
+    // rediscover it: #nextActionBanner sits in the page header, outside the tab
+    // panes, so it used to be measured once per tab — five measurements of the
+    // same element. It now renders only when it has something to steer, because
+    // a banner that is always populated is one nobody reads, and in the common
+    // case (a peer is connected, nothing is staged) it correctly stays hidden.
+    // That removes exactly those five. Verified by reverting only that one
+    // behaviour, which returned the count to 26 with no other change present.
+    const CONTRAST_MIN_MEASURED = 21;
     const measured = { dark: 0, light: 0 };
+    // Which selectors did not render, per theme. Without this the floor check
+    // can only say "21 of 26" and never which five went missing, so a drop is
+    // only diagnosable by bisecting the dashboard by hand.
+    const notRendered = { dark: [], light: [] };
     for (const s of ['dark', 'light']) {
       await scheme(s); await sleep(200);
       for (const t of ['tab-drop', 'tab-relay', 'tab-peers', 'tab-transfers', 'tab-logs']) {
         await tab(t);
         for (const sel of TARGETS) {
           const v = await CONTRAST(sel);
-          if (v) measured[s]++;
+          if (v) measured[s]++; else notRendered[s].push(t + ' ' + sel);
           if (v && v.ratio < v.need) {
             // A failing contrast number alone says what happened, not why:
             // carry the element's ancestry and every matching color rule, so
@@ -482,7 +495,8 @@ async function main() {
       measured.dark === measured.light, JSON.stringify(measured));
     check('contrast sweep measured a full complement of rendered targets',
       measured.light >= CONTRAST_MIN_MEASURED,
-      JSON.stringify(measured) + ' (floor ' + CONTRAST_MIN_MEASURED + ')');
+      JSON.stringify(measured) + ' (floor ' + CONTRAST_MIN_MEASURED + ') missing: ' +
+      JSON.stringify(notRendered.light));
     console.log('uxtest: contrast measured ' + JSON.stringify(measured));
     await scheme('dark');
 
@@ -773,6 +787,67 @@ async function main() {
       !!(emptyNav && !emptyNav.missing && emptyNav.paneVisible && emptyNav.tabSelected && emptyNav.focused),
       JSON.stringify(emptyNav));
     await tab('tab-transfers');
+
+    // --- tab labels must not wrap ---
+    // Fifty checks passed over a nav bar where every one of the five labels had
+    // broken onto a second line, because a flex item shrinks below its content
+    // width by default and nothing in the CSS said not to. Each button measured
+    // 64px tall instead of 46px, so five tabs occupied the space of ten and the
+    // section bar was the second-largest element on the page. .tabs-list
+    // already scrolls horizontally, which is what narrow screens were always
+    // meant to do; this asserts the labels stay on one line so the scroll takes
+    // over instead.
+    //
+    // The viewport is set explicitly because it has to be. An earlier version of
+    // this check inherited whatever viewport the previous check left behind --
+    // 1280x900, set by the zoom section and never restored -- where the labels
+    // have ample room and never wrap, so the check could not fail for the
+    // reason it exists. 800px is the harness default and the width at which
+    // this was actually observed.
+    const tabWrapViewport = page.viewportSize();
+    await metrics(800, 600);
+    await sleep(250);
+    const tabWrap = await js(`(function(){
+      var out = [];
+      var btns = document.querySelectorAll('.tab-btn');
+      for (var i = 0; i < btns.length; i++) {
+        var b = btns[i];
+        var cs = getComputedStyle(b);
+        // Count the rendered lines of the label itself. Padding, borders and a
+        // taller emoji glyph all make arithmetic on getBoundingClientRect
+        // unreliable -- an earlier version of this check compared the button
+        // height against padding + line-height and reported a false wrap on
+        // every tab. The text's own client rects are the direct evidence.
+        var range = document.createRange();
+        range.selectNodeContents(b);
+        var rects = Array.prototype.slice.call(range.getClientRects());
+        var tops = {};
+        for (var j = 0; j < rects.length; j++) {
+          if (rects[j].width > 0 || rects[j].height > 0) {
+            tops[Math.round(rects[j].top)] = true;
+          }
+        }
+        var lines = Object.keys(tops).length;
+        out.push({
+          label: b.textContent.trim(),
+          lines: lines,
+          nowrap: cs.whiteSpace === 'nowrap'
+        });
+      }
+      var nav = document.querySelector('.tabs-nav');
+      return {tabs: out, navH: Math.round(nav.getBoundingClientRect().height)};
+    })()`);
+    const wrappedTabs = (tabWrap && tabWrap.tabs || []).filter(t => t.lines > 1);
+    // Only the line count is asserted. An earlier version also bounded the nav
+    // height, which cannot work: the nav is 16px of top padding plus a ~46px
+    // tab plus a border, so any bound under 63px is unsatisfiable regardless
+    // of wrapping. The label line count is the defect itself; the nav height
+    // is a consequence of it.
+    check('no tab label wraps onto a second line',
+      !!(tabWrap && tabWrap.tabs.length >= 5 && wrappedTabs.length === 0 &&
+         tabWrap.tabs.every(t => t.nowrap)),
+      JSON.stringify(tabWrap));
+    if (tabWrapViewport) { await metrics(tabWrapViewport.width, tabWrapViewport.height); await sleep(200); }
 
     // --- console hygiene ---
     // Three classes are harness/browser noise, each narrowly scoped:
