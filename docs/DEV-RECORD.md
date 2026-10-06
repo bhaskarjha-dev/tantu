@@ -3585,7 +3585,8 @@ decision about emphasis, not a defect.
 
 `gofmt -l .` clean, `go vet ./...`, staticcheck v0.8.1 exit 0,
 `go test -count=1 ./...` green across 14 packages, `encgate`, `docgate`.
-Browser harness 51/51 on chromium in both topologies, with firefox and webkit
-run separately. Verified in the live browser at 800px: title is one lock, all
+Browser harness **51/51 on all six runs** - chromium, firefox and webkit, each
+peerless and with `--peers` - so the new nav gate is not a Chromium-only
+observation. Verified in the live browser at 800px: title is one lock, all
 five labels render on one line, three duplicate Refresh controls gone, banner
 hidden in the idle state.
