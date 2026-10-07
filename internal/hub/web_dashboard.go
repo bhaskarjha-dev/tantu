@@ -495,6 +495,14 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 
 		page := strings.ReplaceAll(dashboardHTML, "{{VERSION}}", escapeHTMLText(HubVersion))
 		page = strings.ReplaceAll(page, "{{BOOKMARKLET_HREF}}", escapeHTMLText(bookmarkletJS))
+		// Without a capability the bookmarklet href is javascript:void(0), so the
+		// pill would render looking draggable and live while doing nothing. The
+		// page marks itself unavailable so the control can say why instead.
+		bookmarkletState := ""
+		if bookmarkletJS == "javascript:void(0)" {
+			bookmarkletState = "unavailable"
+		}
+		page = strings.ReplaceAll(page, "{{BOOKMARKLET_STATE}}", bookmarkletState)
 		// Do not make an unauthenticated page probe every sensitive endpoint
 		// just to discover that it needs the one-time bootstrap link. The
 		// HttpOnly cookie is intentionally invisible to JavaScript, so the

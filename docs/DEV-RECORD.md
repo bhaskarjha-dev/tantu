@@ -4127,3 +4127,80 @@ checks only mean something against a record that actually carries an id.
 
 This is the same class as the discovery gate macOS caught, one level up: not a
 wrong assertion but an assertion that could evaporate without anyone noticing.
+## Batch Z46 - user-visible work, after five batches of gate work (2026-10-07)
+
+### The decision
+
+Batches Z41 to Z45 were five consecutive rounds of hardening the gates. The
+reasoning was sound -- the macOS run proved a gate of mine could assert a
+property of the host rather than of the product, and only CI caught it -- but
+there is a real risk in optimising the verification while the product sits still.
+Recorded in DEV-RECORD, then the gate work stopped.
+
+### 3.6: recovery instructions that could not recover
+
+Found by getting it wrong. Opening `127.0.0.1:9876` by hand produces the session
+banner, and the previous wording offered exactly two options: press `o` in the
+Hub terminal, or reload the page the Hub opened for you. Neither helps anyone who
+got there by typing the address, opening a bookmark, or starting from a new tab
+-- there is no Hub-opened tab to reload, and the `o` shortcut needs a terminal
+they may not have open. **The most likely way to reach that page by hand is the
+one its instructions cannot recover from.**
+
+Both messages now lead with `tantu dashboard`, which works in every case: it
+finds the running Hub, mints a fresh one-time link and prints it. The reload hint
+survives as a secondary, explicitly scoped to "if the Hub *did* open this tab".
+
+The page still cannot heal itself, and that is deliberate rather than an
+oversight. `/api/dashboard-url` mints a fresh link but sits behind the same
+capability check that was just lost. Exempting it would let any local page,
+including a cross-site request to 127.0.0.1, obtain a live dashboard link. So
+the fix is to say the right thing, not to make the wrong thing possible.
+
+### The relay tab: primary vs fallback, and a button that did nothing
+
+The bookmarklet and the manual forwarder were presented as equals. They are not.
+The bookmarklet relays the page you are already looking at, in one click, with
+no URL to copy; the forwarder requires selecting a long URL out of an address
+bar and pasting it. A user choosing between two controls that look equally hard
+will pick the wrong one. The bookmarklet is now badged "One click -- recommended"
+and the forwarder "Fallback", and the copy says why rather than just which.
+
+A second defect sat behind it: without a dashboard capability the server renders
+`javascript:void(0)` as the href, so the pill looked draggable, looked live, and
+clicking it did nothing at all. An inert control presented as a working one. The
+page now marks itself unavailable and says why, pointing at the forwarder,
+which works either way.
+
+### A gate that was green because it matched the stylesheet
+
+`TestRelayPathsDeclareWhichIsPrimary` first checked for `path-label--fallback` as
+a substring. Deleting the badge from the markup left the gate green, because the
+class name is also in the CSS. Red proof caught it; the gate now asserts on the
+exact `<span class="path-label ...">` markup.
+
+That is the same defect class as the macOS discovery gate one level up -- an
+assertion that cannot fail for the reason it exists -- and it is the second time
+in this batch's history that a green gate turned out to be checking the wrong
+thing. Worth noting that red proof is what surfaced it, not a code review.
+
+An existing gate also caught a genuine regression in the same batch: the rewrite
+dropped the phrase "never expires" from the bookmarklet copy. That reassurance
+distinguishes a bookmark from a single-use ticket, which the surrounding test
+explicitly cares about, so it was restored rather than the assertion weakened.
+Dropping a real product point to satisfy a copy edit is the wrong trade in either
+direction.
+
+### Red proofs
+
+| Injection | Result |
+|---|---|
+| Revert the 3.6 recovery copy | `TestSessionRecoveryNamesACommandThatWorksFromAnywhere` fails, naming the old wording |
+| Remove the fallback badge from markup | `TestRelayPathsDeclareWhichIsPrimary` fails (only after the gate was fixed to match markup) |
+| Remove the primary badge from markup | fails on both the badge and on "One click" |
+| Server stops marking the bookmarklet unavailable | fails: "the pill can again look live and do nothing" |
+
+### Evidence
+
+`gofmt -l .` clean, `go vet ./...`, staticcheck v0.8.1 exit 0,
+`go test -race -count=1 ./...` green across 14 packages, `encgate`, `docgate`.

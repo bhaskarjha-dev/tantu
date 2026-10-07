@@ -411,6 +411,42 @@
     box-shadow: 0 4px 14px rgba(59, 130, 246, 0.4);
     cursor: move;
   }
+  /* No dashboard session means no bookmarklet: the server renders
+     javascript:void(0) so the href cannot carry a capability. Without this the
+     pill still looked draggable and live, and clicking it did nothing at all --
+     an inert control presented as a working one. */
+  .bookmarklet-box.unavailable .bookmarklet-btn {
+    background: var(--surface-hover);
+    color: var(--text-muted);
+    box-shadow: none;
+    cursor: not-allowed;
+  }
+  .bookmarklet-unavailable-note { display: none; }
+  .bookmarklet-box.unavailable .bookmarklet-unavailable-note { display: block; }
+  /* The bookmarklet is the primary path -- one click from the login page, with
+     no URL to copy. The manual forwarder is the fallback for anyone who cannot
+     install a bookmark. Labelling them was the fix; the copy made no such
+     distinction, so both looked equally hard. */
+  .path-label {
+    display: inline-block;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 0.2rem 0.55rem;
+    border-radius: 9999px;
+    margin-bottom: 0.6rem;
+  }
+  .path-label--primary {
+    background: rgba(59, 130, 246, 0.18);
+    color: var(--accent);
+    border: 1px solid rgba(59, 130, 246, 0.4);
+  }
+  .path-label--fallback {
+    background: var(--surface-hover);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+  }
   .hint-text {
     font-size: 0.85rem;
     color: var(--text-muted);
@@ -1077,7 +1113,7 @@
   <main class="tab-content" id="main" tabindex="-1">
     <div id="sessionBanner" role="alert" style="display: none; background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.4); color: #fbbf24; border-radius: 12px; padding: 0.85rem 1.25rem; margin-bottom: 1.25rem; font-size: 0.9rem;">
       ⚠️ <strong>Dashboard session not established.</strong>
-      <span id="sessionBannerDetail">Actions on this page will fail until you reconnect. Reopen the dashboard from the Hub terminal (press <kbd>o</kbd>) or reload the page the Hub opened for you.</span>
+      <span id="sessionBannerDetail">Actions on this page will fail until you reconnect. Run <code>tantu dashboard</code> in a terminal for a fresh link &mdash; that works whether or not the Hub opened this page. If the Hub <em>did</em> open this tab, reloading it is enough. Pressing <kbd>o</kbd> in the Hub terminal does the same thing.</span>
     </div>
     <!-- INBOUND PAIRING APPROVAL BANNER: the only action in the product that
          grants permanent mutual trust, so it is an announced status region
@@ -1207,16 +1243,19 @@
 
     <!-- TAB 2: OAUTH RELAY -->
     <div id="tab-relay" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-relay">
-      <div class="bookmarklet-box">
+      <div class="bookmarklet-box {{BOOKMARKLET_STATE}}">
+        <span class="path-label path-label--primary">One click &mdash; recommended</span>
         <a class="bookmarklet-btn" href="{{BOOKMARKLET_HREF}}">⚡ Tantu</a>
-        <div class="hint-text">Drag this button to your browser Bookmarks Bar. When logging in on any OAuth tab, click it, confirm in the popup, and the authorization is relayed back to your dev terminal. The saved bookmark never expires.</div>
-        <!-- The single-pointer alternative belongs next to the drag-only
-             affordance, not on a different tab: a user who cannot drag a button
-             should not have to go looking for the replacement. -->
-        <div class="hint-text" style="margin-top: 0.75rem;">Can&rsquo;t drag? Paste the URL in the forwarder below &mdash; it does the same thing.</div>
+        <div class="hint-text" style="margin-top: 0.75rem;">Drag <strong>⚡ Tantu</strong> to your Bookmarks Bar once. Then, on any login page, click it and confirm &mdash; that page&rsquo;s URL is relayed to your peer, with nothing to copy or paste. The saved bookmark never expires, and carries no ticket or secret.</div>
+        <p class="hint-text bookmarklet-unavailable-note" style="margin-top: 0.75rem;">The bookmark is unavailable because this page has no Hub session. Run <code>tantu dashboard</code> in a terminal for a fresh link, then drag this button. The forwarder below works either way.</p>
+        <!-- The fallback belongs next to the primary path, not on another tab:
+             a user who cannot install a bookmark should not have to go looking
+             for the alternative. -->
+        <div class="hint-text" style="margin-top: 0.75rem;">Can&rsquo;t drag, or on a managed browser? Paste the URL into the forwarder below &mdash; same result, one extra step.</div>
       </div>
 
       <div class="card">
+        <span class="path-label path-label--fallback">Fallback</span>
         <h2 class="card-title">⚡ Manual OAuth URL Forwarder</h2>
         <form data-action="relay-oauth" class="form-group">
           <input type="text" id="oauthUrlInput" aria-label="OAuth authorization URL" placeholder="Paste OAuth URL (https://accounts.google.com/o/oauth2/...)" required>
@@ -3589,7 +3628,7 @@
       if (!ready) {
         status.style.display = 'block';
         status.className = 'status-banner error';
-        status.textContent = '⚠️ Dashboard session not established. Reopen it from the Hub terminal.';
+        status.textContent = '⚠️ Not connected to the Hub. Run `tantu dashboard` in a terminal for a fresh link.';
         return;
       }
 

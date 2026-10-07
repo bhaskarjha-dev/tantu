@@ -75,6 +75,23 @@ rollback procedures.
   cloning the repository. The original plan lives under gitignored `temp/`.
 
 ### Changed
+- **The dashboard's recovery instructions can now actually recover.** If you
+  opened `127.0.0.1:9876` by hand — a bookmark, a new tab, a typed address —
+  the session banner offered only "press `o` in the Hub terminal" and "reload the
+  page the Hub opened for you". There was no Hub-opened page to reload, so the
+  most likely way to reach that page was the one its instructions could not
+  recover from. Both messages now lead with `tantu dashboard`, which finds the
+  running Hub and prints a fresh one-time link regardless of how you arrived. The
+  page still cannot heal itself: minting a new link needs the same capability
+  that was just lost, and making that available to an unauthenticated page would
+  hand a live dashboard link to anything able to reach the loopback port.
+- **The OAuth Relay tab now says which path to use, and stops showing a button
+  that does nothing.** The bookmarklet and the manual URL forwarder were
+  presented as equals, though the bookmarklet relays the page you are already on
+  in one click with nothing to copy. It is now marked as the recommended path and
+  the forwarder as the fallback. Separately, without a Hub session the
+  bookmarklet's link is inert but still looked draggable and live; the tab now
+  says why and points at the forwarder, which works either way.
 - **`tantu pair` no longer reuses the port your Hub already owns, or hangs
   silently when it does.** The collision guard compared the requested port against
   the literal default `9877` rather than against the port the running Hub
