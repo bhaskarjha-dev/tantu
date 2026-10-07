@@ -340,12 +340,6 @@ jobs:
       # two places that had to agree; a matrix entry adding a platform would
       # have needed both.
       ARCHIVE_EXT: ${{ matrix.archive_ext }}
-      # Resolved from the runner, not from a matrix literal. The archive glob
-      # must select exactly one file, and `*_linux_*.tar.gz` matches BOTH the
-      # amd64 and arm64 builds. Adding an arch to the matrix would fix that for
-      # today's runners and break the day a new one appears; deriving it means
-      # the job follows the machine it is on.
-      GOARCH: ${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}
     steps:
       - uses: actions/checkout@v7
       - name: Set up Go
@@ -367,6 +361,21 @@ jobs:
       - name: Run this platform's archive exactly as a user would
         run: |
           set -euo pipefail
+          # The archive glob must select exactly one file, and `*_linux_*.tar.gz`
+          # matches BOTH the amd64 and arm64 builds -- verified against a real
+          # dist/ tree, where it matched 2 of 6 artifacts on every platform. A
+          # matrix literal for the arch would fix that for today's runners and
+          # break the day a new one appears, so this is derived at run time from
+          # the Go toolchain, which is set up for the runner and therefore
+          # cannot disagree with it.
+          #
+          # `runner.arch` would read better but is not available here: it is
+          # step-scoped, and using it in this job's env block made GitHub reject
+          # the whole workflow with "Unrecognized named-value: 'runner'", so the
+          # job never started. That failure cost a push and is the reason this
+          # is a shell expansion rather than an expression.
+          GOARCH=$(go env GOARCH)
+          echo "selecting the $GOOS/$GOARCH archive"
           pattern="*_${GOOS}_${GOARCH}*${ARCHIVE_EXT}"
           # Exactly one archive must match, and it must be named for the
           # platform under test. `ls | head -1` would quietly take whichever
