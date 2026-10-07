@@ -4096,3 +4096,34 @@ a single bad network moment does not permanently downgrade the status line.
 Both reverted. That second one is the check the macOS failure asked for: it
 distinguishes "the host refused every send" (acceptable, and now reported) from
 "the engine never tried" (a defect).
+### A security-adjacent gate that could silently stop running
+
+The macOS failure prompted a scan for gates that assume something about their
+environment rather than about the product, which is the same mistake that gate
+made. Eleven `t.Skip` sites were reviewed. One stood out:
+
+    TestWebDashboard_RelayActiveListsInFlightRelay
+    t.Skip("no relay reached the wire in this environment; ...")
+
+That gate asserts a submitted OAuth URL never appears in the active-relay
+listing. **A skip is a green test**, so whenever it could not observe the relay,
+the leak assertions silently did not run and the suite reported success.
+
+The cause was in its own premise. It drove the relay at peer `"no-such-peer"`,
+which is not in the store, so peer resolution failed immediately and the relay
+was never observably in-flight. The two skips were there to absorb that race
+rather than to report it.
+
+The fix makes the premise true instead of tolerating its absence: a registered
+peer pointing at **192.0.2.1** (TEST-NET-1, RFC 5737, reserved and never
+routable), so the dial hangs until the transport timeout and the relay holds in
+the "relaying" phase deterministically. Both skips are now `t.Fatal`, because a
+gate that cannot see its own subject has nothing left to report.
+
+The test went from polling for up to five seconds -- and sometimes skipping --
+to completing in 0.04 s with a real id-bearing entry: `operation_id=rl-0da3606625bb4317`.
+It now also asserts the observed entry is not an empty shell, since the leak
+checks only mean something against a record that actually carries an id.
+
+This is the same class as the discovery gate macOS caught, one level up: not a
+wrong assertion but an assertion that could evaporate without anyone noticing.

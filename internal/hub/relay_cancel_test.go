@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bhaskarjha-dev/tantu/internal/bridge"
+	"github.com/bhaskarjha-dev/tantu/internal/pairing"
 )
 
 // These tests cover the endpoint that makes an abandoned sign-in recoverable
@@ -145,11 +146,37 @@ func TestWebDashboard_RelayActiveListsInFlightRelay(t *testing.T) {
 	h, _, cleanup := startTestHub(t)
 	defer cleanup()
 
-	// Drive a relay that will sit waiting: an unroutable peer with a long
-	// timeout, so the coordinator holds an entry we can observe.
+	// Drive a relay that will sit waiting, so the coordinator holds an entry we can
+	// observe.
+	//
+	// The peer has to be registered and unroutable rather than merely unknown.
+	// This previously used "no-such-peer", which is not in the store, so the
+	// relay failed peer resolution immediately and was never observably
+	// in-flight -- which is why this test carried two t.Skip calls that fired
+	// whenever the window was missed. A skip is a green test, so on a machine
+	// where the relay completed before the first poll, the URL-leak assertions
+	// below silently stopped running.
+	//
+	// TEST-NET-1 (RFC 5737) is reserved and never routable, so the dial hangs
+	// until the transport's timeout instead of failing at once. That makes the
+	// "relaying" phase deterministic rather than a race.
+	blackholeID, err := pairing.GenerateIdentity()
+	if err != nil {
+		t.Fatalf("GenerateIdentity: %v", err)
+	}
+	if err := h.Store().AddPeer(pairing.Peer{
+		Name:        "blackhole",
+		Alias:       "blackhole",
+		Address:     "192.0.2.1:9877",
+		Fingerprint: blackholeID.Fingerprint,
+		CertPEM:     blackholeID.CertPEM,
+	}); err != nil {
+		t.Fatalf("seed the unroutable peer: %v", err)
+	}
+
 	body, _ := json.Marshal(map[string]string{
 		"url":  "https://login.example.com/authorize?client_id=demo&redirect_uri=http%3A%2F%2F127.0.0.1%3A45999%2Fcallback&state=listing",
-		"peer": "no-such-peer",
+		"peer": "blackhole",
 	})
 	relayDone := make(chan struct{})
 	go func() {
@@ -214,11 +241,23 @@ func TestWebDashboard_RelayActiveListsInFlightRelay(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	if !sawEntry {
-		t.Skip("no relay reached the wire in this environment; the listing path is covered by the coordinator tests")
+		// Fatal, not Skip. The dial is pointed at a reserved unroutable
+		// address, so the relay holds for the transport timeout; if nothing was
+		// listed in five seconds the product changed and this test has nothing
+		// left to say. A skip here reported green while the URL-leak assertions
+		// below never ran, which is the worst possible outcome for the one
+		// property here -- that a submitted OAuth URL never appears in a listing.
+		t.Fatal("no relay appeared in the active listing within 5s, so the leak assertions below never ran")
 	}
 	if listed == nil {
-		t.Skip("every observation of the relay landed outside its attempt-id window (before registration or just after completion); the id-bearing listing is covered by the coordinator tests")
+		t.Fatal("the relay was listed but never in a phase carrying an operation id, so a Cancel button could not have named it")
 	}
+	// The entry must be a real, id-bearing one rather than an empty shell, which
+	// is what makes the leak assertions above meaningful.
+	if listed["operation_id"] == nil {
+		t.Error("the observed entry carries no operation id, so the leak check ran against an empty record")
+	}
+	t.Logf("observed an in-flight relay entry carrying operation_id=%v", listed["operation_id"])
 	if listed["state"] != "relaying" {
 		t.Errorf("state = %v for a relay that published its attempt id, want relaying", listed["state"])
 	}
