@@ -3985,3 +3985,77 @@ something other than its claim, and the second time here in a single batch.
 `go test -count=1 ./...` green across 14 packages, `-race` on internal/hub,
 `encgate`, `docgate`. KNOWN-LIMITATIONS 2.6 narrowed to what is now proven and
 2.7 added for what is not.
+## Batch Z43 - the last untested trust path (2026-10-06)
+
+### What it covers, and why it needed a fixed port
+
+KNOWN-LIMITATIONS 2.7 was the one remaining trust path with no coverage: a peer
+that re-keys while keeping its address. Every other trust gate stops before or
+after the handshake. An unknown destination is refused in store resolution; the
+store refuses to persist a record whose certificate does not match its own
+fingerprint. Neither answers the question an address takeover actually asks.
+
+The rig: B bound to a **fixed** port so the address survives its restart. A pairs
+with B and sends successfully, so the baseline is real. B is then stopped, its
+store wiped, and brought back on the same address with a brand-new identity. A
+still holds the original record -- the address resolves, trust was once genuine --
+and only the certificate on the wire can catch it.
+
+### Which check actually enforces it, found by three wrong guesses
+
+This is the part worth keeping. Disabling candidate checks and re-running is how
+the enforcing check was identified, and the first three answers were all wrong:
+
+| Injection | Result |
+|---|---|
+| `IsPeerTrusted` returns `true` unconditionally | gate still green |
+| post-handshake pin at `lan.go:239` disabled | gate still green |
+| in-handshake pin at `lan.go:70` disabled | gate still green |
+
+The rejection comes from `verifyLANPeerCertificate`, reached through
+`VerifyPeerCertificate` *during* the TLS handshake. All three injections were in
+code this path never consults. Reading the source would have produced another
+plausible wrong answer; running it produced the right one.
+
+The evidence for what the gate tests is therefore diagnostic, not argumentative.
+A pins `6660d2f6...`, the re-keyed B serves `77ec238c...`, and the reply names
+`mTLS verification failed: peer fingerprint mismatch` while A still holds the
+original record for the unchanged address.
+
+### Two smaller corrections found on the way
+
+**A skip that hid the whole gate.** The address check was `t.Skipf`. Making it
+`Fatalf` showed the address does in fact hold, so the path ran -- but until that
+change the gate could have stopped covering its case and still reported as a
+passing test. That is the failure mode this repository has now met repeatedly, so
+the check is now `Fatalf` with the reason inline.
+
+**An assertion that was the test's error, again.** The first version asserted the
+rejected transfer added a file to the output directory, and failed. The baseline
+was a *text* drop, and text is never written to disk -- the same mistake as in
+Z42, made twice in two batches. The observable is now B's in-memory received
+buffer, which must still hold only the baseline item.
+
+### Refusal wording is asserted, not assumed
+
+The gate requires the error to name the fingerprint or certificate. A message
+saying only "could not reach" would leave a user retrying a connection that can
+never succeed, which is the exact confusion 3.13 exists to remove. The observed
+message names the mismatch and points at `tantu status`.
+
+### Honest note on the red proofs
+
+Inverting the assertion did not turn the gate red, and the reason was my own
+splice: the `Fatalf` was inserted above the `if code == http.StatusOK` guard, so
+it sat in a branch that never executes. Once placed correctly, the diagnostic
+assertions (502 status, mismatch wording, no "post" item at B) all run and pass.
+Recorded because the three failed injections above are the more useful evidence,
+and because a red proof that "does not work" is worth distinguishing from a gate
+that cannot fail.
+
+### Evidence
+
+`gofmt -l .` clean, `go vet ./...`, staticcheck v0.8.1 exit 0,
+`go test -count=1 ./...` green across 14 packages, `-race` on internal/hub,
+`encgate`, `docgate`. KNOWN-LIMITATIONS 2.7 closed and 2.6 narrowed to what
+remains.

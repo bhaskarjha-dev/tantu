@@ -56,6 +56,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -418,5 +419,230 @@ func TestUnpairedDestinationIsRefusedBeforeAnyConnection(t *testing.T) {
 	}
 	if items := recentFrom(t, hB); len(items) != 0 {
 		t.Errorf("B recorded %d recent item(s) from an unpaired sender: %+v", len(items), items)
+	}
+}
+
+// aPinned returns the single peer A trusts, and fails if that is not true. It is
+// deliberately strict: a gate about "the fingerprint A pinned" is meaningless if
+// A has pinned nothing, or has pinned more than one thing.
+func aPinned(t *testing.T, a *Hub) pairing.Peer {
+	t.Helper()
+	peers := a.Store().ListPeers()
+	if len(peers) != 1 {
+		t.Fatalf("expected exactly one pinned peer, got %d", len(peers))
+	}
+	if peers[0].Fingerprint == "" {
+		t.Fatal("the pinned peer carries no fingerprint")
+	}
+	return peers[0]
+}
+
+// mustPeerStore opens the store B keeps its identity in.
+func mustPeerStore(t *testing.T, dir string) *pairing.PeerStore {
+	t.Helper()
+	store, err := pairing.NewPeerStore(dir)
+	if err != nil {
+		t.Fatalf("open peer store %s: %v", dir, err)
+	}
+	return store
+}
+
+// TestPeerReKeyingAtTheSameAddressIsRejected closes KNOWN-LIMITATIONS 2.7, and
+// it is the last untested trust path.
+//
+// Every other trust gate stops before or after the handshake: an unknown
+// destination is refused in store resolution, and the store refuses to persist a
+// record whose certificate does not match its own fingerprint. Neither answers
+// the question an address-takeover actually asks. If a paired machine is
+// reinstalled, or its store is wiped, or an attacker takes the machine over --
+// and it keeps the same address -- then the address still resolves, the store
+// still lists the peer, and trust was once genuinely established. The only thing
+// left that can catch it is the handshake comparing the certificate on the wire
+// against the fingerprint that was pinned.
+//
+// The rig has to hold the address steady, which is why this needed a fixed port
+// and a restart rather than two fresh Hubs. B is paired with A, stopped, given a
+// brand-new identity, and brought back up on the *same* port. A then sends to the
+// address it has always used. B's new certificate is not the one A pinned, so
+// the transfer must fail.
+//
+// An earlier attempt at this gate produced a false alarm rather than coverage: it
+// injected its own impostor into the trust store with a direct AddPeer call and
+// then reported the resulting "verified": true as though a MITM had won. It had
+// only demonstrated its own shortcut, since IsPeerTrusted is store.GetPeer(fp)
+// and no remote peer can write the store. This version changes B instead of A's
+// bookkeeping, so the mismatch is produced by the wire rather than by the test.
+//
+// Finding which check actually enforces this took three wrong guesses, and the
+// wrongness is the useful part:
+//
+//   - Disabling IsPeerTrusted left the gate green.
+//   - Disabling the post-handshake pin at lan.go:239 left it green.
+//   - Disabling the in-handshake pin at lan.go:70 left it green.
+//
+// The real rejection comes from verifyLANPeerCertificate, reached through
+// VerifyPeerCertificate during the handshake, so all three injections were in
+// code this path never consults. The evidence for what is being tested is
+// therefore in the diagnostics rather than in a code-reading argument: A pins
+// 6660d2f6..., the re-keyed B serves 77ec238c..., and the reply names
+// "mTLS verification failed: peer fingerprint mismatch" while A still holds the
+// original record for the unchanged address.
+//
+// That is also why this gate does not skip when B fails to rebind the fixed
+// port: the skip is asserted with Fatalf. A gate that can quietly stop covering
+// its case is the failure mode this repository keeps meeting.
+func TestPeerReKeyingAtTheSameAddressIsRejected(t *testing.T) {
+	// A fixed port, chosen by binding and releasing so the OS picks something
+	// genuinely free, then held constant across B's restart.
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("cannot reserve a port on this host: %v", err)
+	}
+	fixedAddr := probe.Addr().String()
+	_ = probe.Close()
+
+	outB := t.TempDir()
+	storeB := t.TempDir()
+
+	newHubB := func() *Hub {
+		h, hErr := NewHub(HubConfig{
+			TransportType:     "lan",
+			ListenAddr:        fixedAddr,
+			WebAddr:           "127.0.0.1:0",
+			StoreDir:          storeB,
+			OutputDir:         outB,
+			Headless:          true,
+			AutoAcceptPairing: true,
+		})
+		if hErr != nil {
+			t.Fatalf("NewHub B: %v", hErr)
+		}
+		return h
+	}
+
+	hA, err := NewHub(HubConfig{
+		TransportType:     "lan",
+		ListenAddr:        "127.0.0.1:0",
+		WebAddr:           "127.0.0.1:0",
+		StoreDir:          t.TempDir(),
+		OutputDir:         t.TempDir(),
+		Headless:          true,
+		AutoAcceptPairing: true,
+	})
+	if err != nil {
+		t.Fatalf("NewHub A: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = hA.Start(ctx) }()
+	select {
+	case <-hA.Ready():
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for Hub A")
+	}
+	defer func() { _ = hA.Stop() }()
+
+	// B's first generation, on the fixed address.
+	hB := newHubB()
+	go func() { _ = hB.Start(ctx) }()
+	select {
+	case <-hB.Ready():
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for Hub B (first generation)")
+	}
+	if hB.P2PAddr().String() != fixedAddr {
+		_ = hB.Stop()
+		t.Skipf("B bound %s rather than the requested %s", hB.P2PAddr(), fixedAddr)
+	}
+
+	pairBody, _ := json.Marshal(map[string]string{"peer_addr": fixedAddr})
+	pairReq, _ := http.NewRequest(http.MethodPost, "http://"+hA.WebAddr()+"/api/pair/initiate", bytes.NewReader(pairBody))
+	pairReq.Header.Set("Content-Type", "application/json")
+	pairReq.Header.Set("Origin", "http://"+hA.WebAddr())
+	pairReq.Header.Set(IPCTokenHeader, hA.ipcToken)
+	pairResp, err := (&http.Client{Timeout: 20 * time.Second}).Do(pairReq)
+	if err != nil {
+		_ = hB.Stop()
+		t.Fatalf("pair initiate: %v", err)
+	}
+	pairResp.Body.Close()
+	if pairResp.StatusCode != http.StatusOK {
+		_ = hB.Stop()
+		t.Fatalf("pair initiate = %d, want 200", pairResp.StatusCode)
+	}
+
+	pinned := aPinned(t, hA)
+	target := pinned.Alias
+	if target == "" {
+		target = pinned.Name
+	}
+
+	// Baseline: the honest generation is trusted and reachable.
+	pre, _ := json.Marshal(map[string]string{"text": "before the re-key", "name": "pre", "peer": target})
+	if code, body := postJSON(t, "http://"+hA.WebAddr()+"/api/drop/upload", hA.ipcToken, "http://"+hA.WebAddr(), pre); code != http.StatusOK {
+		_ = hB.Stop()
+		t.Fatalf("baseline send to the correctly paired peer failed (%d): %s", code, body)
+	}
+
+	// Re-key B: stop it, wipe its identity, bring it back on the same address.
+	if err := hB.Stop(); err != nil {
+		t.Fatalf("stopping B: %v", err)
+	}
+	if err := os.RemoveAll(storeB); err != nil {
+		t.Fatalf("wiping B's store: %v", err)
+	}
+	hB2 := newHubB()
+	go func() { _ = hB2.Start(ctx) }()
+	defer func() { _ = hB2.Stop() }()
+	select {
+	case <-hB2.Ready():
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for Hub B (second generation)")
+	}
+	if hB2.P2PAddr().String() != fixedAddr {
+		// Fatalf, not Skipf. A skip here means the gate stops covering the only
+		// case it exists for, and it would still report as a passing test. This
+		// repository has now met that failure mode several times; a gate that can
+		// quietly stop working is worse than no gate, because it looks like
+		// coverage.
+		t.Fatalf("the re-keyed B bound %s rather than %s, so the address did not hold and this gate covers nothing",
+			hB2.P2PAddr(), fixedAddr)
+	}
+	newID, err := mustPeerStore(t, storeB).LoadOrCreateIdentity()
+	if err != nil {
+		t.Fatalf("loading B's new identity: %v", err)
+	}
+	if newID.Fingerprint == pinned.Fingerprint {
+		t.Fatalf("B's identity did not actually change; the premise of this gate is broken")
+	}
+
+	// A still trusts the old fingerprint at the address it has always used.
+	post, _ := json.Marshal(map[string]string{"text": "after the re-key", "name": "post", "peer": target})
+	code, body := postJSON(t, "http://"+hA.WebAddr()+"/api/drop/upload", hA.ipcToken, "http://"+hA.WebAddr(), post)
+
+	if code == http.StatusOK {
+		t.Fatalf("a peer that re-keyed at a previously trusted address was ACCEPTED (200): %s", body)
+	}
+	// The refusal must name the certificate rather than only report
+	// unreachability. A message that said merely "could not reach" would leave a
+	// user retrying a connection that can never succeed, which is exactly the
+	// confusion limitation 3.13 exists to remove.
+	lowered := strings.ToLower(body)
+	if !strings.Contains(lowered, "fingerprint") && !strings.Contains(lowered, "certificate") {
+		t.Errorf("refusal does not name the fingerprint/certificate mismatch: %s", body)
+	}
+
+	// The observable for a text drop is the receiver's in-memory buffer, not the
+	// output directory. An earlier version of this gate asserted on the
+	// directory and failed for exactly that reason -- the baseline was text, and
+	// text is never written to disk. B's buffer must hold only the baseline item,
+	// which proves the rejected transfer delivered nothing.
+	for _, item := range recentFrom(t, hB2) {
+		if item.Name == "post" {
+			t.Errorf("the re-keyed peer received the item it should have been refused: %+v", item)
+		}
+	}
+	if entries, _ := os.ReadDir(outB); len(entries) != 0 {
+		t.Errorf("the re-keyed peer published %d file(s); nothing should have been written", len(entries))
 	}
 }
