@@ -4364,3 +4364,81 @@ My `CGO_ENABLED=1` experiment overwrote `go.mod` with `module dynprobe` because
 a `Push-Location` had failed and left the shell in the repo root. CI's
 `git diff --exit-code go.mod go.sum` step is exactly the gate for that class of
 mistake; caught locally by `git status` and reverted.
+## Batch Z49 - the artifact gate, five runs to first green (2026-10-07)
+
+The `release-artifact` job took five CI runs to pass on all three platforms.
+Every failure was a defect in the job, not in the product, and none of them was
+visible by reading the file. Worth recording as a sequence, because the pattern
+is more useful than any single bug.
+
+| Run | Failure | Cause |
+|---|---|---|
+| 1 | no jobs at all, zero duration | `runner.arch` in a job-level `env:` block; `runner` is step-scoped, so GitHub rejected the workflow file |
+| 2 | all 3 legs at `Build every archive` | goreleaser was never installed -- it is not preinstalled on any runner, and only the release workflow installs it, on a tag |
+| 3 | all 3 legs at `Build every archive`, installer passing | the build shelled out to a bare `goreleaser` after using the action as an installer, depending on a PATH side effect the action does not provide |
+| 4 | darwin at the linkage step | ran `ldd` on macOS, which has no `ldd`; the step's own comment already said darwin needed `otool -L` |
+| 5 | windows at the linkage step | `find -name 'tantu'` in an archive containing `tantu.exe` |
+
+Runs 1 and 4 are the same shape: the comment described the right thing and the
+code did a different one. In both cases the comment was written first and
+believed, and the code was never checked against it.
+
+Run 3 is the one I would call a guess. I could not read the log (the API returns
+403, admin only), so I had two candidates and changed the code so both were
+correct rather than picking one. That is a worse position than knowing, and the
+next run proved it.
+
+### Verification tools that were themselves wrong
+
+Four probes written to check this job produced wrong verdicts, three of them
+false passes. They live in the temp directory rather than the repository, which
+is deliberate: these are properties of one YAML file, and committing a Go test
+asserting on `ci.yml` would be the same class of substring check that just
+failed. But they are recorded here because the failures are the lesson.
+
+- A structural probe asked whether `runner.arch` was *present*. It was. It never
+  asked whether GitHub could *evaluate* it there. That is the Z47
+  markup-versus-stylesheet error one level up: confirming a value is spelled
+  correctly is not confirming it resolves.
+- The shell probe matched zero steps and still printed "all run steps declare the
+  shell they need" -- its regex had lost its line anchor inside a PowerShell
+  heredoc, so the loop body never ran. A check that passes against any file at
+  all is worse than no check. It now cross-checks its parse against the raw text
+  and treats an empty parse as failure.
+- A `bash -n` syntax check over every `run:` block was added only after leaving
+  an orphaned `fi` and a duplicated success line in a step I had just rewritten.
+  It caught both immediately.
+- Two probes gave false verdicts purely from PowerShell mangling `$` in inline
+  `node -e`. All of them moved to files.
+
+### The red-proof lesson, three distinct meanings
+
+Today "the red proof did not fail" meant three different things: the check was
+broken (the shell probe), the proof was broken (I removed `set -euo pipefail`,
+which is not a syntax error), and the tool was broken (a mangled regex). Only the
+last two are distinguishable by looking harder at the failure -- which is the
+only reason it is worth writing down.
+
+### One failure I could not reproduce and did not dismiss
+
+`Test (Windows)` (`go test -count=2 ./...`) failed on run 4 and passed on run 5,
+with no Go code changed in between. Six full local runs of the same command were
+clean. It is probably a flake, but "probably" is not evidence, so it stands
+unexplained until it recurs.
+
+What made that acceptable to leave open is the fix that shipped with it: unlike
+the Test step beside it, this step re-emitted nothing, so the run reported only
+"Process completed with exit code 1". It now extracts `--- FAIL` lines into
+annotations, which the public API serves. A recurrence is now diagnosable
+without opening the UI, which is the difference between leaving something open
+and losing it.
+
+### What the run now proves
+
+All eight jobs green on `a1e7623`. For the first time the shipped binary has been
+built and executed on Linux, macOS and Windows from the same commit, and the
+"no C libraries, no runtime install" invariant is checked against the actual
+artifact bytes rather than asserted. Limitation 1.1 is closed on that basis.
+
+Still unverified and tracked as 3.18: keyless signing, which needs the release
+workflow's OIDC identity and therefore only runs at tag time.
