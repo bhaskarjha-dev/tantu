@@ -3892,3 +3892,96 @@ product. The audit of rows closed before Z37 is still not done and is still not
 claimed. What this batch adds to it is a sharper form of the question: not "does
 this gate use a constructed value" but **"is this function ever called with a
 real one"**. `hubP2PPort` was tested thoroughly and called with `""`.
+## Batch Z42 - pair, then send (2026-10-06)
+
+### Why no `--yes` flag was added
+
+The plan for this batch was `tantu pair --yes`, so pairing could be scripted and
+then tested end to end. That was the wrong call and it was caught before any code
+was written: the SAS confirmation is the defence against a man-in-the-middle
+during pairing, and adding a flag that bypasses it *for testability* trades a
+security control for a convenience that nothing has asked for.
+
+The evidence was available without the flag. Both `pairing.PairInitiator` and
+`DialInBandPairing` take a `confirmFn`, and `HubConfig` already carries
+`AutoAcceptPairing`. So a test can establish trust through the product's own
+unattended-pairing switch, with no product change and nothing weakened.
+
+### What the gap actually was
+
+Two things were already covered and neither covered the gap:
+
+- `relpath_e2e_test.go` sends real bytes between real Hubs over **loopback**
+  transport, where `IsPeerTrusted` returns true unconditionally. It proves bytes
+  survive validation, staging and publication, and says nothing about trust.
+- `unpair_notify_test.go` pairs two real Hubs over **LAN** transport. It proves
+  the ceremony and store convergence, and sends nothing.
+
+So "pair, then send" had never run. The store lookup that turns a peer name into
+an address, and the trust check that decides whether A will speak to B at all,
+were never on the path of a real payload. That is precisely why 2.6 records the
+two-machine evidence as one-directional.
+
+### Four gates, and both drop kinds
+
+- `TestPairedHubsTransferTextOverLANTransport` - text asserted by content
+- `TestPairedHubsTransferFileOverLANTransport` - 164 KiB asserted by SHA-256 in
+  the receiver's output directory, tolerant of collision renaming
+- `TestUnpairedDestinationIsRefusedBeforeAnyConnection`
+- `TestPairedStoreRefusesAnImpostorRecordAtARealPeersAddress`
+
+Both kinds are covered because they land in different places, and getting that
+wrong was the first failure here: the initial version sent **text** and then
+asserted a file appeared on disk. It failed, and the failure was the test's
+error - a text drop is held in memory and surfaces through `/api/drop/recent`;
+only files are written. Worth recording because the same shape of assumption is
+what this repository keeps paying for.
+
+### A gate that looked like it found a security vulnerability, and did not
+
+The impostor gate went through two versions, and the first version of it is the
+most useful thing in this batch.
+
+**Version one** tried to build a stale-trust record by rewriting A's stored
+fingerprint. The store refused: `peer certificate does not match fingerprint`.
+So that state cannot be persisted at all, and the gate was rewritten to assert
+the invariant that actually holds.
+
+**Version two** was more ambitious and looked much more alarming. It generated a
+second, entirely valid identity and stored it at B's address, then asserted the
+transfer would be refused. It was **accepted**, and the response carried
+`"verified": true`.
+
+That reads like a man-in-the-middle succeeding. It is not. `IsPeerTrusted` is
+`store.GetPeer(fp)`: the store *is* the trust anchor, and the gate had written its
+own impostor into that anchor with a direct `AddPeer` call. No remote peer can do
+that. The gate was measuring its own shortcut and reporting it as a finding.
+
+The gate was deleted rather than weakened into something that passes. What it
+taught is recorded as 2.7, and the property that actually matters turns out to be
+narrower and already gated: the store is only written through an approved pairing,
+and a record's certificate must match its own fingerprint.
+
+### The unpaired gate does not say what its first draft claimed
+
+It was originally described as proving trust is enforced. It does not. Flipping
+both Hubs to loopback transport -- where trust is granted unconditionally -- left
+it green, and the diagnostic gave the real answer:
+
+    dial peer failed: peer target is not a trusted paired peer:
+    no paired peers found; pair with remote machine first
+
+So the refusal is store resolution, before a socket is opened. The gate was
+renamed to `TestUnpairedDestinationIsRefusedBeforeAnyConnection` and now says so
+in its own comment rather than borrowing credibility from a check it does not
+perform.
+
+That is the fourth time in this sequence that a green gate was measuring
+something other than its claim, and the second time here in a single batch.
+
+### Evidence
+
+`gofmt -l .` clean, `go vet ./...`, staticcheck v0.8.1 exit 0,
+`go test -count=1 ./...` green across 14 packages, `-race` on internal/hub,
+`encgate`, `docgate`. KNOWN-LIMITATIONS 2.6 narrowed to what is now proven and
+2.7 added for what is not.
