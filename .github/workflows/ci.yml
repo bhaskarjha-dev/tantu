@@ -467,39 +467,85 @@ jobs:
         # supposed to produce them. Reading CGO_ENABLED=0 out of the config
         # would prove only that the config still says what it said.
         #
-        # `ldd` is the ground truth on linux: a dynamically linked binary lists
-        # its loader and libc here, a static one prints "not a dynamic
-        # executable". On darwin a Go binary is also expected to be static
-        # against the system library, and `otool -L` would show libSystem;
-        # windows has no equivalent, so the check is skipped there rather than
-        # faked.
+        # The check is per-platform because the ground truth is per-platform, and
+        # getting this wrong is not hypothetical: an earlier version ran `ldd` on
+        # darwin as well as linux, and macOS has no `ldd`, so the darwin leg
+        # failed on a tool that does not exist there.
+        #
+        #   linux   -- `ldd` is definitive. A dynamically linked binary prints its
+        #              loader and libc; a static one prints "not a dynamic
+        #              executable".
+        #   darwin  -- `otool -L`. A CGO_ENABLED=0 Go binary links only the
+        #              system library; a cgo one drags in a dylib from wherever
+        #              it was built, which is the failure being guarded against.
+        #   windows -- no equivalent worth faking, so the leg is skipped and
+        #              says so. The CGO_ENABLED=0 claim is carried by the other
+        #              two legs and by the config itself.
         run: |
           set -euo pipefail
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            echo "windows has no ldd; the CGO_ENABLED=0 claim is checked on the linux and darwin legs"
-            exit 0
-          fi
           bin=$(find unpacked -maxdepth 1 -name 'tantu' -type f | head -1)
           if [ -z "$bin" ]; then
-            echo "::error::no untarred binary found under unpacked/; the archive was empty or packed the binary under a subdirectory."
+            echo "::error::no binary found under unpacked/; the archive was empty or packed it under a subdirectory."
             find unpacked -type f
             exit 1
           fi
-          echo "::group::ldd $bin"
-          ldd_out=$(ldd "$bin" 2>&1) || true
-          echo "$ldd_out"
-          echo "::endgroup::"
-          # An absent or broken ldd must not read as "statically linked". Both a
-          # static binary and a missing ldd produce no libc line, so the absence
-          # of evidence is checked for explicitly -- otherwise the gate passes
-          # having proved nothing, which is worse than not having it.
-          case "$ldd_out" in
-            *"not a dynamic executable"*) ;;
-            "") echo "::error::ldd produced no output for $bin. The static-linking check would pass without having run, so this proves nothing."; exit 1 ;;
-            *"not found"*) echo "::error::ldd is not available on this runner, so the static-linking check cannot run."; exit 1 ;;
+
+          case "$GOOS" in
+            windows)
+              echo "windows has no ldd or otool equivalent; the static-linking claim is checked on the linux and darwin legs"
+              exit 0
+              ;;
+            linux)
+              echo "::group::ldd $bin"
+              ldd_out=$(ldd "$bin" 2>&1) || true
+              echo "$ldd_out"
+              echo "::endgroup::"
+              # An absent or broken ldd must not read as "statically linked".
+              # Both a static binary and a missing ldd produce no libc line, so
+              # the absence of evidence is checked for explicitly -- otherwise the
+              # gate passes having proved nothing, which is worse than not
+              # having it. This branch is what the darwin failure tripped.
+              case "$ldd_out" in
+                *"not a dynamic executable"*) ;;
+                "") echo "::error::ldd produced no output for $bin. The static-linking check would pass without having run, so this proves nothing."; exit 1 ;;
+                *"not found"*) echo "::error::ldd is not available on this runner, so the static-linking check cannot run."; exit 1 ;;
+              esac
+              if printf '%s' "$ldd_out" | grep -qE 'libc\.so|GLIBC_'; then
+                echo "::error::$bin is dynamically linked. It will not run on a machine without a matching libc, which is the whole premise of shipping a static binary."
+                exit 1
+              fi
+              echo "OK: $bin is statically linked"
+              ;;
+            darwin)
+              echo "::group::otool -L $bin"
+              otool_out=$(otool -L "$bin" 2>&1) || true
+              echo "$otool_out"
+              echo "::endgroup::"
+              case "$otool_out" in
+                "") echo "::error::otool produced no output for $bin; the check would pass without having run."; exit 1 ;;
+                *"command not found"*|*"error:"|*"can't open"*) echo "::error::otool could not read $bin, so the static-linking check cannot run."; exit 1 ;;
+              esac
+              # Line 1 is the binary itself; the rest are linked libraries. Only
+              # paths inside /usr/lib or /System are present on every macOS, so
+              # anything else -- @rpath, /usr/local, /opt/homebrew -- means a
+              # dylib from the build machine that a user will not have.
+              libs=$(printf '%s\n' "$otool_out" | tail -n +2 | sed 's/^[[:space:]]*//; s/[[:space:]].*$//' | grep -v '^$' || true)
+              echo "linked libraries:"
+              printf '  %s\n' $libs
+              if [ -z "$libs" ]; then
+                echo "::error::otool listed no libraries at all; refusing to call that statically linked without evidence."
+                exit 1
+              fi
+              offenders=$(printf '%s\n' $libs | grep -vE '^(/usr/lib/|/System/)' || true)
+              if [ -n "$offenders" ]; then
+                echo "::error::$bin links libraries from outside the macOS system tree. A user without them cannot run it:"
+                printf '  %s\n' $offenders
+                exit 1
+              fi
+              echo "OK: $bin links only macOS system libraries"
+              ;;
+            *)
+              echo "::error::no static-linking check defined for GOOS=$GOOS"
+              exit 1
+              ;;
           esac
-          if printf '%s' "$ldd_out" | grep -qE 'libc\.so|GLIBC_'; then
-            echo "::error::$bin is dynamically linked. It will not run on a machine without a matching libc, which is the whole premise of shipping a static binary."
-            exit 1
-          fi
-          echo "OK: $bin is statically linked"
