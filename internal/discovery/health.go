@@ -185,6 +185,16 @@ func describeHealth(h Health, broadcastStopped, multicastStopped bool) string {
 		return "Discovery is not running on this Hub."
 	case !usable:
 		return "Discovery cannot reach this network: neither multicast nor subnet broadcast could be opened. Pair by entering the other machine's address instead."
+	case h.BeaconsSent == 0 && h.SendErrors > 0:
+		// Sockets are bound, so every "discovery is running on X" sentence below
+		// would be true and useless at once: this hub has announced itself
+		// nothing and had every announcement refused, so no peer can see it. That
+		// is the state a host with no multicast-capable interface produces, and
+		// it was reported as healthy -- the precise "looks fine, is invisible"
+		// failure this surface exists to remove. Found by a macOS CI run where
+		// the gate for the best-effort binds failed and the health block read
+		// "running on multicast only" while 100 of 100 sends had errored.
+		return fmt.Sprintf("Discovery is bound but cannot announce this hub: every beacon send is failing (%d attempt(s)), so no peer can see it. Pair by entering the other machine's address instead.", h.SendErrors)
 	case broadcastStopped && multicastStopped:
 		return "Discovery sockets stopped responding after repeated errors, so nearby hubs may be missing. Restart the Hub to retry."
 	case broadcastStopped:

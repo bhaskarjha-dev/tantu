@@ -4059,3 +4059,40 @@ that cannot fail.
 `go test -count=1 ./...` green across 14 packages, `-race` on internal/hub,
 `encgate`, `docgate`. KNOWN-LIMITATIONS 2.7 closed and 2.6 narrowed to what
 remains.
+### A health surface that reported a healthy transport while announcing nothing
+
+The CI failure was my gate's error, not a regression, and the numbers said why:
+`Multicast:true  BeaconsSent:0  SendErrors:100`. The engine was beaconing --
+100 attempts in five seconds at a 50 ms interval -- and every multicast write was
+refused, because a macOS CI runner has no multicast-capable interface. My gate
+asserted `BeaconsSent > 0`, which is a claim about the host's network rather than
+about the code. Rewritten to assert that a beacon is **attempted** over the open
+transport, and to log which of the two outcomes the host produced.
+
+But the failure was pointing at a real defect one level down. At that moment the
+health surface reported:
+
+    Discovery is running on multicast only (subnet broadcast is unavailable on
+    this network). No nearby hubs have answered yet.
+
+Sockets bound, every announcement refused, and the sentence claims discovery is
+running. That is the "looks healthy, is invisible" failure this whole surface
+exists to remove, and it was reachable on any host that cannot send multicast --
+not only in CI.
+
+`describeHealth` now has a branch ahead of the "running on X" sentences: bound
+but `BeaconsSent == 0 && SendErrors > 0` says the hub cannot announce itself and
+names the attempt count, with the pair-by-address fallback. It is deliberately
+not latching -- as soon as one beacon gets out, the ordinary wording returns, so
+a single bad network moment does not permanently downgrade the status line.
+
+### Red proofs
+
+| Injection | Result |
+|---|---|
+| Disable the new `describeHealth` branch | `TestDescribeHealthReportsWhenNothingCanBeAnnounced` fails |
+| Disable multicast beaconing, so the hub starts and never announces | the best-effort-bind gate fails: "the engine never attempted a beacon on the open transport" |
+
+Both reverted. That second one is the check the macOS failure asked for: it
+distinguishes "the host refused every send" (acceptable, and now reported) from
+"the engine never tried" (a defect).

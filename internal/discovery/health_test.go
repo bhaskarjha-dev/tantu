@@ -290,6 +290,42 @@ func TestDescribeHealthNeverClaimsAFaultForANormalNetwork(t *testing.T) {
 	}
 }
 
+// TestDescribeHealthReportsWhenNothingCanBeAnnounced covers the state a macOS CI
+// run exposed: sockets bound, zero beacons sent, and every send refused. Every
+// "discovery is running on X" sentence is literally true there and completely
+// useless, because a hub that has announced itself nothing is invisible however
+// healthy its sockets are.
+func TestDescribeHealthReportsWhenNothingCanBeAnnounced(t *testing.T) {
+	silent := Health{
+		Running: true, Broadcast: false, Multicast: true, Usable: true,
+		BeaconsSent: 0, SendErrors: 100, Nodes: 0,
+	}
+	got := describeHealth(silent, false, false)
+	if !strings.Contains(got, "cannot announce") {
+		t.Errorf("a hub that cannot send a single beacon is not reported as such: %q", got)
+	}
+	// It must not claim to be running on a working transport while invisible.
+	for _, forbidden := range []string{"is running on multicast", "No nearby hubs have answered"} {
+		if strings.Contains(got, forbidden) {
+			t.Errorf("the sentence still claims a healthy transport (%q): %q", forbidden, got)
+		}
+	}
+
+	// The moment one beacon does get out, the ordinary wording returns: the
+	// sentence must not latch on permanently after one bad network.
+	recovered := silent
+	recovered.BeaconsSent = 1
+	if after := describeHealth(recovered, false, false); !strings.Contains(after, "multicast only") {
+		t.Errorf("once a beacon has gone out the normal wording should return, got: %q", after)
+	}
+
+	// A healthy engine that has simply not needed to send yet must be unaffected.
+	fresh := Health{Running: true, Broadcast: true, Multicast: true, Usable: true, Nodes: 0}
+	if g := describeHealth(fresh, false, false); !strings.Contains(g, "is running on multicast and subnet broadcast") {
+		t.Errorf("a healthy engine was misreported as unable to announce: %q", g)
+	}
+}
+
 // TestTruncateErrorIsBounded keeps a hostile or verbose OS error from growing
 // the dashboard's status payload without limit.
 func TestTruncateErrorIsBounded(t *testing.T) {
