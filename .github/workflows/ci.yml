@@ -371,6 +371,43 @@ jobs:
           # sound" statements about different compilers.
           go-version: '1.27.1'
           cache: true
+      - name: Warm the module cache
+        # goreleaser's `before.hooks: go mod tidy` needs the module *zips*, and
+        # the first run of this job died there on a transient proxy failure --
+        # `read https://proxy.golang.org/.../v0.47.0.zip: stream error: stream ID
+        # 1; INTERNAL_ERROR`. That is the network, not the product, and setup-go's
+        # cache does not carry the zips because a linux `go test` never needs
+        # them.
+        #
+        # Doing the fetch here rather than inside goreleaser's hook makes the
+        # difference between "we depend on a network call mid-build" and "we
+        # warmed a cache", and it puts the tidiness check where its output is
+        # legible. The hook then has nothing to fetch and cannot flake.
+        #
+        # Retried because the only thing being retried is a network fetch, and
+        # each attempt is reported. This is not a blanket retry: the loop still
+        # fails the job if every attempt fails, and a genuine go.mod problem
+        # fails on the first attempt and again on all three.
+        #
+        # No `set -e`: under `-e` the first failing iteration would abort the loop
+        # before it could retry, which is the opposite of the intent here.
+        shell: bash
+        run: |
+          set -uo pipefail
+          ok=0
+          for attempt in 1 2 3; do
+            if go mod download all && go mod tidy; then
+              ok=1
+              break
+            fi
+            echo "::warning::module fetch attempt ${attempt}/3 failed; retrying"
+            sleep 5
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "::error::could not fetch modules after 3 attempts"
+            exit 1
+          fi
+          git diff --exit-code go.mod go.sum
       - name: Validate the release config
         # Not an assumption: the first run of this job failed on all three
         # platforms at `goreleaser release` with the command simply absent --
