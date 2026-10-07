@@ -129,10 +129,32 @@ func startPairedHubs(t *testing.T, outB string) (a *Hub, b *Hub) {
 	if got := len(a.Store().ListPeers()); got != 1 {
 		t.Fatalf("A lists %d peers after pairing, want 1", got)
 	}
-	if got := len(b.Store().ListPeers()); got != 1 {
-		t.Fatalf("B lists %d peers after pairing, want 1", got)
-	}
+	// B's half is a separate, asynchronous inbound handshake. A's initiate
+	// returning 200 says A's side finished; it says nothing about whether B has
+	// recorded the peer yet. This asserted convergence immediately and passed on
+	// Windows, then failed on Linux CI with "B lists 0 peers" -- a race in the
+	// test, not a product change. unpair_notify_test.go already polls for this
+	// convergence, and that precedent should have been followed here.
+	waitForPeerCount(t, b, 1, 15*time.Second)
 	return a, b
+}
+
+// waitForPeerCount polls a Hub's store until it reports want peers, and fails
+// with the count it actually reached. Polling is not leniency here: the
+// convergence is genuinely asynchronous, so a single immediate read is a
+// platform-dependent coin flip rather than an assertion.
+func waitForPeerCount(t *testing.T, h *Hub, want int, within time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	var got int
+	for time.Now().Before(deadline) {
+		got = len(h.Store().ListPeers())
+		if got == want {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("Hub listed %d peer(s) after %s, want %d; the store never converged", got, within, want)
 }
 
 // solePeerName returns the name a user would pick in the dashboard. The send
@@ -570,6 +592,9 @@ func TestPeerReKeyingAtTheSameAddressIsRejected(t *testing.T) {
 		_ = hB.Stop()
 		t.Fatalf("pair initiate = %d, want 200", pairResp.StatusCode)
 	}
+	// Same asynchronous convergence as the other two-Hub gates: A's initiate
+	// returning 200 does not mean B has recorded the peer yet.
+	waitForPeerCount(t, hB, 1, 15*time.Second)
 
 	pinned := aPinned(t, hA)
 	target := pinned.Alias

@@ -4204,3 +4204,84 @@ direction.
 
 `gofmt -l .` clean, `go vet ./...`, staticcheck v0.8.1 exit 0,
 `go test -race -count=1 ./...` green across 14 packages, `encgate`, `docgate`.
+## Batch Z47 - CI red on Linux, and a torn Health snapshot behind it (2026-10-07)
+
+### What CI actually said
+
+`TestPairedHubsTransferFileOverLANTransport` failed on ubuntu-latest with
+"B lists 0 peers after pairing, want 1" -- my own Batch Z42 gate.
+
+The gate asserted that Hub B's store held the peer the instant Hub A's
+`/api/pair/initiate` returned 200. That is not a property the system has. A's
+initiate returning 200 says A's half of the handshake finished; B's half is a
+separate inbound exchange that records the peer some time later. The gate was
+asserting a synchronisation the design does not promise.
+
+It passed on Windows every time. `unpair_notify_test.go` already polls for
+exactly this convergence, and following that existing precedent would have
+avoided the whole thing. Now polls, with a 15s budget and a failure message
+naming the count it reached. Same fix applied to the re-key gate.
+
+**I could not reproduce this locally.** A probe reading B's store immediately
+after initiate saw 1 peer in 8 of 8 runs on Windows. The Linux log is the only
+evidence the race is real; everything else in this session has the same
+limitation.
+
+### The real defect: a Health snapshot torn in half
+
+The full `-race` sweep then failed
+`TestEngine_HealthAfterContextCancelIsNotDegraded` -- once, under load, and 12
+times clean in isolation. Rather than re-run until green, the reason mattered:
+
+The cancellation goroutine cleared `started` and **released `startMu` before
+closing the sockets**, while `Health()` read `started` under that lock and then
+loaded the bound flags after releasing it. A caller landing in between got
+
+```
+Running=false, Broadcast=true, Multicast=true
+```
+
+a state the engine is never in: stopped, yet apparently still holding
+transports. `describeHealth` checks `Running` first, so nothing reacted to it
+-- which is exactly why it survived Z37 and Z39, both of which added to this
+surface without noticing.
+
+Fix: `started` and both bound flags are read under one acquisition of
+`startMu`, and both shutdown paths hold it across the flag clear *and*
+`closeSockets()`. This does not trade one tear for the other -- because the
+flags are read under the same lock the shutdown holds, a caller that reports
+`Running=true` also sees pre-shutdown flags rather than catching sockets already
+closed.
+
+### The gate, and what red proof got wrong about it
+
+`TestHealthSnapshotIsCoherentAcrossShutdown` samples `Health()` in a tight loop
+across 25 real shutdown transitions per path, and fails on any snapshot pairing
+`!Running` with a bound socket. It exists because re-running the original test
+until it fails is not a gate: the window is microseconds wide, so the poll
+almost always lands after it closes, and the test passes whether or not the
+ordering is right.
+
+It runs both shutdown paths separately, and that was not the first version.
+Red proof initially reverted only `Close()`'s ordering -- the gate stayed
+**green**, because it drove the cancellation goroutine and asserted on neither.
+Exactly what red proof exists to catch, caught by red proof. Each path is now
+red-proven independently.
+
+Reliability measured, not assumed: reverting the cancellation goroutine fails
+10/10; reverting `Close()` fails 8/8.
+
+### Red proofs
+
+| Injection | Result |
+|---|---|
+| Revert cancellation goroutine ordering only | `context_cancellation` fails, cycle 0 |
+| Revert `Close()` ordering only | `Close` fails, cycle 2; 8/8 runs |
+| Re-running the original flaky gate | 12/12 clean -- demonstrating it cannot see this |
+
+### A pattern worth naming
+
+Third gate in a row to encode an assumption instead of a fact: B's store
+converging synchronously, `Health()` being safe to read, a class name being
+absent from the markup. Each was green locally and wrong. The shared mistake is
+writing the assertion I expected rather than the one the code permits.

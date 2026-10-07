@@ -124,6 +124,23 @@ func (e *Engine) Health() Health {
 	if e == nil {
 		return Health{Running: false, Family: "none", Detail: "Discovery is not running on this Hub."}
 	}
+	// `started` and the two bound flags are read under one acquisition of
+	// startMu, and shutdown updates all three while holding it. That is what
+	// makes a snapshot coherent.
+	//
+	// Reading `started` and then releasing the lock before loading the bound
+	// flags allowed a torn observation: shutdown clears `started` and then
+	// closes the sockets, so a caller landing in that window saw Running=false
+	// with Broadcast and Multicast still true. That is a state the engine
+	// cannot actually be in -- it has stopped, yet appears to hold transports.
+	// It surfaced as an intermittent failure of a gate that polls for
+	// `!Running` and then asserts nothing is bound, and only under
+	// full-suite load, because the window is short.
+	//
+	// Note the inverse tear is equally prevented rather than merely traded
+	// for it: because the flags are read under the same lock that shutdown
+	// holds, a caller that reports Running=true also observes the flags as they
+	// were before shutdown began, rather than catching sockets already closed.
 	e.startMu.Lock()
 	running := e.started
 	e.startMu.Unlock()

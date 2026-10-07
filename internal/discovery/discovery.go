@@ -341,14 +341,21 @@ func (e *Engine) Start(parent context.Context) error {
 	// stopping, so Health has to say so — the same reasoning Close() applies,
 	// and the same class of silent lie. Without this, a Hub that shut down
 	// normally could log a discovery fault it never had.
+	//
+	// The flag clear and the socket close share one hold of startMu. Releasing
+	// between them left a window in which Health reported Running=false with
+	// Broadcast and Multicast still set — a stopped engine that still appeared
+	// to hold transports. Health reads all three under this same lock, so
+	// holding it across the whole transition is what makes that window
+	// impossible rather than merely narrow.
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
 		<-ctx.Done()
 		e.startMu.Lock()
 		e.started = false
-		e.startMu.Unlock()
 		e.closeSockets()
+		e.startMu.Unlock()
 	}()
 
 	return nil
@@ -768,13 +775,17 @@ func (e *Engine) Close() error {
 		// answers Health() with Running=true is a Hub that claims to be
 		// discovering peers while holding nothing to discover them with, which
 		// is the exact class of silent lie this surface removes.
+		//
+		// startMu stays held across closeSockets for the same reason as in the
+		// cancellation goroutine: the flag and the bound flags it mirrors have to
+		// move together, or Health can observe one without the other.
 		e.startMu.Lock()
 		e.started = false
-		e.startMu.Unlock()
 		if cancel != nil {
 			cancel()
 		}
 		e.closeSockets()
+		e.startMu.Unlock()
 		e.wg.Wait()
 	})
 	return nil
