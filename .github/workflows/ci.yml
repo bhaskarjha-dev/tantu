@@ -350,7 +350,36 @@ jobs:
           # sound" statements about different compilers.
           go-version: '1.27.1'
           cache: true
+      - name: Install GoReleaser
+        # Not an assumption: the first run of this job failed on all three
+        # platforms at `goreleaser release` with the command simply absent --
+        # goreleaser is not preinstalled on any GitHub runner, and only the
+        # release workflow installs it, on a tag.
+        #
+        # Pinned to the same v2.18.2 the release workflow uses, deliberately. CI
+        # verifying the output of a different goreleaser version than the one
+        # that ships releases would mean the gate and the product are built by
+        # different tools, which is the same class of error as verifying a
+        # different Go toolchain than the one that ships.
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: v2.18.2
+          # `check`, and never omitted: the action defaults to `release --clean`
+          # when `args` is absent, which on a pull request would attempt an
+          # actual release. Using it as a pure installer would work until that
+          # default changed under us. `check` validates .goreleaser.yaml and
+          # exits 0, so the config is now gated on every push too -- a
+          # deprecated property fails here rather than at tag time, which is the
+          # failure the `formats:` comment in that file was written to prevent.
+          args: check
       - name: Build every archive
+        # `shell: bash` is required on the windows leg, not a style choice: the
+        # default shell on windows-latest is PowerShell, where `set -euo
+        # pipefail` is not a command at all and the step dies on its first line.
+        # Every step in this job is bash, so it is stated per step rather than
+        # as a job-level default -- the existing Test job does the same.
+        shell: bash
         # Not --clean alone: goreleaser refuses to run in a directory with
         # uncommitted changes only in release mode, and a snapshot here is
         # built from a checkout CI has already committed.
@@ -359,6 +388,7 @@ jobs:
           goreleaser release --snapshot --clean --skip=sign,sbom
           ls -la dist/
       - name: Run this platform's archive exactly as a user would
+        shell: bash
         run: |
           set -euo pipefail
           # The archive glob must select exactly one file, and `*_linux_*.tar.gz`
@@ -422,6 +452,7 @@ jobs:
           "$bin" doctor || true
           echo "::endgroup::"
       - name: The archive must not need a runtime the machine may lack
+        shell: bash
         # The "no C libraries, no runtime install" invariant, checked against
         # the shipped bytes rather than against the build flags that are
         # supposed to produce them. Reading CGO_ENABLED=0 out of the config
