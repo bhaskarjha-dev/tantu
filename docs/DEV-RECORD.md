@@ -4442,3 +4442,76 @@ artifact bytes rather than asserted. Limitation 1.1 is closed on that basis.
 
 Still unverified and tracked as 3.18: keyless signing, which needs the release
 workflow's OIDC identity and therefore only runs at tag time.
+## Batch Z50 - the warning that was computed and thrown away (2026-10-07)
+
+Limitation 3.9 said an OAuth flow carrying neither `redirect_uri` nor `state`
+"is not separately surfaced to the user at the call site". Reading the code to
+fix it showed something more specific than a missing feature.
+
+`callbackExpectationSpec` has an `unbound` field. Its comment reads: "Such a flow
+has no redirect binding of its own, so it leans entirely on the navigation and
+Origin checks below **and must be reported as weaker to the user**."
+
+`callbackExpectation` sets it correctly on every call. Nothing reads it. The only
+references outside its own definition are in `callback_csrf_test.go`. So the
+weaker flow was detected, documented as needing a report, and then discarded --
+which is exactly what this repository's own rules name: a function that exists, a
+comment explaining why it matters, and a document describing its output are not
+evidence that any of them are connected.
+
+It also means the register was right for the wrong reason. 3.9 said the flow "is
+not separately surfaced"; the sharper truth is that the detection existed and was
+unused. Recorded that way, because a reader deciding whether to trust the
+limitation needs the actual shape.
+
+### The change
+
+`callbackExpectation` is now evaluated before the browser opens rather than after,
+so the warning lands while the user can still decide. The warning names what is
+missing, what it costs in terms the user can act on, and which parameters would
+fix it -- a bare "this flow is weaker" teaches nobody anything.
+
+It is a warning, not a block. Refusing would break legitimate flows, and Tantu
+cannot manufacture a `state` an application never sent. What remains open in 3.9
+is a property of the flow, not a defect in this product, and the row now says so.
+
+### The gate, and why it is not a pure-function test
+
+A pure-function version would call `callbackExpectation` on an unbound URL and
+assert `unbound == true`. The existing tests already do that, and it would pass
+against a product that warns nobody -- the claim under test is "the user is
+told", not "the field is set".
+
+So the gate drives two real sessions: a real loopback connection, a real
+`HandleASide`, a real callback listener, and the real logger a user would see.
+Synchronisation is on the `OpenBrowser` call, which the A-side makes *after* the
+warning, so the log read cannot race it. A sleep would have been the alternative
+and would have produced a gate that passes or flakes at random.
+
+Both directions are asserted. Warning on every flow would train users to ignore
+it, which is its own defect, so a flow with a loopback `redirect_uri` must stay
+silent -- and the ordering is checked too, since a warning printed after the
+browser is open cannot inform the decision it exists to inform.
+
+### Red proofs
+
+| Injection | Result |
+|---|---|
+| `if false && expected.unbound` | fails: "does not mention \"no redirect binding\"" |
+| `if true` (warn unconditionally) | fails: "a correctly bound flow was reported as weaker" |
+
+Both directions can fail, which is the point: a gate that only proves the
+warning appears would be satisfied by a product that warns about everything.
+
+### A process failure worth recording
+
+The second red proof left `internal/bridge/aside.go` containing a literal
+`if true {`, because the restore step reused a backup file that the first red
+proof had already moved back. Caught by running the gate after restoring and
+seeing it still fail, rather than by reading the diff. Reverted with the edit
+tool and confirmed with `go build` plus the full bridge suite under `-race`.
+
+Same shape as the `go.mod` incident in Z48 and the `fixtures/` splice earlier: a
+restore that appears to succeed because the earlier half of the script already
+moved the file. The lesson is the same both times -- verify the tree, do not
+trust the restore.

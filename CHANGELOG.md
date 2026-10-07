@@ -75,6 +75,18 @@ rollback procedures.
   cloning the repository. The original plan lives under gitignored `temp/`.
 
 ### Changed
+- **An OAuth sign-in with no `redirect_uri` and no `state` is now reported to
+  you as weaker, before the browser opens.** Such a flow has no redirect binding:
+  the callback can arrive on any path of the listener carrying no token to match,
+  so only the browser-navigation checks stand between a forged login and a
+  completed one — and another process on the same machine simply omits those
+  headers. Tantu already computed this (`callbackExpectationSpec.unbound`, whose
+  own comment said it "must be reported as weaker to the user") and then read it
+  nowhere outside tests, so the weaker flow was detected and discarded. The
+  sign-in now says what is missing, what it costs, and which parameters would fix
+  it. It stays a warning rather than a block: an app that legitimately redirects
+  somewhere other than loopback is not an attack, and Tantu cannot manufacture a
+  `state` the application never sent.
 - **The shipped binary is now built and run on every push, on all three
   platforms.** CI previously compiled from source and ran the test suite, but
   never exercised the packaging path: the `CGO_ENABLED=0` build, the version

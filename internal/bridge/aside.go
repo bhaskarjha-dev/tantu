@@ -473,6 +473,38 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 
 	a.logf("Callback listener active on 127.0.0.1:%d", actualPort)
 
+	// Computed before the browser opens, not after, so the warning below lands
+	// while the user can still decide whether to continue.
+	expected := callbackExpectation(req.URL)
+
+	// Say so when the flow has no redirect binding of its own.
+	//
+	// `unbound` has been computed since this code was written and nothing ever
+	// read it outside tests, so the weaker flow was detected and then discarded.
+	// Its own field comment says it "must be reported as weaker to the user",
+	// which is exactly the kind of documented claim that is only true if
+	// something runs it.
+	//
+	// What "unbound" means concretely, which is what the wording has to convey:
+	// with a loopback redirect_uri or a loopback state, a callback can only
+	// complete if it arrives at the right path carrying the token the provider
+	// echoed. Without either, the listener accepts a callback on any path and
+	// there is no token to match, so the only things still standing between a
+	// forged login and a completed one are the browser-navigation checks --
+	// which a web page cannot forge but a process on this machine simply omits
+	// (KNOWN-LIMITATIONS 3.8). That is a real reduction in what this relay
+	// guarantees, and the user is the only one positioned to act on it.
+	//
+	// It is a warning, not a block. Refusing would break the legitimate flows
+	// this product exists for: a web app that legitimately redirects to a
+	// non-loopback host is not an attack, it is just a weaker shape.
+	if expected.unbound {
+		a.logf("⚠️  This authorization URL has no redirect binding: it carries no loopback redirect_uri and no state value.")
+		a.logf("    The callback can arrive on any path of this listener and carries no token to match, so only")
+		a.logf("    browser navigation is checked -- another process on this machine can complete the login.")
+		a.logf("    Continue only if you trust the page, and prefer an app URL that includes redirect_uri or state.")
+	}
+
 	// Open browser if configured.  Never put the query string in logs: it can
 	// contain state, PKCE challenges, and (in callback requests) auth codes.
 	if a.cfg.OpenBrowser != nil {
@@ -489,7 +521,6 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 	completionCh := make(chan completionResult, 1)
 	var captureMu sync.Mutex
 	captured := false
-	expected := callbackExpectation(req.URL)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
