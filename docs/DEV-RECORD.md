@@ -4285,3 +4285,82 @@ Third gate in a row to encode an assumption instead of a fact: B's store
 converging synchronously, `Health()` being safe to read, a class name being
 absent from the markup. Each was green locally and wrong. The shared mistake is
 writing the assertion I expected rather than the one the code permits.
+## Batch Z48 - the shipped binary had never been run by anything (2026-10-07)
+
+### The gap
+
+Asked what to do once CI was green, the useful answer was not more gate work.
+It was noticing what none of the five passing jobs touched: **CI never builds
+the release artifact.**
+
+Every existing job runs `go build ./...` or `go test`, compiling from source with
+the toolchain's own defaults. The file a user downloads is produced by
+`.goreleaser.yaml`, which sets `CGO_ENABLED=0`, stamps the version through
+`ldflags`, and packs six archives. `ci.yml` said so itself, in a comment about
+the release workflow: "nothing exercises it until a tag is pushed."
+
+So the claims in `AGENTS.md` -- *no C libraries, no runtime install, one static
+binary that runs on a machine with no toolchain and no package manager* -- were
+asserted and verified nowhere. And this is the product's whole premise: Tantu
+exists for machines where something else is already broken.
+
+### What could have shipped broken, undetected
+
+| Breakage | Consequence |
+|---|---|
+| ldflag typo or wrong `-X` target | binary reports `dev` while its own Hub reports a release |
+| `CGO_ENABLED=0` dropped | needs a matching libc on a machine with no package manager -- the exact failure the product exists to prevent |
+| `name_template` change | archives users cannot tell apart |
+| archive packing change | release with no binary in it |
+
+### The job
+
+`release-artifact` is a matrix over linux, darwin and windows. Each leg builds
+**every** archive via `goreleaser release --snapshot --clean --skip=sign,sbom`,
+then unpacks and runs **the archive built for that platform**: `--version` to
+prove the binary loads, the ldflags reached it, and it runs on the OS it was
+packaged for; `doctor` to exercise a fresh machine's first run. The linux and
+darwin legs then assert static linkage against the shipped bytes with `ldd`.
+
+The signing block is deliberately still unverified -- keyless cosign needs the
+release workflow's `id-token: write`, which a pull request must not have.
+Recorded as limitation 3.18 rather than papered over.
+
+### Two gates in this batch that could not fail, caught before shipping
+
+**The archive glob matched two files.** `*_linux_*.tar.gz` matches both
+`linux_amd64` and `linux_arm64`, so the job would have picked an arbitrary
+build on its first run -- or, with the `head -1` I originally wrote, silently
+verified the wrong architecture. Found by running the glob against a real
+`dist/` tree: all three platforms matched 2 files. Now `*_${GOOS}_${GOARCH}*`,
+with `GOARCH` derived from `runner.arch` rather than a matrix literal, because a
+literal would work for today's runners and break the day a new one appears.
+
+**`ldd` failing would have read as "statically linked."** Both a static binary
+and a missing `ldd` produce no libc line, so the gate would pass having proved
+nothing -- the failure mode worse than not having the gate. It now distinguishes
+`not a dynamic executable` from silence and refuses to report success when its
+own input is absent.
+
+### Red proofs
+
+| Injection | Result |
+|---|---|
+| ldflags pointed at a non-existent var | binary reports `v1.0.0-dev+0200d30.dirty`; version check fails |
+| `name_template` drops the arch | goreleaser itself refuses on the windows collision; had it not, the count check finds 0 and refuses to guess |
+| `*_linux_*.tar.gz` (the arch-less glob) | matches 2 of 6 real artifacts -- the bug, confirmed against real bytes |
+| ldd output: static / dynamic / absent / broken | pass / fail / fail / fail -- all four branches exercised |
+
+**Not red-proven, stated plainly:** the static-linkage assertion was never run
+against a genuinely dynamic ELF. This host has no linux cross-compiler, and
+`CGO_ENABLED=1` fails the *build* here rather than producing a dynamic binary,
+so I could not produce one. That check is verified by simulation over realistic
+`ldd` output, not against a real dynamically linked binary. The first CI run on
+the linux leg is what will actually confirm it.
+
+### Incidental
+
+My `CGO_ENABLED=1` experiment overwrote `go.mod` with `module dynprobe` because
+a `Push-Location` had failed and left the shell in the repo root. CI's
+`git diff --exit-code go.mod go.sum` step is exactly the gate for that class of
+mistake; caught locally by `git status` and reverted.

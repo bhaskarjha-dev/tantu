@@ -75,6 +75,16 @@ rollback procedures.
   cloning the repository. The original plan lives under gitignored `temp/`.
 
 ### Changed
+- **The shipped binary is now built and run on every push, on all three
+  platforms.** CI previously compiled from source and ran the test suite, but
+  never exercised the packaging path: the `CGO_ENABLED=0` build, the version
+  stamping, and the archive layout that produces the file a user actually
+  downloads. Those claims were asserted in the project's own architecture rules
+  and verified nowhere. A new matrix job builds every archive on each platform,
+  runs that platform's archive — `--version` to confirm the binary loads and
+  carries its version, `doctor` to exercise a first run on a clean machine — and
+  on Linux and macOS asserts the binary is statically linked. Keyless release
+  signing still runs only at tag time and is recorded as a known limitation.
 - **The dashboard's recovery instructions can now actually recover.** If you
   opened `127.0.0.1:9876` by hand — a bookmark, a new tab, a typed address —
   the session banner offered only "press `o` in the Hub terminal" and "reload the

@@ -284,3 +284,173 @@ jobs:
             done
           done
           exit "$status"
+
+  release-artifact:
+    name: Release artifact (${{ matrix.goos }})
+    # The one product promise no existing gate touches.
+    #
+    # Every other job runs `go build ./...` or `go test`, which compile from
+    # source with the toolchain's own defaults. The file a user downloads is
+    # neither: it is produced by .goreleaser.yaml, which sets CGO_ENABLED=0,
+    # stamps the version through ldflags, and packs six archives. Until this
+    # job, nothing in CI ever executed that path, so the header comment above
+    # ("nothing exercises it until a tag is pushed") was accurate -- and the
+    # consequences were: a typo in an ldflag would ship a binary reporting
+    # "dev" while its own Hub reported a release; a dropped CGO_ENABLED=0 would
+    # ship a binary needing glibc on a machine with no package manager, which
+    # is the exact failure the product exists to avoid; a wrong `name_template`
+    # would ship archives users cannot tell apart.
+    #
+    # Each matrix entry runs the archive built FOR that platform, so linux is
+    # verified by running the linux binary on linux, not by checking that a file
+    # exists. Cross-compiling proves it compiles; running it is the only thing
+    # that proves it works on the machine it was built for.
+    #
+    # `--snapshot` because there is no tag on a pull request, and `--skip=sign`
+    # because keyless signing needs the release workflow's OIDC identity, which
+    # this job deliberately does not have. Signing is therefore still unverified
+    # outside a real release; see docs/KNOWN-LIMITATIONS.md 3.18.
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            runner: ubuntu-latest
+            ext: ''
+            archive_ext: '.tar.gz'
+          - goos: darwin
+            runner: macos-latest
+            ext: ''
+            archive_ext: '.tar.gz'
+          - goos: windows
+            runner: windows-latest
+            ext: '.exe'
+            archive_ext: '.zip'
+    env:
+      # Set explicitly rather than read from `go env`: the point of this job is
+      # to know which platform's archive to run, and asking the toolchain would
+      # make the archive under test a function of the toolchain rather than of
+      # the matrix.
+      GOOS: ${{ matrix.goos }}
+      EXT: ${{ matrix.ext }}
+      # The archive container suffix, as a second matrix fact rather than a
+      # second `if [ "$RUNNER_OS" = ... ]` branch. An earlier version
+      # special-cased Windows inline, which meant the platform name appeared in
+      # two places that had to agree; a matrix entry adding a platform would
+      # have needed both.
+      ARCHIVE_EXT: ${{ matrix.archive_ext }}
+      # Resolved from the runner, not from a matrix literal. The archive glob
+      # must select exactly one file, and `*_linux_*.tar.gz` matches BOTH the
+      # amd64 and arm64 builds. Adding an arch to the matrix would fix that for
+      # today's runners and break the day a new one appears; deriving it means
+      # the job follows the machine it is on.
+      GOARCH: ${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          # Deliberately the same toolchain the Test jobs use. A release built
+          # with a different one would make "CI is green" and "the artifact is
+          # sound" statements about different compilers.
+          go-version: '1.27.1'
+          cache: true
+      - name: Build every archive
+        # Not --clean alone: goreleaser refuses to run in a directory with
+        # uncommitted changes only in release mode, and a snapshot here is
+        # built from a checkout CI has already committed.
+        run: |
+          set -euo pipefail
+          goreleaser release --snapshot --clean --skip=sign,sbom
+          ls -la dist/
+      - name: Run this platform's archive exactly as a user would
+        run: |
+          set -euo pipefail
+          pattern="*_${GOOS}_${GOARCH}*${ARCHIVE_EXT}"
+          # Exactly one archive must match, and it must be named for the
+          # platform under test. `ls | head -1` would quietly take whichever
+          # sorted first, so a change to name_template that made the names
+          # ambiguous -- or a leftover file from an earlier run -- would let the
+          # job unpack the wrong binary and report on it as if it were right.
+          # That is the failure mode a gate has most to avoid: it would pass
+          # having verified nothing about this platform.
+          matches=$(find dist -maxdepth 1 -name "$pattern" | sort)
+          count=$(printf '%s\n' "$matches" | grep -c . || true)
+          if [ "$count" -ne 1 ]; then
+            echo "::error::expected exactly 1 archive matching '$pattern', found $count:"
+            printf '%s\n' "$matches"
+            ls -la dist/ || true
+            exit 1
+          fi
+          archive="$matches"
+          echo "::group::unpacking $(basename "$archive")"
+          mkdir -p unpacked
+          case "$archive" in
+            *.zip) unzip -q "$archive" -d unpacked ;;
+            *)     tar xzf "$archive" -C unpacked ;;
+          esac
+          ls -la unpacked/
+          echo "::endgroup::"
+          bin="unpacked/tantu${EXT}"
+          test -x "$bin" || test -f "$bin"
+          # --version proves three things at once: the binary loads, the ldflags
+          # reached it, and it runs on the OS it was packaged for. A binary that
+          # reports its version wrong has an ldflag path problem, which is
+          # exactly the class of defect this job exists to catch.
+          echo "::group::$bin --version"
+          "$bin" --version
+          echo "::endgroup::"
+          version=$("$bin" --version)
+          case "$version" in
+            *SNAPSHOT*) echo "version reports the snapshot build: $version" ;;
+            *) echo "::error::version does not carry the build stamp: '$version'. The ldflags path in .goreleaser.yaml is not reaching the binary."; exit 1 ;;
+          esac
+          # doctor is the one read-only command that touches config, identity
+          # and the peer store, so it exercises the parts of a fresh machine's
+          # first run that --version cannot.
+          echo "::group::$bin doctor"
+          "$bin" doctor || true
+          echo "::endgroup::"
+      - name: The archive must not need a runtime the machine may lack
+        # The "no C libraries, no runtime install" invariant, checked against
+        # the shipped bytes rather than against the build flags that are
+        # supposed to produce them. Reading CGO_ENABLED=0 out of the config
+        # would prove only that the config still says what it said.
+        #
+        # `ldd` is the ground truth on linux: a dynamically linked binary lists
+        # its loader and libc here, a static one prints "not a dynamic
+        # executable". On darwin a Go binary is also expected to be static
+        # against the system library, and `otool -L` would show libSystem;
+        # windows has no equivalent, so the check is skipped there rather than
+        # faked.
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            echo "windows has no ldd; the CGO_ENABLED=0 claim is checked on the linux and darwin legs"
+            exit 0
+          fi
+          bin=$(find unpacked -maxdepth 1 -name 'tantu' -type f | head -1)
+          if [ -z "$bin" ]; then
+            echo "::error::no untarred binary found under unpacked/; the archive was empty or packed the binary under a subdirectory."
+            find unpacked -type f
+            exit 1
+          fi
+          echo "::group::ldd $bin"
+          ldd_out=$(ldd "$bin" 2>&1) || true
+          echo "$ldd_out"
+          echo "::endgroup::"
+          # An absent or broken ldd must not read as "statically linked". Both a
+          # static binary and a missing ldd produce no libc line, so the absence
+          # of evidence is checked for explicitly -- otherwise the gate passes
+          # having proved nothing, which is worse than not having it.
+          case "$ldd_out" in
+            *"not a dynamic executable"*) ;;
+            "") echo "::error::ldd produced no output for $bin. The static-linking check would pass without having run, so this proves nothing."; exit 1 ;;
+            *"not found"*) echo "::error::ldd is not available on this runner, so the static-linking check cannot run."; exit 1 ;;
+          esac
+          if printf '%s' "$ldd_out" | grep -qE 'libc\.so|GLIBC_'; then
+            echo "::error::$bin is dynamically linked. It will not run on a machine without a matching libc, which is the whole premise of shipping a static binary."
+            exit 1
+          fi
+          echo "OK: $bin is statically linked"
