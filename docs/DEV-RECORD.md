@@ -4515,3 +4515,87 @@ Same shape as the `go.mod` incident in Z48 and the `fixtures/` splice earlier: a
 restore that appears to succeed because the earlier half of the script already
 moved the file. The lesson is the same both times -- verify the tree, do not
 trust the restore.
+## Batch Z51 - auditing a closure that was never earned (2026-10-07)
+
+Five register rows were closed before Batch Z37, under a standard weaker than the
+one this repository now holds. Z37 is where `AGENTS.md` gained the rules about
+pure-function versus behaviour gates and produced versus constructed conditions,
+so anything closed before it was closed without them.
+
+Four turned out to be fine, and each was confirmed by running its gate rather than
+by reading it:
+
+| Row | Gate run | Result |
+|---|---|---|
+| 4.1 | `TestWebDashboard_NoNativeDialogCalls` | pass |
+| 4.3 | `TestWebDashboard_EmptyStatesOfferANextAction` | pass |
+| 2.7 | `TestPeerReKeyingAtTheSameAddressIsRejected` | pass |
+| 3.17 | `binds_test.go` best-effort binds, plus the "cannot announce" wording | pass |
+
+**3.13 was not.** It is genuinely fixed -- all three original defects are
+addressed and I verified each in the code -- but what the closure rested on was
+not enough to support it.
+
+### What the closure actually proved
+
+- `TestDescribeHealthReportsWhenNothingCanBeAnnounced` constructs
+  `Health{SendErrors: 100}` by hand and passes it to `describeHealth`. It proves
+  the function has words for that state. It cannot prove the product ever puts
+  the engine into it -- the distinction this repository's own rules draw, after
+  a watcher function went uncalled for three batches behind a green
+  pure-function gate.
+- The one behaviour gate, `binds_test.go`, deliberately accepts either outcome,
+  because whether a multicast write succeeds is a property of the host rather
+  than of the code. That was the right call when it was written and it was what
+  broke the macOS run. But it means that on an ordinary workstation the gate only
+  ever observes `BeaconsSent > 0` and asserts nothing about the failure path.
+
+So every link in the chain had a test and the chain had none: engine to counter,
+counter to Health, Health to wording. Three tests, three links, zero coverage of
+the connection.
+
+### The gate
+
+`TestEngineReportsItselfUnannounceableWhenEveryBeaconFails` closes the socket
+underneath a running engine, so every subsequent beacon write fails for real.
+Host-independent, which is the point: the state was originally discovered on a
+macOS runner with no multicast interface, and no test should depend on that.
+
+It asserts the counters move (a new send error, no new beacon sent), that the
+wording appears, that it does not simultaneously claim a working transport, that
+the advice is actionable, and that one successful beacon clears the warning.
+
+Red proofs: removing `atomic.AddInt64(&e.stats.sendErrors, ...)` fails on "no new
+send failure"; counting failures as sent fails on "a write to a closed socket
+counted as sent". Both are the real defect this row was about, so both can fail.
+
+### Three attempts, two of which were my test's fault
+
+Worth recording, because the first two failures looked exactly like product
+defects and were not.
+
+1. `Start()` was used, so the background `advertiseLoop` beacons on a timer and
+   its sends interleaved with the test's, inflating `BeaconsSent` between the two
+   reads. The gate reported "a write to a closed socket counted as sent". Before
+   changing any product code I probed the actual behaviour: a `WriteToUDP` to a
+   closed `*net.UDPConn` returns `use of closed network connection` on this
+   platform. The assertion was wrong, not the code. Now the transport is wired
+   without `Start`, so `broadcastBeacon` is the only caller.
+2. The counter assertions used absolute values (`BeaconsSent != 0`). Counters only
+   increase, so the baseline call had already made that false. Now deltas against
+   a captured baseline.
+3. `describeHealth` checks `Running` first, and an engine that was never started
+   short-circuits to "not running", so the gate never reached the branch. `started`
+   is now set directly, same package.
+
+The rule this reinforces is the one from Z37 and it is not about tests alone: when
+a gate fails, establish which side is wrong before changing the product. Two of
+the three failures here would have become "fixes" to a correct engine had I not
+probed first.
+
+### Also corrected
+
+The register row for 3.13 still read as an unfixed defect list while its status
+column said closed, and carried a note pointing at a "Resolved" section that no
+longer answered it. It now states what is fixed, what the closure previously
+rested on, and why that was insufficient.
