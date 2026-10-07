@@ -172,7 +172,28 @@ jobs:
 
       - name: Test (Windows)
         if: matrix.os == 'windows-latest'
-        run: go test -count=2 ./...
+        shell: bash
+        # The same annotation re-emission as the Test step above, which this one
+        # lacked entirely. Without it a red Windows run reported only "Process
+        # completed with exit code 1" -- which is what happened on 2026-10-07 to
+        # a `-count=2` failure that could not be reproduced locally in six full
+        # runs. A failure you cannot name is a failure you cannot act on, and the
+        # whole point of the annotations is that the public API exposes them.
+        #
+        # `shell: bash` is required for that re-emission, since it uses pipes,
+        # `while read`, and parameter expansion that PowerShell does not share.
+        run: |
+          status=0
+          go test -count=2 ./... 2>&1 | tee test-output.log || status=$?
+          if [ "$status" -ne 0 ]; then
+            (grep -E -- '--- FAIL' test-output.log || true) | sort -u | head -20 \
+              | while IFS= read -r line; do
+                  printf '::error title=failed test::%s\n' "$line"
+                done
+            detail=$(tail -n 60 test-output.log)
+            printf '::error::%s\n' "${detail//$'\n'/%0A}"
+          fi
+          exit "$status"
 
       - name: Coverage floor
         if: matrix.os == 'ubuntu-latest'
@@ -483,18 +504,30 @@ jobs:
         #              two legs and by the config itself.
         run: |
           set -euo pipefail
-          bin=$(find unpacked -maxdepth 1 -name 'tantu' -type f | head -1)
+
+          case "$GOOS" in
+            windows)
+              # Exits before any lookup, deliberately. An earlier version located
+              # the binary with `find -name 'tantu'` before branching, and on
+              # windows the binary is `tantu.exe`, so the lookup found nothing and
+              # the leg failed with "no binary found under unpacked/" on a step
+              # that was going to skip anyway.
+              echo "windows has no ldd or otool equivalent; the static-linking claim is checked on the linux and darwin legs"
+              exit 0
+              ;;
+          esac
+
+          # ${EXT} rather than a bare name, and not just for tidiness: the
+          # windows archive is the one that has a suffix, so a hardcoded name is
+          # exactly the case that breaks.
+          bin=$(find unpacked -maxdepth 1 -name "tantu${EXT}" -type f | head -1)
           if [ -z "$bin" ]; then
-            echo "::error::no binary found under unpacked/; the archive was empty or packed it under a subdirectory."
+            echo "::error::no binary found under unpacked/ as tantu${EXT}; the archive was empty or packed it under a subdirectory."
             find unpacked -type f
             exit 1
           fi
 
           case "$GOOS" in
-            windows)
-              echo "windows has no ldd or otool equivalent; the static-linking claim is checked on the linux and darwin legs"
-              exit 0
-              ;;
             linux)
               echo "::group::ldd $bin"
               ldd_out=$(ldd "$bin" 2>&1) || true
