@@ -75,6 +75,16 @@ rollback procedures.
   cloning the repository. The original plan lives under gitignored `temp/`.
 
 ### Changed
+- **The OAuth Relay tab is now covered by real browser tests, including the
+  states you reach without a Hub session.** The acceptance harness previously
+  only clicked into that tab to measure page width. Nothing looked at the
+  bookmarklet or the URL forwarder, so the tab's behaviour rested entirely on
+  tests that assert on HTML text. The harness now checks the bookmarklet is a
+  real, working link rather than an inert one, that the recommended path and the
+  fallback are labelled, and — in a browser that has never opened this Hub — that
+  the page says it is not connected, announces that as an alert for screen
+  readers, tells you a command that works from there, and explains why the
+  bookmark is unavailable instead of presenting a dead button.
 - **An OAuth sign-in with no `redirect_uri` and no `state` is now reported to
   you as weaker, before the browser opens.** Such a flow has no redirect binding:
   the callback can arrive on any path of the listener carrying no token to match,

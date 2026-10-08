@@ -545,6 +545,110 @@ async function main() {
       const n = await js('(function(){var d=document.documentElement;return {w:d.scrollWidth,c:d.clientWidth};})()');
       check('360px ' + label + ': no page overflow', n.w <= n.c, JSON.stringify(n));
     }
+
+    // The Relay tab is the product's most distinctive feature and until now the
+    // harness only clicked into it. Nothing drove the forwarder or looked at the
+    // bookmarklet, so the states added in Z46 -- the primary/fallback badges and
+    // the unavailable marking -- had never been rendered in any browser. A Go gate
+    // asserting on substrings cannot tell you the pill looks live, and "looks
+    // live but does nothing" is exactly what Z46 fixed.
+    await tab('tab-relay');
+    const relayUI = await js(`(function(){
+      var a = document.querySelector('.bookmarklet-btn');
+      var box = document.querySelector('.bookmarklet-box');
+      var note = document.querySelector('.bookmarklet-unavailable-note');
+      var primary = document.querySelector('.path-label--primary');
+      var fallback = document.querySelector('.path-label--fallback');
+      function shown(el){ if(!el) return false; var s=getComputedStyle(el); return s.display!=='none' && s.visibility!=='hidden'; }
+      var cards = [].slice.call(document.querySelectorAll('.card-title'));
+      var forwarder = null;
+      for (var i=0;i<cards.length;i++){ if(/Forwarder/i.test(cards[i].textContent)) forwarder = cards[i].textContent.trim(); }
+      return {
+        href: a ? a.getAttribute('href') : null,
+        pillShown: shown(a),
+        unavailable: box ? box.className.indexOf('unavailable') >= 0 : null,
+        noteShown: shown(note),
+        primaryText: primary ? primary.textContent.trim() : null,
+        fallbackText: fallback ? fallback.textContent.trim() : null,
+        hasInput: !!document.getElementById('oauthUrlInput'),
+        hasSubmit: !!document.getElementById('btnRelay'),
+        forwarderLabel: forwarder
+      };
+    })()`);
+    check('relay: the bookmarklet is present and visible', relayUI && relayUI.pillShown, JSON.stringify(relayUI));
+    check('relay: the bookmarklet is a real javascript: URL, not an inert void(0)',
+      relayUI && /^javascript:/.test(relayUI.href || '') && relayUI.href !== 'javascript:void(0)',
+      'href=' + (relayUI ? relayUI.href : null));
+    check('relay: the bookmarklet is marked as the recommended path',
+      relayUI && relayUI.primaryText && /one click/i.test(relayUI.primaryText),
+      'primary=' + (relayUI ? relayUI.primaryText : null));
+    check('relay: the manual forwarder is marked as the fallback',
+      relayUI && relayUI.fallbackText && /fallback/i.test(relayUI.fallbackText),
+      'fallback=' + (relayUI ? relayUI.fallbackText : null));
+    check('relay: the fallback forwarder is still offered beside it',
+      relayUI && relayUI.hasInput && relayUI.hasSubmit && !!relayUI.forwarderLabel,
+      JSON.stringify(relayUI));
+    // The two are asserted together on purpose. A live session must give a
+    // working bookmark AND no "unavailable" note; checking either alone passes
+    // against the exact defect Z46 fixed, where the pill looked live and did
+    // nothing.
+    check('relay: a live session shows a working bookmark and no unavailable note',
+      relayUI && relayUI.unavailable === false && relayUI.noteShown === false,
+      JSON.stringify(relayUI));
+
+    // The same tab, reached the way a user reaches it when they type the address
+    // into a browser that has never opened this Hub: no bootstrap token and no
+    // session cookie, so requestHasDashboardCapability is false.
+    //
+    // This is the state Z46 changed, and the state the checks above cannot see.
+    // Red proof proved it: reverting the server's unavailable marking left all 57
+    // checks green, because this harness Hub always holds a session.
+    //
+    // It must be a *fresh context*. The first attempt navigated the existing page
+    // to the bare URL and four checks failed -- correctly, for the wrong reason:
+    // the session cookie persisted in the reused context, so the page was still
+    // authorised and the banner legitimately did not appear. A private window is
+    // the real equivalent, and browser.newContext() is exactly that.
+    //
+    // A second context also leaves the authenticated page untouched, so no later
+    // check depends on recovering from a lost session. An earlier version
+    // re-bootstrapped with the same token and asserted the session came back; it
+    // cannot, because the token is single-use by design.
+    const bareContext = await browser.newContext({ viewport: { width: 1000, height: 800 } });
+    const barePage = await bareContext.newPage();
+    await barePage.goto(`http://127.0.0.1:${WEB_PORT}/`);
+    await sleep(1200);
+    const noSession = await barePage.evaluate(`(function(){
+      var banner = document.getElementById('sessionBanner');
+      var detail = document.getElementById('sessionBannerDetail');
+      function shown(el){ if(!el) return false; var s=getComputedStyle(el); return s.display!=='none' && s.visibility!=='hidden'; }
+      var box = document.querySelector('.bookmarklet-box');
+      var note = document.querySelector('.bookmarklet-unavailable-note');
+      var a = document.querySelector('.bookmarklet-btn');
+      return {
+        bannerShown: shown(banner),
+        bannerRole: banner ? banner.getAttribute('role') : null,
+        detail: detail ? detail.textContent.trim() : null,
+        href: a ? a.getAttribute('href') : null,
+        unavailable: box ? box.className.indexOf('unavailable') >= 0 : null,
+        noteShown: shown(note)
+      };
+    })()`).catch(() => null);
+    check('no session: the dashboard warns that it is not connected',
+      noSession && noSession.bannerShown === true, JSON.stringify(noSession));
+    check('no session: the warning is announced, not just drawn',
+      noSession && noSession.bannerRole === 'alert', 'role=' + (noSession ? noSession.bannerRole : null));
+    check('no session: the recovery instruction names a command that works from here',
+      noSession && /tantu dashboard/.test(noSession.detail || ''),
+      'detail=' + (noSession ? (noSession.detail || '').slice(0, 120) : null));
+    check('no session: the bookmarklet is inert rather than pretending to work',
+      noSession && noSession.href === 'javascript:void(0)', 'href=' + (noSession ? noSession.href : null));
+    check('no session: the inert bookmarklet is marked unavailable and says why',
+      noSession && noSession.unavailable === true && noSession.noteShown === true,
+      JSON.stringify(noSession));
+    await barePage.screenshot({ path: path.join(out, 'no-session-relay.png') }).catch(() => {});
+    await bareContext.close().catch(() => {});
+
     await shot('narrow360');
     await metrics(1280, 900); await sleep(300);
     await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });

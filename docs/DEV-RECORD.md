@@ -4599,3 +4599,73 @@ The register row for 3.13 still read as an unfixed defect list while its status
 column said closed, and carried a note pointing at a "Resolved" section that no
 longer answered it. It now states what is fixed, what the closure previously
 rested on, and why that was insufficient.
+## Batch Z52 - the flagship feature had no browser coverage at all (2026-10-07)
+
+Asked what was left, the honest answer was not in the register. It was that the
+OAuth Relay tab -- the product's most distinctive feature, the reason the tool
+exists -- had never been driven by anything. The harness clicked into
+`tab-relay` to measure overflow at 360px and stopped. No check looked at the
+bookmarklet, the forwarder, or any relay behaviour.
+
+That is especially uncomfortable given Z46: I changed that tab, added a primary
+path badge, a fallback badge and an unavailable state, and gated all of it with a
+Go test asserting on substrings of `dashboard.html`. A substring cannot tell you
+whether a pill looks live.
+
+### What the red proof found before any check existed
+
+The first attempt at the new checks asserted the *live* state: the bookmarklet is
+present, its href is a real `javascript:` URL, it is badged recommended, the
+forwarder is badged fallback. Reverting the server's unavailable marking left all
+57 checks green.
+
+That was not a weak assertion; it was an unreachable state. The harness Hub
+always holds a dashboard session, so `requestHasDashboardCapability` is true,
+`bookmarkletJS` is never `javascript:void(0)`, and the branch Z46 added never
+runs. **The fix for "a control that looks live and does nothing" had no browser
+coverage, and could not have any, in the harness's existing setup.**
+
+### Getting to the real state
+
+Second attempt navigated the existing page to the bare URL. Four checks failed --
+correctly, for the wrong reason. The session cookie lives in the browser
+context, and navigating the same page kept it, so the page was still fully
+authorised: the banner legitimately did not appear and the bookmarklet was
+legitimately live. The failures were telling me the product was right and the
+test was wrong.
+
+The state is a browser that has never seen this Hub: a private window, a new
+profile, a typed address. `browser.newContext()` is exactly that, and it also
+leaves the authenticated page untouched, so no later check has to depend on
+recovering from a lost session.
+
+An earlier version of this block re-bootstrapped with the same token and asserted
+the session came back. It cannot: the token is single-use by design. That check
+was asserting something the product deliberately does not do, and it is removed
+rather than made to pass.
+
+### The gate
+
+Eleven checks, up from 51 to 62. Six on the authenticated Relay tab, five on a
+cookie-less context. The five cover 3.6 as well, which until now existed only as
+a wording gate in Go: the banner must be visible, must carry `role="alert"` so a
+screen reader announces it, and must name a command that works from here.
+
+Both directions are asserted across the two contexts -- a live bookmarklet with
+no unavailable note, and an inert one with the note shown -- because either half
+alone passes against the defect Z46 fixed.
+
+Red proof: reverting the server's unavailable marking now fails
+`no session: the inert bookmarklet is marked unavailable and says why`. The same
+injection that was undetectable before is caught.
+
+All three engines pass, peerless and with peers: chromium 62/62, firefox 62/62,
+webkit 62/62.
+
+### The lesson, which is not about browsers
+
+Three of the four failures in this batch were my test being wrong, and in each
+case the failure output was the accurate report. The same pattern as Z47's torn
+Health snapshot and Z51's two phantom product defects: a gate that fails is
+evidence, and the question worth asking first is which side is lying. In two of
+those cases the product was correct and I was about to "fix" it.
