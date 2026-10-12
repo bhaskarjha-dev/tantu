@@ -4669,3 +4669,54 @@ case the failure output was the accurate report. The same pattern as Z47's torn
 Health snapshot and Z51's two phantom product defects: a gate that fails is
 evidence, and the question worth asking first is which side is lying. In two of
 those cases the product was correct and I was about to "fix" it.
+## Batch Z53 - auditing the remaining closed rows, and a wrong hypothesis (2026-10-13)
+
+Z51 audited the five rows closed before Z37. Thirteen more had never been
+audited. Verified by running each claim, not by reading it.
+
+### Held up
+
+| Row | Claim | How verified |
+|---|---|---|
+| 1.3 | `-race` runs locally on Windows with a C toolchain | ran it repeatedly this session, green every time |
+| 1.5 | "No release has ever been published" | `git tag -l` returns empty |
+| 1.6 | The API serves annotations but not job logs | hit it directly: 403 "Must have admin rights" |
+| 2.3 | The harness drives three engines on every push | chromium, firefox and webkit, all 62/62 |
+| 5.5 | Documentation claims are verified against code | `docgate` passes, and it has caught real drift today |
+
+### 4.2 was closable and I had left it open
+
+The bookmarklet was drag-only with the forwarder unlinked; the row read "partly
+closed". Z46 -- six days ago -- added exactly the cross-reference that closes
+it, and I did not revisit the row. Same stale-row shape as 3.13: the status
+column had moved on from the code, or in this case the code had moved on from
+the status column.
+
+It is now closed, with the evidence named, and the Z52 browser checks cover the
+markup rather than a substring.
+
+### The hypothesis I was wrong about
+
+I expected 2.5 to be stale. It says the remaining budgets -- upload progress
+("every 250ms") and cancel acknowledgement ("under 1s") -- "need a live peer
+which the peerless harness cannot provide". Z42 added paired two-Hub e2e tests,
+so a live peer plainly exists in Go now, and the row predates that. That looked
+like a gap I could close with infrastructure already in the tree.
+
+It cannot, and the blocker is real. Two findings, both from reading:
+
+- The operation ledger writes `BytesSent` **only on completion**, always as the
+  full size. There is no in-flight state: grepping for one returns nothing. So
+  the server has no mid-transfer progress signal to gate against.
+- The progress the user actually sees is `xhr.upload.onprogress` in the
+  dashboard -- a client-side event. The budget is therefore a browser
+  measurement, and a browser measurement needs a browser that can start an
+  upload, which is what `/api/drop/upload` requiring `DialPeer` forbids in the
+  peerless harness.
+
+So 2.5 stands as written. Worth recording because the reasoning looked airtight
+before checking: existing live-peer tests, a stale-sounding row, a budget
+waiting to be measured. Three of those are true and the conclusion is false.
+
+The counting in that row does check out: 5 gates in `internal/hub` plus 2 in
+`cmd/tantu` is the "7 Go gates" it claims.
