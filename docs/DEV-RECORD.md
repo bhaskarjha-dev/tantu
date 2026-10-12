@@ -5076,3 +5076,50 @@ two false starts cost less time than the first harness I wrote. The gates were
 never wrong about what they checked. They checked markup and lengths, and the
 defects are in what survives to be rendered and in what two halves of a screen say
 about the same value.
+## Batch Z60 - a WCAG failure, found by a machine audit of the live page (2026-10-13)
+
+There is a Lighthouse tool among the browser tools, and it had never been run
+against this dashboard. It reports the running page, not the source, so it sees
+what a person sees.
+
+**Accessibility scored 1.0 and best practices 1.0.** One failure underneath:
+axe `label-content-name-mismatch` on `#dropZone`. Its accessible name was "Choose
+a file to send to your peer" while the visible text read "Drag & drop files here,
+or click to browse".
+
+That is WCAG 2.5.3, Label in Name, and it is not cosmetic. Voice-control users
+say what they see; a control printed as "Drag and drop files here" and announced
+as something else cannot be activated by saying its label, and a screen-reader user
+hears a different sentence from the one on screen. The name now leads with the
+visible text and keeps the extra context after it.
+
+Re-audited after the change: accessibility 1.0, best practices 1.0, no
+`label-content-name-mismatch`. The only remaining item is a missing meta
+description, which is SEO noise for a page served on loopback and should never
+appear in a search result anyway.
+
+## What the audit cannot do
+
+This is a machine check and it is not the screen-reader session limitation 2.2
+records. It catches a mechanical mismatch between two strings. It cannot tell you
+the journey is navigable, that focus order makes sense, or that the wording helps
+anyone. Both rows stay open.
+
+The gate covers the rule broadly rather than only the element that failed: every
+role="button" whose visible text shares no word with its accessible name is
+rejected, and the drop zone's name is asserted to contain its label after
+normalising "&" to "and", because a screen reader pronounces the ampersand and a
+person does not.
+
+## Keyboard structure, measured rather than asserted
+
+Also checked, since nothing had: a focusable skip link pointing at `#main`,
+54 focusable elements, 13 live or status regions. Structure is sound. The
+traversal *order* is the next thing to look at and is not covered here.
+
+## The tally so far
+
+Four batches of gate work on this dashboard produced one user-visible fix. Reading
+the running page -- once unauthenticated, once authenticated -- plus one machine
+audit of it has now produced four, and one of those was a standards failure that
+no amount of substring checking would ever have surfaced.
