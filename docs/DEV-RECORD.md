@@ -5027,3 +5027,52 @@ Two of the four things I found in ten minutes of looking were things several
 batches of gate work had asserted were fine. The gates were not wrong about what
 they checked; they checked markup and lengths, while the defects were in what a
 person sees and in what survives to be rendered.
+## Batch Z59 - reading the authenticated product (2026-10-13)
+
+Z58 found two defects by looking at the page. That was in a *no-session* state --
+a spent one-time link -- because getting a working session through the browser tool
+had not been worked out. This batch is the authenticated product: what a user
+actually sees on a normal day.
+
+Getting there first cost three false starts. Tokens are single-use and cleared on
+use, so a link minted in one command and opened in the next arrives already spent,
+and twice the page came back 403. That was my automation, not a defect: the
+acceptance harness bootstraps successfully six times per push. Worth writing down
+because the 403 looked exactly like the Z58 finding and was not one.
+
+## What looking found
+
+**A chip and the sentence beneath it contradicted each other.** The Peers tab
+renders a status chip and a health sentence from the same value. The chip
+distinguishes "never heard from anyone" from "a hub answered and has since aged
+out": `nodes == 0` with `beacons_received > 0` renders as "Discovery idle". All
+three transport branches of `describeHealth` claimed "No nearby hubs have
+answered yet". On the live page: running, usable, 334 beacons sent, 1 received, 0
+nodes -- chip said a hub had been heard and gone quiet, sentence beneath it said
+nothing had ever answered.
+
+The word "yet" is what made it wrong. It asserts nothing has *ever* answered, which
+the counters disprove. All three branches now share a helper that says which of
+the two it is and, when a hub was heard, how many beacons carried it.
+
+The gate compares the two halves, because they are computed in two languages --
+the chip in JavaScript, the sentence in Go -- and nothing compared them.
+
+**Two candidates that were not defects, reported as such.** The downloads path
+appeared in the accessibility tree with an empty accessible name; the adjacent
+"Downloads location:" text supplies the context when read linearly, so it is not a
+defect. And the path is `white-space: normal` with `overflow: visible`, so it wraps
+rather than truncating, with nothing to fix.
+
+Recording the non-findings matters as much as the findings. Two of the four things
+I looked at hard were fine, and saying so stops the next session spending effort
+on them.
+
+## The measurement that makes this worth doing
+
+Four batches of gate work on the dashboard produced one user-visible fix. Ten
+minutes of reading the running page, authenticated, produced another -- and the
+two false starts cost less time than the first harness I wrote. The gates were
+never wrong about what they checked. They checked markup and lengths, and the
+defects are in what survives to be rendered and in what two halves of a screen say
+about the same value.

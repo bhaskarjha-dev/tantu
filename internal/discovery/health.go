@@ -195,6 +195,28 @@ func (e *Engine) Health() Health {
 // depends only on the socket state a caller can actually observe; a caller that
 // forgot to populate a derived field would otherwise get a sentence describing
 // a state it is not in.
+// noHubsYetSentence is the sentence for "the transport is healthy but no hub
+// is in reach", and it distinguishes never-heard from heard-then-quiet.
+//
+// The dashboard's status chip already made that distinction: nodes == 0 with
+// beacons_received > 0 renders as "Discovery idle", meaning a hub was heard and
+// has since aged out. This function claimed in all three transport branches
+// that no nearby hub had answered *yet*, so the chip and the sentence directly
+// beneath it contradicted each other on the same card. Found by reading the
+// rendered Peers tab against /api/status: running, usable, 334 beacons sent, 1
+// received, 0 nodes -- chip "Discovery idle", detail "No nearby hubs have
+// answered yet".
+//
+// "yet" is the word that makes it wrong. It asserts nothing has ever answered,
+// which the counters disprove.
+func noHubsYetSentence(transportName string, h Health) string {
+	prefix := "Discovery is running on " + transportName + "."
+	if h.BeaconsReceived > 0 {
+		return fmt.Sprintf("%s %d beacon(s) were heard but no hub is in reach now \u2014 one may have stopped, or aged out of the window.", prefix, h.BeaconsReceived)
+	}
+	return prefix + " No nearby hubs have answered yet \u2014 check the other machine is on this network and its Hub is running."
+}
+
 func describeHealth(h Health, broadcastStopped, multicastStopped bool) string {
 	usable := h.Broadcast || h.Multicast
 	switch {
@@ -220,17 +242,17 @@ func describeHealth(h Health, broadcastStopped, multicastStopped bool) string {
 		return "Multicast discovery stopped responding after repeated errors; only subnet broadcast is still working."
 	case h.Broadcast && h.Multicast:
 		if h.Nodes == 0 {
-			return "Discovery is running on multicast and subnet broadcast. No nearby hubs have answered yet \u2014 check the other machine is on this network and its Hub is running."
+			return noHubsYetSentence("multicast and subnet broadcast", h)
 		}
 		return fmt.Sprintf("Discovery is running on multicast and subnet broadcast; %d nearby hub(s) in reach.", h.Nodes)
 	case h.Broadcast:
 		if h.Nodes == 0 {
-			return "Discovery is running on subnet broadcast only (multicast is unavailable on this network). No nearby hubs have answered yet."
+			return noHubsYetSentence("subnet broadcast only (multicast is unavailable on this network)", h)
 		}
 		return fmt.Sprintf("Discovery is running on subnet broadcast only (multicast is unavailable); %d nearby hub(s) in reach.", h.Nodes)
 	default:
 		if h.Nodes == 0 {
-			return "Discovery is running on multicast only (subnet broadcast is unavailable on this network). No nearby hubs have answered yet."
+			return noHubsYetSentence("multicast only (subnet broadcast is unavailable on this network)", h)
 		}
 		return fmt.Sprintf("Discovery is running on multicast only; %d nearby hub(s) in reach.", h.Nodes)
 	}
