@@ -84,6 +84,19 @@ function seedPeers(storeDir) {
     a1: { fingerprint: 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90', name: 'devbox', alias: 'Devbox (workstation)', is_default: true, address: '192.168.1.50:9877', cert_pem: null, first_seen: '2026-09-01T09:00:00Z', last_seen: '2026-09-26T23:40:00Z' },
     b1: { fingerprint: 'b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1', name: 'build-box-with-a-deliberately-long-hostname-that-should-truncate-cleanly', address: '10.0.12.7:9877', cert_pem: null, first_seen: '2026-08-14T11:20:00Z', last_seen: '2026-09-20T08:05:00Z' },
     c1: { fingerprint: 'c3', name: 'tiny-fp', address: 'not-a-host:0', cert_pem: null, first_seen: '2026-07-01T00:00:00Z', last_seen: '2026-07-01T00:00:00Z' },
+    // A blackhole peer, and the reason the cancel budget can be measured at
+        // all without a second machine.
+        //
+    // 192.0.2.0/24 is TEST-NET-1 (RFC 5737): reserved for documentation and
+    // unroutable by design, so a dial to it hangs instead of being refused in
+    // milliseconds. That is the whole trick. A refused dial leaves no window
+    // in which a user could cancel anything, so the cancel-acknowledgement
+    // budget would be untestable against it. Same idea as the deterministic
+    // leak gate in relay_cancel_test.go.
+    //
+    // Deliberately not the default peer: making it default would leave every
+    // other check in this run waiting on a timeout.
+    d1: { fingerprint: 'd4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3', name: 'unreachable-peer', alias: 'Unreachable (blackhole)', address: '192.0.2.1:9877', cert_pem: null, first_seen: '2026-10-07T00:00:00Z', last_seen: '2026-10-07T00:00:00Z' },
   };
   const out = {};
   for (const [k, p] of Object.entries(peers)) out[p.fingerprint] = p;
@@ -1133,6 +1146,132 @@ async function main() {
     check('console noise filter matches its documented scope', noiseWrong.length === 0, JSON.stringify(noiseWrong));
     check('zero unexpected console errors', errs.length === 0, JSON.stringify(errs.slice(0, 2)));
 
+    // ------------------------------------------------------------ 2.5 budgets
+    // The cancel-acknowledgement budget ("under 1s"), measured for real.
+    //
+    // Row 2.5 recorded both transfer budgets as ungated because they "need a
+    // live peer which the peerless harness cannot provide". Cancel turns out not
+    // to need one, and the seeded blackhole peer is what makes it measurable: a
+    // dial to TEST-NET-1 hangs instead of being refused, so there is a real
+    // window in which a user could press Cancel. Against a refused dial there is
+    // no window at all and the budget would be untestable rather than merely
+    // untested.
+    //
+    // This is the genuine user experience being measured: press send, the
+    // machine appears to hang, press Cancel, and the UI has to say so promptly.
+    await tab('tab-drop');
+    const picked = await js(`(function(){
+      var pills = [].slice.call(document.querySelectorAll('#dropPeerPills button'));
+      // The pill renders the peer's DisplayName, which is Alias when set. Matching the\n      // name would have passed against an empty list for the wrong reason.\n      var target = pills.filter(function(b){ return /Unreachable \\(blackhole\\)/.test(b.textContent); })[0];
+      if (!target) return { ok:false, count:pills.length, texts:pills.map(function(b){return b.textContent;}) };
+      target.click();
+      return { ok:true, value:target.getAttribute('data-value') };
+    })()`);
+    // Only meaningful with a seeded store. Peerless, the Hub has no peers at all
+    // and the upload goes to loopback instead -- which still exercises the cancel
+    // path, so the budget is measured either way.
+    if (WITH_PEERS) {
+      check('transfer budget: the blackhole peer is selectable as a destination',
+        picked && picked.ok === true, JSON.stringify(picked));
+    } else {
+      skip('transfer budget: the blackhole peer is selectable as a destination',
+        'peerless run: no peer store is seeded, so the upload goes to loopback');
+    }
+
+    // Staged through the file picker, not a synthetic paste. Two reasons, both
+    // found by running this on all three engines:
+    //
+    //  Firefox drops clipboardData on a synthetic ClipboardEvent, so the paste
+    //  path stages nothing there and the budget silently did not run.
+    //  A staged image left in the DOM tripped an unrelated existing check in
+    //  webkit ("reduced motion kills all animation and transition", which found
+    //  an IMG). A new check must not perturb the ones already there.
+    //
+    // The picker is also the primary path a user actually takes, so it is the
+    // better thing to measure.
+    const budgetFile = path.join(WORK, 'cancel-budget.bin');
+    fs.writeFileSync(budgetFile, Buffer.alloc(3 * 1024 * 1024, 7));
+    await page.setInputFiles('#fileInput', budgetFile);
+    await sleep(900);
+    const stagedForSend = await js(`(function(){
+      var card = document.getElementById('filePreviewCard');
+      var confirm = document.getElementById('btnConfirmSend');
+      return {
+        visible: card ? !card.hasAttribute('hidden') : false,
+        canConfirm: confirm ? !confirm.disabled : false,
+        dest: (document.getElementById('destinationSummary')||{}).textContent || ''
+      };
+    })()`);
+    check('transfer budget: the file is staged for the chosen destination',
+      stagedForSend && stagedForSend.visible === true, JSON.stringify(stagedForSend));
+
+    let cancelMs = null;
+    if (stagedForSend && stagedForSend.visible && stagedForSend.canConfirm) {
+      await page.evaluate(`(function(){ document.getElementById('btnConfirmSend').click(); })()`);
+      // Wait for the in-flight state that offers a Cancel.
+      let inFlight = false;
+      for (let i = 0; i < 40 && !inFlight; i++) {
+        inFlight = await js(`(function(){
+          var b = document.getElementById('btnCancelUpload');
+          if (!b) return false;
+          var s = getComputedStyle(b);
+          return s.display !== 'none';
+        })()`);
+        if (!inFlight) await sleep(150);
+      }
+      check('transfer budget: an in-flight upload offers a Cancel control', inFlight === true, '');
+
+      if (inFlight) {
+        const t0 = Date.now();
+        await page.evaluate(`(function(){ document.getElementById('btnCancelUpload').click(); })()`);
+        let acked = false;
+        let text = '';
+        for (let i = 0; i < 40 && !acked; i++) {
+          const r = await js(`(function(){
+            var bar = document.getElementById('uploadStatus');
+            var txt = bar ? bar.textContent : '';
+            var b = document.getElementById('btnCancelUpload');
+            var hidden = !b || getComputedStyle(b).display === 'none';
+            return { txt: txt, hidden: hidden };
+          })()`);
+          text = r ? r.txt : '';
+          if (/cancel/i.test(text) || (r && r.hidden && i > 2)) { acked = true; break; }
+          await sleep(50);
+        }
+        cancelMs = Date.now() - t0;
+        // Surfaced rather than only stored in the JSON report, which lives in a temp
+        // directory this process deletes on exit. Same reasoning as the first-render
+        // timing already printed by this harness.
+        console.log('uxtest: cancel acknowledged in ' + cancelMs + 'ms (budget 1000ms)');
+        check('transfer budget: cancelling is acknowledged to the user',
+          acked === true, 'after ' + cancelMs + 'ms, status text: ' + String(text).slice(0, 80));
+        // Leave nothing behind. This block stages a file and runs an upload, and
+        // a staged preview left visible made an unrelated existing check fail:
+        // webkit's "reduced motion kills all transition" began reporting an IMG,
+        // because a thumbnail from the earlier clipboard check was still attached
+        // to the preview card this one reopened. Confirmed by removing this block
+        // and watching webkit go back to 75/75.
+        //
+        // A new check must not perturb the ones already there.
+        await js(`(function(){
+          var b = document.querySelector('[data-action="cancel-preview"]');
+          if (b) b.click();
+          return 'dismissed';
+        })()`);
+        await sleep(300);
+        check('transfer budget: the staged preview is dismissed afterwards',
+          (await js(`(function(){
+            var card = document.getElementById('filePreviewCard');
+            return card ? card.hasAttribute('hidden') : false;
+          })()`)) === true, '');
+
+        check('transfer budget: cancel acknowledgement is under 1s',
+          cancelMs !== null && cancelMs < 1000, 'took ' + cancelMs + 'ms');
+      }
+    } else {
+      skip('transfer budget: cancel acknowledgement',
+        'the file could not be staged for send, so the upload could not be started');
+    }
     fs.writeFileSync(path.join(out, 'uxtest-report.json'), JSON.stringify({ head, engine: ENGINE, peers: WITH_PEERS, checks, skips }, null, 1));
     const pass = checks.filter((c) => c.ok).length;
     if (skips.length) console.log('uxtest: ' + skips.length + ' check(s) SKIPPED -- see the SKIP lines above');
