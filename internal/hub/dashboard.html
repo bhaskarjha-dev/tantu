@@ -3083,12 +3083,42 @@
     });
 
     // Clipboard-first uploads: pasting an image (screenshot, copied file)
+    // Returns the files a paste carried, across the shapes browsers actually use.
+    //
+    // `clipboardData.files` alone is not enough, and that is why row 2.4 was
+    // open. The shape depends on the browser AND on what was copied: a copied
+    // file usually populates `files`, but a screenshot taken with the platform
+    // shortcut is exposed through `items` (kind "file") and on some engines
+    // `files` stays empty. Reading only `files` meant paste-an-image silently did
+    // nothing there -- no error, no staged preview, just a keystroke that looked
+    // like it had been ignored.
+    //
+    // Both are consulted and `files` wins when present, because it is the cheaper
+    // shape and already correct where it is populated. `items` is the fallback,
+    // not a replacement: where `files` is populated the two agree, and taking
+    // `items` first would mean a getAsFile() call on every paste for nothing.
+    function extractPastedFiles(clipboardData) {
+      if (!clipboardData) return [];
+      var fromFiles = clipboardData.files ? Array.prototype.slice.call(clipboardData.files) : [];
+      if (fromFiles.length > 0) return fromFiles;
+      var items = clipboardData.items || [];
+      var fromItems = [];
+      for (var i = 0; i < items.length; i++) {
+        var item = items[i];
+        if (!item || item.kind !== 'file') continue;
+        var f = null;
+        try { f = item.getAsFile(); } catch (_) { f = null; }
+        if (f) fromItems.push(f);
+      }
+      return fromItems;
+    }
+
     // anywhere on the dashboard stages it for preview and confirmation
     // through the authenticated upload path. Text pastes fall through to the
     // focused field (e.g. the snippet textarea). Only file payloads are
     // logged (name + size); no clipboard content ever enters logs or URLs.
     document.addEventListener('paste', (e) => {
-      const files = (e.clipboardData && e.clipboardData.files) || [];
+      const files = extractPastedFiles(e.clipboardData);
       if (files.length === 0) return;
       const image = Array.prototype.find.call(files, f => f.type && f.type.startsWith('image/')) || files[0];
       if (!image) return;

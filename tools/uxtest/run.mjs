@@ -50,6 +50,17 @@ function check(name, ok, detail) {
   checks.push({ name, ok: !!ok, detail: String(detail ?? '').slice(0, 240) + suffix });
   if (!ok) console.log('  FAIL  ' + name + '  ' + String(detail ?? '').slice(0, 200) + suffix);
 }
+// A skip is never a pass. It gets its own line, its own count in the summary,
+// and a printed reason -- because a check that quietly stops running is how a
+// gate ends up covering nothing while still reporting green, which this
+// repository has now hit several times. The clipboard behaviour checks need a
+// real ClipboardEvent carrying a real DataTransfer, and not every engine will
+// produce one, so that capability is measured rather than assumed.
+const skips = [];
+function skip(name, reason) {
+  skips.push({ name, reason: String(reason).slice(0, 240) });
+  console.log('  SKIP  ' + name + '  -- ' + String(reason).slice(0, 200));
+}
 // hubDied is where a red run is classified as an infrastructure failure rather
 // than a product result. It is a hard stop: continuing would bury the cause
 // under dozens of consequential failures, which is what made the previous
@@ -596,6 +607,89 @@ async function main() {
       relayUI && relayUI.unavailable === false && relayUI.noteShown === false,
       JSON.stringify(relayUI));
 
+    // Row 2.4: which clipboard shapes a browser exposes is now measured, on three
+    // engines, per push. The handler used to read only clipboardData.files, so a
+    // screenshot pasted on an engine that exposes items instead did nothing at
+    // all -- no error, no staged preview, just a swallowed keystroke.
+    //
+    // These call the shipped extractPastedFiles directly. A Go gate cannot: the
+    // logic is JavaScript, and testing it from Go would mean either adding a JS
+    // engine (against the pinned dependency surface) or re-implementing it in the
+    // test, which passes whenever the real one is broken.
+    const clip = await js(`(function(){
+      function img(){ return { name:'shot.png', type:'image/png', size:2048 }; }
+      var out = [];
+      function add(name, data, want){ out.push({name:name, got:extractPastedFiles(data).length, want:want}); }
+      add('files shape (copied file)', {files:[img()], items:[{kind:'file',getAsFile:function(){return img();}}]}, 1);
+      add('items shape only (screenshot)', {files:[], items:[{kind:'file',getAsFile:function(){return img();}}]}, 1);
+      add('files property absent', {items:[{kind:'file',getAsFile:function(){return img();}}]}, 1);
+      add('both populated, no duplication', {files:[img(),{name:'a.txt',type:'text/plain',size:9}], items:[{kind:'file',getAsFile:function(){return img();}}]}, 2);
+      add('text-only falls through', {files:[], items:[{kind:'string',getAsFile:function(){return null;}}]}, 0);
+      add('items with no file kind', {files:[], items:[{kind:'string'},{kind:'string'}]}, 0);
+      add('getAsFile throwing is ignored', {files:[], items:[{kind:'file',getAsFile:function(){throw new Error('revoked');}}]}, 0);
+      add('one throwing, one good', {files:[], items:[{kind:'file',getAsFile:function(){throw new Error('x');}},{kind:'file',getAsFile:function(){return img();}}]}, 1);
+      add('neither property present', {}, 0);
+      add('null clipboardData', null, 0);
+      return { defined: typeof extractPastedFiles === 'function', rows: out };
+    })()`);
+    check('clipboard: the extraction helper exists and is callable',
+      clip && clip.defined === true, String(clip && clip.defined));
+    if (clip && clip.defined && clip.rows) {
+      for (const row of clip.rows) {
+        check('clipboard shape: ' + row.name, row.got === row.want, 'got ' + row.got + ', want ' + row.want);
+      }
+    }
+
+    // Measured, not assumed: can this engine carry a DataTransfer on a synthetic
+    // ClipboardEvent? Firefox cannot -- it drops clipboardData -- which is why
+    // the paste path is not drivable there from a test at all. Discovering that
+    // by running is what row 2.4 said was missing, so it is probed and reported
+    // rather than assumed either way.
+    const clipEventWorks = await js(`(function(){
+      try {
+        var dt = new DataTransfer();
+        dt.items.add(new File([new Uint8Array([1,2,3])], 'probe.bin', {type:'application/octet-stream'}));
+        var ev = new ClipboardEvent('paste', {clipboardData:dt, bubbles:true, cancelable:true});
+        return !!(ev.clipboardData && ev.clipboardData.files && ev.clipboardData.files.length > 0);
+      } catch (e) { return false; }
+    })()`);
+
+    if (clipEventWorks) {
+      // The behaviour half: a real ClipboardEvent carrying a real DataTransfer
+      // must switch to QuickDrop and stage a preview. The shape checks above
+      // prove the function; these prove the handler calls it.
+      await page.evaluate(`(function(){
+        var dt = new DataTransfer();
+        var bytes = new Uint8Array([137,80,78,71,13,10,26,10,1,2,3,4,5,6,7,8]);
+        dt.items.add(new File([bytes], 'clipboard-shot.png', {type:'image/png'}));
+        document.body.focus();
+        document.dispatchEvent(new ClipboardEvent('paste', {clipboardData:dt, bubbles:true, cancelable:true}));
+      })()`);
+      await sleep(800);
+      const staged = await js(`(function(){
+        var card = document.getElementById('filePreviewCard');
+        var meta = document.getElementById('filePreviewMeta');
+        var tab = document.getElementById('tab-drop');
+        return {
+          cardVisible: card ? !card.hasAttribute('hidden') : false,
+          meta: meta ? meta.textContent : null,
+          onDropTab: tab ? tab.classList.contains('active') : false
+        };
+      })()`);
+      check('clipboard: a pasted image switches to QuickDrop and stages a preview',
+        staged && staged.cardVisible === true && staged.onDropTab === true, JSON.stringify(staged));
+      check('clipboard: the staged preview names the pasted file and its type',
+        staged && /clipboard-shot\.png/.test(staged.meta || '') && /image\/png/.test(staged.meta || ''),
+        'meta=' + (staged ? staged.meta : null));
+    } else {
+      // Not a silent pass. Reported, counted, and recorded in the JSON report.
+      skip('clipboard: a pasted image switches to QuickDrop and stages a preview',
+        ENGINE + ' drops clipboardData on a synthetic ClipboardEvent, so the paste path cannot be ' +
+        'driven from a test here. The extraction shapes above still run: they pass a plain object.');
+      skip('clipboard: the staged preview names the pasted file and its type',
+        'same cause as the previous skip.');
+    }
+
     // The same tab, reached the way a user reaches it when they type the address
     // into a browser that has never opened this Hub: no bootstrap token and no
     // session cookie, so requestHasDashboardCapability is false.
@@ -1039,8 +1133,9 @@ async function main() {
     check('console noise filter matches its documented scope', noiseWrong.length === 0, JSON.stringify(noiseWrong));
     check('zero unexpected console errors', errs.length === 0, JSON.stringify(errs.slice(0, 2)));
 
-    fs.writeFileSync(path.join(out, 'uxtest-report.json'), JSON.stringify({ head, engine: ENGINE, peers: WITH_PEERS, checks }, null, 1));
+    fs.writeFileSync(path.join(out, 'uxtest-report.json'), JSON.stringify({ head, engine: ENGINE, peers: WITH_PEERS, checks, skips }, null, 1));
     const pass = checks.filter((c) => c.ok).length;
+    if (skips.length) console.log('uxtest: ' + skips.length + ' check(s) SKIPPED -- see the SKIP lines above');
     console.log('\nuxtest: ' + pass + '/' + checks.length + ' checks passed (' + ENGINE + '; screenshots in ' + out + ')');
     // A run that went red only because the Hub vanished is not a product
     // result, and reporting it as 47/51 checks passed would be a false claim

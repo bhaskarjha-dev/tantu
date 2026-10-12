@@ -75,6 +75,13 @@ rollback procedures.
   cloning the repository. The original plan lives under gitignored `temp/`.
 
 ### Fixed
+- **Pasting an image now works on every browser, not just the ones that fill
+  `clipboardData.files`.** Which shape a browser exposes depends on the engine and
+  on what was copied: a copied file usually lands in `files`, but a screenshot
+  taken with the platform shortcut arrives through `items`. The dashboard read
+  only `files`, so on the engines that use `items` paste-an-image did nothing at
+  all — no error, no staged preview, no log line, just a keystroke that looked
+  swallowed. Both shapes are now handled.
 - **The Hub banner no longer prints a dashboard URL that cannot work.** The
   interactive startup banner labelled a bare address as "Dashboard", but every
   API behind it rejects an unauthenticated request, so copying that line opened a
