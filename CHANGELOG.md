@@ -74,6 +74,14 @@ rollback procedures.
   that decision IDs cited by three tracked documents resolve for anyone
   cloning the repository. The original plan lives under gitignored `temp/`.
 
+### Fixed
+- **The Hub banner no longer prints a dashboard URL that cannot work.** The
+  interactive startup banner labelled a bare address as "Dashboard", but every
+  API behind it rejects an unauthenticated request, so copying that line opened a
+  page where all actions fail - whose own banner then said to run
+  `tantu dashboard`. The URL printed was the one thing you were told to ignore. It
+  now says to press `o` instead, which opens an authenticated link. The headless
+  mode already printed the real one-time link and is unchanged.
 ### Changed
 - **The OAuth Relay tab is now covered by real browser tests, including the
   states you reach without a Hub session.** The acceptance harness previously

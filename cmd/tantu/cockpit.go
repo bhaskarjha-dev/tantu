@@ -639,7 +639,23 @@ func printCockpitBanner(h *hub.Hub) {
 	fmt.Println("┌────────────────────────────────────────────────────────────────┐")
 	fmt.Printf("│  🚀 tantu v%-45s │\n", hub.HubVersion+" (Unified Symmetric Hub)")
 	fmt.Println("│                                                                │")
-	fmt.Printf("│  ➜ Dashboard:  http://%-40s │\n", h.WebAddr()+"/")
+	// The bare address is not a usable dashboard: every API behind it returns
+	// 401 without a capability, so a user who copies this line gets a page whose
+	// actions all fail and whose banner then tells them to run `tantu dashboard`
+	// -- that is, to ignore the URL the Hub just printed. Verified by serving the
+	// page with no token: the bookmarklet comes back as javascript:void(0) and
+	// the box is marked unavailable.
+	//
+	// The headless branch in hub.go already prints the one-time link and labels
+	// it. This one did not, which is the same defect 3.6 described for the
+	// in-page recovery instructions: the advice given did not work from where
+	// the reader was. Pressing `o` opens an authenticated link, so the fix is to
+	// say that rather than to mint a token that may expire before it is used.
+	// Deliberately not printing the tokenised link here. It is ~100 characters,
+	// and this box is 64 wide, so putting it in broke the banner it was meant to
+	// improve -- verified by rebuilding and reading the output. The instruction
+	// fits, says the same thing, and `o` is one keypress away.
+	fmt.Printf("│  ➜ Dashboard:  http://%-30s (press o) │\n", h.WebAddr()+"/")
 	fmt.Printf("│  ➜ Network:    %-47s │\n", p2pAddr+" ("+h.TransportType()+" mTLS multiplexer)")
 	fmt.Printf("│  ➜ Peer:       %-47s │\n", peerLabel)
 	// A sign-in waiting on a browser used to be invisible from the terminal

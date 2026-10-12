@@ -4720,3 +4720,56 @@ waiting to be measured. Three of those are true and the conclusion is false.
 
 The counting in that row does check out: 5 gates in `internal/hub` plus 2 in
 `cmd/tantu` is the "7 Go gates" it claims.
+## Batch Z54 - "can I use it yet?" answered by using it (2026-10-13)
+
+Asked whether the work was done and whether the tool was usable, the honest
+move was to build from current `main` and walk the first-run path rather than
+answer from memory.
+
+### What works
+
+Built `cmd/tantu`, ran `doctor`, started the Hub, read the banner. The Hub
+comes up, binds `[::]:9877`, finds the paired peer `ai` online, and
+`tantu dashboard` mints a working one-time link.
+
+Served `http://127.0.0.1:9876/` with no token and confirmed the security model
+holds: `/api/status`, `/api/probe` and `/api/peers` all return 401. The page
+comes back with `href="javascript:void(0)"` and `class="bookmarklet-box
+unavailable"` -- Z46's fix, verified in the running product rather than in a
+string gate.
+
+### A real defect, found by looking
+
+The Hub's interactive banner printed:
+
+```
+|  > Dashboard:  http://127.0.0.1:9876/   |
+```
+
+That address is not a usable dashboard. Every API behind it 401s without a
+capability, so a user who copies it lands on a page whose actions all fail --
+whose banner then tells them to run `tantu dashboard`. In other words the Hub
+prints a URL whose only correct response is to ignore it.
+
+This is 3.6's exact shape, one level up: advice that does not work from where
+the reader is. The headless branch in `hub.go` already got it right, printing
+`h.DashboardURL()` and labelling it "one-time link". The cockpit branch did not.
+
+First attempt printed the tokenised link, which is about 100 characters into a
+64-wide box -- I made the banner I was repairing look worse, and only noticed by
+rebuilding and reading the output. Second attempt printed it inside a short
+instruction, and the line came out 62 runes where the box is 66, so the border no
+longer closed. Measured rune widths across the five box lines rather than by eye;
+they are now all 66.
+
+The instruction, not the token: the token is a poor thing to print at startup
+because it may expire before it is used, and `o` is one keypress away.
+
+### What still is not true
+
+There is no release. `git tag -l` is empty, so "use it" means building from
+source, which needs a Go toolchain -- an irony for a product whose central claim
+is that it needs none. The binary itself needs nothing at runtime, which the
+release-artifact job now proves on all three platforms on every push. Getting it
+onto a second machine without a toolchain requires a tag, which is the one thing
+the owner asked not to do.
