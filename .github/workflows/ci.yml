@@ -97,6 +97,20 @@ jobs:
             exit 1
           fi
 
+      - name: Workflow shell parses
+        # release.yml has never executed: it runs for the first time on a tag
+        # push, and nothing in CI inspected it, so a shell error in its signing
+        # step would be found at the moment of release. The CI workflow itself
+        # grew five shell steps recently and every one of them was found broken
+        # by a real runner rather than by a check.
+        #
+        # bash -n parses without executing, which is the only safe thing to do
+        # with steps that install binaries, push tags and sign artifacts.
+        #
+        # wfcheck exits non-zero when bash is absent rather than reporting a pass
+        # it did not earn.
+        run: go run ./tools/wfcheck
+
       - name: UTF-8 encoding
         # A CP1252 round trip once re-encoded source and documentation into
         # still-valid UTF-8 that compiled, tested green, and read as plausible

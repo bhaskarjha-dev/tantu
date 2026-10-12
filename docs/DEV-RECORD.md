@@ -4828,3 +4828,55 @@ The pin comment was written when 1.26.3 had to be replaced, and it recorded why
 that mattered. This is the same failure the comment exists to prevent, arriving
 six days later from the other direction: not a bad pin, a pin that went stale
 underneath a moving target. The gate did its job.
+## Batch Z56 - release.yml had never run, and had never been tested (2026-10-13)
+
+Finishing the register audit turned up two things: a pair of rows that read as a
+contradiction, and a workflow with zero coverage of any kind.
+
+### 1.4 and 3.18 were not in conflict; they were unscoped
+
+1.4 said artifacts are signed keyless, verified locally with a full
+sign/verify/tamper round trip. 3.18 said signing is unverified outside a real
+tag. Neither mentioned the other, so a reader saw "signed" and "unverified" and
+could not tell which applied. They are the same `signs` block at two scopes:
+verified on a workstation, unverified in CI because a pull request must not be
+granted `id-token: write`.
+
+Both rows now state the scope and cross-reference each other. That is the whole
+fix -- no claim changed, but a reader can now tell which is which.
+
+### release.yml had no coverage at all
+
+The Release workflow runs for the first time on a tag push. Nothing in CI
+inspected it. Its signature gate -- the step that decides whether a published
+release is actually signed -- was a shell script that had never been executed by
+anything, in a repository where `AGENTS.md` now says a documented claim about
+behaviour is a claim that something runs.
+
+Two things done.
+
+**The gate was exercised against produced conditions.** Extracted verbatim and
+run against five dists: a complete one passes; one unsigned archive fails; a
+half-signed artifact with `.sig` but no `.pem` fails, which a naive
+"does a .sig exist" check would wave through; an empty dist fails, so it cannot
+pass on a release that produced nothing; and zero-byte signature files fail
+because of `! -s`.
+
+**`tools/wfcheck` now parses every shell block in every workflow on every
+push**, with `bash -n`, which parses without executing -- the only safe thing to
+do with steps that install binaries, push tags and sign artifacts. It exits
+non-zero when bash is absent rather than passing a check it did not run, and it
+cross-checks its own parse against the file's `run: |` count, because an earlier
+probe in this session matched zero blocks and still reported success.
+
+Red proof: an unbalanced `if` injected into release.yml is caught, naming
+release.yml:111 and the syntax error. 16 blocks across both workflows parse.
+
+### A note on where this gate lives
+
+First attempt was an awk extractor embedded in the workflow YAML. It was
+immediately complicated -- the kind of elaborate gate logic that produced three
+broken probes earlier today -- so it was thrown away and rewritten as a Go tool
+under `tools/`, beside `encgate` and `docgate`, which is how this repository does
+gates. The awk version was never committed and never needed debugging, which was
+the point of noticing.
