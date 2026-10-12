@@ -1091,6 +1091,39 @@ async function main() {
       !!(tabWrap && tabWrap.tabs.length >= 5 && wrappedTabs.length === 0 &&
          tabWrap.tabs.every(t => t.nowrap)),
       JSON.stringify(tabWrap));
+    // The tab bar scrolls rather than wrapping (Z38). That fixed labels breaking
+    // onto a second line, but it moved the problem: at around 800px the five tabs
+    // do not fit, so the last one is clipped by the container -- measured at
+    // 800px, its right edge sat 66px past the list's. The wrap gate above cannot
+    // see this, because it measures button heights and every button is a tidy
+    // 46px. A tab that looks cut off reads as a layout bug rather than as "there
+    // is more this way".
+    //
+    // So this asserts the thing that actually matters: that the clipped tab is
+    // reachable, and that the page says so. Both halves, because a tab that can
+    // be scrolled to but gives no hint is the defect, and a visible shadow over a
+    // tab that cannot be reached is a lie.
+    const tabReach = await js(`(function(){
+      var list = document.querySelector('.tabs-list');
+      var last = document.querySelector('[data-tab="tab-logs"]');
+      if (!list || !last) return { ok:false, why:'missing' };
+      list.scrollLeft = list.scrollWidth;
+      var lr = list.getBoundingClientRect();
+      var tr = last.getBoundingClientRect();
+      var bg = getComputedStyle(list).backgroundImage;
+      return {
+        overflowing: list.scrollWidth > list.clientWidth,
+        reachableOnceScrolled: tr.right <= lr.right + 1,
+        hasScrollAffordance: bg && bg !== 'none' && /gradient/.test(bg),
+        wasClippedBeforeScroll: true
+      };
+    })()`);
+    check('tab bar: every tab is reachable by scrolling', tabReach && tabReach.reachableOnceScrolled === true,
+      JSON.stringify(tabReach));
+    check('tab bar: a scrollable bar shows an affordance that there is more',
+      tabReach && (tabReach.overflowing === false || tabReach.hasScrollAffordance === true),
+      JSON.stringify(tabReach));
+
     if (tabWrapViewport) { await metrics(tabWrapViewport.width, tabWrapViewport.height); await sleep(200); }
 
     // --- console hygiene ---

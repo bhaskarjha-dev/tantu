@@ -4955,3 +4955,75 @@ mistake -- `$enc` was set in an earlier command, so the write threw and the
 console still printed "appended Z57". Caught by grepping for the heading after
 committing rather than trusting the message. Verification does not stop at the
 point where something looks like it worked.
+
+# Batch Z58 - reading the running product, and a fix that was never live (2026-10-13)
+
+The owner pointed out that browser tooling was available and that I should use it
+to test the UI. Every previous look at the dashboard had been through the
+acceptance harness, which asserts what it was written to assert. Opening the real
+page against a real Hub and reading it found two things in ten minutes that no
+gate had.
+
+## I was reviewing a stale binary, and it nearly became a bogus fix
+
+The first thing I saw was tab labels wrapping to two lines -- precisely the
+defect Z38 fixed. Measured every `.tab-btn` at 64px, and confirmed the served CSS
+had no `white-space: nowrap` at all.
+
+I was about to "fix" a regression that did not exist. Port 9876 was owned by
+`D:\tantu-test\tantu.exe`, started at 02:42 -- an old build the owner had left
+running. My own Hub never got the port and exited. Against the current binary the
+same tabs measure 46px with `nowrap`, so the fix was intact all along.
+
+The tell was there and I read past it: I checked the source file and it *did*
+contain the rule, while the served page did not. Two copies of the same document
+disagreeing is a question about which one is being served, not about the CSS.
+
+## 3.6 was not actually fixed
+
+With the right binary, the banner said:
+
+> Press o in the terminal for a fresh link, and do not reuse old links.
+
+Which is the original 3.6 defect -- advice that only works for someone sitting at
+the Hub terminal. My Z46 fix rewrote that banner's markup and its gate passed.
+
+The gate asserted a substring of the **static markup**. The page has four runtime
+messages that write the same element: three assign `dashboardBlockReason`, and
+one line copies that over the banner's text. So the copy Z46 wrote was replaced
+at runtime in every case a user is likely to hit -- an expired or already-used
+one-time link, which is the most likely reason to be reading that banner at all.
+
+This is the same substring blindness as the Z46 class-name-in-CSS gate and the
+Z48 `runner.arch` probe, one level up: a check that confirms a value is present
+rather than confirming it is what the user sees.
+
+All three messages now name `tantu dashboard`, which finds the running Hub from
+any directory. The new gate reads the **assignments** rather than the markup, so
+a message a user can be shown cannot be shown without naming a command that works
+from where they are. Red proof: reverting one message fails it, quoting the
+offending string.
+
+## A tab gate that could not see its own regression
+
+Z38 stopped labels wrapping by making the tab bar scroll. At 800px the five tabs
+no longer fit: the last tab's right edge sits 66px past the list's. Still
+reachable by scrolling, but nothing said so, and a tab that looks cut off reads as
+a layout bug rather than "there is more this way".
+
+The gate that fixed the wrap -- `no tab label wraps onto a second line` -- measures
+button heights. Every button is a tidy 46px. It structurally cannot see clipping,
+which is the defect its own fix introduced.
+
+Fixed with the standard pure-CSS scroll shadow, which appears only on the side
+that has more content and disappears when everything fits. Two new checks assert
+both halves: the clipped tab is reachable, and a scrollable bar shows an
+affordance. Red proof: removing the background layers fails the second and names
+the reason.
+
+## The lesson
+
+Two of the four things I found in ten minutes of looking were things several
+batches of gate work had asserted were fine. The gates were not wrong about what
+they checked; they checked markup and lengths, while the defects were in what a
+person sees and in what survives to be rendered.

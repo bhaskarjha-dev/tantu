@@ -868,6 +868,24 @@
     gap: 0.5rem;
     overflow-x: auto;
     scrollbar-width: thin;
+    /* Scroll affordance. Stopping labels from wrapping (Z38) meant that at
+       around 800px the five tabs no longer fit and the last one is clipped by
+       the container -- measured at 800px: the last tab's right edge sat 66px
+       past the list's. It is still reachable by scrolling, but nothing said
+       so, and a tab that looks cut off reads as a layout bug rather than as
+       "there is more this way".
+
+       These four layers are the standard pure-CSS scroll shadow: two `local`
+       gradients paint the background over the edges, and two `scroll` shadows
+       sit underneath them. When the content is not overflowing, the local
+       gradients cover the shadows and nothing shows; when it is, the shadow
+       appears on the side that has more content. No JS, and it disappears on
+       its own at widths where everything fits. */
+    background:
+      linear-gradient(to right, var(--bg) 40%, transparent) left / 36px 100% no-repeat local,
+      linear-gradient(to left, var(--bg) 40%, transparent) right / 36px 100% no-repeat local,
+      radial-gradient(farthest-side at 0 50%, rgba(0, 0, 0, 0.45), transparent) left / 14px 100% no-repeat scroll,
+      radial-gradient(farthest-side at 100% 50%, rgba(0, 0, 0, 0.45), transparent) right / 14px 100% no-repeat scroll;
   }
   @media (max-width: 768px) {
     .tabs-list { overflow-x: auto; }
@@ -1531,9 +1549,15 @@
         });
         if (!response.ok) {
           if (response.status === 403) {
-            dashboardBlockReason = 'This one-time link did not work — it may already have been used, or the Hub restarted since it was printed. Press o in the terminal for a fresh link, and do not reuse old links.';
+            // Every recovery string here must name `tantu dashboard`, not just
+            // "press o". `o` is a shortcut in a terminal the reader may not have
+            // open; `tantu dashboard` finds the running Hub and mints a fresh link
+            // from anywhere. These strings replace the banner text Z46 fixed,
+            // which is why Z46's copy looked right in the markup and was not
+            // what a user saw: every one of these overwrote it at runtime.
+            dashboardBlockReason = 'This one-time link did not work — it may already have been used, or the Hub restarted since it was printed. Run `tantu dashboard` in a terminal for a fresh link; that works whether or not the Hub opened this page. Links are single-use, so do not reuse an old one.';
           } else if (response.status === 503) {
-            dashboardBlockReason = 'The Hub has too many dashboard sessions open. Close other dashboard tabs and press o for a fresh link.';
+            dashboardBlockReason = 'The Hub has too many dashboard sessions open. Close the other dashboard tabs, then run `tantu dashboard` in a terminal for a fresh link.';
           }
           // A failed exchange must not leave its token behind: the fragment
           // would otherwise replay a doomed exchange on every reload or
@@ -1547,7 +1571,7 @@
         window.location.reload();
         return true;
       } catch (_) {
-        dashboardBlockReason = 'This page cannot reach the Hub from this browser. Check for a proxy or VPN intercepting localhost, then reload the page the Hub opened for you.';
+        dashboardBlockReason = 'This page cannot reach the Hub from this browser. Check for a proxy or VPN intercepting localhost, fix that, then run `tantu dashboard` in a terminal for a fresh link. Reloading only helps if the Hub opened this page.';
         return false;
       }
     }
