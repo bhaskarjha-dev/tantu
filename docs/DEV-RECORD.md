@@ -5123,3 +5123,57 @@ Four batches of gate work on this dashboard produced one user-visible fix. Readi
 the running page -- once unauthenticated, once authenticated -- plus one machine
 audit of it has now produced four, and one of those was a standards failure that
 no amount of substring checking would ever have surfaced.
+## Batch Z61 - the one control with no focus ring (2026-10-13)
+
+There is no theme-emulation tool, so the light theme could not be looked at
+directly; contrast in both schemes is already gated by the harness. Keyboard
+traversal could be, and it was: sixteen real Tab presses against a running Hub,
+reading the computed outline at every stop.
+
+Two things that walk established, both fine:
+
+- The tab list is a single tab stop with arrow-key navigation, as claimed. Tab
+  lands on QuickDrop and leaves; it does not walk through the other four.
+- Focus never landed on anything off-screen. Sixteen stops, all visible.
+
+And one that was not fine. Every control showed a deliberate 2px accent ring
+except one: `#expertImmediateSend`, the expert immediate-send checkbox -- the
+only way to skip the send confirmation. It had **no focus rule at all**, so it
+took the user agent default: `auto 0.8px rgb(238, 238, 238)`. A sub-pixel
+pale-grey outline on a dark card, and in the light theme a pale grey ring on
+near-white, which is close to invisible.
+
+The omission is invisible to review because the rule it should have joined looks
+complete. `input[type="text"], textarea, select, button` share one focus-visible
+rule, and checkbox was simply absent from a list of five. Nothing in that CSS
+says "and also every other input".
+
+The gate works from the controls outward instead of the rules inward: for every
+focusable type the page ships, assert some rule gives it an explicit outline. A
+control that has none is exactly the defect, and a control added later with a new
+type fails the gate rather than silently inheriting the browser's ring. A second
+gate pins that the checkbox ring uses the same accent and geometry as every other
+control, so a differently-styled ring cannot replace a missing one.
+
+Red proof: deleting the rule fails both, naming the control and saying what to
+add.
+
+## A probe that lied to me, twice in one batch
+
+Confirming it in the live page, I ran the same mistake as the Z58 tab
+investigation. I selected `outlineRules` by calling `element.matches(selector)`
+over rules containing `:focus-visible` -- and a `:focus-visible` selector cannot
+match an element that is not focused, so the list came back empty and looked
+like "the fix did not apply". It had applied. The served CSS carries the rule;
+the probe was asking a question with an unfocusable premise.
+
+That is now the second time in this review that a computed-style probe produced a
+confident wrong answer about the live page, and both times the fix was to check
+the served bytes rather than to trust the probe. Worth stating as a rule: when
+the question involves a state-dependent pseudo-class, a DOM query cannot answer
+it -- fetch what was served.
+
+## Tally
+
+Gate work on this dashboard: one user-visible fix. Reading and driving the
+running page, plus one Lighthouse audit: five.

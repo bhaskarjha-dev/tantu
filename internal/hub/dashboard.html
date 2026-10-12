@@ -778,6 +778,23 @@
     outline: 2px solid var(--accent);
     outline-offset: 2px;
   }
+  /*
+     `checkbox` was missing from the rule above, so the page's only checkbox --
+     the expert immediate-send opt-in, the one way to skip the send
+     confirmation -- fell back to the user agent default ring: `auto 0.8px
+     rgb(238, 238, 238)`. A sub-pixel pale-grey outline on a dark card, and in
+     the light theme a pale grey ring on near-white, which is close to
+     invisible. Every other control on the page gets a deliberate 2px accent
+     ring; this one got whatever the browser felt like.
+
+     Found by walking the real Tab order against a running Hub and reading the
+     computed outline at each stop, which is the only way to notice a control
+     that has no focus style at all rather than a bad one.
+  */
+  input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
   .modal-overlay {
     background: rgba(4, 6, 12, 0.7);
     animation: fadeIn var(--dur-fast) var(--ease-out);
