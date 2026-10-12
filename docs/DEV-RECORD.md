@@ -4880,3 +4880,78 @@ broken probes earlier today -- so it was thrown away and rewritten as a Go tool
 under `tools/`, beside `encgate` and `docgate`, which is how this repository does
 gates. The awk version was never committed and never needed debugging, which was
 the point of noticing.
+
+# Batch Z57 - the cancel budget, measured (2026-10-13)
+
+Row 2.5 said the remaining transfer budgets were ungated because they "need a
+live peer which the peerless harness cannot provide". That was true of one of
+them and I had not checked which.
+
+## The blackhole peer
+
+A refused dial fails in milliseconds, which leaves no window in which a user
+could press Cancel -- so against one, the cancel budget would be *untestable*,
+not merely untested. `192.0.2.1:9877` is TEST-NET-1: reserved for documentation
+and unroutable by RFC 5737, so a dial to it hangs. Seeded as a fourth peer, and
+deliberately not the default, because a default that hangs would leave every
+other check waiting on a timeout.
+
+Same idea as the deterministic leak gate in relay_cancel_test.go, which reached
+the same conclusion about a different test: manufacture the condition rather than
+wait for a machine to have it.
+
+The block starts a 3 MiB upload, clicks Cancel, and times how long the UI takes
+to acknowledge. Measured 189-211ms against the 1000ms budget across six runs:
+three engines, both topologies.
+
+## A live peer was still not needed
+
+I checked whether a second real Hub was feasible first, since that would close
+the progress budget too. It is -- `identity.json` holds a peer's certificate and
+the harness already writes `peers.json` by hand -- but it is hours of mTLS
+hand-shaking for one measurement, and the cancel half needed none of it. The
+expensive option was scoped before the cheap one was taken, not abandoned after.
+
+## Two failures that were my test, found by running all three engines
+
+**Firefox staged nothing.** The block staged the file by dispatching a synthetic
+paste, and Firefox drops `clipboardData` on a synthetic `ClipboardEvent` -- the
+same limitation the clipboard gate already documents. The budget silently did not
+run there. Now staged through the file picker, which works everywhere and is what
+a user actually does.
+
+**webkit went red on a check I had not touched.** "reduced motion kills all
+animation and transition" began reporting an `IMG`. Confirmed mine by removing the
+block and watching webkit return to 75/75: staging a file and running an upload
+leaves DOM state that a later check then scans. Dismissing the preview did not
+help, so the block was moved to run **last**, immediately before the report is
+written.
+
+A check that can change the outcome of an unrelated check does not belong in the
+middle of the sequence. That is a property of the harness rather than the
+product, and it was visible only by running three engines rather than one.
+
+## The remaining half is genuinely blocked
+
+Upload progress cannot be measured here, and the reason is written down rather
+than guessed. The progress bar is driven by `xhr.upload.onprogress` -- a
+client-side event -- and the operation ledger writes `BytesSent` only on
+completion, always as the full size, with no in-flight state at all. So the
+server has no mid-transfer signal to gate against, and a browser measurement
+needs a browser that can complete a real upload. That is a second live Hub.
+
+2.5 is therefore half closed rather than closed, and the half that stays open now
+says why.
+
+## Process, again
+
+Four helper scripts for this batch are files rather than shell one-liners because
+inline `node -e` had its string anchors mangled by PowerShell three separate
+times, one of which corrupted run.mjs. Every one of those mangles is now recorded
+as the reason these checks are Go tools or script files.
+
+The DEV-RECORD append for this batch was itself lost to a PowerShell scope
+mistake -- `$enc` was set in an earlier command, so the write threw and the
+console still printed "appended Z57". Caught by grepping for the heading after
+committing rather than trusting the message. Verification does not stop at the
+point where something looks like it worked.
