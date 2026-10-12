@@ -4773,3 +4773,58 @@ is that it needs none. The binary itself needs nothing at runtime, which the
 release-artifact job now proves on all three platforms on every push. Getting it
 onto a second machine without a toolchain requires a tag, which is the one thing
 the owner asked not to do.
+## Batch Z55 - the toolchain the pin was protecting went behind (2026-10-13)
+
+CI went red on `govulncheck`: 11 reachable standard-library vulnerabilities, all
+in Go 1.27.1, all fixed in 1.27.2. Exit 3.
+
+The `ci.yml` pin already prescribed the response -- "Bump this the way the
+release pin is bumped: deliberately, with a govulncheck run on the candidate
+version recorded in the commit." So that is what was done, in both directions,
+using `GOTOOLCHAIN` so each scan really ran on the toolchain it claimed:
+
+```
+GOTOOLCHAIN=go1.27.1  govulncheck  ->  Your code is affected by 11 vulnerabilities  (exit 1)
+GOTOOLCHAIN=go1.27.2  govulncheck  ->  No vulnerabilities found                    (exit 0)
+```
+
+Reproducing the failure locally first matters more than usual here. The claim
+"the pin is behind" is a claim about a moving target, and it was checkable: the
+same eleven IDs appeared locally that CI reported, so the bump is fixing the
+thing CI said and not a different one.
+
+The eleven: GO-2026-6603, 6604, 6605, 6607, 6608, 6609, 6610, 6611, 6612, 6613,
+6617. An HTTP/2 HPACK encoder race that crashes a server; connection
+desynchronisation after CONNECT and after a 2xx CONNECT; unbounded Range-header
+parsing; a memory-limit bypass parsing MIME headers, reachable here from
+`ParseMultipartForm` on the upload path; HTTP/2 transport memory exhaustion via
+Trailer headers; a malformed-ECH check in crypto/tls, reached by every
+handshake; and a Windows `os.Root` junction escape, reached from drop staging.
+
+Every one of those is reachable in this product rather than theoretical. That is
+what the pin is for.
+
+### The cascade the pin exposed
+
+Bumping Go broke the static-analysis gate, which is the kind of second-order
+failure a toolchain bump always risks and nobody looks for:
+
+```
+v0.8.1: internal error in importing "internal/byteorder"
+        (export data version 5 is greater than maximum supported version 4)
+```
+
+staticcheck v0.8.1 cannot read the export format Go 1.27.2 emits. So the gate
+would have failed on a tool error, not on a finding, on every push from then on.
+v0.8.2 reads it and exits 0 on this tree.
+
+Red proof, because "exits 0" from a static analysis tool is exactly the kind of
+result that can mean "found nothing" or "looked at nothing": a planted
+`strings.Title` (SA1019) is reported with exit 1 under v0.8.2. It inspects.
+
+### Why this was caught and not shipped
+
+The pin comment was written when 1.26.3 had to be replaced, and it recorded why
+that mattered. This is the same failure the comment exists to prevent, arriving
+six days later from the other direction: not a bad pin, a pin that went stale
+underneath a moving target. The gate did its job.

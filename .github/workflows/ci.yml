@@ -33,10 +33,21 @@ jobs:
           # security patches fails the quality gate even when the repository's
           # own code is clean. Go 1.26.3 reported 9 reachable stdlib
           # vulnerabilities (GO-2026-6218 through GO-2026-4970, fixed in
-          # 1.26.4-1.26.6) and exited 3; Go 1.27.1 reports 0. Bump this the
-          # way the release pin is bumped: deliberately, with a
-          # `govulncheck` run on the candidate version recorded in the commit.
-          go-version: '1.27.1'
+          # 1.26.4-1.26.6) and exited 3. Go 1.27.1 was clean until 2026-10-12,
+          # when it reported 11 (GO-2026-6603, 6604, 6605, 6607, 6608, 6609,
+          # 6610, 6611, 6612, 6613 and 6617, all fixed in 1.27.2): an HTTP/2 HPACK
+          # encoder race that crashes a server, connection desynchronisation
+          # after CONNECT, unbounded Range-header parsing, a MIME-header
+          # memory-limit bypass reachable from ParseMultipartForm, and a Windows
+          # os.Root junction escape in drop staging. Bump this the way the release
+          # pin is bumped: deliberately, with a govulncheck run on the candidate
+          # version recorded in the commit.
+          #
+          # Verified locally before bumping, in both directions, with GOTOOLCHAIN
+          # pinned so each scan really used that toolchain:
+          #   go1.27.1 -> Your code is affected by 11 vulnerabilities (exit 1)
+          #   go1.27.2 -> No vulnerabilities found (exit 0)
+          go-version: '1.27.2'
           cache: true
 
       - name: gofmt
@@ -64,7 +75,12 @@ jobs:
         # 1.27. Checks that are deliberately off are recorded in
         # staticcheck.conf with the reason.
         run: |
-          go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
+            # v0.8.2, not v0.8.1: v0.8.1 cannot read Go 1.27.2's export data ("export
+            # data version 5 is greater than maximum supported version 4") and the toolchain bump above
+            # made the gate fail on a tool error rather than on a finding. Verified under
+            # GOTOOLCHAIN=go1.27.2 that v0.8.2 exits 0 on this tree, and that it still reports a
+            # planted violation rather than silently passing.
+            go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
 
       - name: govulncheck
         # Reports vulnerabilities reachable from this module's own code, which
@@ -121,7 +137,7 @@ jobs:
           # Must match the quality job: stdlib findings are judged against
           # this version, and a mismatch would test a different runtime than
           # the one the gate scans.
-          go-version: '1.27.1'
+          go-version: '1.27.2'
           cache: true
 
       - name: Verify modules
@@ -244,7 +260,7 @@ jobs:
           node-version: '20'
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.27.1'
+          go-version: '1.27.2'
           cache: true
       - name: Install Playwright and the three engines
         run: |
@@ -369,7 +385,7 @@ jobs:
           # Deliberately the same toolchain the Test jobs use. A release built
           # with a different one would make "CI is green" and "the artifact is
           # sound" statements about different compilers.
-          go-version: '1.27.1'
+          go-version: '1.27.2'
           cache: true
       - name: Warm the module cache
         # goreleaser's `before.hooks: go mod tidy` needs the module *zips*, and
