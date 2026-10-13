@@ -31,6 +31,137 @@ func cockpitShortcutHelp() string {
 
 // RunCockpit starts the interactive developer terminal cockpit.
 // It renders a status banner, attaches to the Hub's EventLogger, and listens for non-blocking hotkeys.
+
+// cockpitRow is one line of the banner, before borders are drawn. The colour is
+// kept separate so that truncating never has to reason about escape sequences.
+type cockpitRow struct {
+	text  string
+	color string // "" plain, "33" warning, "32" positive
+}
+
+// cockpitRuneWidth reports how many terminal columns a rune occupies. The banner
+// is full of emoji and arrows -- the rocket, the arrow, the status dot, the
+// bullet, the warning sign -- and most of them are double width, so counting
+// them as one column is exactly what made the old box look correct in a diff and
+// wrong on screen.
+//
+// This is a compact table rather than a dependency. It covers the ranges this
+// banner uses plus the East Asian blocks; it is not a general wcwidth and does
+// not need to be, because the only strings it measures are ones this file
+// builds.
+func cockpitRuneWidth(r rune) int {
+	switch {
+	case r >= 0x1F300 && r <= 0x1FAFF, // pictographs, symbols and emoji
+		r >= 0x1F900 && r <= 0x1F9FF, // supplemental symbols and pictographs
+		r >= 0x2B00 && r <= 0x2BFF,   // miscellaneous arrows and shapes
+		r >= 0xFE00 && r <= 0xFE0F,   // variation selectors
+		r >= 0x1F1E6 && r <= 0x1F1FF: // regional indicators
+		return 2
+	case r == 0x26A0, // warning sign
+		r == 0x2691, r == 0x2693, // the pin and the helmet below
+		r >= 0x2600 && r <= 0x26FF: // miscellaneous symbols
+		return 2
+	case r >= 0x2700 && r <= 0x27BF: // dingbats: arrows and bullets
+		return 2
+	case r >= 0x1100 && r <= 0x115F,
+		r >= 0x2E80 && r <= 0xA4CF,
+		r >= 0xAC00 && r <= 0xD7A3,
+		r >= 0xF900 && r <= 0xFAFF,
+		r >= 0xFF00 && r <= 0xFF60,
+		r >= 0xFFE0 && r <= 0xFFE6:
+		return 2
+	case r >= 0x0300 && r <= 0x036F: // combining marks take no space
+		return 0
+	}
+	return 1
+}
+
+// cockpitWidth is the rendered column count of s.
+func cockpitWidth(s string) int {
+	w := 0
+	for _, r := range s {
+		w += cockpitRuneWidth(r)
+	}
+	return w
+}
+
+// cockpitTruncate shortens s to at most max columns, ending in an ellipsis when
+// it had to cut. It cuts on a rune boundary and never leaves a double-width rune
+// straddling the edge.
+func cockpitTruncate(s string, max int) string {
+	if max <= 1 || cockpitWidth(s) <= max {
+		return s
+	}
+	var b strings.Builder
+	w := 0
+	for _, r := range s {
+		rw := cockpitRuneWidth(r)
+		if w+rw > max-1 {
+			break
+		}
+		b.WriteRune(r)
+		w += rw
+	}
+	b.WriteString("…")
+	return b.String()
+}
+
+// cockpitBox draws the banner around rows, sizing the border to the widest row
+// and capping it so one enormous value cannot produce a box nobody can read.
+// The lines are returned as well as printed, because the only way to know a box
+// is the right width is to measure what was drawn.
+//
+// The box used to be a fixed 66 columns containing six hardcoded minimum field
+// widths. A minimum width pads short content and does nothing about long
+// content, so both unbounded values broke it, in opposite directions. Measured
+// against the same 66-column border on one build:
+//
+//	title   7 columns SHORT   (dev version string)
+//	title   9 columns OVER    (release-shaped version string)
+//	peer   22 columns OVER   (two peers)
+//
+// None of that was visible without running the binary and measuring its output.
+func cockpitBox(rows []cockpitRow) []string {
+	const (
+		minContent = 60
+		maxContent = 74
+	)
+	content := minContent
+	for _, r := range rows {
+		if w := cockpitWidth(r.text); w > content {
+			content = w
+		}
+	}
+	if content > maxContent {
+		content = maxContent
+	}
+
+	// Every line must measure the same: one border column, two spaces, the
+	// content padded to exactly content columns, two more spaces, one border
+	// column. So the rule between the corners is content+4, not content+2.
+	pad := strings.Repeat("─", content+4)
+	lines := make([]string, 0, len(rows)+2)
+	lines = append(lines, "┌"+pad+"┐")
+	for _, r := range rows {
+		text := cockpitTruncate(r.text, content)
+		fill := content - cockpitWidth(text)
+		if fill < 0 {
+			fill = 0
+		}
+		line := "│  " + text + strings.Repeat(" ", fill) + "  │"
+		if r.color != "" {
+			line = "│  \033[" + r.color + "m" + text +
+				strings.Repeat(" ", fill) + "\033[0m  │"
+		}
+		lines = append(lines, line)
+	}
+	lines = append(lines, "└"+pad+"┘")
+	for _, l := range lines {
+		fmt.Println(l)
+	}
+	return lines
+}
+
 func RunCockpit(ctx context.Context, h *hub.Hub, cancel context.CancelFunc, initialVerbose ...bool) {
 	var verboseMode atomic.Bool
 	if len(initialVerbose) > 0 && initialVerbose[0] {
@@ -635,10 +766,6 @@ func printCockpitBanner(h *hub.Hub) {
 		}
 	}
 
-	fmt.Println()
-	fmt.Println("┌────────────────────────────────────────────────────────────────┐")
-	fmt.Printf("│  🚀 tantu v%-45s │\n", hub.HubVersion+" (Unified Symmetric Hub)")
-	fmt.Println("│                                                                │")
 	// The bare address is not a usable dashboard: every API behind it returns
 	// 401 without a capability, so a user who copies this line gets a page whose
 	// actions all fail and whose banner then tells them to run `tantu dashboard`
@@ -651,25 +778,34 @@ func printCockpitBanner(h *hub.Hub) {
 	// in-page recovery instructions: the advice given did not work from where
 	// the reader was. Pressing `o` opens an authenticated link, so the fix is to
 	// say that rather than to mint a token that may expire before it is used.
-	// Deliberately not printing the tokenised link here. It is ~100 characters,
-	// and this box is 64 wide, so putting it in broke the banner it was meant to
-	// improve -- verified by rebuilding and reading the output. The instruction
-	// fits, says the same thing, and `o` is one keypress away.
-	fmt.Printf("│  ➜ Dashboard:  http://%-30s (press o) │\n", h.WebAddr()+"/")
-	fmt.Printf("│  ➜ Network:    %-47s │\n", p2pAddr+" ("+h.TransportType()+" mTLS multiplexer)")
-	fmt.Printf("│  ➜ Peer:       %-47s │\n", peerLabel)
+	//
+	// Deliberately not printing the tokenised link: it is about 100 characters,
+	// and the box caps content at 74 columns, so it would truncate into
+	// uselessness. The instruction fits, says the same thing, and `o` is one
+	// keypress away.
+	rows := []cockpitRow{
+		{text: "🚀 tantu v" + hub.HubVersion + " (Unified Symmetric Hub)"},
+		{text: ""},
+		{text: "➜ Dashboard:  http://" + h.WebAddr() + "/               (press o)"},
+		{text: "➜ Network:    " + p2pAddr + " (" + h.TransportType() + " mTLS multiplexer)"},
+		{text: "➜ Peer:       " + peerLabel},
+	}
 	// A sign-in waiting on a browser used to be invisible from the terminal
 	// entirely: a CLI that never returns looked identical to a hung process.
 	// One line in the banner turns "is it stuck?" into a visible answer, and
 	// names the key that stops it.
 	if active := h.ActiveRelays(); len(active) > 0 {
-		label := fmt.Sprintf("  ⚠️  %d sign-in(s) in progress — press [l] to list or release", len(active))
-		fmt.Printf("│  \033[33m%-59s\033[0m │\n", label)
+		rows = append(rows, cockpitRow{
+			color: "33",
+			text:  fmt.Sprintf("⚠️  %d sign-in(s) in progress — press [l] to list or release", len(active)),
+		})
 	}
 	if nearbyLabel != "" {
-		fmt.Printf("│  \033[32m%-59s\033[0m │\n", nearbyLabel)
+		rows = append(rows, cockpitRow{color: "32", text: nearbyLabel})
 	}
-	fmt.Println("└────────────────────────────────────────────────────────────────┘")
+
+	fmt.Println()
+	cockpitBox(rows)
 	fmt.Println()
 	fmt.Println("  Shortcuts: " + cockpitShortcutHelp())
 	fmt.Println()

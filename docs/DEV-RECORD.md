@@ -5684,3 +5684,85 @@ what the system already emitted: the screenshot nobody opened (Z65), the
 annotation nobody read (Z66), and the job that parsed and ran nothing (Z68).
 None of the three was findable by reading the repository. All three were
 findable by looking at what it produced.
+## Batch Z69 - the cockpit banner, a 695-line surface with five tests (2026-10-13)
+
+Four batches had passed with zero product defects, because all four had been
+about the machinery. Z65 the screenshot nobody opened, Z66 the annotation nobody
+read, Z67 the fuzz targets that never ran, Z68 the job indented four spaces. The
+18 UI defects all came from batches that drove a product.
+
+So: go and look at a product. There was one left that had never been touched at
+all. `cmd/tantu/cockpit.go` is 695 lines of interactive terminal UI - the first
+thing a user sees when they type `tantu hub` - and it had **five tests**, against
+the dashboard's forty. It had never been run.
+
+### Two defects, both invisible until it was run
+
+The banner was a fixed 66-column box containing six hardcoded *minimum* field
+widths (`%-45s`, `%-30s`, `%-47s`, `%-59s` and two more). A minimum width pads
+short content and does nothing about long content, so both unbounded values broke
+the box, in opposite directions. Measured against the same 66-column border:
+
+    title    7 columns SHORT   on a dev version string
+    title    9 columns OVER    on a release-shaped version string
+    peer    22 columns OVER   with two peers
+
+The version line broke differently depending on how long the version was, so a
+tagged release - the case that matters most - would have shipped the broken one.
+The peer line concatenates every peer with no truncation, so the harness's own
+deliberately long alias would have made it far worse.
+
+There is a comment at the old line 654 recording that someone hit this class
+before: *"this box is 64 wide, so putting it in broke the banner it was meant to
+improve"*. The box was known to be fragile and the workaround was to shorten the
+text rather than to make the box adapt.
+
+The box now sizes itself to its widest row, capped so one enormous value cannot
+produce an unreadable banner, and truncates on rune boundaries with an ellipsis.
+Verified by building and measuring the real output: **every line 80 columns**, on
+both a dev and a release-shaped version, confirmed by a script outside the Go
+process.
+
+### Seven tests, and what they had to know
+
+The tests assert that every line occupies the same number of terminal columns,
+with the two shapes that broke it - a long version and four long peers - and that
+colour does not change width. That needed a rune-width function, because the
+banner is full of double-width glyphs: the rocket, the arrow, the status dot, the
+bullet, the warning sign. Counting them as one column is exactly what made the
+old box look right in a diff and wrong on screen.
+
+One width is a judgement and is pinned as one. U+2022 (the peer bullet) is East
+Asian Width **Ambiguous**: one column in a Western terminal, two in a CJK one.
+Tantu targets the former, so it counts as one. The first version of that test
+guessed two, and "fixing" the code to match the guess would have made every
+banner line one column too narrow in the terminals people actually use - so the
+reasoning is in the test rather than just the number.
+
+Red proof: taking the border back to `content+2` fails every row with its actual
+width.
+
+### encgate caught me twice, doing the thing it exists to catch
+
+Applying this fix I corrupted cockpit.go with a PowerShell
+`Get-Content -Raw` / `Set-Content -Encoding UTF8` round trip, which double-encoded
+every box-drawing rune. The encoding gate failed immediately and named the cause
+in its output: *"Do NOT fix this with ... a PowerShell Get-Content/Set-Content
+round trip - running one of those is what caused it."*
+
+I made the same mistake a second time during the red proof, and encgate caught
+that one too. The fix is node reading and writing utf8 explicitly, which is what
+the final version uses. Two gate catches of the same mistake by the same author
+is the clearest possible statement of what that gate is for.
+
+### Seventh instrument failure, and it was my own measuring script
+
+After the fix, an external script reported the rows as 1-2 columns narrower than
+the border while the Go test said they were uniform. The Go was right: my
+JavaScript width function covered `0x1F300-0x1F64F` but not dingbats
+(`0x2700-0x27BF`), so it counted the arrow, the rocket and the status dot as one
+column. The measuring script written for this purpose had the bug. Fixed, and the
+two now agree on the real binary output.
+
+staticcheck also caught a loop in the new test that should have been an append,
+which is the ordinary value of a lint gate on code you just wrote.
