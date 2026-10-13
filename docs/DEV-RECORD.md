@@ -5373,3 +5373,84 @@ The ones that survived were the ones that checked the premise first: `--bg` and
 Gate work on this dashboard to date: one user-visible fix. Reading and driving
 the running page, plus Lighthouse: five. This batch: **nine** -- six light, three
 dark -- and the gate that would have prevented all of them.
+## Batch Z64 - the narrow layout, from a screenshot nobody had looked at (2026-10-13)
+
+The harness already checked narrow viewports, and both of those checks are real:
+document-level horizontal overflow at 360px, and the tab bar's horizontal scroll
+at 800px. What nobody had done was *look*. The harness takes a `narrow360`
+screenshot on every run and nobody has ever opened one.
+
+It is not even easy to open: the harness deletes its work directory on success, so
+the screenshots only survive a failing run. The cleanup is deliberate and stays -
+but it means the evidence of the narrow layout existed only as a transient file.
+
+### What it showed
+
+At 360px the header was three rows deep. The wordmark broke between its emoji and
+its name, the version tag wrapped onto two lines, and the peer pill was clipped
+mid-word at "Devbox (workst" with no ellipsis. At 640px the same header is one
+row and truncates cleanly - and **640px is the harness default viewport**, which
+is precisely why nothing caught it. The existing 360px check could not see it
+either, because a header that squeezes its contents does not produce horizontal
+document overflow.
+
+The underlying CSS was not uninformed. `.peer-status-pill` already had
+`min-width: 0` and `flex-shrink: 1`, and `#peerLabel` already had
+`overflow: hidden` - both added earlier to stop a long peer name pushing the
+*page* into horizontal scroll. Two things were missing: `overflow: hidden` on its
+own truncates with a hard cut, so the pill needed `text-overflow: ellipsis`; and
+`header` never wrapped, so at 360px three groups were forced onto one line.
+`header { flex-wrap: wrap }` plus `white-space: nowrap` on the wordmark takes
+the header from 145px to 95px, two rows instead of three, and nothing clips.
+
+### The picture lied, again
+
+The screenshot also appeared to show **no tab bar at 360px**. It has one:
+measured, `nav.tabs-nav` sits at top=95, 360x59, visible. The shot had simply
+been taken with the page scrolled past it. Reading the image would have produced
+a confident, wrong defect report; measuring corrected it. That is the fifth time
+in five batches that a visual or DOM probe has asserted something untrue about
+the live page.
+
+### Two standards failures, one of which I dismissed wrongly
+
+Instrumenting the narrow layout surfaced 13 controls under 44px, identical at
+both widths. The maintainer had already ruled on this: "44px enforced targeted,
+spacing accepted elsewhere". So the blanket floor stays declined - but two of
+them are below **WCAG 2.2 SC 2.5.8 Target Size (Minimum), which is AA and asks
+for 24x24**, a different and lower bar that was never explicitly waived:
+
+- `select#headerPeerSelect`, 144x20 - the control that decides who you are
+  sending to. Lighthouse scored accessibility 1.0 in Z60 because its default set
+  does not include 2.5.8.
+- `input#expertImmediateSend`, 13x13.
+
+The second one I waved through: the checkbox is wrapped in a `<label>`, so I
+decided the hit area was the label and the 13x13 was the input only. **That was
+wrong, and the gate caught it on the next run.** The label is 574x**17**: a
+wrapping label expands the *width* and leaves the height at the line box, so the
+real target was 574x17 and still under 24. And it only appeared at 640px - at
+360px the label wraps to two lines, measures 34px tall, and passes. A defect
+that exists at one width and not the other is exactly the kind that a
+single-width gate is built to catch. Both fixed: `min-height: 24px`.
+
+The general lesson is in the gate, not the fix: it measures the **hit area**, not
+the control. Taking the larger of the element and its wrapping label. Without
+that, the first run reported the checkbox as a failure and it would have been a
+false positive; with it, the failure it reports is the real one.
+
+### The checks
+
+Five per width, at 360 and 640: nothing overflows the viewport outside a
+deliberately scrollable ancestor; every control reaches 24x24; the tab bar
+renders; the wordmark stays on one line; the header does not exceed 110px.
+
+Harness: 86 -> 96 checks.
+
+Red proof: removing only the header wrap gives a 48x54 wordmark and a select
+whose right edge lands at 373px on a 360px viewport.
+
+## Tally
+
+Reading and driving the running page, plus Lighthouse: **seventeen** user-visible
+defects so far, against one from gate work on this dashboard.

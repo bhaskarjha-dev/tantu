@@ -144,6 +144,17 @@ measured 1.23:1 on the dark chrome in the light theme); a full 44px floor
 remaining `prompt()` dialogs (the alias prompt is left native as an acceptable
 low-risk surface).
 
+**Touch targets, clarified (Z64):** the blanket 44px floor stays declined, but it
+was doing quiet work as the only stated bar. There is a lower one that was never
+explicitly waived — **WCAG 2.2 SC 2.5.8 Target Size (Minimum), AA, 24×24** — and
+the harness now enforces it at 360px and 640px, measuring the *hit area* rather
+than the control (a checkbox wrapped in a `<label>` is as large as its label).
+Two controls were below it: the header peer switcher at 144×20, and the expert
+immediate-send checkbox, whose label turned out to be 574×**17** — a wrapping
+label expands width and leaves the height at the line box. Both fixed.
+Lighthouse's default accessibility set does not include 2.5.8, which is why the
+page scored 1.0 with both of them present.
+
 **Still open, recorded not improvised:** the `alert()` dialogs on peer
 actions; empty states without a next action; the bookmarklet's drag-only
 affordance. Staleness is now declared (Z18) — when the Hub stops answering the

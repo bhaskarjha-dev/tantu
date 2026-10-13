@@ -906,6 +906,111 @@ async function main() {
     await barePage.screenshot({ path: path.join(out, 'no-session-relay.png') }).catch(() => {});
     await bareContext.close().catch(() => {});
 
+
+    // --- narrow viewports, two widths, measured ---
+    //
+    // 640px is the harness default and 360px is a phone. Both are checked
+    // because the header broke at one and not the other: at 360px the wordmark,
+    // the version tag and the peer pill were forced onto one line and the
+    // header came out three rows deep with the pill clipped mid-word at
+    // "Devbox (workst". At 640px the same header is one row and truncates
+    // cleanly. Nothing caught it because 640px is what the harness looked at,
+    // and because the only narrow check that existed was document-level
+    // horizontal overflow, which a header that squeezes rather than overflows
+    // never triggers.
+    //
+    // The picture misled me here first: the narrow360 screenshot appeared to
+    // have no tab bar at all, and it does -- the shot had simply been taken
+    // scrolled past it. Measuring said nav.tabs-nav was at top=95 and visible.
+    const NARROW = `(function(){
+      function parseBox(sel){
+        var el = document.querySelector(sel);
+        if (!el) return null;
+        var r = el.getBoundingClientRect();
+        return { top: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height),
+                 visible: r.width > 0 && r.height > 0 };
+      }
+      var vw = document.documentElement.clientWidth;
+      var out = { boxes: {}, overflowing: [], smallTargets: [] };
+      ['header', 'nav.tabs-nav', '.tabs-list', '.logo-title', '.version-tag']
+        .forEach(function(s){ out.boxes[s] = parseBox(s); });
+
+      var all = document.querySelectorAll('body *');
+      for (var i = 0; i < all.length; i++) {
+        var el = all[i];
+        // The skip link is parked off-screen on purpose; that is how it stays
+        // out of the tab order until it is focused.
+        if (el.classList && el.classList.contains('skip-link')) continue;
+        var cs = getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+        var r = el.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) continue;
+        if (r.right <= vw + 1 && r.left >= -1) continue;
+        var scrollable = false, n = el.parentElement;
+        while (n && n !== document.body) {
+          if (/auto|scroll/.test(getComputedStyle(n).overflowX)) { scrollable = true; break; }
+          n = n.parentElement;
+        }
+        if (scrollable) continue;
+        out.overflowing.push(el.tagName.toLowerCase() +
+          (el.id ? '#' + el.id : '') + ' ' + String(el.className || '').slice(0, 24) +
+          ' L=' + Math.round(r.left) + ' R=' + Math.round(r.right));
+      }
+
+      // WCAG 2.2 SC 2.5.8 asks for 24x24. The number that matters is the hit
+      // area, not the control: a checkbox wrapped in a <label> is as big as
+      // its label, and measuring the input instead reports 13x13 for a control
+      // a user can comfortably tap. That mistake made the probe call the
+      // expert immediate-send checkbox a failure on the first run.
+      var tap = document.querySelectorAll('a[href], button, input, select, textarea, [role="button"], [role="tab"]');
+      for (var j = 0; j < tap.length; j++) {
+        var e = tap[j];
+        var ecs = getComputedStyle(e);
+        if (ecs.display === 'none' || ecs.visibility === 'hidden') continue;
+        var er = e.getBoundingClientRect();
+        if (er.width === 0 || er.height === 0) continue;
+        var target = e, w = er.width, h = er.height;
+        var lab = e.closest('label');
+        if (lab) {
+          var lr = lab.getBoundingClientRect();
+          if (lr.width >= w && lr.height >= h) { w = lr.width; h = lr.height; }
+        }
+        if (w >= 24 && h >= 24) continue;
+        out.smallTargets.push((e.id ? '#' + e.id : e.tagName.toLowerCase()) +
+          ' ' + Math.round(w) + 'x' + Math.round(h) +
+          ' "' + (e.textContent || e.getAttribute('aria-label') || '').replace(/\\s+/g, ' ').trim().slice(0, 24) + '"');
+      }
+      return out;
+    })()`;
+
+    for (const vp of [[360, 780], [640, 900]]) {
+      await metrics(vp[0], vp[1]);
+      await sleep(350);
+      await js('window.scrollTo(0,0); "ok"');
+      await sleep(150);
+      const p = await js(NARROW);
+      const tag = vp[0] + 'px';
+      if (!p) {
+        check('narrow ' + tag + ': probe ran', false, 'probe returned nothing');
+        continue;
+      }
+      check('narrow ' + tag + ': nothing overflows the viewport', p.overflowing.length === 0,
+        JSON.stringify(p.overflowing.slice(0, 6)));
+      check('narrow ' + tag + ': every control reaches 24x24 (WCAG 2.5.8)', p.smallTargets.length === 0,
+        JSON.stringify(p.smallTargets.slice(0, 8)));
+      check('narrow ' + tag + ': the tab bar is rendered', !!(p.boxes['nav.tabs-nav'] && p.boxes['nav.tabs-nav'].visible),
+        JSON.stringify(p.boxes['nav.tabs-nav']));
+      check('narrow ' + tag + ': the wordmark stays on one line',
+        !!(p.boxes['.logo-title'] && p.boxes['.logo-title'].h <= 34), JSON.stringify(p.boxes['.logo-title']));
+      // The header may take a second row at 360px; three is the bug. Two rows of
+      // content plus padding measures about 95px, and it was 145 before the wrap
+      // fix, which is what put the tab bar below the fold.
+      check('narrow ' + tag + ': the header does not eat the viewport',
+        !!(p.boxes.header && p.boxes.header.h <= 110), JSON.stringify(p.boxes.header));
+    }
+    await metrics(1280, 900);
+    await sleep(200);
+
     await shot('narrow360');
     await metrics(1280, 900); await sleep(300);
     await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });

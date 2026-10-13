@@ -704,12 +704,23 @@
   .peer-status-pill #peerLabel {
     min-width: 0;
     overflow: hidden;
+    /* overflow:hidden on its own truncates with a hard cut. The ellipsis
+       is what makes a clipped name read as a name. */
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .peer-status-pill select {
     font: inherit;
     max-width: 16rem;
     min-width: 0;
     text-overflow: ellipsis;
+    /* Measured 144x20 at 360px and 640px alike. WCAG 2.2 SC 2.5.8
+       (Target Size, Minimum) is AA and asks for 24x24 CSS px, so the peer
+       switcher -- the control that decides who you are sending to -- was
+       below it. Lighthouse's default accessibility set does not include
+       2.5.8, which is why it scored 1.0 anyway. */
+    min-height: 24px;
+    padding: 0.1rem 0.25rem;
   }
   .tab-btn {
     position: relative;
@@ -903,7 +914,21 @@
     font-variant-numeric: tabular-nums;
   }
   @media (max-width: 640px) {
-    header { padding: 0.75rem 1rem; }
+    header {
+      padding: 0.75rem 1rem;
+      /* At 360px the wordmark, the version tag and the peer pill cannot
+         share one line. They were being forced to, and the header came
+         out three rows deep: the wordmark broke between its emoji and its
+         name, the version tag wrapped, and the pill was clipped at
+         "Devbox (workst". One extra row costs less than three broken
+         ones, and at 640px this rule does not apply. */
+      flex-wrap: wrap;
+      row-gap: 0.5rem;
+    }
+    /* "🔐 tantu" is one wordmark. Breaking between its emoji and its name
+       reads as two unrelated marks. */
+    .logo-title { white-space: nowrap; }
+    .logo-group { min-width: 0; }
     nav.tabs-nav { padding: 0.75rem 1rem 0; }
     main.tab-content { padding: 1rem; }
     .card { padding: 1rem; }
@@ -1274,7 +1299,7 @@
                 <button type="button" class="btn-sm" id="btnCancelPreview" data-action="cancel-preview">Cancel</button>
               </div>
             </div>
-            <label style="display: flex; gap: 0.5rem; align-items: center; font-size: 0.8rem; color: var(--text-muted); margin-top: 0.75rem;">
+            <label style="display: flex; gap: 0.5rem; align-items: center; min-height: 24px; font-size: 0.8rem; color: var(--text-muted); margin-top: 0.75rem;">
               <input type="checkbox" id="expertImmediateSend"> Expert immediate-send for this session (skip preview; destination stays visible)
             </label>
             
