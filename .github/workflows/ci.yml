@@ -298,13 +298,23 @@ jobs:
         run: |
           status=0
           infra=0
+          # Screenshots are written here rather than into the harness work
+          # directory, which is deleted when a run passes. Uploaded below on
+          # every run, green or red.
+          SHOTDIR="$RUNNER_TEMP/uxtest-shots"
+          mkdir -p "$SHOTDIR"
           for mode in "" "--peers"; do
             for engine in chromium firefox webkit; do
               label="$engine${mode:+ peers}"
               slug="$engine${mode:+-peers}"
               echo "::group::dashboard-acceptance $label"
               run_status=0
-              node tools/uxtest/run.mjs --browser="$engine" $mode 2>&1 | tee "harness-$slug.log" || run_status=$?
+              TANTU_TEST_SHOTDIR="$SHOTDIR" node tools/uxtest/run.mjs --browser="$engine" $mode 2>&1 | tee "harness-$slug.log" || run_status=$?
+              # Six runs share one directory, so a run that produced no images
+              # is worth saying out loud rather than passing as an empty folder.
+              if [ ! -d "$SHOTDIR/$slug" ]; then
+                printf '::warning::dashboard-acceptance (%s) produced no screenshots at %s\n' "$label" "$SHOTDIR/$slug"
+              fi
               # Exit 4 is the harness telling us its Hub died mid-run, which is
               # not a product result: every later check failed for want of a
               # server. Reporting it in the same bucket as a real regression
@@ -335,6 +345,26 @@ jobs:
             done
           done
           exit "$status"
+
+      - name: Upload rendered screenshots
+        # Every run of this job renders the dashboard several ways per engine
+        # and topology. Until now none of it survived the run. Seventeen of
+        # the eighteen UI defects found so far came from looking at the
+        # running page rather than from reading code, and the first image
+        # anyone actually opened here -- the 360px one, after suspending the
+        # cleanup by hand -- showed a header three rows deep.
+        #
+        # `if: always()` because the failing run is the one whose pictures are
+        # worth having, and the step above exits non-zero to report a failure.
+        # Seven days: six runs per push at four images each is neither large
+        # nor worth keeping forever.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-screenshots
+          path: ${{ runner.temp }}/uxtest-shots
+          if-no-files-found: warn
+          retention-days: 7
 
   release-artifact:
     name: Release artifact (${{ matrix.goos }})

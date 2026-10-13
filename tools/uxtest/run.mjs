@@ -13,6 +13,13 @@
 //   --peers    seed three trusted peers, exercising the multi-peer layout
 //   --browser  engine to drive (default: chromium, or TANTU_TEST_BROWSER)
 //
+// TANTU_TEST_SHOTDIR=<dir> writes the screenshots outside the work
+// directory, so they survive the run instead of being deleted with it.
+// The work directory holds the generated identity and its private key, so
+// it should keep being deleted; the screenshots should not have been in
+// it. CI sets this and uploads the result, which is the only reason anyone
+// has ever seen what this harness renders.
+//
 // Requires: Node 18+, `npm ci` in this directory, and the browser builds from
 // `npx playwright install chromium firefox webkit`. None of that is needed to
 // build, test, or run Tantu itself.
@@ -111,7 +118,13 @@ async function main() {
     process.exitCode = 2; return;
   }
   const store = path.join(WORK, 'store');
-  const out = path.join(WORK, 'out');
+  // Outside WORK when asked, so the cleanup below cannot take the evidence
+  // with it. Labelled per topology and engine because CI runs six of these
+  // in one job and they all write here.
+  const SHOT_ROOT = process.env.TANTU_TEST_SHOTDIR;
+  const RUN_LABEL = ENGINE + (WITH_PEERS ? '-peers' : '');
+  const out = SHOT_ROOT ? path.join(SHOT_ROOT, RUN_LABEL) : path.join(WORK, 'out');
+  if (SHOT_ROOT) fs.mkdirSync(out, { recursive: true });
   // The binary is deliberately NOT named "tantu". This harness spawns a real
   // Hub, and a developer with their own Hub running will restart it with
   // something like `Stop-Process -Name tantu` -- which, when this exe carried
