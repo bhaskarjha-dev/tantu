@@ -5454,3 +5454,85 @@ whose right edge lands at 373px on a 360px viewport.
 
 Reading and driving the running page, plus Lighthouse: **seventeen** user-visible
 defects so far, against one from gate work on this dashboard.
+## Batch Z65 - make the evidence reachable, and verify the request that matters (2026-10-13)
+
+Asked whether a two-Hub harness would help development. The answer was no, and
+the reason is worth keeping: the defect class here is not "no machine
+available", it is "nobody looked". All eighteen defects so far came from driving
+or viewing a single Hub against loopback and a blackhole peer. A second Hub
+addresses a problem this project does not have.
+
+Two things followed from that answer instead.
+
+### The evidence existed and was being destroyed
+
+The dashboard-acceptance job runs six times per push and every run renders the
+dashboard several ways: each tab, 360px, 200% zoom, the no-session relay. Those
+images went into the harness work directory, which is deleted when the run
+passes, and the job uploaded **no artifacts at all**. The visual record of every
+CI run was produced and thrown away, and the one time the cleanup was suspended
+by hand so the 360px image could be opened, the first image opened showed a
+header three rows deep.
+
+`TANTU_TEST_SHOTDIR` now writes the screenshots outside the work directory, so
+the cleanup keeps running - that directory holds a generated identity and its
+private key and should keep being deleted - while the images outlive the run,
+labelled per engine and topology. CI uploads them on every run, green or red,
+because the failing run is the one whose pictures are worth having.
+
+Verified by running the workflow's own shell block under bash with `RUNNER_TEMP`
+set: 96/96, four images under `uxtest-shots/chromium-peers`, exit 0, no warning,
+no work directory left behind.
+
+### The most consequential request in the product was unverified
+
+Pairing approval grants permanent mutual trust, and the SAS code compared before
+it is the defence against a machine in the middle. Two browser checks touch it
+and neither could see what is sent: the focus and announcement check replaces
+`window.fetch` outright and never issues a request at all, and the data-action
+sweep answers `/api/pair/decision` with a synthetic body because, in its own
+words, "the sweep synthesises buttons, so it has no real fingerprint or pairing
+id".
+
+So the payload was untested. Renaming `{id, accept}` to `{peer_id, approved}`,
+posting to the wrong path, or dropping the accept flag would leave every existing
+pairing check green and break approval for every user, silently.
+
+Eight checks now drive the real path and assert the wire: the consequence dialog
+appears before trust is granted and explains what is being granted - "Only
+approve if the SAS code matches the one shown on that device. If it does not,
+reject it instead" - the POST goes to `/api/pair/decision` as JSON, the body
+carries the served pairing id with `accept: true`, approval is confirmed to the
+user in words, and rejection sends `accept: false` for the same id without
+passing through the approve dialog.
+
+Red proof: renaming the field fails the approve and reject checks by name and
+prints the actual body, while the focus, announcement and 44px checks stay green.
+That is precisely the gap.
+
+What this does *not* cover, stated plainly: the pending list is still served
+synthetically, because a real pending pairing needs a second Hub to create one.
+The decision request itself travels the product's own unmodified code - the
+dialog, `decidePairing`, `apiFetch`, the JSON body - and only the network
+boundary is intercepted, so the bytes under test are the bytes the product
+writes.
+
+### Sixth probe, sixth confident wrong answer
+
+The reject check failed on the first run and it read like a serious product bug:
+the Reject button appears, is clicked, and sends nothing. Approve uses the
+identical mechanism and worked, so this looked like rejections being silently
+dropped.
+
+They are not. Instrumenting `fetch` directly shows
+`POST /api/pair/decision {"id":"req-7","accept":false}` going out exactly right.
+The gate waited only inside the dialog branch, and a rejection never opens the
+dialog, so it read the captured requests before the POST existed. An empty array
+looks identical to a product that drops the request.
+
+That is the same shape as the previous five: a probe reporting a number without
+reporting whether its premise held. The fix was to wait on both branches and say
+why in a comment, because the next person to see an empty array will reach the
+same conclusion.
+
+Harness: 96 -> 104 checks.
