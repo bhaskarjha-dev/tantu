@@ -5766,3 +5766,92 @@ two now agree on the real binary output.
 
 staticcheck also caught a loop in the new test that should have been an append,
 which is the ordinary value of a lint gate on code you just wrote.
+## Batch Z70 - two real Hubs, and the browser finally drives a peer (2026-10-13)
+
+Built the thing whose absence had been argued about for several batches.
+
+Everything the browser harness had ever done against a "peer" was done against
+either loopback or the blackhole at 192.0.2.1 that never answers. So two flows
+the product exists for had **no browser coverage at all**: a real pairing, and a
+real transfer whose receiver the user can see update.
+
+The Go suite already covers "pair, then send" at the protocol level, so this was
+never about proving the wire works. It was about the browser half, which had
+nothing.
+
+### How it works
+
+Self-contained on purpose. It spawns its own pair of Hubs on their own ports and
+leaves the harness's own Hub alone, because that one runs `--transport loopback`
+where `IsPeerTrusted` is unconditionally true - a pairing between two loopback
+Hubs would prove nothing - and switching it to lan would change the conditions
+under which the other 104 checks run.
+
+Pairing goes through the product's own CLI, not around it:
+
+    tantu pair --store-dir <A> --peer 127.0.0.1:19891     (with "y" on stdin)
+
+and B runs `--auto-pair`, the product's own unattended switch. So the SAS
+comparison and both handshakes are the real ones. In the manual run the two sides
+independently derived the same code, `GREW-ROOT-EARN-BOTH-GOLF-HOME`, which is
+the MITM defence working rather than being asserted.
+
+Both stores converging is polled, not asserted once.
+`paired_transfer_e2e_test.go` records that asserting it immediately passed on
+Windows and failed on Linux CI, so polling here is the only correct assertion for
+an asynchronous handshake rather than leniency.
+
+Each Hub's dashboard link is minted by its own CLI against its own store, which
+is what makes **the receiver's dashboard reachable at all**. The sender's
+dashboard then sends through the UI, and the receiver's dashboard - a second
+page in the same browser - is read to confirm arrival.
+
+Ten checks, all passing: both Hubs answer; the CLI pairs them; both stores
+converge; both mint authenticated links; the sender resolves the real peer as its
+trusted destination; the text send succeeds; the transfer reports **verified**
+against the real peer; the receiver's inbox shows the text; a 64 KiB file lands
+in the receiver's own output directory; and that file is byte-for-byte intact.
+
+That last pair is the one that matters. It is the only assertion anywhere that
+bytes actually moved between two machines' worth of Hub and came out unchanged.
+
+### The product was right twice and my checks were wrong
+
+Both failures in the first run were mine.
+
+**`#dropPeerPills` is empty when there is exactly one peer.** The destination
+picker renders only when there is a choice to make; with a single peer the
+destination is simply the default. Asserting on the pill list produced a failure
+against a perfectly working product, and the real peer was visible the whole time
+in `#destinationSummary` and `#peerLabel`.
+
+**The receiver's inbox is `#receivedDropsList`**, which nothing matching /recent/i
+finds. Found by opening the receiver's dashboard and looking, which is now the
+fourth time in five batches that looking beat asserting.
+
+Both were confirmed by hand before changing anything: run the pair, open both
+dashboards, and read them. The manual send came back
+`Text sent to DESKTOP-SUD78TU - verified (ID op-8cc794d430acafcf)`.
+
+### In CI
+
+Once, on chromium, after the six ordinary runs - deliberately not six times over.
+Two extra Hubs and a real mTLS pairing per run would cost minutes on every push
+to re-prove the same wire. The signal is in the flow, not in rendering, and the
+ordinary pass already renders these screens on all three engines. A failure is
+reported as its own `::error::` annotation naming the log tail, so it cannot be
+confused with the other six.
+
+Harness: 104 -> 114 checks.
+
+Red proof: changing the receiver's marker string fails exactly the receive check
+and prints B's real inbox HTML in the diagnostic. Without `--two-hub` the ten
+checks **skip**, they do not silently pass.
+
+### What this still does not close
+
+2.5's open half is upload *progress* advancing every 250ms, and this does not
+close it. Two Hubs on one machine over loopback move a file too fast to have a
+window to measure; that needs a genuinely slow peer, which needs throttling. What
+this closes is the different and larger gap - that no browser check had ever
+driven a peer which exists.

@@ -36,7 +36,12 @@ const REPO = path.resolve(HERE, '..', '..');
 const WORK = path.join(os.tmpdir(), 'tantu-uxtest-' + process.pid);
 const WEB_PORT = 18976;
 const P2P_PORT = 19877;
+// The two-Hub scenario needs a second web and P2P pair, well clear of both
+// the harness's own ports and anything a developer's Hub might hold.
+const WEB_PORT_A2 = 18990, P2P_PORT_A2 = 19890;
+const WEB_PORT_B = 18991, P2P_PORT_B = 19891;
 const WITH_PEERS = process.argv.includes('--peers');
+const TWO_HUB = process.argv.includes('--two-hub');
 const ENGINES = { chromium, firefox, webkit };
 const ENGINE = (() => {
   const arg = process.argv.find((a) => a.startsWith('--browser='));
@@ -122,7 +127,10 @@ async function main() {
   // with it. Labelled per topology and engine because CI runs six of these
   // in one job and they all write here.
   const SHOT_ROOT = process.env.TANTU_TEST_SHOTDIR;
-  const RUN_LABEL = ENGINE + (WITH_PEERS ? '-peers' : '');
+  // Two-Hub is a suffix of its own: it runs on the same engine and topology as
+  // an ordinary run, and without this its screenshots would overwrite that
+  // run's instead of sitting beside them.
+  const RUN_LABEL = ENGINE + (WITH_PEERS ? '-peers' : '') + (TWO_HUB ? '-twohub' : '');
   const out = SHOT_ROOT ? path.join(SHOT_ROOT, RUN_LABEL) : path.join(WORK, 'out');
   if (SHOT_ROOT) fs.mkdirSync(out, { recursive: true });
   // The binary is deliberately NOT named "tantu". This harness spawns a real
@@ -1545,6 +1553,196 @@ async function main() {
     check('zero unexpected console errors', errs.length === 0, JSON.stringify(errs.slice(0, 2)));
 
     // ------------------------------------------------------------ 2.5 budgets
+    // --- two real Hubs, paired, with a real transfer between them ---
+    //
+    // Every "peer" this harness had ever driven was either loopback or the
+    // blackhole at 192.0.2.1 that never answers. So the two flows the product
+    // most exists for had no browser coverage: a real pairing, and a real
+    // transfer that the receiver's inbox actually shows.
+    //
+    // Self-contained: it spawns its own pair of Hubs on their own ports. The
+    // harness's own Hub runs --transport loopback, where IsPeerTrusted is
+    // unconditionally true, so a pairing between two loopback Hubs would prove
+    // nothing -- and switching that Hub to lan would change the conditions under
+    // which the other 104 checks run.
+    let hubs2 = null;
+    if (TWO_HUB) {
+      const storeA2 = path.join(WORK, 'store2hub-a');
+      const storeB = path.join(WORK, 'store2hub-b');
+      const outB = path.join(WORK, 'received-by-b');
+      fs.mkdirSync(storeA2, { recursive: true });
+      fs.mkdirSync(storeB, { recursive: true });
+      fs.mkdirSync(outB, { recursive: true });
+
+      const hubOut2 = { a: '', b: '' };
+      const spawnHub = (args, label) => {
+        const p = spawn(exe, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        p.stdout.on('data', (d) => { hubOut2[label] += d; });
+        p.stderr.on('data', (d) => { hubOut2[label] += d; });
+        p.on('exit', () => {});
+        return p;
+      };
+      const waitFor = async (port, label) => {
+        const by = Date.now() + 30000;
+        while (Date.now() < by) {
+          try { await (await fetch('http://127.0.0.1:' + port + '/')).text(); return true; } catch (e) {}
+          await sleep(250);
+        }
+        console.log('  note: two-Hub ' + label + ' never answered on ' + port + ': ' + hubOut2[label].slice(-200));
+        return false;
+      };
+
+      const a2 = spawnHub(['hub', '--auto-pair', '--transport', 'lan',
+        '--web-addr', '127.0.0.1:' + WEB_PORT_A2, '--listen', '127.0.0.1:' + P2P_PORT_A2,
+        '--store-dir', storeA2, '--output-dir', path.join(WORK, 'sent-by-a2')], 'a');
+      const hb = spawnHub(['hub', '--auto-pair', '--transport', 'lan',
+        '--web-addr', '127.0.0.1:' + WEB_PORT_B, '--listen', '127.0.0.1:' + P2P_PORT_B,
+        '--store-dir', storeB, '--output-dir', outB], 'b');
+
+      const bothUp = (await waitFor(WEB_PORT_A2, 'A2')) && (await waitFor(WEB_PORT_B, 'B'));
+      check('two-Hub: both Hubs answer on their own ports', bothUp, '');
+
+      if (bothUp) {
+        // Pair them with the product's own CLI. The SAS codes are compared by a
+        // human in normal use, so "y" is fed here -- and B runs with
+        // --auto-pair, the product's own unattended switch, rather than the
+        // harness bypassing the decision endpoint.
+        let pairOut = '';
+        try {
+          pairOut = execFileSync(exe, ['pair', '--store-dir', storeA2,
+            '--peer', '127.0.0.1:' + P2P_PORT_B],
+            { cwd: WORK, encoding: 'utf8', input: 'y\n' });
+        } catch (e) {
+          pairOut = String(e.stdout || '') + String(e.stderr || '');
+        }
+        check('two-Hub: the product CLI pairs the two Hubs',
+          /paired/i.test(pairOut) && /SAS:/.test(pairOut),
+          pairOut.slice(-220));
+
+        // Both halves converge asynchronously: A's initiate returning says
+        // nothing about whether B has recorded A yet. paired_transfer_e2e_test.go
+        // records that asserting this immediately passed on Windows and failed on
+        // Linux CI, so this polls -- which is not leniency but the only correct
+        // assertion for an asynchronous handshake.
+        const peerCount = (dir) => {
+          try { return Object.keys(JSON.parse(fs.readFileSync(path.join(dir, 'peers.json'), 'utf8'))).length; }
+          catch (e) { return 0; }
+        };
+        let converged = false;
+        const byConv = Date.now() + 20000;
+        while (Date.now() < byConv) {
+          if (peerCount(storeA2) >= 1 && peerCount(storeB) >= 1) { converged = true; break; }
+          await sleep(250);
+        }
+        check('two-Hub: both stores converge on each other',
+          converged, 'A=' + peerCount(storeA2) + ' B=' + peerCount(storeB));
+
+        // Each Hub's own dashboard link, minted by its own CLI against its own
+        // store. This is what makes the receiver's dashboard reachable at all.
+        const linkFor = (dir) => {
+          const link = execFileSync(exe, ['dashboard', '--store-dir', dir, '--print'], { cwd: WORK, encoding: 'utf8' });
+          return (String(link).match(/tantu_bootstrap=([a-f0-9]+)/) || [])[1];
+        };
+        const tokA2 = linkFor(storeA2), tokB = linkFor(storeB);
+        check('two-Hub: both Hubs mint an authenticated dashboard link',
+          !!(tokA2 && tokB), 'a2=' + !!tokA2 + ' b=' + !!tokB);
+
+        if (tokA2 && tokB) {
+          const pageA2 = await context.newPage();
+          const pageB = await context.newPage();
+          await pageA2.goto('http://127.0.0.1:' + WEB_PORT_A2 + '/#tantu_bootstrap=' + tokA2);
+          await pageB.goto('http://127.0.0.1:' + WEB_PORT_B + '/#tantu_bootstrap=' + tokB);
+          await pageA2.waitForLoadState('networkidle').catch(() => {});
+          await pageB.waitForLoadState('networkidle').catch(() => {});
+
+          // A must see B as its destination. Not #dropPeerPills: those render
+          // only when there is a choice to make, and with one peer the
+          // destination is simply the default, so an empty pill list is correct
+          // and asserting on it produced a failure against a working product.
+          const sawPeer = await pageA2.evaluate(`(async function(){
+            for (var i = 0; i < 60; i++) {
+              var d = document.getElementById('destinationSummary');
+              var l = document.getElementById('peerLabel');
+              var dt = d ? d.textContent.replace(/\\s+/g,' ').trim() : '';
+              var lt = l ? l.textContent.replace(/\\s+/g,' ').trim() : '';
+              if (/Trusted/.test(lt)) return { destination: dt, peer: lt };
+              await new Promise(function(r){ setTimeout(r, 250); });
+            }
+            return { destination: '', peer: '' };
+          })()`);
+          check('two-Hub: the sender resolves the real peer as its trusted destination',
+            sawPeer && /Trusted/.test(sawPeer.peer), JSON.stringify(sawPeer));
+
+          // Send text through the UI, exactly as a user would.
+          const sentText = await pageA2.evaluate(`(async function(){
+            var ta = document.getElementById('textPayload');
+            ta.value = 'two-hub browser harness: ' + Date.now();
+            ta.dispatchEvent(new Event('input', {bubbles:true}));
+            await new Promise(function(r){ setTimeout(r, 200); });
+            document.getElementById('btnSendText').click();
+            for (var i = 0; i < 40; i++) {
+              var ds = document.getElementById('dropStatus');
+              if (ds && /Text sent|Not sent/.test(ds.textContent)) {
+                return { sent: /Text sent/.test(ds.textContent), status: ds.textContent.trim() };
+              }
+              await new Promise(function(r){ setTimeout(r, 250); });
+            }
+            return { sent: false, why: 'no terminal status' };
+          })()`);
+          check('two-Hub: text sent from the browser reaches the real peer',
+            sentText && sentText.sent === true, JSON.stringify(sentText));
+          check('two-Hub: the transfer is reported as verified against the real peer',
+            !!(sentText && /verified/.test(sentText.status || '')),
+            JSON.stringify(sentText));
+
+          // And it must arrive on B, shown by B's own dashboard.
+          const received = await pageB.evaluate(`(async function(){
+            var marker = 'two-hub browser harness';
+            for (var i = 0; i < 80; i++) {
+              var el = document.getElementById('receivedDropsList');
+              if (el && el.textContent.indexOf(marker) >= 0) {
+                return { found: true, text: el.textContent.replace(/\\s+/g,' ').trim().slice(0, 140) };
+              }
+              await new Promise(function(r){ setTimeout(r, 250); });
+            }
+            return { found: false, html: (document.getElementById('receivedDropsList')||{}).innerHTML ?
+              (document.getElementById('receivedDropsList').innerHTML || '').slice(0, 140) : '(no list)' };
+          })()`);
+          check('two-Hub: the receiver dashboard shows the text that was sent',
+            received && received.found === true, JSON.stringify(received));
+
+          // The file leg, which is the one that proves bytes moved: a file has to
+          // appear in B's own output directory with its contents intact.
+          const twoHubFile = path.join(WORK, 'two-hub-proof.bin');
+          fs.writeFileSync(twoHubFile, Buffer.alloc(64 * 1024, 0x5a));
+          await pageA2.setInputFiles('#fileInput', twoHubFile);
+          await sleep(700);
+          await pageA2.evaluate('document.getElementById("btnConfirmSend").click(); "ok"').catch(() => {});
+          let fileLanded = null;
+          const byFile = Date.now() + 25000;
+          while (Date.now() < byFile) {
+            const got = fs.readdirSync(outB).filter((f) => /two-hub-proof/.test(f));
+            if (got.length) {
+              const bytes = fs.readFileSync(path.join(outB, got[0]));
+              fileLanded = { name: got[0], size: bytes.length, allSame: bytes.every((b) => b === 0x5a) };
+              break;
+            }
+            await sleep(400);
+          }
+          check('two-Hub: a file sent from the browser lands in the real receiver directory',
+            !!fileLanded, JSON.stringify(fileLanded || { dir: outB, contents: fs.readdirSync(outB) }));
+          check('two-Hub: the received file is byte-for-byte intact',
+            !!(fileLanded && fileLanded.size === 64 * 1024 && fileLanded.allSame),
+            JSON.stringify(fileLanded));
+        }
+        hubs2 = { a2, hb, outB };
+      } else {
+        hubs2 = { a2, hb, outB };
+      }
+    } else {
+      skip('two-Hub: both Hubs answer on their own ports', 'run with --two-hub');
+    }
+
     // The cancel-acknowledgement budget ("under 1s"), measured for real.
     //
     // Row 2.5 recorded both transfer budgets as ungated because they "need a
@@ -1696,6 +1894,9 @@ async function main() {
     process.exitCode = 3;
   } finally {
     if (browser) { try { await browser.close(); } catch (_) {} }
+      if (hubs2) {
+        for (const p of [hubs2.a2, hubs2.hb]) { if (p) { try { p.kill(); } catch (e) {} } }
+      }
     if (hub) { try { hub.kill(); } catch (_) {} }
     // The browser and its profile can keep file handles for a moment after
     // exit, so a single delete can fail. Retry, and say so rather than

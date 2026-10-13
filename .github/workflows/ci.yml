@@ -427,6 +427,28 @@ jobs:
               echo "::endgroup::"
             done
           done
+
+          # One extra pass, on one engine, and deliberately not six.
+          #
+          # This stands up a second and third Hub, pairs them through the
+          # product's own CLI, and sends real bytes between them over real mTLS.
+          # Everything else the harness does against a "peer" is either loopback
+          # or the blackhole at 192.0.2.1 that never answers, so this is the only
+          # place the browser ever drives a peer that exists.
+          #
+          # Once rather than per engine and topology because the signal is in the
+          # wire and the flow, not in rendering: two extra Hubs and a real pairing
+          # six times over would cost minutes per push to re-prove the same thing.
+          # Rendering of the same screens on all three engines is still covered by
+          # the ordinary pass above.
+          twohub_status=0
+          echo "::group::dashboard-acceptance two-hub"
+          TANTU_TEST_SHOTDIR="$SHOTDIR" node tools/uxtest/run.mjs --browser=chromium --peers --two-hub 2>&1 | tee harness-two-hub.log || twohub_status=$?
+          if [ "$twohub_status" -ne 0 ]; then
+            status="$twohub_status"
+            printf '::error::dashboard-acceptance (two-hub) failed: %s\n' "$(tail -n 40 harness-two-hub.log)"
+          fi
+          echo "::endgroup::"
           exit "$status"
 
       - name: Upload rendered screenshots
