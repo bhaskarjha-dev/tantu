@@ -557,6 +557,156 @@ async function main() {
     console.log('uxtest: contrast measured ' + JSON.stringify(measured));
     await scheme('dark');
 
+    // --- contrast sweep: every rendered text node, both themes ---
+    //
+    // The allowlist above is a list of selectors somebody remembered to write
+    // down, and it is why six light-theme defects shipped green: none of them
+    // was on the list. This walks every visible element that owns a text node,
+    // composites each translucent background layer down onto the page, and
+    // keeps the worst reading per element.
+    //
+    // Two things it has to handle that a fixed selector list never had to:
+    //
+    //   Transitions. .tab-btn and .btn-sm both carry `transition: all 0.2s`, so
+    //   switching the scheme leaves them reporting the previous theme's colours
+    //   for 200ms. Reading immediately returns the old theme and makes a
+    //   correct one look broken -- which is exactly what happened when this was
+    //   first written by hand. Transitions are disabled for the duration.
+    //
+    //   Gradient-filled text. The wordmark paints a gradient with
+    //   -webkit-text-fill-color: transparent and background-clip: text, so its
+    //   `color` is not what anyone sees. Measuring `color` reported 1.03:1 for a
+    //   wordmark that is perfectly legible; the gradient stops are the real
+    //   foreground, and when the clip is `text` they are what get measured.
+    const CONTRAST_SWEEP = `(function(){
+      function parse(c){
+        var m = String(c).match(/rgba?\\(([^)]+)\\)/);
+        if (!m) return null;
+        var p = m[1].split(',').map(function(x){ return parseFloat(x); });
+        if (p.length < 3) return null;
+        return { r:p[0], g:p[1], b:p[2], a: p.length>3 ? p[3] : 1 };
+      }
+      function over(fg,bg){ var a=fg.a; return { r:fg.r*a+bg.r*(1-a), g:fg.g*a+bg.g*(1-a), b:fg.b*a+bg.b*(1-a), a:1 }; }
+      function srgb(c){ c/=255; return c<=0.03928 ? c/12.92 : Math.pow((c+0.055)/1.055, 2.4); }
+      function lum(c){ return 0.2126*srgb(c.r)+0.7152*srgb(c.g)+0.0722*srgb(c.b); }
+      function ratio(a,b){ var hi=Math.max(a,b), lo=Math.min(a,b); return (hi+0.05)/(lo+0.05); }
+      function effBg(el, skipOwnImage){
+        var layers=[], n=el;
+        while (n) {
+          var cs = getComputedStyle(n);
+          var c = parse(cs.backgroundColor);
+          if (c && c.a > 0) { layers.push(c); if (c.a === 1) break; }
+          var img = cs.backgroundImage;
+          // When the element's own background paints its own text, it is
+          // the foreground, not a backdrop. Feeding it in made fg and bg
+          // identical and reported the wordmark at 1:1.
+          if (skipOwnImage && n === el) img = 'none';
+          if (img && img !== 'none' && /gradient/.test(img)) {
+            var stops = img.match(/rgba?\\([^)]+\\)/g) || [];
+            for (var i=0;i<stops.length;i++){ var sc = parse(stops[i]); if (sc && sc.a > 0) layers.push(sc); }
+          }
+          n = n.parentElement;
+        }
+        var acc = { r:255, g:255, b:255, a:1 };
+        for (var k=layers.length-1;k>=0;k--) acc = over(layers[k], acc);
+        return acc;
+      }
+      function ownText(el){
+        var s='';
+        for (var i=0;i<el.childNodes.length;i++) if (el.childNodes[i].nodeType===3) s += el.childNodes[i].nodeValue;
+        return s.replace(/\\s+/g,' ').trim();
+      }
+      function visible(el){
+        var cs = getComputedStyle(el);
+        if (cs.display==='none' || cs.visibility==='hidden' || parseFloat(cs.opacity)===0) return false;
+        var r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      }
+      var checked = 0, fails = [], seen = {};
+      var all = document.querySelectorAll('body *');
+      for (var i=0;i<all.length;i++){
+        var el = all[i];
+        if (!visible(el)) continue;
+        var txt = ownText(el);
+        if (!txt) continue;
+        var cs = getComputedStyle(el);
+        var clip = cs.backgroundClip || cs.webkitBackgroundClip;
+        var isGrad = (clip === 'text') && /gradient/.test(cs.backgroundImage || '');
+        var fgs = [];
+        if (isGrad) {
+          var stops = cs.backgroundImage.match(/rgba?\\([^)]+\\)/g) || [];
+          for (var j=0;j<stops.length;j++){ var sc2 = parse(stops[j]); if (sc2) fgs.push(sc2); }
+        } else {
+          var fg = parse(cs.color);
+          if (fg && fg.a !== 0) fgs.push(fg);
+        }
+        if (!fgs.length) continue;
+        var size = parseFloat(cs.fontSize);
+        var bold = (parseInt(cs.fontWeight,10) || 400) >= 700;
+        var need = (size >= 24 || (bold && size >= 18.66)) ? 3.0 : 4.5;
+        var bg = effBg(el, isGrad);
+        var worst = Infinity, wfg = null;
+        for (var f=0; f<fgs.length; f++){
+          var rr = ratio(lum(over(fgs[f], bg)), lum(bg));
+          if (rr < worst) { worst = rr; wfg = fgs[f]; }
+        }
+        checked++;
+        if (worst < need) {
+          var key = el.tagName + '|' + (el.id||'') + '|' + String(el.className||'');
+          if (seen[key]) continue;
+          seen[key] = 1;
+          fails.push({
+            sel: el.tagName.toLowerCase() + (el.id ? '#'+el.id : '') +
+                 (el.className ? '.'+String(el.className).trim().split(/\\s+/).slice(0,2).join('.') : ''),
+            text: txt.slice(0, 48),
+            ratio: Math.round(worst*100)/100, need: need, px: Math.round(size*10)/10,
+            fg: 'rgb('+Math.round(wfg.r)+','+Math.round(wfg.g)+','+Math.round(wfg.b)+')',
+            bg: 'rgb('+Math.round(bg.r)+','+Math.round(bg.g)+','+Math.round(bg.b)+')',
+            inline: (el.getAttribute('style')||'').slice(0,80) || null
+          });
+        }
+      }
+      return { checked: checked, fails: fails };
+    })()`;
+
+    // The floor is a canary for the sweep itself. Measured 157 across the five
+    // tabs in the light theme with two peers seeded; set well below that so a
+    // normal content change cannot trip it, but high enough that a sweep which
+    // silently matched nothing -- a broken selector engine, a theme flip that
+    // hid every pane -- cannot report success.
+    const SWEEP_FLOOR = 80;
+    await js("(function(){var s=document.createElement('style');s.id='uxtest-noanim';" +
+      "s.textContent='*,*::before,*::after{transition:none !important;animation:none !important}';" +
+      "document.head.appendChild(s);return 'ok';})()");
+    const swept = { dark: 0, light: 0 };
+    const sweepFails = [];
+    for (const s of ['dark', 'light']) {
+      await scheme(s);
+      await sleep(250);
+      for (const t of ['tab-drop', 'tab-relay', 'tab-peers', 'tab-transfers', 'tab-logs']) {
+        await tab(t);
+        const got = await js(CONTRAST_SWEEP);
+        if (!got) { sweepFails.push({ theme: s, tab: t, sel: '(sweep returned nothing)' }); continue; }
+        swept[s] += got.checked;
+        for (const f of got.fails) sweepFails.push(Object.assign({ theme: s, tab: t }, f));
+      }
+    }
+    await js("(function(){var s=document.getElementById('uxtest-noanim'); if(s) s.remove(); return 'ok';})()");
+    // One check per failing element, so the log names the element rather than
+    // reporting a count the reader has to go and count.
+    for (const f of sweepFails) {
+      console.log('  fail  contrast sweep ' + f.theme + ' ' + f.sel + '  ' + JSON.stringify(f));
+      check('contrast sweep ' + f.theme + ' ' + f.tab + ' ' + f.sel, false, JSON.stringify(f));
+    }
+    check('contrast sweep: no unreadable text in either theme', sweepFails.length === 0,
+      sweepFails.length + ' failing element(s)');
+    check('contrast sweep: same text nodes rendered in both themes',
+      swept.dark === swept.light, JSON.stringify(swept));
+    check('contrast sweep: actually measured the page', swept.light >= SWEEP_FLOOR,
+      JSON.stringify(swept) + ' (floor ' + SWEEP_FLOOR + ')');
+    console.log('uxtest: full contrast sweep ' + JSON.stringify(swept) + ', ' + sweepFails.length + ' failure(s)');
+    await scheme('dark');
+
     // --- 200% zoom, narrow viewport, reduced motion ---
     await tab('tab-drop');
     await metrics(640, 450); await sleep(400);

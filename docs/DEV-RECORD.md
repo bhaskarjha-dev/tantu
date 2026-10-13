@@ -5271,3 +5271,105 @@ Gate work on this dashboard: one user-visible fix. Reading and driving the
 running page, plus one Lighthouse audit: five. This batch produced no product
 defect at all - three error paths verified correct - and one gate that closes the
 ninth instance of the recurring class.
+## Batch Z63 - the light theme, looked at for the first time (2026-10-13)
+
+An entire surface nobody had ever seen. There is no theme-emulation tool here and
+Lighthouse explicitly does not emulate one either, so the light palette had to be
+built rather than switched to. What worked: the page declares its own light
+theme, so the `prefers-color-scheme: light` blocks can be read out of the CSSOM,
+unwrapped, and reinstalled after the originals are detached - and the
+`prefers-color-scheme: dark` blocks dropped. The declarations are the page's
+own; nothing was invented.
+
+**The first attempt was invalid and nearly produced a confident lie.** Appending
+the flattened light rules alongside the originals looked right - `--bg` came back
+`#f4f6fb` - but the browser turned out to report `prefersDark: true`, so the
+original dark blocks were live and winning in places. The result was a hybrid:
+light custom properties, dark component colours. Twelve contrast failures came
+out of it and not one was real. `--bg` being light while `.mono-chip` computed to
+its dark value is what exposed it. The check that the simulation is *actually*
+light has to be made before any number from it is believed.
+
+### What the light theme was actually doing wrong
+
+Once the simulation was honest, 46 distinct failures across the five tabs. Two
+root causes, and one of them was a documented decision that had only been half
+implemented.
+
+**The chrome was never adapted to the light theme.** `.version-tag` carries a
+comment saying the header is "the deliberately dark header chrome in both
+themes", with the measurement that motivated it. `.log-console` is the same idea,
+with its own text colours. So dark header chrome in both themes is a decision,
+not an oversight - and reversing it would have been the wrong fix. What was
+missing is that only `.version-tag` had been adapted to it. The five tab labels,
+the header's own button and the wordmark all still resolved `--text` and
+`--text-muted`, which the light theme turns into dark navy. Dark slate text on a
+dark band: the tab labels measured **1.23:1**. The chrome now owns its colours
+(`--chrome-text`, `--accent-on-chrome`, `--chrome-text-strong`, and an opaque
+light `--bar-bg`/`--nav-bg`, because 0.4 alpha over near-white is a grey smear
+rather than deliberate chrome). The wordmark is gradient-filled text, so its
+gradient needed its own chrome-safe variant.
+
+**Colours written for one surface, used on another.** `.status-banner.relaying`
+hardcoded the dark theme's amber - a pattern the light block already overrode
+correctly, so that one was fine. The session banner had drifted out of that
+pattern entirely and hardcoded `#fbbf24` in an *inline* style: 1.42:1. The SAS
+code a user reads aloud to verify pairing was `#60a5fa` on a white card, 2.54:1.
+The Unpair button was `#f87171`, 2.77:1. The metadata disclosure mixed two
+surfaces under one inherited colour - a summary line on the card and a `<pre>` on
+`rgba(0,0,0,0.3)` - which no single colour can serve.
+
+### The gate, and why the old one could not have found any of this
+
+`tools/uxtest` already had a contrast sweep in both themes. It ran against a
+**hand-picked list of 16 selectors**, and none of the elements above were on it.
+That is the tenth appearance of this defect class, and the most expensive one,
+because the gate looked thorough: it sweeps themes and tabs and reports measured
+numbers.
+
+The replacement walks every visible element that owns a text node, composites
+each translucent background layer down onto the page, and keeps the worst reading
+per element: **181 text nodes per theme, 0 failures**. It found the four
+light-theme defects above and then **three dark-theme ones the allowlist had also
+been hiding**: white on `--accent-gradient` measured 3.68:1 at the blue end and
+4.49:1 at the indigo end, on the primary action button and the bookmarklet pill -
+the two things a user is meant to press, the least readable text in the product.
+And `--accent` at 3.57:1 as small text on a dark blue tint.
+
+Two things the sweep has to get right that a fixed selector list never had to:
+
+- **Transitions.** `.tab-btn` and `.btn-sm` both carry `transition: all 0.2s`, so
+  flipping the scheme leaves them reporting the *previous* theme for 200ms.
+  Reading immediately returns the old theme and makes a correct one look broken.
+  Hidden panels, which do not animate, showed the right values while every
+  visible element showed stale ones - that mismatch is what gave it away.
+- **Gradient-filled text.** The wordmark paints a gradient with
+  `-webkit-text-fill-color: transparent`, so its `color` is not what anyone sees.
+  Reading `color` reported 1.03:1 for a wordmark that is perfectly legible.
+
+The sweep itself had a bug of that same shape, which is worth recording: it
+collected background layers from the element *and* its ancestors, so for
+gradient-text elements it fed the text back in as its own backdrop and reported
+the wordmark at 1:1 - the worst-looking failure on the page being one of the
+most legible things on it.
+
+Red proof: reverting only the dark `--accent-text` value fails the badge and the
+path label by name, with their ratios, and nothing else.
+
+Harness: 83 -> 86 checks.
+
+### Third instrument failure in three batches
+
+Z61's `matches(':focus-visible')` on an unfocused element, Z62's visibility
+check that ignored ancestors, and now a light-theme simulation that measured a
+hybrid and a sweep that confused a text fill with a backdrop. Every one produced
+a confident, specific, wrong answer about the live page. The pattern is that
+these probes all report a number without reporting whether their premise held.
+The ones that survived were the ones that checked the premise first: `--bg` and
+`prefersDark` together, the served CSS instead of a selector match.
+
+## Tally
+
+Gate work on this dashboard to date: one user-visible fix. Reading and driving
+the running page, plus Lighthouse: five. This batch: **nine** -- six light, three
+dark -- and the gate that would have prevented all of them.

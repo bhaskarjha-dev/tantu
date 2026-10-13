@@ -53,7 +53,7 @@ E5 cross-platform/accessibility/failure evidence.
 | Standalone migration/deprecation labels | Done | `serve`/`node` print Hub pointers; usage labels advanced/compatibility; `drop`/`relay` already carried Hub tips. |
 | OAuth state machine | Done (faithful subset) | Sender-side submitted → waiting_callback → complete/failed/cancelled with redacted codes; browser-opened instant lives in A-side logs by architecture. Durable ledger + API + dashboard card + bundle; design for full versioning in `docs/SPEC-WIRE-VERSIONING.md`. |
 | Browser/platform clipboard matrix | Partial | Paste-event path + picker fallback implemented and marked; matrix measurements need real browsers/platforms. |
-| WCAG 2.2 AA audit | Partial | Code-level requirements implemented (names, live regions, focus, motion, drag alternative); formal audit with AT sessions not run. **Z15: measured contrast for both themes is now green across the audited surfaces (was four sub-AA elements, three of them below 1.4:1), the page has a real heading outline plus a skip link and navigation landmark, and the chatty upload live region was removed in favour of `aria-valuetext`. Still no E4/E5 evidence.** |
+| WCAG 2.2 AA audit | Partial | Code-level requirements implemented (names, live regions, focus, motion, drag alternative); formal audit with AT sessions not run. **Z15: measured contrast for both themes is now green across the audited surfaces (was four sub-AA elements, three of them below 1.4:1), the page has a real heading outline plus a skip link and navigation landmark, and the chatty upload live region was removed in favour of `aria-valuetext`. Z63 widened "the audited surfaces" from a hand-picked list of 16 selectors to **every rendered text node — 181 per theme, verified on Chromium and Firefox**: that found six light-theme and three dark-theme failures the list never covered, including white on the primary action button at 3.68:1. Still no E4/E5 evidence.** |
 | Failure-injection suite | Partial | Offline, quota-shape, checksum-shape, lost-ACK-shape, receiver-rejection (Unix-gated), disk-full taxonomy + write-failure E2E, corrupt-history, restart-during-life covered; true OS disk-full condition not injected. |
 | Performance measurement harness | Done (code-level) | `internal/drop/throughput_bench_test.go` (1 MiB E2E, stdlib-only) with recorded baselines; no CI schedule yet. |
 | User research baseline | Not started (human-only) | Ready-to-run materials in `docs/RESEARCH-PACKET.md`. |
@@ -136,10 +136,13 @@ success and silent over-limit rejection; pairing approval rebuilt every poll and
 destroying keyboard focus; four sub-AA contrast elements.
 
 **Calibrated by the maintainer, deliberately not done:** header/tab chrome
-re-theming (kept dark in both themes on purpose — contrast fixed on what sits
-on it instead); a full 44px floor (targeted bumps plus spacing, per the plan);
-wholesale replacement of the remaining `prompt()` dialogs (the alias prompt is
-left native as an acceptable low-risk surface).
+re-theming (kept dark in both themes on purpose — the chrome owns its own
+colours instead, and Z63 finally made that true rather than merely intended: the
+tab labels, header button and wordmark had all been inheriting body colours and
+measured 1.23:1 on the dark chrome in the light theme); a full 44px floor
+(targeted bumps plus spacing, per the plan); wholesale replacement of the
+remaining `prompt()` dialogs (the alias prompt is left native as an acceptable
+low-risk surface).
 
 **Still open, recorded not improvised:** the `alert()` dialogs on peer
 actions; empty states without a next action; the bookmarklet's drag-only

@@ -19,6 +19,11 @@
     --accent: #3b82f6;
     --accent-hover: #2563eb;
     --accent-gradient: linear-gradient(135deg, #3b82f6, #6366f1);
+    /* For surfaces that carry white text, not for decoration. White on
+       --accent-gradient measured 3.68:1 at the blue end and 4.49:1 at the
+       indigo end -- both under 4.5 for a 15.2px label. These stops give
+       5.12:1 and 7.88:1. */
+    --accent-gradient-strong: linear-gradient(135deg, #2563eb, #4338ca);
     --success: #10b981;
     --success-bg: rgba(16, 185, 129, 0.12);
     --success-text: #34d399;
@@ -29,6 +34,22 @@
     --error-bg: rgba(239, 68, 68, 0.12);
     --error-text: #f87171;
     --purple: #a855f7;
+    --accent-text: #93c5fd;
+    /* The header and tab bar are deliberately dark in BOTH themes --
+       .version-tag has said so since it was given its own colour, and
+       .log-console is the same idea. Only .version-tag was ever adapted
+       to that decision though: everything else on the chrome still
+       resolved --text and --text-muted, which the light theme turns into
+       dark slate. Five tab labels and the header button were therefore
+       dark text on a dark band. The chrome owns its colours here. */
+    --bar-bg: rgba(19, 23, 34, 0.85);
+    --nav-bg: rgba(19, 23, 34, 0.4);
+    --chrome-text: #8b949e;
+    --chrome-text-strong: #e6edf3;
+    --chrome-btn-bg: rgba(255, 255, 255, 0.06);
+    --chrome-btn-bg-hover: rgba(255, 255, 255, 0.12);
+    --accent-on-chrome: #3b82f6;
+    --accent-gradient-on-chrome: linear-gradient(135deg, #3b82f6, #6366f1);
     --radius-sm: 6px;
     --radius-md: 8px;
     --radius-lg: 12px;
@@ -61,6 +82,7 @@
       --accent: #2563eb;
       --accent-hover: #1d4ed8;
       --accent-gradient: linear-gradient(135deg, #2563eb, #4f46e5);
+      --accent-gradient-strong: linear-gradient(135deg, #1d4ed8, #3730a3);
       --success: #047857;
       --success-bg: rgba(4, 120, 87, 0.1);
       /* #047857 on this tint measured 4.24:1 at 12px; deepening the text
@@ -76,6 +98,27 @@
       --error-bg: rgba(220, 38, 38, 0.08);
       --error-text: #b91c1c;
       --purple: #7e22ce;
+    /* Small text on a light accent tint needs more depth than the accent
+       used for large text: #2563eb measured 3.71:1 on the .path-label
+       tint at 11.2px, #1d4ed8 measures 4.64:1 on the same tint. */
+    --accent-text: #1d4ed8;
+    /* Opaque rather than translucent, unlike the dark theme. At 0.4 alpha
+       over #f4f6fb the nav measured rgb(154, 157, 164): murky, and not
+       dark enough to be the deliberate chrome it is meant to be.
+       --chrome-text #a8b3c7 on --nav-bg measures 7.1:1, and
+       --accent-on-chrome #60a5fa measures 6.0:1 where the plain light
+       --accent #2563eb managed only 3.0:1 on this band. */
+    --bar-bg: rgb(26, 31, 45);
+    --nav-bg: rgb(31, 37, 53);
+    --chrome-text: #a8b3c7;
+    --chrome-text-strong: #e8eef7;
+    --chrome-btn-bg: rgba(255, 255, 255, 0.08);
+    --chrome-btn-bg-hover: rgba(255, 255, 255, 0.16);
+    --accent-on-chrome: #60a5fa;
+    /* Lighter than --accent on purpose: this one is painted on the dark
+       chrome. #60a5fa measures 6.0:1 there and #818cf8 5.3:1, where the
+       body-text accent managed 3.0:1. */
+    --accent-gradient-on-chrome: linear-gradient(135deg, #60a5fa, #818cf8);
       --shadow-sm: 0 1px 2px rgba(22, 33, 58, 0.08);
       --shadow-md: 0 4px 20px rgba(22, 33, 58, 0.1);
       --shadow-lg: 0 25px 50px -12px rgba(22, 33, 58, 0.25);
@@ -92,7 +135,7 @@
     flex-direction: column;
   }
   header {
-    background: rgba(19, 23, 34, 0.85);
+    background: var(--bar-bg);
     backdrop-filter: blur(12px);
     border-bottom: 1px solid var(--border);
     padding: 1rem 2rem;
@@ -116,7 +159,7 @@
     font-size: 1.25rem;
     font-weight: 700;
     letter-spacing: -0.02em;
-    background: var(--accent-gradient);
+    background: var(--accent-gradient-on-chrome);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
   }
@@ -155,13 +198,14 @@
   nav.tabs-nav {
     padding: 1rem 2rem 0;
     border-bottom: 1px solid var(--border);
-    background: rgba(19, 23, 34, 0.4);
+    background: var(--nav-bg);
   }
   .tab-btn {
     background: transparent;
     border: none;
     border-bottom: 2px solid transparent;
-    color: var(--text-muted);
+    /* Chrome colour, not --text-muted: see --chrome-text. */
+    color: var(--chrome-text);
     font-size: 0.95rem;
     font-weight: 600;
     padding: 0.75rem 1.25rem;
@@ -179,11 +223,21 @@
     flex-shrink: 0;
   }
   .tab-btn:hover {
-    color: var(--text);
+    color: var(--chrome-text-strong);
   }
   .tab-btn.active {
-    color: var(--accent);
+    color: var(--accent-on-chrome);
     border-bottom-color: transparent;
+  }
+  /* The one button that sits on the chrome. Scoped rather than given its
+     own class so it follows the header wherever the header moves. */
+  header .btn-sm {
+    color: var(--chrome-text-strong);
+    background: var(--chrome-btn-bg);
+    border-color: var(--border-light);
+  }
+  header .btn-sm:hover {
+    background: var(--chrome-btn-bg-hover);
   }
   .tab-btn:focus-visible {
     outline: 2px solid var(--accent);
@@ -314,7 +368,7 @@
     font-family: inherit;
   }
   .btn-primary {
-    background: var(--accent-gradient);
+    background: var(--accent-gradient-strong);
     border: none;
     color: #fff;
     padding: 0.75rem 1.5rem;
@@ -402,7 +456,7 @@
   }
   .bookmarklet-btn {
     display: inline-block;
-    background: var(--accent-gradient);
+    background: var(--accent-gradient-strong);
     color: #fff;
     text-decoration: none;
     font-weight: 600;
@@ -439,7 +493,7 @@
   }
   .path-label--primary {
     background: rgba(59, 130, 246, 0.18);
-    color: var(--accent);
+    color: var(--accent-text);
     border: 1px solid rgba(59, 130, 246, 0.4);
   }
   .path-label--fallback {
@@ -512,7 +566,7 @@
      Active markers on a peer row) they sit on an ordinary themed card, where
      the console palette measured 1.67:1 in the light theme. The two cases are
      therefore scoped separately. */
-  .tag-oauth { background: rgba(59, 130, 246, 0.2); color: var(--accent); }
+  .tag-oauth { background: rgba(59, 130, 246, 0.2); color: var(--accent-text); }
   .tag-drop { background: var(--success-bg); color: var(--success-text); }
   .tag-peer { background: rgba(168, 85, 247, 0.2); color: #7e22ce; }
   .tag-net { background: var(--warning-bg); color: var(--warning-text); }
@@ -899,8 +953,8 @@
        appears on the side that has more content. No JS, and it disappears on
        its own at widths where everything fits. */
     background:
-      linear-gradient(to right, var(--bg) 40%, transparent) left / 36px 100% no-repeat local,
-      linear-gradient(to left, var(--bg) 40%, transparent) right / 36px 100% no-repeat local,
+      linear-gradient(to right, var(--nav-bg) 40%, transparent) left / 36px 100% no-repeat local,
+      linear-gradient(to left, var(--nav-bg) 40%, transparent) right / 36px 100% no-repeat local,
       radial-gradient(farthest-side at 0 50%, rgba(0, 0, 0, 0.45), transparent) left / 14px 100% no-repeat scroll,
       radial-gradient(farthest-side at 100% 50%, rgba(0, 0, 0, 0.45), transparent) right / 14px 100% no-repeat scroll;
   }
@@ -1146,7 +1200,7 @@
   </nav>
 
   <main class="tab-content" id="main" tabindex="-1">
-    <div id="sessionBanner" role="alert" style="display: none; background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.4); color: #fbbf24; border-radius: 12px; padding: 0.85rem 1.25rem; margin-bottom: 1.25rem; font-size: 0.9rem;">
+    <div id="sessionBanner" role="alert" style="display: none; background: var(--warning-bg); border: 1px solid var(--warning); color: var(--warning-text); border-radius: 12px; padding: 0.85rem 1.25rem; margin-bottom: 1.25rem; font-size: 0.9rem;">
       ⚠️ <strong>Dashboard session not established.</strong>
       <span id="sessionBannerDetail">Actions on this page will fail until you reconnect. Run <code>tantu dashboard</code> in a terminal for a fresh link &mdash; that works whether or not the Hub opened this page. If the Hub <em>did</em> open this tab, reloading it is enough. Pressing <kbd>o</kbd> in the Hub terminal does the same thing.</span>
     </div>
@@ -2135,7 +2189,7 @@
 
       let metaHTML = '';
       if (meta && Object.keys(meta).length > 0) {
-        metaHTML = '<details style="margin-top:0.25rem; font-size:0.75rem; color:#94a3b8;"><summary style="cursor:pointer; color:#60a5fa;">inspect metadata</summary><pre style="background:rgba(0,0,0,0.3); padding:0.4rem; border-radius:4px; margin-top:0.25rem; overflow-x:auto;">' + escapeHTML(JSON.stringify(meta, null, 2)) + '</pre></details>';
+        metaHTML = '<details style="margin-top:0.25rem; font-size:0.75rem; color:var(--text-muted);"><summary style="cursor:pointer; color:var(--accent-text);">inspect metadata</summary><pre style="background:rgba(0,0,0,0.3); color:#d7dde8; padding:0.4rem; border-radius:4px; margin-top:0.25rem; overflow-x:auto;">' + escapeHTML(JSON.stringify(meta, null, 2)) + '</pre></details>';
       }
 
       row.innerHTML = '<span class="log-time" style="margin-right:0.5rem;">' + timeStr + '</span><span class="tag ' + tagClass + '">' + escapeHTML(domain) + '</span> ' + escapeHTML(msg) + metaHTML;
@@ -2750,12 +2804,12 @@
             '<div style="display:flex; gap:0.35rem;">' +
               '<button class="btn-sm" data-action="edit-alias" data-value="' + escapeHTML(pr.fingerprint) + '" data-alias="' + escapeHTML(pr.alias || pr.name || '') + '">✏️ Alias</button>' +
               defaultBtn +
-              '<button class="btn-sm" style="color:#f87171; border-color:rgba(239,68,68,0.3);" data-action="unpair-peer" data-value="' + escapeHTML(pr.fingerprint) + '" data-name="' + escapeHTML(pr.name || '') + '">🗑️ Unpair</button>' +
+              '<button class="btn-sm" style="color:var(--error-text); border-color:var(--error);" data-action="unpair-peer" data-value="' + escapeHTML(pr.fingerprint) + '" data-name="' + escapeHTML(pr.name || '') + '">🗑️ Unpair</button>' +
             '</div>' +
           '</div>' +
           '<div style="font-size:0.8rem; color:var(--text-muted); margin-top:0.5rem; display:flex; gap:1rem; flex-wrap:wrap;">' +
             '<span>Address: <strong style="color:var(--text);">' + escapeHTML(pr.address) + '</strong></span>' +
-            '<span>SAS: <strong style="color:#60a5fa;">' + escapeHTML(pr.sas) + '</strong></span>' +
+            '<span>SAS: <strong style="color:var(--accent-text);">' + escapeHTML(pr.sas) + '</strong></span>' +
             '<span>FP: <span style="font-family:monospace; font-size:0.75rem;">' + escapeHTML(fpShort) + '</span></span>' +
           '</div>' +
         '</div>';
