@@ -5536,3 +5536,42 @@ why in a comment, because the next person to see an empty array will reach the
 same conclusion.
 
 Harness: 96 -> 104 checks.
+## Batch Z66 - the annotation nobody read (2026-10-13)
+
+Z65 added a screenshot upload to the dashboard-acceptance job. Having gone to the
+trouble, I read that job's check annotations for the first time. They had been
+there the whole time, on every push, on all three release-artifact jobs:
+
+    [warning] Node.js 20 is deprecated. The following actions target Node.js 20
+    but are being forced to run on Node.js 24: goreleaser/goreleaser-action@v6.
+
+Two deprecations were accruing. Mine - `upload-artifact@v4`, which I had reached
+for because that is what most repositories still carry - cleared in one commit.
+The other had been there since Z48.
+
+The interesting part is the workflow header, which defended the pin:
+
+    The release workflow's goreleaser-action deliberately stays at v6: nothing
+    exercises it until a tag is pushed, and bumping a step that has never run is
+    how a release pipeline gets discovered to be broken at release time.
+
+Sound reasoning, and still exactly right for `release.yml`, whose goreleaser step
+really does only run on a tag. It does not apply to `ci.yml`. The `release-artifact`
+job added in Z48 runs on every push across three operating systems, so its
+goreleaser step is exercised continuously and a major bump proves itself the same
+day.
+
+So the comment was written when both were v6 and applied to both. It only ever
+justified one of them, and the warning it would have prevented was being emitted
+by the job it does not cover. A documented decision that reads as considered and
+is applied one time too broadly is still wrong, and no gate can tell - the
+comment is true of something.
+
+`ci.yml` is now v7; `release.yml` stays v6; the header states why the split is
+deliberate rather than an oversight.
+
+This is the same failure as the screenshots, one level up. Making the images
+reachable was worth doing for the images; the annotations that came back with the
+step found debt accruing on every push since the release job landed. Neither was
+findable by reading the repository. Both were findable by looking at what the
+system already said.
