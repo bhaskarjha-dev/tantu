@@ -14,9 +14,17 @@ on:
 # Action majors are current as of 2026-09-30. The previous pins
 # (checkout@v4, setup-go@v5, setup-node@v4) run on Node 20, which GitHub has
 # deprecated - every run reported it, and the runtime underneath them is being
-# removed. The release workflow's goreleaser-action deliberately stays at v6:
-# nothing exercises it until a tag is pushed, and bumping a step that has never
-# run is how a release pipeline gets discovered to be broken at release time.
+# removed.
+#
+# goreleaser-action is v7 in *this* file and deliberately stays at v6 in
+# release.yml, and the split is not an inconsistency. The release-artifact job
+# below runs on every push across three operating systems, so its goreleaser
+# step is exercised continuously and a major bump proves itself the same day.
+# The release workflow's does not run until a tag is pushed, and bumping a step
+# that has never run is how a release pipeline gets discovered to be broken at
+# release time. That reasoning was written when both were v6 and was applied to
+# both; it only ever justified one of them. The warning it would have prevented
+# was in fact being emitted on every push by the job it does not cover.
 jobs:
   quality:
     name: Quality gates
@@ -485,7 +493,7 @@ jobs:
         # release. It also gates the config on every push, so a deprecated
         # property fails here rather than at tag time -- which is the failure the
         # `formats:` comment in .goreleaser.yaml was written to prevent.
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           version: v2.18.2
@@ -499,7 +507,7 @@ jobs:
         # failed immediately after it, on every platform, with the binary not
         # resolvable. Rather than depend on a side effect of someone else's
         # action, each step now asks the action to do goreleaser's work.
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           version: v2.18.2
