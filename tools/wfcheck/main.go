@@ -81,6 +81,96 @@ func blocks(src string) []struct {
 	return out
 }
 
+// jobKeys are the keys a job may carry. Anything else sitting directly under a
+// job name is a mis-indented job, not a field of one.
+var jobKeys = map[string]bool{
+	"name": true, "runs-on": true, "steps": true, "needs": true, "if": true,
+	"permissions": true, "strategy": true, "services": true, "env": true,
+	"outputs": true, "defaults": true, "timeout-minutes": true,
+	"continue-on-error": true, "container": true, "uses": true, "with": true,
+	"secrets": true, "concurrency": true,
+}
+
+// mapKey returns the key of a 'key:' or 'key: value' line.
+func mapKey(ln string) (string, bool) {
+	s := strings.TrimSpace(ln)
+	if s == "" || strings.HasPrefix(s, "#") || strings.HasPrefix(s, "- ") {
+		return "", false
+	}
+	i := strings.Index(s, ":")
+	if i <= 0 {
+		return "", false
+	}
+	k := strings.TrimSpace(s[:i])
+	if k == "" || strings.ContainsAny(k, " \t") {
+		return "", false
+	}
+	return k, true
+}
+
+// checkJobShape reports keys that sit directly under a job but are not job
+// keys.
+//
+// Why this exists: on 2026-10-13 a job was added at four spaces when every
+// other job sits at two. That is not cosmetic. The new key stopped being a job
+// and became a field inside the preceding one, so the workflow failed to load
+// entirely and GitHub recorded a failed run with zero jobs.
+//
+// Nothing local caught it, and both gates that plausibly should have were
+// reasoning about something else. bash -n only ever sees shell blocks, and
+// every one of those was valid. A YAML parser would not have helped either: a
+// nested key under a job is well-formed YAML, it is simply not a workflow.
+//
+// So the check is semantic rather than syntactic -- a job's children have to
+// look like a job's children -- which is the only form that separates this from
+// a file that is merely valid.
+func checkJobShape(src string) []string {
+	var problems []string
+	lines := strings.Split(strings.ReplaceAll(src, "\r\n", "\n"), "\n")
+
+	jobsAt := -1
+	for i, ln := range lines {
+		if strings.HasPrefix(ln, "jobs:") {
+			jobsAt = i
+			break
+		}
+	}
+	if jobsAt < 0 {
+		return []string{"no top-level jobs: key"}
+	}
+
+	// Job names are the keys at jobs+2. Fix the indent from the first one.
+	jobIndent := -1
+	for i := jobsAt + 1; i < len(lines); i++ {
+		ln := lines[i]
+		if strings.TrimSpace(ln) == "" || strings.HasPrefix(strings.TrimSpace(ln), "#") {
+			continue
+		}
+		ind := leadingSpaces(ln)
+		if ind == 0 {
+			break
+		}
+		if jobIndent < 0 {
+			jobIndent = ind
+			continue
+		}
+		// Job names sit at jobIndent and are skipped by construction. Their
+		// children sit at jobIndent+2, and that is exactly where a mis-indented
+		// job lands -- the ambiguity the key-name test below exists to resolve.
+		if ind == jobIndent+2 {
+			k, ok := mapKey(ln)
+			if ok && !jobKeys[k] {
+				problems = append(problems, fmt.Sprintf(
+					"line %d: %q sits directly under a job at %d spaces but is not a job key "+
+						"(allowed: name, runs-on, steps, needs, if, permissions, strategy, services, env, "+
+						"outputs, defaults, timeout-minutes, continue-on-error, container, uses, with, secrets, "+
+						"concurrency). A job written at the wrong indentation parses as YAML and runs nothing",
+					i+1, k, ind))
+			}
+		}
+	}
+	return problems
+}
 func min(a, b int) int {
 	if a < b {
 		return a
@@ -120,6 +210,13 @@ func main() {
 			continue
 		}
 		src := string(raw)
+		if problems := checkJobShape(src); len(problems) > 0 {
+			for _, p := range problems {
+				fmt.Printf("FAIL %s: %s\n", wf, p)
+			}
+			failed++
+			continue
+		}
 		bs := blocks(src)
 		// Cross-check the parse against the file. Without it, a regex change
 		// turns this into a no-op that reports success having inspected nothing,

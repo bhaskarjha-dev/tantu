@@ -142,80 +142,80 @@ jobs:
         # lesson from the encoding gate that could not detect its own damage.
         run: go run ./tools/docgate
 
-    fuzz:
-      name: Fuzz (wire and validation parsers)
-      # The four fuzz targets that already existed were never actually fuzzed.
-      # `go test` runs a fuzz target's seed corpus and stops; `go test -fuzz`
-      # is what generates inputs. Every job in this workflow runs the former, so
-      # the latter had never executed once. All four parse input that arrives
-      # from another machine -- the wire envelope, the OAuth callback relay, the
-      # discovery beacon and the drop metadata -- which is exactly where a
-      # hand-written table stops helping. Their seed corpora are small (1, 3, 1
-      # and 4 entries), which is what makes running them so cheap.
-      #
-      # A separate job rather than a step in Quality gates: it costs minutes,
-      # and Quality gates is the job everyone waits on and is deliberately fast.
-      runs-on: ubuntu-latest
-      steps:
-        - name: Checkout repository
-          uses: actions/checkout@v7
+  fuzz:
+    name: Fuzz (wire and validation parsers)
+    # The four fuzz targets that already existed were never actually fuzzed.
+    # `go test` runs a fuzz target's seed corpus and stops; `go test -fuzz`
+    # is what generates inputs. Every job in this workflow runs the former, so
+    # the latter had never executed once. All four parse input that arrives
+    # from another machine -- the wire envelope, the OAuth callback relay, the
+    # discovery beacon and the drop metadata -- which is exactly where a
+    # hand-written table stops helping. Their seed corpora are small (1, 3, 1
+    # and 4 entries), which is what makes running them so cheap.
+    #
+    # A separate job rather than a step in Quality gates: it costs minutes,
+    # and Quality gates is the job everyone waits on and is deliberately fast.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
 
-        - name: Set up Go
-          uses: actions/setup-go@v7
-          with:
-            go-version: '1.27.2'
-            cache: true
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.2'
+          cache: true
 
-        - name: Fuzz each target for 30s
-          # A loop, because Go refuses -fuzz with more than one package and
-          # more than one target at a time. Both limits found by running this
-          # rather than reading about them: `go test ./... -fuzz=...` exits 1
-          # with "cannot use -fuzz flag with multiple packages".
-          #
-          # The execs floor is the part that matters. A target that matched
-          # nothing, or terminated immediately, still exits 0 and would report
-          # success having fuzzed nothing -- the same failure shape as the
-          # encoding gate that could not detect its own damage. So this greps the
-          # output rather than trusting the exit code.
-          #
-          # This is not theoretical. The first run of this job failed on its own
-          # floor, because FuzzValidateDropMetadata was pointed at
-          # ./internal/hub/ when it lives in ./internal/drop/. Go did not complain:
-          # a package with no such target exits 0 and prints PASS, having fuzzed
-          # nothing. Without the floor that run would have been green and the gate
-          # would have been decorative for as long as the mistake survived.
-          # Baselines measured 2026-10-13: FuzzDecode 1,021,828 execs in 32s, the
-          # other three 250,000 to 300,000 in 15-30s. The floor is well below the
-          # slowest, so it cannot flake.
-          run: |
-            status=0
-            for spec in "./internal/protocol/:FuzzDecode" \
-                        "./internal/bridge/:FuzzValidateCallbackRelay" \
-                        "./internal/discovery/:FuzzValidBeacon" \
-                        "./internal/drop/:FuzzValidateDropMetadata"; do
-              pkg="${spec%%:*}"
-              target="${spec##*:}"
-              echo "::group::fuzz $target"
-              log=$(mktemp)
-              # -run=NONE skips the seed-only pass so the whole budget goes to
-              # generated inputs. Anything Go writes to testdata/fuzz/<target>
-              # is a reproducer and is meant to be committed, not deleted.
-              go test "$pkg" -run=NONE -fuzz="$target" -fuzztime=30s -parallel=2 >"$log" 2>&1
-              run_status=$?
-              tail -n 12 "$log"
-              execs=$(grep -o 'execs: [0-9]*' "$log" | tail -n 1 | grep -o '[0-9]*')
-              if [ -z "$execs" ] || [ "$execs" -lt 100000 ]; then
-                printf '::error::%s reported %s executions, expected at least 100000. A fuzz gate that ran nothing is worse than no gate, because it is green.\n' "$target" "${execs:-none}"
-                status=1
-              fi
-              if [ "$run_status" -ne 0 ]; then
-                printf '::error::%s found a failure. Reproducers are written to testdata/fuzz/%s/ -- commit them, they are the regression test.\n' "$target" "$target"
-                status="$run_status"
-              fi
-              rm -f "$log"
-              echo "::endgroup::"
-            done
-            exit "$status"
+      - name: Fuzz each target for 30s
+        # A loop, because Go refuses -fuzz with more than one package and
+        # more than one target at a time. Both limits found by running this
+        # rather than reading about them: `go test ./... -fuzz=...` exits 1
+        # with "cannot use -fuzz flag with multiple packages".
+        #
+        # The execs floor is the part that matters. A target that matched
+        # nothing, or terminated immediately, still exits 0 and would report
+        # success having fuzzed nothing -- the same failure shape as the
+        # encoding gate that could not detect its own damage. So this greps the
+        # output rather than trusting the exit code.
+        #
+        # This is not theoretical. The first run of this job failed on its own
+        # floor, because FuzzValidateDropMetadata was pointed at
+        # ./internal/hub/ when it lives in ./internal/drop/. Go did not complain:
+        # a package with no such target exits 0 and prints PASS, having fuzzed
+        # nothing. Without the floor that run would have been green and the gate
+        # would have been decorative for as long as the mistake survived.
+        # Baselines measured 2026-10-13: FuzzDecode 1,021,828 execs in 32s, the
+        # other three 250,000 to 300,000 in 15-30s. The floor is well below the
+        # slowest, so it cannot flake.
+        run: |
+          status=0
+          for spec in "./internal/protocol/:FuzzDecode" \
+                      "./internal/bridge/:FuzzValidateCallbackRelay" \
+                      "./internal/discovery/:FuzzValidBeacon" \
+                      "./internal/drop/:FuzzValidateDropMetadata"; do
+            pkg="${spec%%:*}"
+            target="${spec##*:}"
+            echo "::group::fuzz $target"
+            log=$(mktemp)
+            # -run=NONE skips the seed-only pass so the whole budget goes to
+            # generated inputs. Anything Go writes to testdata/fuzz/<target>
+            # is a reproducer and is meant to be committed, not deleted.
+            go test "$pkg" -run=NONE -fuzz="$target" -fuzztime=30s -parallel=2 >"$log" 2>&1
+            run_status=$?
+            tail -n 12 "$log"
+            execs=$(grep -o 'execs: [0-9]*' "$log" | tail -n 1 | grep -o '[0-9]*')
+            if [ -z "$execs" ] || [ "$execs" -lt 100000 ]; then
+              printf '::error::%s reported %s executions, expected at least 100000. A fuzz gate that ran nothing is worse than no gate, because it is green.\n' "$target" "${execs:-none}"
+              status=1
+            fi
+            if [ "$run_status" -ne 0 ]; then
+              printf '::error::%s found a failure. Reproducers are written to testdata/fuzz/%s/ -- commit them, they are the regression test.\n' "$target" "$target"
+              status="$run_status"
+            fi
+            rm -f "$log"
+            echo "::endgroup::"
+          done
+          exit "$status"
 
   test:
     name: Test (${{ matrix.os }})

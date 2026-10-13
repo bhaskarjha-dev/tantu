@@ -5633,3 +5633,54 @@ The simulation extracts the `run:` block out of ci.yml and runs that under bash,
 rather than a hand-typed copy, so what is tested is what CI will run. All four
 targets clean, exit 0, and `wfcheck` parses 17 shell blocks across the two
 workflows.
+## Batch Z68 - CI was red because a job was indented four spaces (2026-10-13)
+
+The fuzz job added in Z67 was pushed at **four** spaces when every other job in
+ci.yml sits at two. That is not a cosmetic slip. `fuzz:` stopped being a job and
+became a key inside the job above it, the workflow stopped being loadable, and
+GitHub recorded a failed run with **zero jobs**.
+
+Nothing local caught it. The three things that plausibly should have were all
+reasoning about something else:
+
+- `wfcheck` parses shell *blocks*. All 17 of them were valid bash. The job was
+  fine; its position was not.
+- The local simulation extracted the job's own `run:` block and executed it. It
+  passed, because the shell was never the problem.
+- A YAML parser would not have helped either. A nested key under a job is
+  well-formed YAML; it is just not a workflow.
+
+What catches it is semantic: a job's children have to look like a job's
+children. `wfcheck` now checks that any key sitting directly under a job name is
+one of the eighteen keys a job may carry, and names the offender with its line
+and indentation. Red proof: pushing the fuzz job back to four spaces fails with
+`line 145: "fuzz" sits directly under a job at 4 spaces but is not a job key`.
+
+### The check was wrong on its first run too
+
+It flagged every legitimate job name in the file, because the condition included
+the job-name line itself rather than stopping at it. Only the red proof found
+that; the green case failed loudly, which is the one time a gate being
+over-eager is a gift. It is fixed and both directions are now tested.
+
+### wfcheck was the one tool here without self-tests
+
+encgate and docgate are both tested against deliberately broken input, which is
+the lesson they exist to teach. wfcheck was not, and within one batch that gap
+produced a false-positive bug in the new check. Seven tests now cover it: a
+well-formed workflow, the mis-indented job, a missing `jobs:` key, comments and
+blank lines, every declared job key being genuinely permitted, an empty document
+refusing to pass, and the existing block-extraction cross-check.
+
+### What this batch says about the batch before it
+
+Z67's own message said the new job had been verified locally. It had been - the
+fuzzing worked, all four targets passed, the execs floor fired correctly on a
+wrong package. What had not been verified was that the file the job lived in was
+still a workflow.
+
+Three batches running now have each found the previous batch's gap by looking at
+what the system already emitted: the screenshot nobody opened (Z65), the
+annotation nobody read (Z66), and the job that parsed and ran nothing (Z68).
+None of the three was findable by reading the repository. All three were
+findable by looking at what it produced.
