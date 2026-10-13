@@ -5575,3 +5575,61 @@ reachable was worth doing for the images; the annotations that came back with th
 step found debt accruing on every push since the release job landed. Neither was
 findable by reading the repository. Both were findable by looking at what the
 system already said.
+## Batch Z67 - the fuzz targets that had never been fuzzed (2026-10-13)
+
+Asked for as many checks as possible, and the shape matters: more hand-written
+lists rot, as the 16-selector contrast allowlist proved. The additions worth
+making are the ones that are exhaustive by construction.
+
+There were four fuzz targets in the repository and CI had never run one.
+
+    internal/protocol   FuzzDecode                    (wire envelope)
+    internal/bridge     FuzzValidateCallbackRelay     (OAuth callback)
+    internal/discovery  FuzzValidBeacon               (mDNS discovery)
+    internal/drop       FuzzValidateDropMetadata      (drop metadata)
+
+`go test` runs a fuzz target's seed corpus and stops. `go test -fuzz` is what
+generates inputs. Every job in this workflow runs the former, so the latter had
+never executed once -- and all four parse input that arrives from another
+machine, which is exactly where a hand-written table stops helping.
+
+A new job fuzzes each for 30s. All four pass, and the executions are worth
+recording as a baseline: FuzzDecode 1,021,828 in 32s, the other three 250,000 to
+300,000 in 15-30s, and **no crashing input in any of them**. The
+`testdata/fuzz/<target>/` directories Go created are empty, which is what a clean
+run looks like: a reproducer would be sitting in one.
+
+### The floor caught a mistake on the job's first run
+
+The job greps each run's output for its execution count and fails below 100,000.
+That is not decoration. The first run failed on it, because
+FuzzValidateDropMetadata was pointed at `./internal/hub/` when it lives in
+`./internal/drop/`.
+
+Go did not complain. A package with no such target **exits 0 and prints PASS**,
+having fuzzed nothing at all. Without the floor that run would have been green
+and the gate would have been decorative for as long as the mistake survived --
+which is the encoding-gate failure shape this repository already paid for once.
+
+The same floor is why a target that cannot start cannot pass either: run with
+`-run=NONE` against a target with an empty corpus, the fuzzer never begins and
+prints PASS in eight seconds.
+
+### Two things I got wrong while building it
+
+`go test ./... -fuzz=...` exits 1 with "cannot use -fuzz flag with multiple
+packages". Found by running the job's shell block, not by reading about it.
+
+And I wrote into the workflow comment that one of the targets had no seeds. That
+came from counting `f.Add(` occurrences, and `FuzzValidateDropMetadata` adds its
+four seeds inside a loop, so the grep saw one. It has four. A number taken from
+a pattern match rather than from running the thing is a claim, not a fact, and
+this batch had already produced two probes that lied; the seed count was the
+third and the cheapest of them.
+
+### Verified by executing the job, not a transcription of it
+
+The simulation extracts the `run:` block out of ci.yml and runs that under bash,
+rather than a hand-typed copy, so what is tested is what CI will run. All four
+targets clean, exit 0, and `wfcheck` parses 17 shell blocks across the two
+workflows.
