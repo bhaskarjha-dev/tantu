@@ -5177,3 +5177,97 @@ it -- fetch what was served.
 
 Gate work on this dashboard: one user-visible fix. Reading and driving the
 running page, plus one Lighthouse audit: five.
+## Batch Z62 - error states, and the wording a timeout does not say (2026-10-13)
+
+The last major surface never looked at: what the product says when a send fails.
+
+Setup took a while and included one self-inflicted wound. `tantu dashboard` does
+not accept `--web-addr`, so the isolated Hub has to stay on the default port and
+be isolated by `APPDATA` instead, which the store path honours on Windows. My
+first attempt to seed a peer failed because PowerShell wrote the `\"` escapes in
+a single-quoted string literally, so the map value was a string rather than an
+object and the store parsed zero peers. The dashboard helpfully said so:
+"No trusted peers yet".
+
+With a TEST-NET-1 blackhole peer at 192.0.2.1 as the default destination, the
+error paths are real rather than staged.
+
+**Three error paths, all honest:**
+
+- In flight: a visible `relaying` banner reading "Sending 18 B to Unreachable
+  (blackhole)...", send button disabled.
+- Timeout after ~10s: `Not sent: Transfer timed out before completing. No
+  complete file was saved. Next: Safe to retry when the peer is reachable. A
+  retry creates a new transfer. (ID op-...)` - on the tab, `role="status"`,
+  `aria-live="polite"`, and in the log. The draft is kept.
+- Over limit at 11 MiB: `This snippet is 11.0 MB, over the 10.0 MB limit. Send
+  it as a file instead, or trim it here first. Nothing was sent.`
+
+**No defect in any of them.** The cancel asymmetry is also correct rather than an
+oversight: only the file-upload path offers a Cancel, and only a file upload can
+take minutes. A text snippet cannot outlast its own timeout.
+
+### The gap that did exist
+
+Three candidates were checked before this one and all three were fine, which is
+the useful part of the record: the on-tab banner really is there (I first
+queried the wrong element ids and read its absence as a defect), the two Cancel
+buttons are both inside `display:none` ancestors (I checked the element's own
+computed style and not its ancestors'), and the over-limit branch only fires on
+Send, not on input.
+
+The real gap is server-side. `ClassifyTransferError` and `classifyRejection` are
+the only place Tantu decides what a user is told about a failed transfer, and
+they have 34 existing assertions on the *flags*. None of them touch the
+*wording*. So this passes today:
+
+    "confirmation_timeout",
+        "Transfer timed out. Please try again.",      // reworded
+        "Please retry.",
+        false, true, true                             // flags untouched
+
+Every flag assertion still passes - `retry_safe` is false, `duplicate_risk` is
+true - and the user is now told to retry a transfer whose bytes the receiver may
+already hold. The gated value and the ungated value are the same fact, stated
+twice. This is the ninth time this defect class has appeared in this review.
+
+The new gate enumerates the tuples out of the source and holds the two halves
+against each other, in both directions: `duplicate_risk` set => the message must
+admit the file may be there; clear => it must not claim it might be; `retry_safe`
+clear => the next action must not say "safe to retry"; both together is always a
+contradiction; and a `duplicate_risk` next action has to say *check the receiver*
+*before retrying*, because the other ordering turns a risk into a duplicate.
+
+Red proof: the rewording above fails on two counts while all 34 existing flag
+assertions stay green.
+
+### Two rules I wrote that were wrong, and what corrected them
+
+The gate failed on first run for reasons that were not product defects, and both
+corrections are the reason it is now a good gate rather than a green tick.
+
+**`data_safe` does not mean "nothing was saved".** The obvious reading failed on
+exactly the branches that matter most: `cancelled_after_send` sets `data_safe`
+true and says "The file may already be saved on the receiver", which is correct
+behaviour. `data_safe` means the sender's own data is not compromised - the
+source file and the user's draft survive - not that the receiver holds nothing.
+For a cancellation after every byte was streamed, the bytes left intact and the
+only unknown is whether they landed. Reading the flag the other way would have
+made the gate demand a reassurance the product is honestly unable to give. It
+now deliberately does not cross-check `data_safe`, and says why in the comment.
+
+**A code may carry different wording in the two classifiers.** `integrity_rejected`
+and `receiver_busy` each appear once in `ClassifyTransferError` and once in
+`classifyRejection`, with different sentences. That is the design: hearing a
+receiver state a refusal is strictly more information than matching a string on
+the sender, so the receiver path can be specific where the sender path cannot.
+The rule is now one-code-one-wording *within* a classifier, with the two
+justified cross-function divergences named and their reasons recorded, so a third
+has to be argued for rather than appearing by accident.
+
+## Tally
+
+Gate work on this dashboard: one user-visible fix. Reading and driving the
+running page, plus one Lighthouse audit: five. This batch produced no product
+defect at all - three error paths verified correct - and one gate that closes the
+ninth instance of the recurring class.
