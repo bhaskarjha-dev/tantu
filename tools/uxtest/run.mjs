@@ -835,7 +835,60 @@ let hubs2 = null;
     console.log('uxtest: full contrast sweep ' + JSON.stringify(swept) + ', ' + sweepFails.length + ' failure(s)');
     await scheme('dark');
 
-    // --- 200% zoom, narrow viewport, reduced motion ---
+    // OVERFLOW_PROBE reports the document's scroll and client widths, and when the
+// document is wider than its viewport, the elements responsible.
+//
+// It measures each element's *text* as well as its border box, and that is not
+// a refinement. An unbreakable string does not widen the block that contains it:
+// the block's box stays at the container's width and the text simply runs past
+// it. A box-only probe therefore reports a clean page while the document is
+// genuinely overflowing -- which is precisely what happened here. A probe built
+// on border boxes found a 924-wide page entirely clean, because the one culprit
+// was a div whose own box was 360 wide. Since the CI-only failure is 21px and
+// the plausible cause is a wider fallback font on the runner, a probe that
+// cannot see unwrapped text would name nothing on the very platform that
+// exhibits the defect.
+//
+// Only leaf-ish elements have their text measured, so an ancestor does not
+// re-report its descendants' overflow and bury them.
+//
+// The selector list is deliberately shallow -- tag, id, up to three classes --
+// because this string goes into a CI log line and a full selector path would
+// bury it. The widest offenders are reported first, since the page-level symptom
+// is almost always one element, not twenty.
+const OVERFLOW_PROBE = `(function(){
+  var d = document.documentElement;
+  var vw = d.clientWidth, out = [];
+  var all = document.querySelectorAll('*');
+  var range = document.createRange();
+  for (var i = 0; i < all.length; i++) {
+    var el = all[i], r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) continue;
+    var over = Math.max(r.right - vw, r.width - vw);
+    var why = over > 0.5 ? 'box' : '';
+    if (el.children.length === 0) {
+      var tr = null;
+      try { range.selectNodeContents(el); tr = range.getBoundingClientRect(); } catch (e) { tr = null; }
+      if (tr && tr.width) {
+        var textOver = Math.max(tr.right - vw, tr.width - vw);
+        if (textOver > over) { over = textOver; why = 'text'; }
+      }
+    }
+    if (over <= 0.5) continue;
+    var cls = (typeof el.className === 'string' && el.className.trim())
+      ? '.' + el.className.trim().split(/\\s+/).slice(0, 3).join('.') : '';
+    out.push({
+      sel: el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + cls,
+      why: why, over: Math.round(over), w: Math.round(r.width),
+      left: Math.round(r.left), right: Math.round(r.right),
+      text: (el.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 48),
+    });
+  }
+  out.sort(function (a, b) { return b.over - a.over; });
+  return { w: d.scrollWidth, c: vw, culprits: out.slice(0, 8) };
+})()`;
+
+// --- 200% zoom, narrow viewport, reduced motion ---
     await tab('tab-drop');
     await metrics(640, 450); await sleep(400);
     const zoom = await js('(function(){var d=document.documentElement;return {h:d.scrollWidth>d.clientWidth};})()');
@@ -844,8 +897,26 @@ let hubs2 = null;
     await metrics(360, 780); await sleep(400);
     for (const [t, label] of [['tab-drop', 'QuickDrop'], ['tab-relay', 'Relay'], ['tab-peers', 'Peers'], ['tab-transfers', 'Transfers'], ['tab-logs', 'Logs']]) {
       await tab(t);
-      const n = await js('(function(){var d=document.documentElement;return {w:d.scrollWidth,c:d.clientWidth};})()');
+      // On overflow, name the elements responsible rather than only reporting
+      // the two numbers.
+      //
+      // CI reported `{"w":381,"c":360}` for Firefox and WebKit while Chromium
+      // passed, and the run was reproducible across two engines but not locally:
+      // the same harness on this machine passes on all three. "381 is more than
+      // 360" is not actionable -- it does not say what is 381 wide. A separate
+      // probe that loaded at 360px, then 1280->360, then 1280->640->360 all
+      // reported the page clean, which is four different arrangements agreeing
+      // with each other and disagreeing with CI. Rather than pick the most
+      // plausible arrangement and declare the defect unreproducible, the check
+      // now carries its own diagnosis into the log, where the next run on the
+      // failing platform will name the element.
+      const n = await js(OVERFLOW_PROBE);
       check('360px ' + label + ': no page overflow', n.w <= n.c, JSON.stringify(n));
+      if (n.w > n.c && n.culprits && n.culprits.length) {
+        for (const c of n.culprits.slice(0, 5)) {
+          console.log('uxtest: overflow culprit ' + label + ' ' + JSON.stringify(c));
+        }
+      }
     }
 
     // The Relay tab is the product's most distinctive feature and until now the

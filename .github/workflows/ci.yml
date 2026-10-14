@@ -374,6 +374,16 @@ jobs:
           cd tools/uxtest
           npm ci
           npx playwright install --with-deps chromium firefox webkit
+      - name: Self-check the harness's overflow diagnostic
+        # The harness names the elements behind a narrow-viewport overflow, and
+        # the one failure it is currently needed for is 21px of overflow in
+        # Firefox and WebKit that does not reproduce on any machine here. If the
+        # diagnostic itself were broken, the next failure would arrive saying
+        # only "381 > 360" again -- the situation this job is currently in.
+        #
+        # Run here rather than locally so it is verified on the same platform
+        # that exhibits the defect, which is the whole difficulty.
+        run: node tools/uxtest/selfcheck-overflow-probe.cjs
       - name: Run acceptance harness across engines
         # Same reasoning as the test step: the harness's diagnostics are the
         # only diagnosis available for this job, and a log nobody can read

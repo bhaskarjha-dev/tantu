@@ -6152,3 +6152,64 @@ called, a document nobody verified, and now a workflow nobody ran.
 - CI was **red on both of the last two pushes** (`Test (macos-latest)`), which
   this batch's record had claimed green. Read from the check-runs API rather
   than from the summary, which is the whole point of that API.
+## Batch Z75 - what the working gates immediately found (2026-10-13)
+
+With the pipeline bug fixed, CI went from 9 green jobs to 4 failures. Every one
+of them was invisible an hour earlier, and none of them was the thing the
+previous batch was about.
+
+**Three of the four were my own new gates failing on a platform they had never
+run on**, which is the correct outcome and worth reading as such.
+
+`TestFallbackGivesUpLoudlyWhenEveryPortIsTaken` failed on the Windows runner with
+"could not occupy 127.0.0.1:50939". `freeQuad` verified a run of four ports
+*upward* from a base; the test then occupied four ports *downward* from that
+base. Three of the four had never been checked. The helper now verifies five and
+the test occupies exactly the verified run, in the direction the scan walks.
+
+`TestPresentStartedHubSaysNothingWhenStartupFailed` failed on Ubuntu and macOS
+with "Err() does not report the startup failure". The gate made startup fail by
+pointing the store at `Z:\tantu-does-not-exist\store`, which is not a path that
+fails -- backslash and colon are legal in a Linux path component, so the
+directory was created and the Hub started happily. It now makes the parent a
+regular file, which fails identically on all three platforms. A fixture that only
+fails on the platform it was written on measures the platform.
+
+**The fourth is a real product defect, and it is not reproducible here.**
+
+`360px QuickDrop: no page overflow {"w":381,"c":360}` in Firefox and WebKit;
+Chromium passes. The same harness passes locally on all three engines, and a
+separate probe was run in four different arrangements -- loading at 360px,
+1280 to 360, 1280 to 640 to 360, and with the overflow probe walking every tab --
+and every one of them reported the page clean.
+
+The most likely cause is font metrics: the runner's fallback face is wider than
+the local one, and 21px of extra width on a string that is a little too long is
+exactly that signature. **This is stated as a hypothesis, not a finding**, and it
+is recorded as a hypothesis because that is the state of the evidence.
+
+What was not acceptable was that the check reported two numbers and left it there.
+So the check now names the elements responsible and prints them into the CI log,
+where the next run on the failing platform will say what is 381 wide.
+
+### The instrument was broken, and the self-check caught it
+
+Building that diagnostic was the useful part. The first version measured element
+border boxes. Its self-check -- a synthetic page with an oversized div and an
+unbreakable string -- showed it reporting a **924-wide page as entirely clean**.
+
+An unbreakable string does not widen the block that contains it. The block's box
+stays at the container's width and the text runs past it. A box-only probe cannot
+see the single most likely cause of a narrow-viewport overflow, and the one
+platform that exhibits this defect is precisely where it would have named
+nothing.
+
+The probe now measures text as well as boxes, distinguishes the two in its output
+(`why: "text"` versus `why: "box"`), and only measures text on leaf-ish elements
+so an ancestor does not re-report its descendants. Its self-check runs in the CI
+dashboard job, not locally, because the difficulty is that the defect does not
+reproduce off the platform that has it.
+
+The self-check is also written to fail if `OVERFLOW_PROBE` cannot be found in
+run.mjs, rather than skipping. A diagnostic that has silently stopped matching
+its source is how the previous four batches of green were possible.

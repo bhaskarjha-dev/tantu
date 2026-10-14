@@ -43,15 +43,23 @@ func occupyPort(t *testing.T, port int) net.Listener {
 	return ln
 }
 
-// freeQuad returns the first port of a run of four consecutive free loopback
+// freeQuad returns the first port of a run of five consecutive free loopback
 // ports, found by actually binding them.
 //
-// Four consecutive are needed because the fallback scans down four, and the
-// gates that exhaust the scan require four genuine refusals. Finding them by
-// binding is the only trustworthy method: assuming a port is free is how a test
-// ends up passing on a quiet machine and failing on a busy one.
+// Five, not four, and the extra one is not slack. The fallback scans down from
+// the configured port, so the gate that exhausts the scan has to occupy a run
+// that the scan actually walks: configured at the top, then the four below it.
+// An earlier version returned a verified run of four and then occupied ports
+// *below* that run, which it had never checked -- three of the four were
+// unverified. It passed on a quiet machine and failed on a Windows runner with
+// "could not occupy 127.0.0.1:50939", which is the failure mode this helper
+// exists to prevent.
+//
+// Finding them by binding is the only trustworthy method: assuming a port is
+// free is how a test passes locally and fails in CI.
 func freeQuad(t *testing.T) int {
 	t.Helper()
+	const run = 5
 	probe, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("probe for a free port: %v", err)
@@ -64,9 +72,9 @@ func freeQuad(t *testing.T) int {
 		if base < 1024 {
 			break
 		}
-		held := make([]net.Listener, 0, 4)
+		held := make([]net.Listener, 0, run)
 		ok := true
-		for i := 0; i < 4; i++ {
+		for i := 0; i < run; i++ {
 			ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", base+i))
 			if err != nil {
 				ok = false
@@ -81,7 +89,7 @@ func freeQuad(t *testing.T) int {
 			return base
 		}
 	}
-	t.Fatalf("no run of 4 consecutive free loopback ports below %d", start)
+	t.Fatalf("no run of %d consecutive free loopback ports below %d", run, start)
 	return 0
 }
 
@@ -311,9 +319,12 @@ func TestFallbackIsSkippedWhenTheConfiguredPortIsFree(t *testing.T) {
 // partial start would be worse than a clear refusal.
 func TestFallbackGivesUpLoudlyWhenEveryPortIsTaken(t *testing.T) {
 	base := freeQuad(t)
-	wire, web := base, base+1
-	for i := 0; i < 4; i++ {
-		occupyPort(t, wire-i)
+	// The scan walks *down* from the configured port, so the port under test is
+	// the top of the verified run and the occupied set is everything beneath it.
+	// Occupying ports below the run would be occupying ports nothing verified.
+	wire, web := base+4, base
+	for i := 0; i < 5; i++ {
+		occupyPort(t, base+i)
 	}
 
 	h, err := NewHub(HubConfig{

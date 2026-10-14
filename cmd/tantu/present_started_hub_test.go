@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -27,11 +28,26 @@ import (
 // fail the same way it would on a machine with a broken profile path, and the
 // assertion is on what the user is actually shown.
 func TestPresentStartedHubSaysNothingWhenStartupFailed(t *testing.T) {
+	// The store directory is made uncreatable by putting a *regular file* where
+	// its parent would have to be. That fails on all three platforms for the
+	// same reason.
+	//
+	// The first version used `Z:\tantu-does-not-exist\store`, which is a
+	// perfectly good directory name on Linux and macOS -- backslash and colon
+	// are legal in a path component -- so the Hub started successfully and the
+	// gate failed on both of them with "Err() does not report the startup
+	// failure". A fixture that only fails on the platform it was written on is
+	// a fixture that measures the platform.
+	blocker := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("this is a file, not a directory\n"), 0o644); err != nil {
+		t.Fatalf("write the blocking file: %v", err)
+	}
+
 	h, err := hub.NewHub(hub.HubConfig{
 		TransportType: "loopback",
 		ListenAddr:    "127.0.0.1:0",
 		WebAddr:       "127.0.0.1:0",
-		StoreDir:      `Z:\tantu-does-not-exist\store`,
+		StoreDir:      filepath.Join(blocker, "store"),
 	})
 	if err != nil {
 		t.Fatalf("NewHub: %v", err)
