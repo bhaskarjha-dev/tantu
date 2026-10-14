@@ -15,6 +15,30 @@ import (
 	"unicode"
 )
 
+// defaultLANPort mirrors transport.DefaultLANPort. The store cannot import
+// internal/transport -- transport imports pairing -- so the value is duplicated
+// here deliberately and pinned from the other side by
+// TestDefaultLANPortMatchesTransport, which fails if the two ever diverge.
+const defaultLANPort = 9877
+
+// normalizePeerAddress is the pairing-package equivalent of hub.EnsurePeerLANPort:
+// it appends the default LAN port to an address that carries none, and returns
+// anything already carrying a port untouched.
+//
+// It exists so address comparisons are made on one canonical form. Without it,
+// "192.168.1.5" and "192.168.1.5:9877" read as two different peers and a
+// connection to one would rewrite the other on every handshake.
+func normalizePeerAddress(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return addr
+	}
+	if _, _, err := net.SplitHostPort(addr); err == nil {
+		return addr
+	}
+	return net.JoinHostPort(addr, strconv.Itoa(defaultLANPort))
+}
+
 // Peer represents a trusted remote tantu instance.
 type Peer struct {
 	Fingerprint string    `json:"fingerprint"`
@@ -25,6 +49,20 @@ type Peer struct {
 	CertPEM     []byte    `json:"cert_pem"`             // peer's certificate for TLS verification
 	FirstSeen   time.Time `json:"first_seen"`
 	LastSeen    time.Time `json:"last_seen"`
+
+	// LastAddressConfirmed is when an authenticated handshake last proved that
+	// Address still reaches this peer.
+	//
+	// It is deliberately separate from LastSeen. LastSeen moves only when a peer
+	// is added or its address is rewritten, so it is not a reachability signal at
+	// all -- before this field existed there was nothing in the store that could
+	// answer "when did we last confirm this address still works?", which is the
+	// question a user needs answered when a peer's network changes underneath
+	// them and sends start failing with no error anywhere.
+	//
+	// Optional and additive: a peers.json written before this field existed loads
+	// with a zero value, which reads as "never confirmed" rather than as corrupt.
+	LastAddressConfirmed time.Time `json:"last_address_confirmed,omitempty"`
 }
 
 // DisplayName returns the peer's preferred display name: Alias if set, else Name, else "peer-<SAS>".
@@ -479,6 +517,17 @@ func (s *PeerStore) AddPeer(p Peer) error {
 			p.FirstSeen = now
 		}
 		p.LastSeen = now
+		// Writing a peer with an address is what pairing does, and pairing is
+		// itself proof that the address reaches the peer -- the responder dialled
+		// back over it and both sides completed the handshake. Without this a
+		// freshly paired peer reads as never confirmed until its first transfer.
+		//
+		// Guarded on the address being present, because AddPeer is also how the
+		// store carries an existing record forward through a re-add, and a peer
+		// with no address has confirmed nothing.
+		if p.Address != "" {
+			p.LastAddressConfirmed = now
+		}
 
 		peers[p.Fingerprint] = p
 		return s.savePeersMap(peers)
@@ -798,9 +847,77 @@ func (s *PeerStore) UpdatePeerAddress(fingerprint, newAddress string) error {
 		}
 		p.Address = newAddress
 		p.LastSeen = time.Now()
+		// Pairing is itself proof that this address reaches the peer, so it
+		// stamps the same field an authenticated handshake would. Without this a
+		// freshly paired peer reads as "never confirmed" until its first transfer.
+		p.LastAddressConfirmed = p.LastSeen
 		peers[fingerprint] = p
 		return s.savePeersMap(peers)
 	})
+}
+
+// ConfirmPeerAddress records that a peer was reached at observedAddress, proven
+// by an authenticated handshake, and returns whether the stored address changed.
+//
+// This is the only sanctioned way to move a peer's address at runtime. It is
+// deliberately the *only* one, because the value of the whole mechanism rests on
+// where the observation comes from: at the end of a completed mTLS handshake the
+// local Hub knows both who the peer is (its fingerprint) and where it is (the
+// remote address of that connection), bound together cryptographically. That is
+// the one source of address truth strong enough to overwrite what pairing
+// recorded.
+//
+// An unauthenticated beacon is not such a source. Discovery may propose an
+// address; only a successful handshake may dispose of one.
+//
+// The two outcomes are deliberately distinguishable by the caller. `changed`
+// means a peer's address moved, which is worth a log line and a visible change;
+// false means the observation merely confirmed what was already believed, which
+// is the common case and should be silent.
+func (s *PeerStore) ConfirmPeerAddress(fingerprint, observedAddress string) (changed bool, err error) {
+	fingerprint = strings.ToLower(strings.TrimSpace(fingerprint))
+	observedAddress = strings.TrimSpace(observedAddress)
+	if observedAddress == "" {
+		return false, nil
+	}
+	if err := validatePeerAddress(observedAddress); err != nil {
+		return false, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Assigned through the named results rather than `return false, ...`: with
+	// named results a literal in the return statement is assigned *after* the
+	// mutation closure has already run, so the literal silently overwrote the
+	// closure's answer and every move reported "unchanged".
+	err = s.withPeerMutationLock(func() error {
+		peers, err := s.loadPeersMap()
+		if err != nil {
+			return err
+		}
+		p, ok := peers[fingerprint]
+		if !ok {
+			return fmt.Errorf("peer %q not found", fingerprint)
+		}
+		now := time.Now()
+		// Compare on the normalised form. A bare host and its explicit-port
+		// spelling are one endpoint, and treating them as two would rewrite the
+		// peer on every single connection.
+		moved := normalizePeerAddress(p.Address) != normalizePeerAddress(observedAddress)
+		if moved {
+			p.Address = observedAddress
+			p.LastSeen = now
+		}
+		p.LastAddressConfirmed = now
+		peers[fingerprint] = p
+		if err := s.savePeersMap(peers); err != nil {
+			return err
+		}
+		changed = moved
+		return nil
+	})
+	return changed, err
 }
 
 // ResolvePeer deterministically resolves a query to a Peer using a 5-tier fuzzy match.

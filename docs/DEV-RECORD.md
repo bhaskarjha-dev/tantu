@@ -5855,3 +5855,89 @@ close it. Two Hubs on one machine over loopback move a file too fast to have a
 window to measure; that needs a genuinely slow peer, which needs throttling. What
 this closes is the different and larger gap - that no browser check had ever
 driven a peer which exists.
+## Batch Z71 - a peer that moved: stop learning addresses by accident (2026-10-13)
+
+Asked whether Tantu could survive a port change, and then whether it survives
+changing network. Tracing it produced the same answer twice, because the two are
+one problem: **the address decayed and nothing re-learned it.**
+
+- A peer's identity is its **fingerprint**. Its address is a **routable hint
+  that decays**. `peers.json` stores exactly one address per peer, so every
+  address change was either repaired narrowly or fatal and silent.
+- Self-healing existed -- "Dynamic IP self-healing" -- but was inbound only,
+  host only, and rebuilt the address as `JoinHostPort(remoteHost, storedPort)`,
+  deliberately **keeping the stale port**. A peer that moved ports was never
+  healed and never even detected.
+- So broadband to hotspot was a **total, silent, permanent partition**: both
+  Hubs healthy, neither able to dial the other, no error anywhere. The only
+  remedy was re-pairing, which destroys trust history and demands a fresh SAS
+  comparison for what is a routine network change.
+
+### The enabling principle
+
+> At the end of an **authenticated** handshake you know both who the peer is and
+> where it is, bound together cryptographically.
+
+That is the only source strong enough to overwrite what pairing recorded, and it
+was already being used once, in a needlessly narrow form. An unauthenticated
+beacon is not such a source -- which is why the design rule stands: discovery may
+*propose* an address, only a handshake may *dispose* of one.
+
+### What changed
+
+**A new store field, `last_address_confirmed`.** Separate from `LastSeen`, which
+turns out to be almost meaningless as a reachability signal: it is written in
+exactly two places, on add and on address rewrite, and **nowhere on a successful
+transfer**. Before this there was nothing in the store that could answer "when
+did we last confirm this address still works?" -- which is precisely the question
+a user has when their network changes underneath them.
+
+**One method that may move an address, with one caller.** `ConfirmPeerAddress`
+returns whether the peer actually moved, so a genuine move earns a log line and
+an ordinary confirmation stays silent. Pairing stamps the same field, because
+pairing is itself proof the address reaches the peer.
+
+**The observation is now made in both directions, and they differ on purpose.**
+
+- *Outbound*: host **and** port are learnable. We chose the destination, so what
+  we reached is unambiguous. This is what makes a peer that moved ports
+  recoverable.
+- *Inbound*: host only. The observed port is the peer's **ephemeral source port**,
+  not the one it listens on; learning it would rewrite every peer to a random high
+  port the first time it sent anything. The host is still learnable, which is the
+  roaming-IP case this replaced.
+
+This also means we never learn a NAT-translated address as a listening port, while
+keeping the inbound host healing that already existed.
+
+### Two bugs the gates caught in the implementation
+
+**A named return value silently discarded the answer.** `return false,
+s.withPeerMutationLock(...)` assigns the literal `false` to the named result
+*after* the closure has set it, so every move reported "unchanged" and no log line
+would ever have appeared. Found by the gate that asserts a move is reported.
+
+**The first red proofs failed for the wrong reason.** They asserted the
+confirmation started at zero -- which pairing now stamps -- so removing the
+observation failed the precondition rather than the claim, and would have kept
+passing if the observation broke any other way. Rewritten to assert that the
+confirmation *advances* across a real transfer. Both directions now fail with
+"nothing observed the connection", which is the reason they exist.
+
+The produced gates start two real Hubs, pair them through the product's own
+path, move a real payload over real mTLS in both directions, and then read what
+the store says.
+
+### Deliberately not in this batch
+
+Port fallback. It is safe only once a moved peer can be *found* again, which is
+the reconnection engine -- beacon-proposed addresses dialled against each paired
+peer's pinned certificate, so a successful authenticated match earns the rewrite.
+Automatic fallback ahead of that would trade a loud startup failure for silent,
+unhealable drift, which is strictly worse.
+
+Also corrected: `NormalizePeers` claims it "rewrites any ephemeral ports to
+DefaultLANPort". It does not -- `EnsurePeerLANPort` only fills *bare hostnames* --
+and `ARCHITECTURE.md` advertises "Dynamic Port Resilience ... and dynamic wire
+port binding" for a wire port that has no fallback at all. Both recorded; the
+second becomes true in the batch that adds it.

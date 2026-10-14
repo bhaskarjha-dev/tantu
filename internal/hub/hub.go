@@ -1933,22 +1933,13 @@ func (h *Hub) Start(parent context.Context) (err error) {
 				}
 			}
 
-			// Dynamic IP self-healing: if incoming authenticated connection originates from a roaming IP
-			if res.PeerFingerprint != "" && res.PeerAddress != "" && h.store != nil {
-				if p, ok := h.store.GetPeer(res.PeerFingerprint); ok {
-					remoteHost, _, err := net.SplitHostPort(res.PeerAddress)
-					if err == nil && remoteHost != "" && remoteHost != "127.0.0.1" && remoteHost != "::1" && remoteHost != "localhost" {
-						storedHost, storedPort, sErr := net.SplitHostPort(p.Address)
-						if sErr != nil {
-							storedPort = transport.DefaultLANPort
-						}
-						if remoteHost != storedHost {
-							newAddr := net.JoinHostPort(remoteHost, storedPort)
-							_ = h.store.UpdatePeerAddress(p.Fingerprint, newAddr)
-							h.logger.Action(DomainPeer, fmt.Sprintf("Dynamic IP self-healed: peer %s address updated from %s to %s", peerName, p.Address, newAddr))
-						}
-					}
-				}
+			// Dynamic address learning: an incoming authenticated connection proves
+			// where the peer is now. Only the host is learned -- the observed port
+			// is the peer's ephemeral source port, not the one it listens on --
+			// which is the roaming-IP case this has always handled, plus the
+			// confirmation timestamp it did not.
+			if res.PeerFingerprint != "" && res.PeerAddress != "" {
+				h.observeAuthenticatedPeer(res.PeerFingerprint, res.PeerAddress, false, peerName)
 			}
 		},
 		OnDropDoneAttempt: func(dropID, attemptID string, res *drop.ReceiveDropResult, err error) {
@@ -2370,6 +2361,69 @@ func (h *Hub) Start(parent context.Context) (err error) {
 }
 
 // DialPeer dials the specified peer address, or the default/active peer if target is empty.
+// observeAuthenticatedPeer records where a peer was just proven to be, after a
+// completed authenticated handshake.
+//
+// The trust argument is the whole point of this function: at the end of an mTLS
+// handshake the local Hub knows both who the peer is (the pinned fingerprint)
+// and where it is (the remote address of that connection), and those two facts
+// arrived bound together cryptographically. That is the only source strong
+// enough to overwrite what pairing recorded. An unauthenticated beacon is not,
+// which is why discovery may propose an address but never disposes of one.
+//
+// learnPort distinguishes the two directions, and the asymmetry is deliberate:
+//
+//   - Outbound (true): we chose the destination, so the observed address is the
+//     one we actually reached. Host and port are both learnable, and both are
+//     trusted. This is what makes a peer that moved ports recoverable.
+//   - Inbound (false): the observed port is the peer's *ephemeral source* port,
+//     not the port it listens on. Learning it would rewrite every peer to a
+//     random high port the first time it sent us anything. The host is still
+//     learnable, which is the dynamic-IP roaming case this replaced.
+//
+// It also means we never learn a NAT-translated address as a listening port,
+// while preserving the inbound host healing that already existed.
+func (h *Hub) observeAuthenticatedPeer(fingerprint, remoteAddr string, learnPort bool, peerLabel string) {
+	fingerprint = strings.ToLower(strings.TrimSpace(fingerprint))
+	if fingerprint == "" || h.store == nil {
+		return
+	}
+	remoteHost, _, err := net.SplitHostPort(strings.TrimSpace(remoteAddr))
+	if err != nil || remoteHost == "" {
+		return
+	}
+	// Never learn an address we could not actually dial back. Loopback and
+	// unspecified are not routable from a peer.
+	if remoteHost == "" || remoteHost == "localhost" ||
+		remoteHost == "0.0.0.0" || remoteHost == "::" {
+		return
+	}
+
+	stored, ok := h.store.GetPeer(fingerprint)
+	if !ok {
+		return
+	}
+	newAddr := remoteAddr
+	if !learnPort {
+		_, storedPort, sErr := net.SplitHostPort(stored.Address)
+		if sErr != nil {
+			storedPort = transport.DefaultLANPort
+		}
+		newAddr = net.JoinHostPort(remoteHost, storedPort)
+	}
+
+	changed, err := h.store.ConfirmPeerAddress(fingerprint, newAddr)
+	if err != nil {
+		h.logger.Warn(DomainPeer, fmt.Sprintf("Could not record the address of peer %s: %v", peerLabel, err))
+		return
+	}
+	if changed {
+		h.logger.Action(DomainPeer, fmt.Sprintf(
+			"Peer %s moved: address updated from %s to %s after an authenticated connection",
+			peerLabel, stored.Address, newAddr))
+	}
+}
+
 func (h *Hub) DialPeer(target string) (transport.Conn, error) {
 	h.mu.RLock()
 	tr := h.tr
@@ -2397,7 +2451,18 @@ func (h *Hub) DialPeer(target string) (transport.Conn, error) {
 			return nil, fmt.Errorf("peer target is not a trusted paired peer: %w", err)
 		}
 		dialTarget = EnsurePeerLANPort(resolved.Address)
-		return transport.DialPinned(tr, dialTarget, resolved.Fingerprint)
+		conn, err := transport.DialPinned(tr, dialTarget, resolved.Fingerprint)
+		if err != nil {
+			return nil, err
+		}
+		// DialPinned has completed the handshake and verified the peer's
+		// certificate against resolved.Fingerprint, so the connection's remote
+		// address is authenticated truth about where that peer is. This is the
+		// only direction from which the port is learnable.
+		if conn.RemoteAddr() != nil {
+			h.observeAuthenticatedPeer(resolved.Fingerprint, conn.RemoteAddr().String(), true, resolved.DisplayName())
+		}
+		return conn, nil
 	} else {
 		actual := h.P2PAddr()
 		configured := configuredListen
