@@ -374,16 +374,26 @@ jobs:
           cd tools/uxtest
           npm ci
           npx playwright install --with-deps chromium firefox webkit
-      - name: Self-check the harness's overflow diagnostic
-        # The harness names the elements behind a narrow-viewport overflow, and
-        # the one failure it is currently needed for is 21px of overflow in
-        # Firefox and WebKit that does not reproduce on any machine here. If the
-        # diagnostic itself were broken, the next failure would arrive saying
-        # only "381 > 360" again -- the situation this job is currently in.
+      - name: Self-check the harness's narrow-viewport gates
+        # Two gates about gates, both about a defect that appears only on the
+        # runners: 21px of horizontal overflow at 360px in Firefox and WebKit,
+        # caused by a button label that cannot wrap, on a font wider than any
+        # developer's. Neither reproduces locally, which is exactly why they run
+        # here.
         #
-        # Run here rather than locally so it is verified on the same platform
-        # that exhibits the defect, which is the whole difficulty.
-        run: node tools/uxtest/selfcheck-overflow-probe.cjs
+        # The first checks the harness's overflow diagnostic still detects and
+        # names both box and text overflow, and ranks a real page-level overflow
+        # above an element inside a scroll container -- the ranking that buried
+        # the actual cause when it was first found.
+        #
+        # The second reproduces the font condition deliberately and asserts the
+        # document does not overflow at 320px or 360px with it. Against the code
+        # as it stood before the fix it reports the document at 413 wide in a 360
+        # viewport.
+        run: |
+          set -o pipefail
+          node tools/uxtest/selfcheck-overflow-probe.cjs
+          node tools/uxtest/selfcheck-narrow-viewport-button.cjs
       - name: Run acceptance harness across engines
         # Same reasoning as the test step: the harness's diagnostics are the
         # only diagnosis available for this job, and a log nobody can read

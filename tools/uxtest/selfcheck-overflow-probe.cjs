@@ -68,12 +68,38 @@ function extractProbe() {
   if (!namesBox) failures.push('did not name the oversized element as a box overflow');
   if (!namesText) failures.push('did not name the unbreakable string as a text overflow');
 
+  // Ranking. An element inside a horizontally scrolling container is wider than
+  // the viewport by design, and it must rank *below* a real page-level overflow.
+  // Getting this wrong is what buried the original defect: three off-screen tab
+  // buttons in a scroll strip reported up to 501px and took every slot, while
+  // the send button that actually caused the 21px scroll sat fourth.
+  await page.setContent(
+    '<html><body style="margin:0">' +
+    '<div style="overflow-x:auto"><button id="instrip" style="width:900px">wide, on purpose</button></div>' +
+    '<div id="realcause" style="white-space:nowrap">' + 'B'.repeat(80) + '</div>' +
+    '</body></html>'
+  );
+  const ranked = await page.evaluate(probe);
+  if (ranked.w <= ranked.c) failures.push('the ranking page was not detected as overflowing');
+  const strip = ranked.culprits.find((c) => c.sel.includes('#instrip'));
+  const cause = ranked.culprits.find((c) => c.sel.includes('#realcause'));
+  if (strip && strip.inScroller !== true) {
+    failures.push('an element inside an overflow-x container was not marked inScroller');
+  }
+  if (!cause || cause.inScroller !== false) {
+    failures.push('the genuine page-level overflow was not marked as such');
+  }
+  if (cause && strip && ranked.culprits.indexOf(cause) > ranked.culprits.indexOf(strip)) {
+    failures.push('a scroll-contained element ranked above the real page-level overflow');
+  }
+
   await browser.close();
 
   if (failures.length) {
     for (const f of failures) console.error('selfcheck: ' + f);
     process.exit(1);
   }
-  console.log('uxtest selfcheck: the overflow probe detects both box and text overflow, ' +
-    'and reports nothing on a page that fits');
+  console.log('uxtest selfcheck: the overflow probe detects box and text overflow, ' +
+    'reports nothing on a page that fits, and ranks a real page-level overflow ' +
+    'above a scroll-contained element');
 })().catch((e) => { console.error('selfcheck: ' + (e && e.message)); process.exit(1); });

@@ -861,6 +861,24 @@ const OVERFLOW_PROBE = `(function(){
   var vw = d.clientWidth, out = [];
   var all = document.querySelectorAll('*');
   var range = document.createRange();
+
+  // True when some ancestor scrolls horizontally, which means an element inside
+  // it being wider than the viewport is by design -- a scrollable tab strip, not
+  // a broken page. Those are reported, because "is it broken" and "is it the
+  // cause" are different questions, but they are ranked last.
+  //
+  // Ranking them first is what buried the real defect. The narrow-viewport
+  // failure was a send button's label running 21px past its own box, while three
+  // off-screen tab buttons in a scroll container reported 196px to 501px of
+  // overflow and occupied every slot in the log.
+  function inScroller(el) {
+    for (var p = el.parentElement; p; p = p.parentElement) {
+      var ox = getComputedStyle(p).overflowX;
+      if (ox === 'auto' || ox === 'scroll' || ox === 'hidden') return true;
+    }
+    return false;
+  }
+
   for (var i = 0; i < all.length; i++) {
     var el = all[i], r = el.getBoundingClientRect();
     if (r.width === 0 && r.height === 0) continue;
@@ -879,12 +897,15 @@ const OVERFLOW_PROBE = `(function(){
       ? '.' + el.className.trim().split(/\\s+/).slice(0, 3).join('.') : '';
     out.push({
       sel: el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + cls,
-      why: why, over: Math.round(over), w: Math.round(r.width),
+      why: why, inScroller: inScroller(el), over: Math.round(over), w: Math.round(r.width),
       left: Math.round(r.left), right: Math.round(r.right),
       text: (el.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 48),
     });
   }
-  out.sort(function (a, b) { return b.over - a.over; });
+  out.sort(function (a, b) {
+    if (a.inScroller !== b.inScroller) return a.inScroller ? 1 : -1;
+    return b.over - a.over;
+  });
   return { w: d.scrollWidth, c: vw, culprits: out.slice(0, 8) };
 })()`;
 

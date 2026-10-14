@@ -1197,6 +1197,28 @@
   .btn-danger:hover:not(:disabled) { background: var(--error-hover, #dc2626); }
   @media (max-width: 640px) {
     .toast-region { right: 0.5rem; left: 0.5rem; bottom: 0.5rem; width: auto; }
+
+    /* Buttons stop refusing to wrap on a narrow viewport.
+     *
+     * `.btn-primary` and friends carry `white-space: nowrap`, which is right at
+     * desktop widths -- a button that breaks across lines reads as two buttons.
+     * It is wrong here: the send button's label names its destination ("Send text
+     * to this Hub (local-only test)"), so its length is not a design constant
+     * but a function of where the payload is going.
+     *
+     * At 360px that label ran 21-22px past its own box in Firefox and WebKit
+     * and not at all in Chromium, because their default button font is wider.
+     * The page gained a horizontal scrollbar that only existed on two of three
+     * engines and on no machine but CI's, which is why it survived several
+     * batches of narrow-viewport work: the width depended on the font stack the
+     * runner happened to have.
+     *
+     * Wrapping is the fix that does not depend on which font is installed. The
+     * longest single word is short enough to fit comfortably, so this costs at
+     * most one extra line. */
+    .btn-primary, .btn, .btn-secondary, .btn-ghost {
+      white-space: normal;
+    }
   }
 </style>
 </head>

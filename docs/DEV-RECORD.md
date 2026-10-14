@@ -6213,3 +6213,53 @@ reproduce off the platform that has it.
 The self-check is also written to fail if `OVERFLOW_PROBE` cannot be found in
 run.mjs, rather than skipping. A diagnostic that has silently stopped matching
 its source is how the previous four batches of green were possible.
+## Batch Z76 - the cause, named (2026-10-13)
+
+The narrow-viewport failure stopped being a number.
+
+`360px QuickDrop: no page overflow {"w":381,"c":360}` in Firefox and WebKit.
+With the diagnostic added in Z75, the next run said:
+
+    button#btnSendText.btn-primary  why:"text"  over:21  w:294  left:33 right:327
+    "Send text to this Hub (local-only test)"
+
+21px is exactly the document overflow. `.btn-primary` carries `white-space:
+nowrap`, which is correct at desktop widths -- a button that breaks across lines
+reads as two buttons -- and wrong here, because this button's label is not a
+design constant. It names its destination, so its length is a function of where
+the payload is going, and for the loopback peer that is a 38-character string.
+
+Firefox and WebKit resolve a wider default button font than Chromium on the same
+page, so the label ran past its box on two engines and not the third. That is
+why it survived several batches of narrow-viewport work: the overflow depended on
+the runner's font stack, not on the viewport.
+
+### The instrument was still not good enough
+
+The first version of the probe named three off-screen tab buttons above the real
+cause, reporting 196px to 501px against the button's 21px. They were inside a
+horizontally scrolling tab strip, so being wider than the viewport is their
+purpose. The probe now marks elements with a scrolling ancestor and ranks them
+below genuine page-level overflow. Ranking was not cosmetic: the first list led
+straight past the answer.
+
+### A gate that would have caught it, on any machine
+
+The condition cannot be produced by changing the viewport -- it needs the wider
+font. So it is produced deliberately: `selfcheck-narrow-viewport-button.cjs`
+gives the buttons a wide font stack and measures the label's text range against
+its own box.
+
+Red proof, against `dashboard.html` as it stood before the fix:
+
+    native font @ 360px -> document 360/360
+    native font @ 320px -> document 326/320   OVERFLOW
+    wide font   @ 360px -> document 413/360   OVERFLOW
+    wide font   @ 320px -> document 413/320   OVERFLOW
+
+Two things worth noting. It overflows at 320px with this machine's own font, so
+the defect was never strictly a CI-only one -- it was a CI-visible one. And 413
+against 360 is the same signature as CI's 381 against 360.
+
+Both self-checks run in the dashboard job rather than only locally, because the
+difficulty is that neither reproduces off the platform that exhibits the defect.
