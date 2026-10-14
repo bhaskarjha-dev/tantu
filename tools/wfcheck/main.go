@@ -171,6 +171,63 @@ func checkJobShape(src string) []string {
 	}
 	return problems
 }
+
+// teePipeline matches a pipeline that captures a command's output with tee, which
+// in a CI workflow is always done so the output can be read afterwards.
+var teePipeline = regexp.MustCompile(`\|\s*tee\b`)
+
+// setPipefail matches a line that actually turns pipefail on, rather than one
+// that merely mentions it.
+//
+// The first version of this check asked whether the block's text contained the
+// word "pipefail". It passed a block whose pipefail line had been deleted,
+// because the block's own comment explained why pipefail was needed and that
+// explanation contains the word. A gate satisfied by a comment about a safety
+// measure, with nothing checking the measure, is the failure this repository has
+// now hit repeatedly -- in a watcher nobody called and in a document nobody
+// verified. The red proof caught it, which is the only reason it is not shipped.
+var setPipefail = regexp.MustCompile(`(?m)^[ \t]*set[ \t]+(-[A-Za-z]+[ \t]+)*pipefail\b`)
+
+// checkTeePipelinesPreserveExitStatus reports any block that captures output
+// with tee without enabling pipefail.
+//
+// The reason this gate exists is not hypothetical. In a bash pipeline the exit
+// status is that of the *last* command, so:
+//
+//	node tools/uxtest/run.mjs ... | tee harness.log || run_status=$?
+//
+// captures tee's status, which is 0 whether the harness passed, found a product
+// regression, or died with its own "not a product result" code 4. Every case
+// statement downstream of that capture is unreachable, and the step reports
+// success.
+//
+// It was reached in practice rather than merely reasoned about: the dashboard
+// acceptance job stayed green through a period in which the harness threw a
+// ReferenceError on every single run and exited 1. The job that carries the
+// product's only browser evidence could not fail.
+//
+// The rule is deliberately blunt -- any tee pipeline needs pipefail -- because
+// the alternative is a rule that reasons about which variable is read where, and
+// such a rule is one edit away from being wrong in the permissive direction.
+func checkTeePipelinesPreserveExitStatus(src string) []string {
+	var problems []string
+	for _, b := range blocks(src) {
+		if !teePipeline.MatchString(b.body) {
+			continue
+		}
+		if setPipefail.MatchString(b.body) {
+			continue
+		}
+		problems = append(problems, fmt.Sprintf(
+			"line %d: this block pipes to `tee` but never runs `set -o pipefail`. A pipeline's "+
+				"exit status is that of its last command, so anything reading `$?` after one reads "+
+				"tee's status, which is always 0. Every gate result derived from it is a false green. "+
+				"A comment explaining why pipefail matters does not turn it on.",
+			b.line))
+	}
+	return problems
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a
@@ -210,6 +267,13 @@ func main() {
 			continue
 		}
 		src := string(raw)
+		if problems := checkTeePipelinesPreserveExitStatus(src); len(problems) > 0 {
+			for _, p := range problems {
+				fmt.Printf("FAIL %s: %s\n", wf, p)
+			}
+			failed++
+			continue
+		}
 		if problems := checkJobShape(src); len(problems) > 0 {
 			for _, p := range problems {
 				fmt.Printf("FAIL %s: %s\n", wf, p)

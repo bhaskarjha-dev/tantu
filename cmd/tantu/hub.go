@@ -75,24 +75,7 @@ func runHub(args []string) {
 	go func() {
 		select {
 		case <-h.Ready():
-			if !cfg.Headless && !cfg.Server {
-				RunCockpit(ctx, h, stop, *verbose)
-			} else {
-				// Headless mode has no cockpit from which to request a fresh
-				// authenticated link. Print the one-time bootstrap URL itself;
-				// a bare /api-protected dashboard address is not usable without
-				// it and was a particularly confusing first-run experience.
-				dashboardURL := h.DashboardURL()
-				if dashboardURL == "" {
-					dashboardURL = "http://" + h.WebAddr()
-				}
-				fmt.Printf("🚀 tantu hub active (headless server mode)\n")
-				fmt.Printf("   ├─ Web Dashboard: %s\n", dashboardURL)
-				fmt.Printf("   │  (one-time link; use `tantu dashboard` to mint another)\n")
-				if h.P2PAddr() != nil {
-					fmt.Printf("   └─ P2P Listener:  %s (transport: %s)\n", h.P2PAddr().String(), h.TransportType())
-				}
-			}
+			presentStartedHub(ctx, h, cfg, stop, *verbose)
 		case <-ctx.Done():
 		}
 	}()
@@ -103,4 +86,46 @@ func runHub(args []string) {
 	}
 
 	fmt.Println("\ntantu hub stopped.")
+}
+
+// presentStartedHub announces a Hub that has actually started: it runs the
+// interactive cockpit, or prints the bootstrap URL in headless mode.
+//
+// It is a named function rather than an inline goroutine body so that the
+// contract can be gated. Ready() means "Start has finished", not "the Hub is
+// up" -- the Hub deliberately wakes waiters on a failed startup so that nobody
+// blocks forever, and Err() is how the two are told apart, a contract pinned by
+// hub.TestHub_ReadyWakesOnStartupFailure.
+//
+// Checking Err() here is not optional. Without it, a Hub that died during
+// startup -- a taken wire port with no fallback left, an unwritable store --
+// would still have its cockpit launched, or print a bootstrap URL assembled
+// from an empty WebAddr, while the real error was still making its way to the
+// caller's own error handling. The user would be shown a dashboard that does
+// not exist, and the reason would arrive a moment later on a different stream,
+// which is the worst possible ordering for the one message that explains it.
+//
+// Gated by TestPresentStartedHubSaysNothingWhenStartupFailed.
+func presentStartedHub(ctx context.Context, h *hub.Hub, cfg hub.HubConfig, stop context.CancelFunc, verbose bool) {
+	if err := h.Err(); err != nil {
+		return
+	}
+	if !cfg.Headless && !cfg.Server {
+		RunCockpit(ctx, h, stop, verbose)
+		return
+	}
+	// Headless mode has no cockpit from which to request a fresh authenticated
+	// link. Print the one-time bootstrap URL itself; a bare /api-protected
+	// dashboard address is not usable without it and was a particularly
+	// confusing first-run experience.
+	dashboardURL := h.DashboardURL()
+	if dashboardURL == "" {
+		dashboardURL = "http://" + h.WebAddr()
+	}
+	fmt.Printf("🚀 tantu hub active (headless server mode)\n")
+	fmt.Printf("   ├─ Web Dashboard: %s\n", dashboardURL)
+	fmt.Printf("   │  (one-time link; use `tantu dashboard` to mint another)\n")
+	if h.P2PAddr() != nil {
+		fmt.Printf("   └─ P2P Listener:  %s (transport: %s)\n", h.P2PAddr().String(), h.TransportType())
+	}
 }

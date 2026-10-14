@@ -147,6 +147,16 @@ async function main() {
   if (WITH_PEERS) seedPeers(store);
 
   let hub = null, browser = null, context = null, page = null;
+// The extra Hubs the --two-hub scenario spawns.
+//
+// Declared here, beside the other cleanup-visible handles, and not inside the
+// scenario block. It was declared in the block and read in the finally clause,
+// which is a different scope: every run ended in a ReferenceError, so the rest
+// of the finally never executed. That did not merely print a stack trace -- it
+// meant the Hub under test was never killed and the work directory was never
+// deleted, on every single run, and the ReferenceError replaced an already-
+// decided exit code with 1. A passing run reported failure.
+let hubs2 = null;
   try {
     console.log('uxtest: building');
     go(['build', '-o', exe, './cmd/tantu']);
@@ -1565,7 +1575,6 @@ async function main() {
     // unconditionally true, so a pairing between two loopback Hubs would prove
     // nothing -- and switching that Hub to lan would change the conditions under
     // which the other 104 checks run.
-    let hubs2 = null;
     if (TWO_HUB) {
       const storeA2 = path.join(WORK, 'store2hub-a');
       const storeB = path.join(WORK, 'store2hub-b');
@@ -1735,8 +1744,6 @@ async function main() {
             !!(fileLanded && fileLanded.size === 64 * 1024 && fileLanded.allSame),
             JSON.stringify(fileLanded));
         }
-        hubs2 = { a2, hb, outB };
-      } else {
         hubs2 = { a2, hb, outB };
       }
     } else {

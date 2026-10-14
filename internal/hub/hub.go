@@ -642,6 +642,82 @@ func findAvailableWebPort(startPort int, maxAttempts int) (net.Listener, int, er
 	return nil, 0, fmt.Errorf("failed to bind web port after %d attempts (starting at %d): %w", maxAttempts, startPort, lastErr)
 }
 
+// p2pFallbackAttempts bounds the wire-port fallback scan.
+//
+// Four mirrors the web port's own budget rather than inventing a new policy: one
+// configured port plus three decrements. It is deliberately short. A scan that
+// ran far would eventually pick something already firewalled, blocked by the
+// peer's allow-list, or claimed by a service that has not started yet, and a Hub
+// listening somewhere nobody can reach is worse than a Hub that said so.
+const p2pFallbackAttempts = 4
+
+// listenP2PWithFallback binds the wire port, walking down a short range when the
+// configured port is already taken, and reports which port it actually got.
+//
+// Why this is safe only now: a Hub that quietly moved ports and told nobody would
+// be unreachable forever, because the peers' stored addresses still named the old
+// port and nothing would ever correct them. That was the reason to refuse the
+// temptation earlier. The reconnection engine is what makes moving survivable --
+// a beacon announces the new port, the peer dials it against a pinned certificate,
+// and the handshake earns the rewrite. A fallback that was silent would instead
+// have manufactured exactly the unhealable drift the engine exists to repair.
+//
+// The scan deliberately skips the configured web port. The web port is what the
+// CLI prints, bookmarks and talks to; letting the wire listener take it would
+// push the dashboard onto a fallback number and break that habit for no gain.
+//
+// Transports that do not bind a TCP port are left alone: an SSH transport's
+// Listen has no notion of a port number to decrement, and inventing one would
+// either do nothing or fail in a way the caller cannot interpret.
+func listenP2PWithFallback(tr transport.Transport, listenAddr, transportName string, reservedPort int) (transport.Listener, int, error) {
+	ln, err := tr.Listen(listenAddr)
+	if err == nil {
+		port := 0
+		if _, portText, splitErr := net.SplitHostPort(ln.Addr().String()); splitErr == nil {
+			port, _ = strconv.Atoi(portText)
+		}
+		return ln, port, nil
+	}
+	if transportName != "lan" && transportName != "loopback" {
+		return nil, 0, err
+	}
+	host, portText, splitErr := net.SplitHostPort(listenAddr)
+	if splitErr != nil {
+		return nil, 0, err
+	}
+	startPort, convErr := strconv.Atoi(portText)
+	if convErr != nil || startPort == 0 {
+		// Port 0 asks the OS for an ephemeral port, which cannot collide with
+		// a configured one, so there is nothing to walk down.
+		return nil, 0, err
+	}
+
+	var lastErr error
+	tried := 0
+	for i := 1; i < p2pFallbackAttempts; i++ {
+		candidate := startPort - i
+		if candidate <= 0 || candidate == reservedPort {
+			continue
+		}
+		tried++
+		attempt, attemptErr := tr.Listen(net.JoinHostPort(host, strconv.Itoa(candidate)))
+		if attemptErr != nil {
+			lastErr = attemptErr
+			continue
+		}
+		return attempt, candidate, nil
+	}
+	if lastErr != nil {
+		// Both the configured port and the ones below it were refused, and the
+		// reasons differ -- the configured port is usually already a Tantu, the
+		// lower ones something else entirely. Reporting the first and last keeps
+		// that distinction instead of flattening it into one opaque failure.
+		return nil, 0, fmt.Errorf("start p2p listener on %s: %w; %d lower port(s) were also "+
+			"unavailable, the last of which failed with: %w", listenAddr, err, tried, lastErr)
+	}
+	return nil, 0, fmt.Errorf("start p2p listener on %s: %w", listenAddr, err)
+}
+
 // NewHub initializes a Hub with the provided configuration.
 func NewHub(cfg HubConfig) (*Hub, error) {
 	if cfg.Timeout <= 0 {
@@ -1474,14 +1550,32 @@ func (h *Hub) Start(parent context.Context) (err error) {
 	h.startTime = time.Now()
 	h.mu.Unlock()
 
-	p2pLn, err := tr.Listen(listenAddr)
+	// The web port is resolved below, but its *configured* value is known now and
+	// the wire listener must not take it.
+	_, webPortText, _ := net.SplitHostPort(h.cfg.WebAddr)
+	configuredWebPort, _ := strconv.Atoi(webPortText)
+
+	p2pLn, boundP2PPort, err := listenP2PWithFallback(tr, listenAddr, h.cfg.TransportType, configuredWebPort)
 	if err != nil {
-		return fmt.Errorf("start p2p listener on %s: %w", listenAddr, err)
+		return err
 	}
 	h.mu.Lock()
 	h.p2pLn = p2pLn
 	h.actualP2P = p2pLn.Addr()
 	h.mu.Unlock()
+
+	// Said out loud, because the port moved. Silently listening somewhere other
+	// than where the user configured is how a port problem turns into a
+	// "Tantu is broken" report hours later, with nothing in the log to match.
+	if _, configuredPortText, splitErr := net.SplitHostPort(listenAddr); splitErr == nil {
+		if configuredPort, convErr := strconv.Atoi(configuredPortText); convErr == nil &&
+			configuredPort != 0 && boundP2PPort != configuredPort {
+			h.logger.Action(DomainNet, fmt.Sprintf(
+				"Wire port %d was already in use, so this Hub is listening on %d instead; "+
+					"peers will find it by discovery, but any firewall rule naming %d needs updating",
+				configuredPort, boundP2PPort, configuredPort))
+		}
+	}
 
 	// 8. Start Web/IPC HTTP Listener with fallback loop
 	_, portStr, err := net.SplitHostPort(h.cfg.WebAddr)

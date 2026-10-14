@@ -6006,3 +6006,149 @@ belongs to.
 
 Port fallback. It is now safe to consider, because a moved peer can be found
 again - but Stage 4 is where the asymmetry gets resolved.
+## Batch Z73 - the wire port can move, loudly (2026-10-13)
+
+The last asymmetry. The web port had a fallback; the wire port was a hard exit.
+A stale Tantu on 9877 meant a refusal to start and a manual hunt for the other
+process. `ARCHITECTURE.md` has been advertising "Dynamic Port Resilience ... and
+dynamic wire port binding" for a wire port that had no fallback at all, which is
+the fourth stated property in this repository that nothing was checking.
+
+It was deliberately left until last, because a Hub that moves ports and says
+nothing is unreachable forever: every peer's stored address still names the old
+port, and the reconnection engine did not exist to correct it. Silent fallback
+would have manufactured exactly the unhealable drift Z72 exists to repair.
+
+The scan walks down four ports, mirroring the web port's own budget. Short on
+purpose -- a scan that ran far would eventually pick something firewalled or
+claimed by a service that has not started, and a Hub listening where nobody can
+reach it is worse than one that said so. It skips the configured web port, and
+the reason is specific: wire is configured *above* web (9877 above 9876), so a
+downward wire scan walks straight through the web port and would push the
+dashboard onto a number the user never configured and has no firewall rule for.
+
+### The gate that found a consumer bug rather than the one it was written for
+
+The exhaustion gate -- "with every candidate port taken, the Hub must refuse" --
+failed, and the failure said `READY: p2p=<nil> web=""`. A Hub that had not
+started had signalled readiness.
+
+The Hub's contract is deliberate and already pinned by
+`TestHub_ReadyWakesOnStartupFailure`: `Ready()` means *Start has finished*, not
+*the Hub is up*, because a waiter must never block forever on a failure, and
+`Err()` is how the two are told apart. So the Hub was right.
+
+The consumer was wrong. `cmd/tantu/hub.go` waited on `Ready()` and then ran the
+cockpit or printed a bootstrap URL without checking `Err()` -- so a Hub that died
+during startup would still have its cockpit launched, or print a URL assembled
+from an empty `WebAddr`, while the real error was still travelling to the caller
+below. The user would be shown a dashboard that does not exist, with the reason
+arriving a moment later on a different stream.
+
+Fixed by extracting `presentStartedHub`, which is named so the contract can be
+gated at all, and by the gate pinning both halves: a failed Hub prints nothing,
+and a started Hub prints the addresses it is *actually* serving on rather than
+the configured ones.
+
+### Gates that could not fail, found by red proofs
+
+Three of the five fallback gates were initially not red.
+
+- *The web port is not stolen.* The test occupied the web port too, so the wire
+  listener could not take it whether or not the guard existed. The guard only
+  matters when the web port is **free** -- which is the interesting case, and the
+  one where the dashboard is moved for no reason.
+- *The port move is announced.* My break text kept `boundP2PPort !=
+  configuredPort` inside an `&&` chain, so it was still conditional and changed
+  nothing.
+- *Four of five red proofs were build errors.* Unbalanced braces and an arity
+  mismatch. A compile error is not a red proof, and reporting one as "RED"
+  because the exit code was non-zero is the exact false confidence the step
+  exists to eliminate. The runner now compiles the broken tree first and reports
+  an invalid break separately from a red one.
+
+### A gate that passed for entirely the wrong reason
+
+`TestTeePipelineRuleMatchesWhatBashActuallyDoes` reported PASS for the
+"without pipefail" case while the child script was failing with 127, not 1: a
+Windows path passed into a bash script loses its backslashes to bash's escape
+processing, so the child was never found. The assertion agreed with the right
+answer because a command-not-found failure is swallowed by `tee` exactly as a
+real failure is. Recorded because a test that passes for the wrong reason is
+worse than one that fails, and this one was one edit from looking fine forever.
+## Batch Z74 - the gates were green because they could not fail (2026-10-13)
+
+The most consequential finding so far, and it was found by accident, by a gate
+I had just written failing for a reason I did not expect.
+
+The wire-port exhaustion gate said `Hub started with all 4 candidate ports
+occupied`. The Hub had not started -- `p2p=<nil>`, `web=""`. Fixing that
+(called out in Z73) left a harness crash in view: `ReferenceError: hubs2 is not
+defined` at `run.mjs:1897`, thrown *after* the summary line, on every run.
+
+`hubs2` was declared inside the two-Hub scenario block and read in the `finally`
+clause, which is a different scope. The throw aborted the rest of the cleanup,
+so **the Hub under test was never killed and the work directory was never
+deleted, on every run**. Eighteen leftover work directories in TEMP were the
+fingerprint. The harness now exits 0, cleans up, and leaves nothing behind.
+
+### The part that matters
+
+The harness had been exiting 1 on every run, and the **Dashboard acceptance job
+was green**.
+
+Every harness invocation in ci.yml is:
+
+    node tools/uxtest/run.mjs ... 2>&1 | tee harness-$slug.log || run_status=$?
+
+In a bash pipeline the exit status is that of the **last** command. `$?` after
+the failure branch is `tee`'s, which is 0. Verified by running the construct
+through a child that exits 1, 4 and 0:
+
+    without pipefail:  exit 1 -> run_status=0    exit 4 -> run_status=0
+    with    pipefail:  exit 1 -> run_status=1    exit 4 -> run_status=4
+
+So `run_status` was always 0. Every case arm in that step -- the careful "Hub
+died mid-run, that is not a product result" arm, and the general failure arm --
+was **unreachable**. The job carrying the product's only browser evidence could
+not fail on a harness regression. It stayed green through 113-of-114 checks
+passing and a ReferenceError on every single run.
+
+The same shape appeared in **two test steps** as well: the `-race` step and the
+`-count=2` step, both of which read `$?` after a `| tee`. And the `-race` step
+carried a comment saying *"`|| true` because this shell runs with -o pipefail"*,
+for a shell that did not run with pipefail. A comment asserting a safety measure
+that was not in effect.
+
+Four blocks fixed with `set -o pipefail`.
+
+### The gate
+
+`wfcheck` now reports any `run: |` block that pipes to `tee` without running
+`set -o pipefail`. Blunt on purpose: the alternative is a rule reasoning about
+which variable is read where, and such a rule is one edit from being wrong in
+the permissive direction.
+
+Its self-tests include one that **runs bash** rather than inspecting text,
+because the defect being guarded is bash's behaviour. A text rule can agree with
+a wrong model forever.
+
+The first version of that rule asked whether the block's text contained the word
+"pipefail". It was **not red**: the block's own comment explains why pipefail
+matters, and that explanation contains the word, so a block with the `set` line
+deleted still passed. The rule now requires an actual `set ... pipefail` command.
+A gate satisfied by a comment about a safety measure, with nothing checking the
+measure, is the same failure this repository has now hit in a watcher nobody
+called, a document nobody verified, and now a workflow nobody ran.
+
+### Also here
+
+- `TestReconnectionFindsAPeerThatMovedIP` hard-coded `127.0.0.2` and failed on
+  **macOS**, where lo0 carries only 127.0.0.1 by default and another 127.x
+  address needs `ifconfig lo0 alias`. The premise was mine, not the product's.
+  The alternate loopback host is now discovered by binding, with `::1` as the
+  fallback, and every candidate that binds is exercised -- so coverage widened
+  rather than being traded away for one platform.
+- CI was **red on both of the last two pushes** (`Test (macos-latest)`), which
+  this batch's record had claimed green. Read from the check-runs API rather
+  than from the summary, which is the whole point of that API.

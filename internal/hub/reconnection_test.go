@@ -116,43 +116,76 @@ func TestReconnectionFindsAPeerThatMovedPort(t *testing.T) {
 // A peer that moved **IP** while keeping its port -- broadband to a phone
 // hotspot, a DHCP lease, a different subnet -- is found again.
 //
-// Produced without a second machine by binding B to 127.0.0.2 and leaving A on
-// 127.0.0.1, then making A believe the peer is on A's own address at B's port.
-// That is precisely the broadband-to-hotspot shape: same port, different subnet,
-// so the old inbound host-heal would have had to notice and nothing else would.
+// Produced without a second machine by binding B to a different loopback host
+// and leaving A on 127.0.0.1, then making A believe the peer is on A's own
+// address at B's port. That is precisely the broadband-to-hotspot shape: same
+// port, different subnet.
+//
+// The alternate host is discovered, not assumed. This gate hard-coded 127.0.0.2,
+// passed on Windows and Linux, and then failed on macOS -- lo0 carries only
+// 127.0.0.1 there by default, and binding any other 127.x address needs an
+// explicit `ifconfig lo0 alias`. The failure had nothing to do with Tantu and
+// everything to do with a premise written into the gate, which is what "verify
+// the premise" exists to catch. Both candidates are tried and each that binds is
+// exercised, so coverage widens rather than being traded away for one platform.
 func TestReconnectionFindsAPeerThatMovedIP(t *testing.T) {
-	a, b := startPairedHubsListening(t, "127.0.0.1:0", "127.0.0.2:0", t.TempDir())
-	realAddr := b.P2PAddr().String()
-
-	_, port, err := net.SplitHostPort(realAddr)
-	if err != nil {
-		t.Fatalf("split B's address %q: %v", realAddr, err)
+	hosts := alternateLoopbackHosts(t)
+	if len(hosts) == 0 {
+		t.Skip("this platform offers no second loopback address: 127.0.0.2 and ::1 both " +
+			"refuse to bind, so a change of host address cannot be produced here")
 	}
-	if host, _, _ := net.SplitHostPort(realAddr); host != "127.0.0.2" {
-		t.Fatalf("B bound to %q, not 127.0.0.2; this gate cannot produce an IP change "+
-			"without that and would silently degrade into the port-change case", host)
+	for _, host := range hosts {
+		t.Run(host, func(t *testing.T) {
+			a, b := startPairedHubsListening(t, "127.0.0.1:0", net.JoinHostPort(host, "0"), t.TempDir())
+			realAddr := b.P2PAddr().String()
+
+			_, port, err := net.SplitHostPort(realAddr)
+			if err != nil {
+				t.Fatalf("split B's address %q: %v", realAddr, err)
+			}
+			if gotHost, _, _ := net.SplitHostPort(realAddr); gotHost != host {
+				t.Fatalf("B bound to %q, not the requested %q; this gate cannot produce an IP "+
+					"change without that and would silently degrade into the port-change case",
+					gotHost, host)
+			}
+			// Same port, wrong host: the peer is now one subnet over.
+			staleAddress(t, a, net.JoinHostPort("127.0.0.1", port))
+
+			a.reconcileDiscoveredAddress(realAddr, "B")
+
+			waitForAddress(t, a, realAddr, 20*time.Second)
+		})
 	}
-	// Same port, wrong host: the peer is now one subnet over.
-	staleAddress(t, a, net.JoinHostPort("127.0.0.1", port))
-
-	a.reconcileDiscoveredAddress(realAddr, "B")
-
-	waitForAddress(t, a, realAddr, 15*time.Second)
 }
 
-// The threat model, produced. Something is genuinely listening at the discovered
-// address, it speaks Tantu, it completes the TLS handshake -- and it is not our
-// peer. No stored address may move.
+// alternateLoopbackHosts returns every loopback host that is actually bindable
+// here and is not 127.0.0.1, found by binding rather than assumed.
 //
-// This is the gate that says the engine *verifies* rather than *believes*. The
-// first version of this gate used a listener that hung up on accept, and it was
-// not red: removing the certificate check entirely still passed it, because a
-// hung-up port is rejected for transport reasons and says nothing about identity.
-// The impostor has to be a working peer of the same product, one that a Hub will
-// happily complete a handshake with, for the gate to isolate what it claims to.
+// 127.0.0.2 comes first because it is the same address family as the default and
+// needs no configuration anywhere. ::1 is the fallback, and it is present on
+// macOS by default.
+func alternateLoopbackHosts(t *testing.T) []string {
+	t.Helper()
+	var usable []string
+	for _, candidate := range []string{"127.0.0.2", "::1"} {
+		ln, err := net.Listen("tcp", net.JoinHostPort(candidate, "0"))
+		if err != nil {
+			t.Logf("loopback candidate %s is not bindable here: %v", candidate, err)
+			continue
+		}
+		_ = ln.Close()
+		usable = append(usable, candidate)
+	}
+	return usable
+}
+
+// A stranger's beacon moves nothing.
 //
-// Produced with a third real Hub, started on the same transport, never paired
-// with A. Deleting the pinned fingerprint from the dial turns this red.
+// The first version of this gate used a listener that hung up on accept, and it
+// was not red: deleting the certificate check entirely still passed it, because a
+// hung-up port is refused for transport reasons and says nothing about identity.
+// The impostor has to be a working peer of the same product for the gate to
+// isolate what it claims to.
 func TestReconciliationRefusesAnAddressThatIsNotOurPeer(t *testing.T) {
 	a, _ := startPairedHubs(t, t.TempDir())
 	impostor := startUnpairedHub(t)
@@ -181,48 +214,24 @@ func TestReconciliationRefusesAnAddressThatIsNotOurPeer(t *testing.T) {
 	}
 }
 
-// waitForDialAttempt blocks until the engine has demonstrably dialled addr, so
-// the gates cannot pass by the engine never trying.
+// The threat model that actually bites, and the gate that isolates the pinned
+// fingerprint from the transport's own store-based trust check.
 //
-// The probe is deliberately cheap and passive: a TCP connect to the address the
-// engine was told about, which the listening Hub accepts and drops. It proves the
-// address is live and reachable at assertion time, without asserting anything
-// about the engine -- the assertion is what follows.
-func waitForDialAttempt(t *testing.T, addr string, within time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(within)
-	for time.Now().Before(deadline) {
-		c, err := net.DialTimeout("tcp", addr, time.Second)
-		if err == nil {
-			_ = c.Close()
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatalf("nothing is listening at %s, so this gate cannot produce an impostor and "+
-		"would pass against an engine that never dials", addr)
-}
-
-// The threat model, produced, and it is the one that actually bites.
-//
-// Tantu's own unpinned dial already refuses an unknown certificate -- "untrusted
-// peer certificate fingerprint" -- so a beacon from a stranger on the LAN cannot
-// move anything. That gate exists and passes. But it is defended by the wrong
-// question. An unpinned dial asks "is this certificate someone I know?" and a
-// Tantu Hub is asked against **every** peer in the store, so it accepts any of
-// them. It cannot answer "is this certificate the peer I was looking for?"
+// Tantu's unpinned dial already refuses an unknown certificate, so a beacon from
+// a stranger was never a risk. But it is defended by the wrong question: an
+// unpinned dial asks "is this certificate someone I know?" and a Tantu Hub is
+// asked against every peer in the store, so it accepts any of them. It cannot
+// answer "is this certificate the peer I was looking for?"
 //
 // That difference is only observable when the impostor is itself a trusted peer,
 // and it is severe when it is: dialling peer C's address in the hope of finding
 // peer B, and succeeding, means concluding that **B is at C's address**. A then
-// sends to C believing it is B -- and mTLS happily delivers it, because C is
-// genuinely trusted. Nothing downstream notices. The address is the identity
-// that routing uses, so this does not merely record a wrong hint, it redirects
-// traffic to the wrong machine.
+// sends to C believing it is B, and C accepts it, because C genuinely is trusted.
+// The address is the identity routing uses, so this does not merely record a
+// wrong hint, it redirects traffic to the wrong machine.
 //
-// Produced with three real Hubs: A paired with B and with C, B's stored address
-// made stale, and C's real address announced. Swapping the pinned dial for the
-// unpinned one turns this red.
+// Produced with three real Hubs. Swapping the pinned dial for the unpinned one
+// turns this red, with exactly that message.
 func TestReconciliationWillNotAttributeOnePairedPeersAddressToAnother(t *testing.T) {
 	a, b := startPairedHubs(t, t.TempDir())
 	c := startHub(t)
@@ -255,6 +264,28 @@ func TestReconciliationWillNotAttributeOnePairedPeersAddressToAnother(t *testing
 		t.Errorf("peer C moved from %q to %q; a peer already recorded at the discovered "+
 			"address must not be rewritten", cBefore.Address, cAfter.Address)
 	}
+}
+
+// waitForDialAttempt blocks until the engine has demonstrably dialled addr, so
+// the gates cannot pass by the engine never trying.
+//
+// The probe is deliberately cheap and passive: a TCP connect to the address the
+// engine was told about, which the listening Hub accepts and drops. It proves the
+// address is live at assertion time without asserting anything about the engine --
+// the assertion is what follows.
+func waitForDialAttempt(t *testing.T, addr string, within time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		c, err := net.DialTimeout("tcp", addr, time.Second)
+		if err == nil {
+			_ = c.Close()
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("nothing is listening at %s, so this gate cannot produce an impostor and "+
+		"would pass against an engine that never dials", addr)
 }
 
 // startHub starts a real Hub on the lan transport, paired with nobody: a

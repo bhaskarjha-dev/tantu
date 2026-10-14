@@ -268,6 +268,12 @@ jobs:
         # failed, and the detail beneath it. An unexplained red run is the
         # thing that let fourteen consecutive failures go unnoticed.
         run: |
+          # See the dashboard-acceptance step for why this is not optional: a
+          # pipeline's exit status is that of its last command, so without
+          # pipefail `... | tee log || status=$?` records tee's status, always 0,
+          # and this job would report success for a red test run.
+          set -o pipefail
+
           status=0
           go test -count=1 -race ./... 2>&1 | tee test-output.log || status=$?
           if [ "$status" -ne 0 ]; then
@@ -296,6 +302,10 @@ jobs:
         # `shell: bash` is required for that re-emission, since it uses pipes,
         # `while read`, and parameter expansion that PowerShell does not share.
         run: |
+          # Same reason as the -race step above: without pipefail this captures
+          # tee's status and the job reports success for a red test run.
+          set -o pipefail
+
           status=0
           go test -count=2 ./... 2>&1 | tee test-output.log || status=$?
           if [ "$status" -ne 0 ]; then
@@ -379,6 +389,26 @@ jobs:
         # Batch Z28; without this loop a peerless-only CI could never notice
         # a regression that only appears once peers are listed.
         run: |
+          # pipefail, and this is not a stylistic choice.
+          #
+          # Every harness invocation below is `node ... | tee log`. Without
+          # pipefail a pipeline's status is the status of its *last* command, so
+          # `$?` after the failure branch is tee's -- always 0. Verified by
+          # running the same construct through a child that exits 1, 4 and 0:
+          # without pipefail all three reported run_status=0; with it, 1, 4 and 0.
+          #
+          # The consequence was that this job could not fail on a harness
+          # regression at all. Every case arm below -- the "Hub died mid-run"
+          # arm and the general failure arm -- was unreachable, while the job
+          # stayed green. It did in fact stay green through a period when the
+          # harness was throwing a ReferenceError on every single run and
+          # exiting 1: 113 of 114 checks passing, reported as success.
+          #
+          # This is the same failure class as a watcher nobody calls or a
+          # document nobody verifies. A gate that cannot fail is not a gate, and
+          # the 114 checks in this job are the product's only browser evidence.
+          set -o pipefail
+
           status=0
           infra=0
           # Screenshots are written here rather than into the harness work
