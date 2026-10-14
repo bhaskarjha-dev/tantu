@@ -5941,3 +5941,68 @@ DefaultLANPort". It does not -- `EnsurePeerLANPort` only fills *bare hostnames* 
 and `ARCHITECTURE.md` advertises "Dynamic Port Resilience ... and dynamic wire
 port binding" for a wire port that has no fallback at all. Both recorded; the
 second becomes true in the batch that adds it.
+## Batch Z72 - the reconnection engine: find a peer that moved (2026-10-13)
+
+Stages 1-2 made an address movable *when a connection succeeds*. That is necessary
+and not sufficient. If the address has already gone stale, the dial never happens,
+so there is no handshake to learn from and nothing to correct. A peer that changed
+network left both sides healthy, neither able to dial the other, no error anywhere,
+and no remedy short of re-pairing.
+
+So: the beacon proposes an address, and each paired peer's pinned certificate
+supplies the question. mTLS answers. No protocol change, no beacon schema change,
+nothing added to the beacon - the deliberate decision that discovery carries no
+identity is untouched.
+
+Bounded on every axis, because the engine turns a passive LAN signal into outbound
+dials: one attempt per address per 90s, at most 8 peers per address, 3s per dial.
+
+### The threat model, and a gate that could not fail
+
+The first version of the impostor gate was **not red**. Deleting the certificate
+check entirely still passed it. The impostor was a listener that hung up on
+accept, so the engine refused it for transport reasons and said nothing about
+identity. A gate that cannot fail for the reason it exists is the failure class
+this repository has hit three times before, and the fourth instance is why the
+rule is written into AGENTS.md.
+
+Probing rather than guessing settled the real shape of the defence. Tantu's
+*unpinned* dial already refuses an unknown certificate - "untrusted peer
+certificate fingerprint" - so a stranger's beacon was never a risk and the
+original gate was asserting something already true. But that check asks the wrong
+question: an unpinned dial asks "is this certificate **someone I know**?", and a
+Tantu Hub is asked against every peer in the store, so it accepts any of them. It
+cannot answer "is this certificate **the peer I was looking for**?"
+
+That difference is only observable when the impostor is itself a trusted peer,
+and it is severe when it is. Dialling peer C's address hoping to find peer B, and
+succeeding, means concluding that **B lives at C's address**. A then sends B's
+traffic to C, and C accepts it, because C genuinely is trusted. Nothing notices.
+The address is the identity routing uses, so this is not a wrong hint, it is
+traffic sent to the wrong machine.
+
+Produced with three real Hubs: A paired with B and with C, B's address stale, C's
+real address announced. Swapping the pinned dial for the unpinned one turns it
+red, with exactly that message.
+
+### A second gate failing at setup
+
+The mis-attribution gate initially failed at `pair initiate: context deadline
+exceeded` rather than at its own claim - the neighbour Hub was not auto-accepting,
+so a changed dial consumed its acceptor and its pairing response never returned. A
+gate breakable by an unrelated dial interfering with setup cannot tell you whether
+the property still holds. The neighbour is now well-behaved and the gate isolates
+one claim.
+
+### Also fixed here
+
+`DialPeer`'s doc comment had been left attached to `observeAuthenticatedPeer`,
+which meant `DialPeer` itself had no doc comment at all. Go tooling shows the
+wrong name for the function; the mistake survived `gofmt`, `vet` and
+`staticcheck` because all three are indifferent to which declaration a comment
+belongs to.
+
+### Not yet
+
+Port fallback. It is now safe to consider, because a moved peer can be found
+again - but Stage 4 is where the asymmetry gets resolved.

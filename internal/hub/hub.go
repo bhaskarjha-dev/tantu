@@ -222,13 +222,17 @@ type PendingPairing struct {
 
 // Hub orchestrates P2P wire multiplexing and local Web/IPC services.
 type Hub struct {
-	cfg              HubConfig
-	store            *pairing.PeerStore
-	identity         *pairing.Identity
-	tr               transport.Transport
-	p2pLn            transport.Listener
-	httpServer       *http.Server
-	actualP2P        net.Addr
+	cfg        HubConfig
+	store      *pairing.PeerStore
+	identity   *pairing.Identity
+	tr         transport.Transport
+	p2pLn      transport.Listener
+	httpServer *http.Server
+	actualP2P  net.Addr
+	// reconcileMu guards reconcileTried, the cooldown that stops a beacon which
+	// keeps arriving from driving one outbound dial per broadcast.
+	reconcileMu      sync.Mutex
+	reconcileTried   map[string]time.Time
 	actualWeb        string
 	startTime        time.Time
 	logger           *EventLogger
@@ -2154,6 +2158,9 @@ func (h *Hub) Start(parent context.Context) (err error) {
 				discSeenMu sync.Mutex
 				discSeen   = make(map[string]time.Time)
 			)
+			if h.reconcileTried == nil {
+				h.reconcileTried = make(map[string]time.Time)
+			}
 			discEngine.OnNodeDiscovered(func(node discovery.DiscoveredNode) {
 				h.mu.RLock()
 				store := h.store
@@ -2161,15 +2168,18 @@ func (h *Hub) Start(parent context.Context) (err error) {
 				if store == nil {
 					return
 				}
-				// Discovery carries no identity, so a discovered node is
-				// correlated to a paired peer only by address host (see
-				// pairing.PeerStore.HasPeerAtAddress), which is a display hint
-				// and nothing more. Paired hosts produce no prompt. A paired
-				// peer's address change is healed by the authenticated
-				// self-healing path when the peer next connects: an
-				// unauthenticated beacon must never rewrite a stored address,
-				// and without identity there is no safe way to tell which
-				// stored peer a beacon from a *new* address belongs to.
+				// Discovery carries no identity, so a discovered node cannot be
+				// *asserted* to be a paired peer. It can, however, be put to the
+				// test: the address is dialled against each paired peer's pinned
+				// certificate, and only a completed mTLS handshake decides. That
+				// is the same trust rule the rest of the feature rests on, read
+				// in the other direction -- the beacon proposes, the handshake
+				// disposes -- and it is what allows a peer that changed network
+				// to be found again without a single byte added to the beacon.
+				//
+				// It also means the prompt below can be suppressed for an address
+				// we have already tried, so a user is never asked to pair with a
+				// machine that is merely their own peer at a new address.
 				if store.HasPeerAtAddress(node.Address) {
 					return
 				}
@@ -2186,8 +2196,19 @@ func (h *Hub) Start(parent context.Context) (err error) {
 					}
 				}
 				discSeenMu.Unlock()
-				if !seen {
-					h.logger.Action(DomainNet, fmt.Sprintf("Nearby hub discovered on LAN: %s at %s (not yet paired)", node.InstanceName, node.Address))
+
+				h.reconcileDiscoveredAddress(node.Address, node.InstanceName)
+
+				if !seen && !h.reconcileRecentlyTried(node.Address) {
+					// Deliberately no longer says "(not yet paired)". That was
+					// wrong in the expensive direction: it told a user whose peer
+					// had simply changed network to go and re-pair, which destroys
+					// trust history and demands a fresh SAS comparison for a
+					// routine DHCP lease. An unrecognised address is most often
+					// one of our own peers, not a stranger, and the reconciliation
+					// above is what distinguishes them.
+					h.logger.Debug(DomainNet, fmt.Sprintf(
+						"Discovered a hub on LAN: %s at %s", node.InstanceName, EnsurePeerLANPort(node.Address)))
 				}
 			})
 
@@ -2360,7 +2381,134 @@ func (h *Hub) Start(parent context.Context) (err error) {
 	}
 }
 
-// DialPeer dials the specified peer address, or the default/active peer if target is empty.
+// Bounds on the reconnection engine's outbound work.
+//
+// The engine turns a passive LAN signal into outbound connection attempts, which
+// is both its purpose and its risk: without bounds, an adversary broadcasting
+// beacons could make this Hub dial without limit. With them the worst case is a
+// bounded number of failed handshakes, at most one attempt per address per
+// cooldown window, and a failed handshake teaches the adversary nothing.
+//
+// reconcileMaxPeers is deliberately far above the number of peers a person
+// realistically pairs. It is a blast-radius cap, not a working limit.
+const (
+	reconcileCooldown    = 90 * time.Second
+	reconcileMaxPeers    = 8
+	reconcileDialTimeout = 3 * time.Second
+)
+
+// reconcileDiscoveredAddress tries to prove that an unrecognised LAN address
+// hosts one of our already-paired peers, and records the move if it does.
+//
+// Why this exists: observeAuthenticatedPeer can only record an address once a
+// connection *succeeds*. If the address has already gone stale the dial never
+// happens, so there is no handshake to learn from and nothing to correct. That
+// is the exact shape of the failure this closes -- a peer changed network, both
+// sides are healthy, neither can dial the other, no error appears anywhere, and
+// the only remedy is re-pairing, which destroys trust history and demands a
+// fresh SAS comparison for what is a routine DHCP lease.
+//
+// The trust model is unchanged in substance. Discovery may *propose* an address
+// and only a completed handshake may *dispose* of one. The beacon supplies a
+// dial target, each paired peer's pinned certificate supplies the question, and
+// mTLS answers. Nothing is added to the beacon, so the deliberate decision that
+// discovery carries no identity is untouched: an impostor advertising a paired
+// peer's address learns nothing, because the certificate will not match, the
+// dial fails, and nothing is written.
+func (h *Hub) reconcileDiscoveredAddress(addr, instanceName string) {
+	h.mu.Lock()
+	tr := h.tr
+	store := h.store
+	h.mu.Unlock()
+	if tr == nil || store == nil || h.cfg.TransportType != "lan" {
+		// Only lan peers have addresses worth reconciling. Loopback and SSH are
+		// single-host or explicitly configured, and a beacon must never induce
+		// traffic on a transport that deliberately does not broadcast at all.
+		return
+	}
+	peers := store.ListPeers()
+	if len(peers) == 0 {
+		return
+	}
+
+	h.reconcileMu.Lock()
+	if last, ok := h.reconcileTried[addr]; ok && time.Since(last) < reconcileCooldown {
+		h.reconcileMu.Unlock()
+		return
+	}
+	h.reconcileTried[addr] = time.Now()
+	if len(h.reconcileTried) > 256 {
+		for k, t0 := range h.reconcileTried {
+			if time.Since(t0) > time.Minute {
+				delete(h.reconcileTried, k)
+			}
+		}
+	}
+	h.reconcileMu.Unlock()
+
+	// Skip peers already recorded here, comparing on the normalised form so two
+	// spellings of one endpoint are not mistaken for two different peers.
+	var candidates []pairing.Peer
+	for _, p := range peers {
+		if EnsurePeerLANPort(p.Address) == EnsurePeerLANPort(addr) {
+			continue
+		}
+		candidates = append(candidates, p)
+	}
+	if len(candidates) == 0 {
+		return
+	}
+	if len(candidates) > reconcileMaxPeers {
+		candidates = candidates[:reconcileMaxPeers]
+	}
+
+	go func() {
+		for _, p := range candidates {
+			ctx, cancel := context.WithTimeout(context.Background(), reconcileDialTimeout)
+			conn, err := transport.DialPinnedContext(ctx, tr, EnsurePeerLANPort(addr), p.Fingerprint)
+			cancel()
+			if err != nil {
+				// Not this peer at this address. Expected for every impostor,
+				// and for every peer that simply lives somewhere else.
+				continue
+			}
+			remote := EnsurePeerLANPort(addr)
+			if conn.RemoteAddr() != nil {
+				remote = conn.RemoteAddr().String()
+			}
+			_ = conn.Close()
+			// mTLS has just proven this fingerprint is at this address. That is
+			// the observation, and it is the only thing permitted to write it.
+			h.observeAuthenticatedPeer(p.Fingerprint, remote, true, p.DisplayName())
+			h.logger.Action(DomainNet, fmt.Sprintf(
+				"Peer %s re-found at %s after an authenticated handshake (was %s)",
+				p.DisplayName(), EnsurePeerLANPort(addr), p.Address))
+			return
+		}
+		// Nothing here is one of ours. That is the normal case -- a LAN is full
+		// of other people's machines -- so it is debug-level, not an action.
+		h.logger.Debug(DomainNet, fmt.Sprintf(
+			"Discovered %s at %s; no paired peer answered there",
+			instanceName, EnsurePeerLANPort(addr)))
+	}()
+}
+
+// reconcileRecentlyTried reports whether an address is currently inside the
+// reconciliation cooldown, i.e. we have already dialled it against our peers
+// and learned what we are going to learn.
+//
+// It is what keeps the discovery prompt from re-appearing every 15 seconds for
+// an address that is simply our own peer at a new address -- the reconnection
+// either worked and the address is now known, or it did not and repeating the
+// attempt every few seconds for as long as the beacon keeps arriving would be
+// pointless work rather than patient work.
+func (h *Hub) reconcileRecentlyTried(addr string) bool {
+	h.reconcileMu.Lock()
+	defer h.reconcileMu.Unlock()
+	last, ok := h.reconcileTried[addr]
+	return ok && time.Since(last) < reconcileCooldown
+}
+
 // observeAuthenticatedPeer records where a peer was just proven to be, after a
 // completed authenticated handshake.
 //
@@ -2424,6 +2572,12 @@ func (h *Hub) observeAuthenticatedPeer(fingerprint, remoteAddr string, learnPort
 	}
 }
 
+// DialPeer dials the specified peer address, or the default/active peer if target is empty.
+//
+// For the lan transport this is also the point at which the peer is *observed*:
+// transport.DialPinned has verified the remote certificate against the resolved
+// fingerprint, so the connection's remote address is authenticated truth about
+// where that peer is, and is recorded through observeAuthenticatedPeer.
 func (h *Hub) DialPeer(target string) (transport.Conn, error) {
 	h.mu.RLock()
 	tr := h.tr

@@ -77,10 +77,21 @@ func sha256Hex(b []byte) string {
 // them already paired. B writes into outB so publication is observable.
 func startPairedHubs(t *testing.T, outB string) (a *Hub, b *Hub) {
 	t.Helper()
-	newHub := func(outDir string) *Hub {
+	return startPairedHubsListening(t, "127.0.0.1:0", "127.0.0.1:0", outB)
+}
+
+// startPairedHubsListening is startPairedHubs with the wire listen addresses
+// under the caller's control, so a gate can bind B to a *different* loopback IP
+// and produce a genuine address change -- the machine's own 127.0.0.2 is a real,
+// routable, unprivileged second address on all three target platforms, and it
+// stands in for "the network gave this machine a different address" without
+// needing a second computer.
+func startPairedHubsListening(t *testing.T, aListen, bListen, outB string) (a *Hub, b *Hub) {
+	t.Helper()
+	newHub := func(listen, outDir string) *Hub {
 		h, err := NewHub(HubConfig{
 			TransportType:     "lan",
-			ListenAddr:        "127.0.0.1:0",
+			ListenAddr:        listen,
 			WebAddr:           "127.0.0.1:0",
 			StoreDir:          t.TempDir(),
 			OutputDir:         outDir,
@@ -92,8 +103,8 @@ func startPairedHubs(t *testing.T, outB string) (a *Hub, b *Hub) {
 		}
 		return h
 	}
-	a = newHub(t.TempDir())
-	b = newHub(outB)
+	a = newHub(aListen, t.TempDir())
+	b = newHub(bListen, outB)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
