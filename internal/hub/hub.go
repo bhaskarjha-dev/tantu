@@ -249,7 +249,18 @@ type Hub struct {
 	peerHealthMu sync.RWMutex
 	peerHealth   map[string]PeerHealth
 	// heartbeatCancel stops the proactive heartbeat, mirroring discoveryCancel.
-	heartbeatCancel  context.CancelFunc
+	heartbeatCancel context.CancelFunc
+	// heartbeatWG counts in-flight heartbeat probes.
+	//
+	// Cancelling the context stops the scheduler but does not wait for a probe
+	// already inside a dial or a store write, and Stop returning while a
+	// background goroutine is still writing to the peer store is a lifecycle bug
+	// rather than a test inconvenience: anything that then removes or replaces
+	// that directory races it. This is what makes Stop mean what it says.
+	//
+	// Found by CI, on Windows, as a "cannot access the file because it is being
+	// used by another process" while a test wiped a stopped Hub's store.
+	heartbeatWG      sync.WaitGroup
 	actualWeb        string
 	startTime        time.Time
 	logger           *EventLogger
@@ -1254,6 +1265,11 @@ func (h *Hub) Stop() error {
 	if heartbeatCancel != nil {
 		heartbeatCancel()
 	}
+	// Wait for probes already in flight, outside the lock, so Stop cannot return
+	// while a background goroutine is still writing to the peer store. See the
+	// field comment; this is not belt and braces, it is the whole reason the field
+	// exists.
+	h.heartbeatWG.Wait()
 	if discoveryEngine != nil {
 		_ = discoveryEngine.Close()
 	}

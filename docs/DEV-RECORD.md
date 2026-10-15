@@ -6424,3 +6424,28 @@ red proof's fault and not the gates': it ran `--peers`, while the checks live in
 the two-Hub section, so they were skipped and a skipped run exits zero. A skipped
 check is not a passing check, and the harness says so -- but only if someone reads
 which section ran. Worth remembering that "not red" can mean "never ran".
+## Batch Z80 - Stop means stopped (2026-10-15)
+
+CI caught a lifecycle bug in the heartbeat, on Windows, and it is a real one.
+
+`TestPeerReKeyingAtTheSameAddressIsRejected` failed with "cannot access the file
+because it is being used by another process" while wiping a **stopped** Hub's
+store. A stopped Hub was still writing to it.
+
+`Stop` cancelled the heartbeat's context, which stops the scheduler -- but a probe
+already inside a dial or a store write keeps going, and the atomic write holds a
+temp file open while it happens. `Stop` returned in the meantime. Anything that
+then removes or replaces that directory races it, which a test does and a user
+does not, but the defect is the same: **`Stop` returned while a background
+goroutine was still working.**
+
+It was made more likely rather than caused by the heartbeat, which writes the
+peer store on every successful probe and therefore widened the window. The
+underlying contract -- that `Stop` returning means the Hub is quiescent -- was
+already broken and simply not being tested.
+
+Fixed with a WaitGroup over in-flight probes, waited in `Stop` outside the lock.
+The test's wipe also retries, because a Windows lock on an atomically written
+temp file is a normal transient condition that should not decide whether a
+re-keying gate passes -- and a red run there reads as "Tantu rejects a re-keyed
+peer", which is the opposite of what happened.

@@ -75,6 +75,25 @@ func sha256Hex(b []byte) string {
 // startPairedHubs brings up two real Hubs on LAN transport -- the transport
 // that actually enforces IsPeerTrusted -- with unattended pairing, and returns
 // them already paired. B writes into outB so publication is observable.
+// removeAllWithRetry deletes a directory, tolerating a transient lock.
+//
+// The store is written atomically: a temp file is written, then renamed over the
+// real one. On Windows a reader can hold the temp file open briefly, and a
+// RemoveAll that walks the directory at that moment fails with "the process cannot
+// access the file because it is being used by another process". That is a
+// property of the platform, not a defect, and it should not decide whether a
+// re-keying gate passes.
+func removeAllWithRetry(dir string) error {
+	var err error
+	for attempt := 0; attempt < 20; attempt++ {
+		if err = os.RemoveAll(dir); err == nil {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return err
+}
+
 func startPairedHubs(t *testing.T, outB string) (a *Hub, b *Hub) {
 	t.Helper()
 	return startPairedHubsListening(t, "127.0.0.1:0", "127.0.0.1:0", outB)
@@ -624,7 +643,11 @@ func TestPeerReKeyingAtTheSameAddressIsRejected(t *testing.T) {
 	if err := hB.Stop(); err != nil {
 		t.Fatalf("stopping B: %v", err)
 	}
-	if err := os.RemoveAll(storeB); err != nil {
+	// Wipe B's store. Retried, because B's store is written atomically through a
+	// temp file and a Windows file lock on one of those is a normal transient
+	// condition rather than a failure -- and a red run here reads as "Tantu
+	// rejects a re-keyed peer", which is the opposite of what happened.
+	if err := removeAllWithRetry(storeB); err != nil {
 		t.Fatalf("wiping B's store: %v", err)
 	}
 	hB2 := newHubB()

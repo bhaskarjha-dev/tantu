@@ -333,7 +333,9 @@ func (h *Hub) runPeerHeartbeat(ctx context.Context) {
 
 				for _, key := range due {
 					k := key
+					h.heartbeatWG.Add(1)
 					go func() {
+						defer h.heartbeatWG.Done()
 						defer func() { <-sem }()
 						answered := h.probePeerOnce(ctx, k)
 						finished := time.Now()
