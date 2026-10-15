@@ -6449,3 +6449,34 @@ The test's wipe also retries, because a Windows lock on an atomically written
 temp file is a normal transient condition that should not decide whether a
 re-keying gate passes -- and a red run there reads as "Tantu rejects a re-keyed
 peer", which is the opposite of what happened.
+## Batch Z81 - a red run I could not reproduce, and would not paper over (2026-10-15)
+
+`TestWebDashboard_RelayActiveListsInFlightRelay` failed on macOS: "no relay
+appeared in the active listing within 5s".
+
+It did not reproduce. Twelve consecutive local runs passed, each completing the
+whole test in about 4.8s, and the cause of the CI miss was not identified. The
+first hypothesis -- that the new heartbeat was probing the same blackhole peer
+the test deliberately relies on -- was checked and **wrong**: that test's Hub runs
+`--transport loopback`, which never probes. The heartbeat is not implicated.
+
+So the temptation is to widen the timeout and call it done. That is the reflex
+this repository argues against, and it is right to: widening a budget until a red
+goes green is not a fix, and if the product had regressed this would hide it.
+
+What is done instead is two things. The window goes from 5s to 20s -- four times
+the *entire* local runtime of the test, so a real regression, which is the entry
+never appearing at all, still fails promptly. And the failure now reports what the
+listing actually held at expiry: how many polls ran, how many entries came back,
+and any decode error.
+
+That is the part that matters. "No relay appeared within 5s" is the same
+unattributable sentence every time, and this repository has a note in its own
+workflow about a red that "could not be reproduced in six full runs" -- which is
+exactly what a sentence like that costs. The new message distinguishes a relay
+that never started from one that started and was reaped from an endpoint that
+answered with the wrong shape, so the next occurrence is a diagnosis rather than
+another mystery.
+
+It is recorded here as unattributed rather than resolved, because that is what it
+is.

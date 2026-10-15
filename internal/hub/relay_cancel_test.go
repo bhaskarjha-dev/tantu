@@ -203,8 +203,29 @@ func TestWebDashboard_RelayActiveListsInFlightRelay(t *testing.T) {
 		leakChecks   = []string{"login.example.com", "redirect_uri", "client_id", "listing"}
 		leakReported = map[string]bool{}
 	)
-	deadline := time.Now().Add(5 * time.Second)
+	// The window, and what a miss means.
+	//
+	// The relay entry is listed when the dial *starts*, so locally the entry
+	// appears in well under a second and the whole test runs in about 4.8s. Five
+	// seconds was therefore always tight rather than meaningful, and on a loaded
+	// macOS runner it was missed -- with the listing polling an over-the-loopback
+	// HTTP endpoint every millisecond, which is not free.
+	//
+	// This is raised to 20s, which is four times the entire local runtime of the
+	// test, so a real regression -- the entry never appearing -- still fails
+	// promptly. It is not being treated as a flake: twelve consecutive local runs
+	// passed, and the cause of the CI miss was not identified. What is done instead
+	// is make the *next* one explainable, by recording what the listing actually
+	// contained when the window expired. An opaque "within 5s" is what makes a red
+	// run unattributable, and this file already carries a note about a red that
+	// could not be reproduced in six full runs.
+	const relayListingWindow = 20 * time.Second
+	deadline := time.Now().Add(relayListingWindow)
+	var lastListing []map[string]any
+	var lastListingErr string
+	polls := 0
 	for time.Now().Before(deadline) {
+		polls++
 		resp, err := testGet(h.ipcToken, "http://"+h.WebAddr()+"/api/relay/active")
 		if err != nil {
 			t.Fatal(err)
@@ -212,7 +233,11 @@ func TestWebDashboard_RelayActiveListsInFlightRelay(t *testing.T) {
 		var payload struct {
 			Active []map[string]any `json:"active"`
 		}
-		_ = json.NewDecoder(resp.Body).Decode(&payload)
+		if decErr := json.NewDecoder(resp.Body).Decode(&payload); decErr != nil {
+			lastListingErr = decErr.Error()
+		} else {
+			lastListing = payload.Active
+		}
 		resp.Body.Close()
 		for _, entry := range payload.Active {
 			sawEntry = true
@@ -243,11 +268,21 @@ func TestWebDashboard_RelayActiveListsInFlightRelay(t *testing.T) {
 	if !sawEntry {
 		// Fatal, not Skip. The dial is pointed at a reserved unroutable
 		// address, so the relay holds for the transport timeout; if nothing was
-		// listed in five seconds the product changed and this test has nothing
+		// listed in the window the product changed and this test has nothing
 		// left to say. A skip here reported green while the URL-leak assertions
 		// below never ran, which is the worst possible outcome for the one
 		// property here -- that a submitted OAuth URL never appears in a listing.
-		t.Fatal("no relay appeared in the active listing within 5s, so the leak assertions below never ran")
+		//
+		// What the listing held at expiry is reported, so a recurrence says
+		// whether the relay never started, started and was reaped, or the
+		// endpoint answered with something other than the expected shape. Without
+		// that, "no relay appeared" is the same unattributable sentence every time.
+		t.Fatalf("no relay appeared in the active listing within %s after %d polls, so the "+
+			"leak assertions below never ran. The listing held %d entries, last decode error %q. "+
+			"That distinguishes 'never started' (0 entries) from 'started and was reaped' "+
+			"(entries, but none with an operation id) from 'the endpoint answered with the "+
+			"wrong shape' (a decode error).",
+			relayListingWindow, polls, len(lastListing), lastListingErr)
 	}
 	if listed == nil {
 		t.Fatal("the relay was listed but never in a phase carrying an operation id, so a Cancel button could not have named it")
