@@ -6691,3 +6691,105 @@ microseconds a read, so it is not the cause of anything here, and it is a
 background cost rather than a user-visible one. It is worth doing and it is worth
 doing when it is looked at rather than as a side effect of chasing a red that it
 did not cause.
+## Batch Z84 - counting reads instead of measuring them (2026-10-15)
+
+Z83 closed by naming something open: the heartbeat re-reads the peer store from
+disk every second, on transports where it will never probe. "Worth doing when it
+is looked at rather than as a side effect of chasing a red that it did not cause."
+This is that.
+
+### What was actually costing
+
+`syncProbes` runs on every tick. It called `store.ListPeers()` -- one full read
+and parse -- and then, for each entry in the probe map, `store.GetPeer(key)`,
+which is *another* full read and parse of the same file. So a store with N peers
+cost N+1 file parses a second, for as long as the Hub ran.
+
+Two separate things are wrong with that, and only the first is obvious:
+
+- It is answering a question the list already in hand answers. The membership
+  check is "is this fingerprint in the trusted set", and the trusted set is what
+  `ListPeers` just returned.
+- It did it **while holding `probesMu`**, which is the lock every in-flight probe
+  takes to schedule its next attempt. So a background disk read was stalling the
+  probes it was supposed to be scheduling. That is the kind of thing that surfaces
+  as "the peers tab felt sluggish", is never logged, and is never diagnosed.
+
+And the loopback/SSH case was pure waste: the map exists only to decide who to
+probe, so on a transport that never probes, populating it is work whose result
+nothing reads. That is a full read and parse every second, on exactly the
+transports where there was most obviously nothing to find.
+
+### The gate counts reads rather than timing them
+
+The store now counts full reads of `peers.json` and exposes the count.
+
+This is the part worth copying. The obvious gate here is a duration -- "a
+loopback Hub must do less than X of work per second" -- and a duration gate passes
+on a fast machine carrying the identical defect, and fails on a slow one that has
+none. A counter cannot do either. The first attempt at this gate was in fact a
+duration, and it measured 555 microseconds for a full `ListPeers`: about 2ms a
+second, which is why Z83 correctly refused to blame the heartbeat for a 522ms
+sample. Knowing the cost mattered; asserting on the cost would have been the
+wrong gate.
+
+So: a loopback Hub and an ssh Hub, seeded with peers, must show **zero** store
+reads across four seconds of ticking. On lan, one read per tick and not one per
+peer.
+
+The lan gate deliberately uses a twenty-second probe interval. Every probe costs
+two more store reads -- one in `probePeerOnce`, one inside `DialPeer`'s own
+resolution -- so at a short interval the per-probe reads swamp the per-tick read
+and the gate would be measuring the wrong thing. That was the first version's
+mistake: it read 13 against a budget of 12 and failed against correct code.
+
+### A claim in a comment that the code did not make
+
+While fixing this I wrote that probes already in the map are "pushed out rather
+than dropped, so a transport that did change would start probing on its own" --
+describing code I had just deleted.
+
+It was also never true. `probes` is created per invocation of `runPeerHeartbeat`
+and written only by `syncProbes`, which is now reached only from the lan arm, so
+on a non-lan transport the map is provably always empty. And the branch is
+decided from `cfg.TransportType`, which is fixed for the life of a run: a change
+would restart the Hub and rebuild the map anyway. The comment now says that, and
+says what was removed and why it was doing nothing.
+
+### A dead read, deliberately left in place
+
+`probePeerOnce` reads the whole store, then uses one field of the result --
+`p.Fingerprint`, which is the value already in hand -- to call `DialPeer`, which
+does its own `ResolvePeer`. So each probe costs two full store reads and discards
+one entirely. Removing the first would halve it.
+
+It is not removed. The read also serves as an existence check, and the behaviour
+that follows it is meaningful: an unpaired peer gets no health update, whereas
+letting `DialPeer` fail first would write a "failed" verdict for a peer whose
+health `syncProbes` has just cleared, resurrecting a verdict about someone no
+longer trusted. Preserving that means distinguishing "not a trusted peer" from
+"dial failed", which needs a sentinel on `ResolvePeer`'s errors -- a change to
+trust-resolution code, on the security-relevant path, to save three store reads a
+minute at the default interval. Recorded as observed, not taken.
+
+### A red proof that could not be built
+
+The mutation for "read the store on every transport again" has no small textual
+form, because the code that permitted it is gone: `syncProbes(now)` now appears
+exactly once, in the `default:` arm, behind a `case transportName != "lan"`.
+
+Three mutations were tried and discarded. `default: fallthrough; case true:`
+compiles, changes nothing, and exits zero -- a red proof that cannot fail is not a
+one. Duplicating the call inside the non-lan arm's *comment* would mean rewriting
+the comment, which changes what is under test. Rewriting the switch wholesale is a
+rewrite, not a mutation: a wrong replacement fails for the wrong reason, which is
+what these files exist to prevent.
+
+So the behavioural gate stands on its own -- a live test on two transports
+asserting zero reads -- and a structural check verifies the call site count, the
+definition count, that the single call sits in the `default:` arm, and that a
+non-lan arm precedes it. That combination cannot be undone by a one-line edit.
+Writing that down is more use than a mutation that silently proved nothing.
+
+The other break is red, and by a wide margin: restoring the per-peer reconcile
+gives **131 reads in fifteen seconds against a budget of 45**.

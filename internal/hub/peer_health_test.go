@@ -533,6 +533,35 @@ func TestHeartbeatDoesNotProbeEveryPeerInEveryInterval(t *testing.T) {
 	}
 }
 
+// startHeartbeatHub is a single started Hub on the given transport, for the
+// gates that are about what a transport does or does not do rather than about a
+// probe reaching a peer.
+func startHeartbeatHub(t *testing.T, transport string, interval time.Duration) *Hub {
+	t.Helper()
+	h, err := NewHub(HubConfig{
+		TransportType:         transport,
+		ListenAddr:            "127.0.0.1:0",
+		WebAddr:               "127.0.0.1:0",
+		StoreDir:              t.TempDir(),
+		OutputDir:             t.TempDir(),
+		Headless:              true,
+		AutoAcceptPairing:     true,
+		PeerHeartbeatInterval: interval,
+	})
+	if err != nil {
+		t.Fatalf("NewHub(%s): %v", transport, err)
+	}
+	ctx, _ := contextWithCancelForTest(t)
+	go func() { _ = h.Start(ctx) }()
+	select {
+	case <-h.Ready():
+	case <-time.After(10 * time.Second):
+		t.Fatalf("Hub on %s never became ready", transport)
+	}
+	t.Cleanup(func() { _ = h.Stop() })
+	return h
+}
+
 // startHeartbeatHubsAt is startHeartbeatHubs with an explicit probe interval, for
 // the gates that count rounds rather than wait for one answer.
 func startHeartbeatHubsAt(t *testing.T, interval time.Duration) (a *Hub, b *Hub) {
@@ -666,6 +695,97 @@ func seedBlackholePeer(t *testing.T, h *Hub, address string) pairing.Peer {
 		t.Fatalf("AddPeer: %v", err)
 	}
 	return p
+}
+
+// A transport that will never probe must not read the peer store.
+//
+// This is a produced count, not a duration. The store counts full reads and
+// parses of peers.json; the assertion is on that counter, so it cannot pass
+// because the machine was fast and cannot fail because the machine was slow.
+//
+// The condition is the whole point: loopback is the same machine by definition
+// and SSH is an explicit single path, so on both the heartbeat has nothing to
+// find and nothing to do about it. It was reading the store once a second for as
+// long as the Hub ran -- so the fix is not to make the read cheaper but to not
+// make it.
+func TestHeartbeatDoesNotReadTheStoreOnATransportThatNeverProbes(t *testing.T) {
+	for _, transport := range []string{"loopback", "ssh"} {
+		t.Run(transport, func(t *testing.T) {
+			h := startHeartbeatHub(t, transport, 200*time.Millisecond)
+			for i := 0; i < 3; i++ {
+				seedBlackholePeer(t, h, fmt.Sprintf("192.0.2.%d:9877", 90+i))
+			}
+
+			// Baseline after the peers exist, so the assertion below is about the
+			// ticking rather than about the seeding.
+			settled := h.Store().PeerReadCount()
+
+			// The tick is one second and the probe interval is 200ms, so this
+			// spans at least ten ticks and many probe intervals. Any read at all
+			// is the defect.
+			time.Sleep(4 * time.Second)
+
+			if grew := h.Store().PeerReadCount() - settled; grew != 0 {
+				t.Errorf("a %s Hub read the peer store %d time(s) in 4 seconds of ticking; "+
+					"it cannot probe on this transport, so there was nothing to look up. "+
+					"(baseline %d, now %d)", transport, grew, settled, h.Store().PeerReadCount())
+			}
+		})
+	}
+}
+
+// One read per tick on lan, not one per peer.
+//
+// The reconciling loop used to call store.GetPeer for each entry in its probe
+// map, and every GetPeer is a full read and parse of peers.json -- so a store
+// with N peers cost N+1 reads a second, forever, to answer a question the list
+// already in hand answers.
+//
+// Counting reads rather than timing them is what makes this gate meaningful: a
+// duration would pass on a fast machine carrying the same defect.
+//
+// The probe interval is deliberately long here. Every probe costs two more store
+// reads -- one in probePeerOnce, one inside DialPeer's own resolution -- so at a
+// short interval the per-probe reads swamp the per-tick read and this gate would
+// be measuring the wrong thing. At a twenty-second interval roughly a quarter of
+// the staggered first round falls inside the window, which is why the budget
+// below allows for probes rather than assuming none.
+func TestHeartbeatReadsTheStoreOncePerTickNotOncePerPeer(t *testing.T) {
+	const (
+		peers    = 6
+		interval = 20 * time.Second
+		window   = 15 * time.Second
+	)
+	h := startHeartbeatHub(t, "lan", interval)
+
+	for i := 0; i < peers; i++ {
+		seedBlackholePeer(t, h, fmt.Sprintf("192.0.2.%d:9877", 60+i))
+	}
+	// Let the first sync happen, so the probe map is populated -- the N+1 only
+	// shows up once there are entries to reconcile.
+	time.Sleep(1500 * time.Millisecond)
+	settled := h.Store().PeerReadCount()
+
+	time.Sleep(window)
+	grew := h.Store().PeerReadCount() - settled
+
+	// Fifteen ticks is fifteen syncing reads. The staggered first round puts
+	// about a quarter of the peers due inside the window, and each due probe
+	// costs two reads, so roughly fifteen plus five is the design's cost. The old
+	// reconciling loop added one read per peer per tick: six peers on fifteen
+	// ticks is ninety more, so the old figure is four times this one.
+	const budget = 45
+	if grew > budget {
+		t.Errorf("the heartbeat read the peer store %d times in %s with %d peers, over the "+
+			"budget of %d; a tick reconciles against one list, so this should cost about one "+
+			"read per second plus whatever the staggered probes cost. Old behaviour added one "+
+			"read per peer per tick, which is %d extra over the same window",
+			grew, window, peers, budget, peers*15)
+	}
+	if grew == 0 {
+		t.Fatalf("no store reads at all in %s on a lan transport with %d paired peers; the "+
+			"gate is measuring nothing and cannot fail for the reason it exists", window, peers)
+	}
 }
 
 // helpers

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 )
@@ -85,7 +86,16 @@ func (p Peer) SAS() string {
 type PeerStore struct {
 	dir string
 	mu  sync.RWMutex
+
+	// peerReads counts full reads of peers.json. See loadPeersMap.
+	peerReads atomic.Int64
 }
+
+// PeerReadCount reports how many times the peer file has been read and parsed.
+//
+// Exported for tests, and named so a caller reading it learns what it measures.
+// It is not a metric the product needs: nothing at runtime asks.
+func (s *PeerStore) PeerReadCount() int64 { return s.peerReads.Load() }
 
 // NewPeerStore creates a store rooted at the given directory.
 // The directory is created with 0700 permissions if it doesn't exist, and
@@ -353,6 +363,13 @@ func (s *PeerStore) HasIdentity() bool {
 
 func (s *PeerStore) loadPeersMap() (map[string]Peer, error) {
 	path := s.peersPath()
+	// Counted rather than assumed: a store read is a full read and parse of the
+	// whole file, so a caller that reaches for it in a loop pays for every peer it
+	// asked about. One such caller existed -- the heartbeat reconciling its probe
+	// list against the trust store once a second -- and counting is what showed
+	// it up. Exported through the package so a test can assert on the count
+	// instead of inferring a read from a duration.
+	s.peerReads.Add(1)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {

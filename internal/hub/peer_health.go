@@ -234,6 +234,15 @@ func (h *Hub) runPeerHeartbeat(ctx context.Context) {
 	// unpaired stops being probed and stops being reported. Without this the map
 	// is harmless for traffic but keeps answering questions about a peer this
 	// machine has decided to stop trusting.
+	//
+	// One read of the store per call, not one per peer. It used to call
+	// store.GetPeer for each entry in `probes`, and every one of those is a full
+	// read and parse of peers.json -- so a store with N peers cost N+1 reads a
+	// second, forever, to answer a question the list already in hand answers.
+	//
+	// The membership set is built outside probesMu for a second reason: the probe
+	// goroutines take that lock to schedule their next attempt, so holding it
+	// across disk I/O stalls them too.
 	syncProbes := func(now time.Time) {
 		h.mu.RLock()
 		store := h.store
@@ -243,8 +252,12 @@ func (h *Hub) runPeerHeartbeat(ctx context.Context) {
 		}
 		list := store.ListPeers()
 
+		trusted := make(map[string]struct{}, len(list))
+		for _, p := range list {
+			trusted[p.Fingerprint] = struct{}{}
+		}
+
 		probesMu.Lock()
-		defer probesMu.Unlock()
 		for _, p := range list {
 			if _, ok := probes[p.Fingerprint]; ok {
 				continue
@@ -268,11 +281,19 @@ func (h *Hub) runPeerHeartbeat(ctx context.Context) {
 				interval: interval,
 			}
 		}
+		var dropped []string
 		for key := range probes {
-			if _, ok := store.GetPeer(key); !ok {
+			if _, ok := trusted[key]; !ok {
 				delete(probes, key)
-				h.setPeerHealth(key, PeerHealth{})
+				dropped = append(dropped, key)
 			}
+		}
+		probesMu.Unlock()
+
+		// Health is cleared outside probesMu, which setPeerHealth does not need
+		// and which the probe goroutines are using.
+		for _, key := range dropped {
+			h.setPeerHealth(key, PeerHealth{})
 		}
 	}
 
@@ -290,8 +311,6 @@ func (h *Hub) runPeerHeartbeat(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			syncProbes(now)
-
 			h.mu.RLock()
 			tr := h.tr
 			transportName := h.cfg.TransportType
@@ -304,16 +323,30 @@ func (h *Hub) runPeerHeartbeat(ctx context.Context) {
 			case transportName != "lan":
 				// Only lan peers have addresses that decay and bindings that
 				// expire. Loopback is the same machine by definition, and SSH is
-				// an explicit single path a probe would add nothing to. Pushed
-				// out rather than dropped, so a transport that did change would
-				// start probing on its own.
-				probesMu.Lock()
-				for _, probe := range probes {
-					probe.next = now.Add(heartbeatMaxBackoffFor(interval))
-				}
-				probesMu.Unlock()
+				// an explicit single path a probe would add nothing to.
+				//
+				// Nothing here reads the store, and that is the point. The probe
+				// map exists only to decide who to probe, so on a transport that
+				// never probes, populating it is work whose result nothing reads.
+				// It was costing a full read and parse of peers.json every second
+				// for as long as the Hub ran -- on exactly the transports where
+				// there was most obviously nothing to find.
+				//
+				// The map is therefore always empty on this arm: `probes` is
+				// created per invocation of this function and only written by
+				// syncProbes, which is reached only from the lan arm below. An
+				// earlier version of this branch pushed every entry out to the
+				// maximum backoff "so a transport that did change would start
+				// probing on its own", and that was doing nothing: the branch is
+				// decided from cfg.TransportType, which is fixed for the life of
+				// a run, and a change would restart the Hub and rebuild this map
+				// from empty.
 
 			default:
+				// Read the store once per tick, on the only transport that acts
+				// on what it finds.
+				syncProbes(now)
+
 				base := probeInterval()
 				probesMu.Lock()
 				due := make([]string, 0, len(probes))
