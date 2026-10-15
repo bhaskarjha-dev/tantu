@@ -6333,3 +6333,57 @@ produces a peer with health but no `last_checked`. It is defence in depth over a
 contract that *is* gated, by `TestPeersAPIReportsNoHealthBeforeTheFirstProbe`,
 which asserts the API omits health entirely rather than emitting a zero value. A
 red proof that cannot be produced is not worth inventing one for.
+## Batch Z78 - bounding the background dialer (2026-10-15)
+
+The heartbeat shipped with two bounds missing, and looking for them turned up a
+third problem that was not on the list.
+
+**No aggregate cap.** Every paired peer was probed every interval, always. Two
+or three peers is nothing; twenty is twenty full mTLS handshakes a minute,
+indefinitely, on a tool that runs on laptops and, per its own README, on metered
+and awkward networks. The reconnection engine has had `reconcileMaxPeers` all
+along. The heartbeat did not, because I wrote one and forgot the other.
+
+**Probes ran serially.** A peer behind a NAT that swallows SYNs held the whole
+loop for the full dial timeout, so one sleeping machine delayed every other
+peer. One unreachable machine making six reachable ones look unreachable is a
+worse failure than the traffic concurrency costs.
+
+**A cap that is too tight starves the healthy.** Found by making the slow-peer
+gate sensitive enough to fail. With four slots and four blackholed peers, each
+holding a slot for five seconds, a healthy peer competes for the leftovers every
+tick -- and the blackholes re-acquire each slot as it frees, so the healthy peer
+usually loses. Measured: 12.8 seconds to be probed with four dead peers around
+it. Raising the pool to eight did not weaken the bound; it stopped the bound from
+being the thing that decided which peers get starved.
+
+### Gates that could not fail, three more ways
+
+**A gate that derived its expectation from the constant it was testing.** The
+rate-cap gate computed its budget from `peerHeartbeatMaxProbesPerInterval`, so
+raising that constant moved the expectations with it and the gate passed against
+a cap that no longer bounded anything. Every expectation is now a literal, and
+the gate asserts the constant matches it -- so changing the budget has to happen
+in the open, in two places.
+
+**A gate that counted too early.** Measuring distinct peers probed shortly after
+startup shows a small number whether or not the cap applies, so an early snapshot
+is evidence of nothing. It has to be a clock, not a count.
+
+**A slow-peer gate that had quietly stopped being able to fail.** With one
+blackhole it only caught serial probing when the blackhole happened to be probed
+first, and the per-peer stagger now actively prevents that. Four blackholes make
+the order irrelevant: serially the live peer waits for all of them however they
+are scheduled, concurrently it waits for none.
+
+### One bound that is not gated, and why
+
+The rate cap is gated on its arithmetic, with literal expectations. Its use *in
+the loop* is not separately covered, and that is not an oversight to be tidied
+away later: with a one-second tick and eight slots, twenty peers saturate
+throughput whether or not the rate cap is connected, so no arrangement available
+to a test makes the rate cap the binding constraint. The loop's use of it is
+asserted by nothing, and the arithmetic it consults is asserted directly.
+
+Recorded rather than quietly left as a passing check, which is the thing this
+repository has been getting wrong in one form or another for seven batches.

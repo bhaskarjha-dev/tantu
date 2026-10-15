@@ -22,6 +22,7 @@ package hub
 import (
 	"context"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bhaskarjha-dev/tantu/internal/bridge"
@@ -59,6 +60,41 @@ const (
 	// says so -- it only bounds how late a due probe can be, so that stopping the
 	// Hub does not wait out a whole interval.
 	peerHeartbeatTick = time.Second
+
+	// peerHeartbeatMaxProbesPerInterval caps the *aggregate* probe rate.
+	//
+	// This is the bound the first version lacked. Probing every paired peer once
+	// per interval is nothing for the two or three peers anyone actually pairs,
+	// and a background dialer that scales without limit is the wrong shape for a
+	// tool that runs on laptops and, per its own README, on metered and awkward
+	// networks. Twenty peers at the default interval is twenty full mTLS
+	// handshakes a minute, forever, and nothing in the design said no.
+	//
+	// The cap is expressed as a rate rather than a peer count because the rate is
+	// the thing that costs something. Six probes per interval is comfortably
+	// above any realistic pairing and below anything a user would notice, and
+	// past it each peer is simply probed less often rather than some being
+	// silently dropped -- a peer you have not paired with cannot be the peer you
+	// were about to send to.
+	peerHeartbeatMaxProbesPerInterval = 6
+
+	// peerHeartbeatMaxConcurrent caps probes in flight at once.
+	//
+	// Without it the loop probed peers one at a time, so a single blackholed peer
+	// -- a laptop that has gone to sleep behind a NAT that swallows SYNs rather
+	// than refusing them -- held up every other peer for the full dial timeout.
+	// One unreachable machine making six reachable ones look unreachable is a
+	// worse failure than the traffic the concurrency costs.
+	//
+	// Eight rather than four, and the reason is worth keeping. A probe holds its
+	// slot for the whole dial timeout, and a blackholed peer therefore occupies
+	// one for five seconds. With four slots, four sleeping machines fill the pool
+	// and a healthy peer competes for the leftovers on every tick -- at four
+	// blackholes it took over twelve seconds to be probed, because the blackholes
+	// re-acquire each slot as it frees and the healthy peer usually loses. Raising
+	// the pool does not weaken the bound; it stops the bound from being the thing
+	// that decides which peers get starved.
+	peerHeartbeatMaxConcurrent = 8
 )
 
 // PeerHealth is what this Hub currently believes about a peer's reachability.
@@ -137,6 +173,22 @@ func scheduleProbeNext(probe *peerProbe, ok bool, now time.Time, base time.Durat
 	probe.next = now.Add(probe.interval)
 }
 
+// heartbeatIntervalForPeers is the per-peer interval once the aggregate rate cap
+// is applied.
+//
+// Below the cap every peer keeps the configured interval, so nothing changes for
+// a realistic pairing. Past it, each peer is probed proportionally less often and
+// the total rate stays flat. One interval is spent per peer beyond the cap, which
+// keeps the arithmetic obvious: six peers at 60s, twelve at 120s, eighteen at
+// 180s.
+func heartbeatIntervalForPeers(base time.Duration, peers int) time.Duration {
+	if peers <= peerHeartbeatMaxProbesPerInterval {
+		return base
+	}
+	rounds := (peers + peerHeartbeatMaxProbesPerInterval - 1) / peerHeartbeatMaxProbesPerInterval
+	return base * time.Duration(rounds)
+}
+
 // heartbeatMaxBackoffFor caps the backoff ladder.
 func heartbeatMaxBackoffFor(base time.Duration) time.Duration {
 	if scaled := base * 16; scaled < peerHeartbeatMaxBackoff {
@@ -167,6 +219,16 @@ func (h *Hub) runPeerHeartbeat(ctx context.Context) {
 
 	interval := h.heartbeatIntervalFor()
 	probes := make(map[string]*peerProbe)
+	// probesMu guards `probes`, which the tick loop and the probe goroutines
+	// both touch. A probe updates its own entry when it finishes.
+	var probesMu sync.Mutex
+
+	// A cap on probes in flight, acquired before the goroutine is spawned rather
+	// than inside it, so that a slow peer cannot cause unbounded goroutines
+	// either. Acquired non-blockingly: a peer that cannot get a slot keeps its
+	// existing `next` and is retried on the following tick, so it is delayed
+	// rather than starved.
+	sem := make(chan struct{}, peerHeartbeatMaxConcurrent)
 
 	// syncProbes drops peers that are no longer trusted, so a machine that was
 	// unpaired stops being probed and stops being reported. Without this the map
@@ -179,9 +241,31 @@ func (h *Hub) runPeerHeartbeat(ctx context.Context) {
 		if store == nil {
 			return
 		}
-		for _, p := range store.ListPeers() {
-			if _, ok := probes[p.Fingerprint]; !ok {
-				probes[p.Fingerprint] = &peerProbe{next: now, interval: interval}
+		list := store.ListPeers()
+
+		probesMu.Lock()
+		defer probesMu.Unlock()
+		for _, p := range list {
+			if _, ok := probes[p.Fingerprint]; ok {
+				continue
+			}
+			// Spread the first round across one interval rather than firing
+			// every peer on the same tick. Deterministic, so there is no jitter
+			// to reason about, and it does not reshuffle when a peer is added.
+			offset := time.Duration(0)
+			if n := len(list); n > 1 {
+				idx := 0
+				for i, q := range list {
+					if q.Fingerprint == p.Fingerprint {
+						idx = i
+						break
+					}
+				}
+				offset = time.Duration(int64(idx) * int64(interval) / int64(n))
+			}
+			probes[p.Fingerprint] = &peerProbe{
+				next:     now.Add(offset),
+				interval: interval,
 			}
 		}
 		for key := range probes {
@@ -190,6 +274,15 @@ func (h *Hub) runPeerHeartbeat(ctx context.Context) {
 				h.setPeerHealth(key, PeerHealth{})
 			}
 		}
+	}
+
+	// The aggregate rate, not the per-peer one, is what has to stay bounded. See
+	// heartbeatIntervalForPeers.
+	probeInterval := func() time.Duration {
+		probesMu.Lock()
+		n := len(probes)
+		probesMu.Unlock()
+		return heartbeatIntervalForPeers(interval, n)
 	}
 
 	for {
@@ -214,16 +307,42 @@ func (h *Hub) runPeerHeartbeat(ctx context.Context) {
 				// an explicit single path a probe would add nothing to. Pushed
 				// out rather than dropped, so a transport that did change would
 				// start probing on its own.
+				probesMu.Lock()
 				for _, probe := range probes {
 					probe.next = now.Add(heartbeatMaxBackoffFor(interval))
 				}
+				probesMu.Unlock()
 
 			default:
+				base := probeInterval()
+				probesMu.Lock()
+				due := make([]string, 0, len(probes))
 				for key, probe := range probes {
 					if now.Before(probe.next) {
 						continue
 					}
-					scheduleProbeNext(probe, h.probePeerOnce(ctx, key), now, interval)
+					select {
+					case sem <- struct{}{}:
+						due = append(due, key)
+					default:
+						// At capacity. Leave `next` alone so this peer is
+						// retried on the next tick instead of being skipped.
+					}
+				}
+				probesMu.Unlock()
+
+				for _, key := range due {
+					k := key
+					go func() {
+						defer func() { <-sem }()
+						answered := h.probePeerOnce(ctx, k)
+						finished := time.Now()
+						probesMu.Lock()
+						if probe, still := probes[k]; still {
+							scheduleProbeNext(probe, answered, finished, base)
+						}
+						probesMu.Unlock()
+					}()
 				}
 			}
 		}

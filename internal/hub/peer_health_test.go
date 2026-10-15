@@ -15,12 +15,14 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/bhaskarjha-dev/tantu/internal/bridge"
 	"github.com/bhaskarjha-dev/tantu/internal/pairing"
 )
 
@@ -405,6 +407,265 @@ func getJSON(t *testing.T, url, token string, out any) {
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		t.Fatalf("decode %s: %v", url, err)
 	}
+}
+
+// The aggregate rate cap, as a decision function.
+//
+// This one is legitimately pure: the input is the whole domain -- a peer count
+// and a configured interval -- and the output is the schedule, so feeding counts
+// and asserting intervals tests the decision rather than a stand-in for it.
+//
+// Every expectation below is a **literal**, never the constant it is checking.
+// The first version derived its expectations from peerHeartbeatMaxProbesPerInterval,
+// so raising that constant moved the expectations with it and the gate passed
+// against a cap that no longer bound anything. A gate that reads the thing it is
+// testing is not a gate.
+//
+// It is not a substitute for the produced gate below, which is what proves the
+// loop actually consults it.
+func TestHeartbeatRateIsCappedAcrossAllPeers(t *testing.T) {
+	base := 60 * time.Second
+
+	// The budget itself, written out. Six probes per interval is above any
+	// realistic pairing and low enough that nobody would notice it; the point of
+	// the literal is that raising the constant above it is a change someone has
+	// to make here as well, in the open.
+	const wantBudget = 6
+	if peerHeartbeatMaxProbesPerInterval != wantBudget {
+		t.Errorf("peerHeartbeatMaxProbesPerInterval is %d, want %d; if the budget has "+
+			"changed deliberately, update this gate and the rationale beside the constant",
+			peerHeartbeatMaxProbesPerInterval, wantBudget)
+	}
+
+	// Up to the cap, nothing changes. A realistic pairing must be unaffected by
+	// a limit that exists for a case nobody has.
+	for _, n := range []int{1, 2, 3, 5, 6} {
+		if got := heartbeatIntervalForPeers(base, n); got != base {
+			t.Errorf("with %d peer(s) the interval is %s, want the configured %s; a realistic "+
+				"pairing must be unaffected by a bound built for an unusual one", n, got, base)
+		}
+	}
+
+	// Past the cap it grows in whole intervals, and the resulting *rate* is what
+	// is actually bounded.
+	for _, tc := range []struct{ peers, wantRounds int }{
+		{7, 2},
+		{12, 2},
+		{13, 3},
+		{60, 10},
+	} {
+		got := heartbeatIntervalForPeers(base, tc.peers)
+		if rounds := int(got / base); rounds != tc.wantRounds {
+			t.Errorf("with %d peers the interval is %s (%d rounds), want %d rounds",
+				tc.peers, got, rounds, tc.wantRounds)
+		}
+		// The claim: the number of probes per base interval never exceeds the
+		// budget, however many peers there are.
+		if perInterval := tc.peers * int(base/got); perInterval > wantBudget {
+			t.Errorf("with %d peers at %s the aggregate is %d probes per %s, over the budget of %d",
+				tc.peers, got, perInterval, base, wantBudget)
+		}
+	}
+}
+
+// The rate cap as the loop actually applies it, not as the helper computes it.
+//
+// The pure gate above tests the decision; this one exists because the first
+// version of the red proof changed the *caller* while the gate read the
+// *function*, so it passed with the cap disconnected entirely. A gate has to read
+// the same thing the change is to.
+//
+// Twenty peers at addresses that are refused rather than blackholed, so each probe
+// costs a connect attempt and a refusal rather than a five-second timeout, and a
+// whole round is cheap enough to run several inside one interval.
+func TestHeartbeatDoesNotProbeEveryPeerInEveryInterval(t *testing.T) {
+	const interval = 700 * time.Millisecond
+	const peers = 20
+
+	a, _ := startHeartbeatHubsAt(t, interval)
+
+	// A refused port on loopback: fast, and unambiguously a failure, so a whole
+	// round of twenty costs a connect attempt each rather than a five-second
+	// timeout.
+	blocker, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("probe for a refused port: %v", err)
+	}
+	refusedAddr := blocker.Addr().String()
+	_ = blocker.Close()
+
+	var watched pairing.Peer
+	for i := 0; i < peers; i++ {
+		p := seedBlackholePeer(t, a, refusedAddr)
+		if i == 0 {
+			watched = p
+		}
+	}
+
+	// Measure one peer's probe *cadence*, not how many peers have been touched.
+	//
+	// Counting distinct peers was the first two attempts and both were useless.
+	// Counting early shows a small number whether or not the cap applies, so an
+	// early snapshot is evidence of nothing. Counting over a long window is
+	// limited by the concurrency cap instead of the rate cap, because a one-second
+	// tick with four slots cannot touch twenty peers quickly whatever the interval
+	// says -- the concurrency bound dominates every short test, so the rate bound
+	// can only be seen in a peer's own cadence.
+	//
+	// Twenty peers at a budget of six is four rounds, so the effective interval is
+	// 2.8s: about four probes in twelve seconds. Uncapped it would be 0.7s, about
+	// seventeen -- a separation wide enough that neither boundary is close.
+	const window = 12 * time.Second
+	time.Sleep(window)
+
+	probes := a.PeerHealthOf(watched.Fingerprint).ConsecutiveFailures
+	if probes == 0 {
+		t.Fatalf("the watched peer was never probed in %s; the gate cannot fail for the "+
+			"reason it exists against a loop that is not probing at all", window)
+	}
+	// Capped is about four; uncapped about seventeen. A bound of eight sits
+	// between them with room for both the jitter a loaded machine introduces and
+	// the rounding in the round calculation.
+	if probes > 8 {
+		t.Errorf("the watched peer was probed %d times in %s with %d peers paired; at a budget "+
+			"of 6 the effective interval is four rounds (2.8s), so about 4 probes is right and "+
+			"this is the unbounded cadence", probes, window, peers)
+	}
+}
+
+// startHeartbeatHubsAt is startHeartbeatHubs with an explicit probe interval, for
+// the gates that count rounds rather than wait for one answer.
+func startHeartbeatHubsAt(t *testing.T, interval time.Duration) (a *Hub, b *Hub) {
+	t.Helper()
+	newHub := func(out string) *Hub {
+		h, err := NewHub(HubConfig{
+			TransportType:         "lan",
+			ListenAddr:            "127.0.0.1:0",
+			WebAddr:               "127.0.0.1:0",
+			StoreDir:              t.TempDir(),
+			OutputDir:             out,
+			Headless:              true,
+			AutoAcceptPairing:     true,
+			PeerHeartbeatInterval: interval,
+		})
+		if err != nil {
+			t.Fatalf("NewHub: %v", err)
+		}
+		return h
+	}
+	a = newHub(t.TempDir())
+	b = newHub(t.TempDir())
+
+	ctx, _ := contextWithCancelForTest(t)
+	go func() { _ = a.Start(ctx) }()
+	go func() { _ = b.Start(ctx) }()
+	for name, h := range map[string]*Hub{"A": a, "B": b} {
+		select {
+		case <-h.Ready():
+		case <-time.After(10 * time.Second):
+			t.Fatalf("timed out waiting for Hub %s", name)
+		}
+	}
+	t.Cleanup(func() {
+		_ = a.Stop()
+		_ = b.Stop()
+	})
+
+	pairBody, _ := json.Marshal(map[string]string{"peer_addr": b.P2PAddr().String()})
+	code, resp := postJSON(t, "http://"+a.WebAddr()+"/api/pair/initiate", a.ipcToken, "http://"+a.WebAddr(), pairBody)
+	if code != 200 {
+		t.Fatalf("pair initiate = %d: %s", code, resp)
+	}
+	waitForPeerCount(t, b, 1, 15*time.Second)
+	return a, b
+}
+
+// A slow peer must not make a fast one look unreachable.
+//
+// This is a produced condition and it is the one that mattered. The loop probed
+// peers one at a time, so a peer behind a NAT that swallows SYNs held the whole
+// loop for the full dial timeout -- and the peers behind it were not slow, they
+// were merely queued behind something that had gone to sleep.
+//
+// 192.0.2.0/24 is TEST-NET-1: unroutable by design, so a dial to it hangs until
+// the timeout rather than being refused. That makes the slow peer genuinely slow
+// rather than merely slow-looking.
+func TestASlowPeerDoesNotDelayAReachableOne(t *testing.T) {
+	a, _ := startHeartbeatHubs(t)
+	live := solePeer(t, a)
+
+	// Four genuinely unresponsive peers, not one. The first version of this gate
+	// used a single blackhole and only caught serial probing when the blackhole
+	// happened to be probed first -- which the per-peer stagger now actively
+	// prevents, so the gate had quietly stopped being able to fail. Four
+	// blackholes make the order irrelevant: serially the live peer waits for all
+	// of them however they are scheduled, and concurrently it waits for none.
+	for i := 0; i < 4; i++ {
+		seedBlackholePeer(t, a, fmt.Sprintf("192.0.2.%d:9877", 77+i))
+	}
+
+	// Four blackholes held serially cost four dial timeouts, so a serial loop
+	// cannot answer in under four of them. Concurrent, the live peer needs no
+	// more than one -- the blackholes all start with it. The bound sits between
+	// the two with room for a loaded machine.
+	within := 2 * bridge.PingRemoteTimeout
+
+	start := time.Now()
+	health := waitForHealth(t, a, live.Fingerprint, true, 20*time.Second)
+	elapsed := time.Since(start)
+
+	if elapsed > within {
+		t.Errorf("the live peer took %s to be probed while four peers at 192.0.2.77-80 "+
+			"were unreachable; probes must run concurrently or one sleeping machine "+
+			"delays every other", elapsed)
+	}
+	if !health.Reachable {
+		t.Errorf("the live peer is not reported reachable: %+v", health)
+	}
+}
+
+// Every paired peer is probed. The stagger must delay a peer's first probe, not
+// drop it -- a peer added to a store with many peers still deserves an answer.
+func TestEveryPairedPeerIsProbed(t *testing.T) {
+	a, _ := startHeartbeatHubs(t)
+	first := solePeer(t, a)
+	second := seedBlackholePeer(t, a, "192.0.2.78:9877")
+	third := seedBlackholePeer(t, a, "192.0.2.79:9877")
+
+	deadline := time.Now().Add(25 * time.Second)
+	for time.Now().Before(deadline) {
+		if !a.PeerHealthOf(first.Fingerprint).LastChecked.IsZero() &&
+			!a.PeerHealthOf(second.Fingerprint).LastChecked.IsZero() &&
+			!a.PeerHealthOf(third.Fingerprint).LastChecked.IsZero() {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("25s in, not every paired peer had been probed:\n  %+v\n  %+v\n  %+v",
+		a.PeerHealthOf(first.Fingerprint),
+		a.PeerHealthOf(second.Fingerprint),
+		a.PeerHealthOf(third.Fingerprint))
+}
+
+// seedBlackholePeer adds a genuinely trusted peer whose address is a TEST-NET-1
+// address: reserved for documentation and unroutable by design, so a dial hangs
+// until it times out rather than being refused in milliseconds.
+func seedBlackholePeer(t *testing.T, h *Hub, address string) pairing.Peer {
+	t.Helper()
+	id, err := pairing.GenerateIdentity()
+	if err != nil {
+		t.Fatalf("GenerateIdentity: %v", err)
+	}
+	p := pairing.Peer{
+		Fingerprint: id.Fingerprint,
+		Name:        "blackhole-peer",
+		Address:     address,
+		CertPEM:     id.CertPEM,
+	}
+	if err := h.Store().AddPeer(p); err != nil {
+		t.Fatalf("AddPeer: %v", err)
+	}
+	return p
 }
 
 // helpers
