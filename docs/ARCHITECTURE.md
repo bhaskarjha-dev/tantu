@@ -103,7 +103,7 @@ All communications over a `transport.Conn` utilize length-prefixed JSON envelope
 
 | Category | Type Constant | Direction | Description |
 |---|---|---|---|
-| **Control** | `heartbeat` | Bi-directional | Keepalive signal to maintain stateful NAT/firewall bindings |
+| **Control** | `heartbeat` | Bi-directional; **proactive since 2026-10-15** | Keepalive signal to maintain stateful NAT/firewall bindings, and the source of peer reachability in the dashboard |
 | **OAuth** | `bridge_request` | Client → Server | Requests remote browser to open URL and listen on `callback_port` |
 | **OAuth** | `bridge_ack` | Server → Client | Confirms browser launch and active callback listener |
 | **OAuth** | `callback_relay`| Server → Client | Relays intercepted HTTP request (headers, query, auth code) |

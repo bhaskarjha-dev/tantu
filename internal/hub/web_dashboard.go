@@ -402,6 +402,31 @@ type peerStatus struct {
 	Fingerprint string `json:"fingerprint"`
 	SAS         string `json:"sas"`
 	Active      bool   `json:"active"`
+
+	// Reachability, from the proactive heartbeat.
+	//
+	// Deliberately a pointer: a peer the heartbeat has not probed yet has no
+	// answer, and "no answer yet" is not "unreachable". A plain bool would render
+	// every peer as unreachable for the first few seconds after a Hub starts, and
+	// then again after every restart, which is the fastest way to teach someone
+	// not to believe it.
+	//
+	// LastAddressConfirmed is carried alongside it on purpose. Reachability is
+	// the heartbeat's opinion right now; this is when the address itself was last
+	// proven. They disagree in exactly the case a user needs to understand -- a
+	// peer that is answering from an address this Hub has not confirmed, because
+	// the address moved and the heartbeat has not yet had a chance to record it.
+	Health               *PeerHealth `json:"health,omitempty"`
+	LastAddressConfirmed time.Time   `json:"last_address_confirmed,omitempty"`
+}
+
+// healthOrNil returns nil when the heartbeat has not probed this peer yet, so
+// the JSON says "unknown" rather than "unreachable".
+func healthOrNil(h PeerHealth) *PeerHealth {
+	if h.LastChecked.IsZero() {
+		return nil
+	}
+	return &h
 }
 
 // relayInterstitialHTML is the bookmarklet confirmation shell. It carries
@@ -572,6 +597,7 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 
 		var peers []peerStatus
 		if store != nil {
+			health := h.AllPeerHealth()
 			allPeers := store.ListPeers()
 			for _, p := range allPeers {
 				isActive := false
@@ -588,6 +614,13 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 					Fingerprint: p.Fingerprint,
 					SAS:         p.SAS(),
 					Active:      isActive,
+					Health:      healthOrNil(health[p.Fingerprint]),
+					// Not p.LastAddressConfirmed. The store's value is stamped by
+					// pairing and by transfers; the heartbeat's observation is the
+					// one that keeps it current for an idle peer, and reporting the
+					// field that is merely "not stale yet" would make it look like a
+					// live signal.
+					LastAddressConfirmed: p.LastAddressConfirmed,
 				})
 			}
 		}

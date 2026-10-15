@@ -2496,7 +2496,23 @@
           }
         }
 
-        const peerSig = JSON.stringify(peers.map(p => [p.fingerprint, p.name, p.alias, p.active, p.is_default, p.address])) + '|' + (selectedPeerTarget || '');
+        // Reachability belongs in this signature, and its absence was a real defect.
+//
+// This signature decides whether to repaint the peer cards, and it listed only
+// the peer's identity and addressing. The heartbeat then made a peer reachable
+// without changing any of those, so the card was never repainted and the
+// reachability chip never appeared -- while the API served it correctly the whole
+// time. The optimisation assumed the peer set is the only thing about a peer that
+// can change, and reachability is the first thing that is not.
+//
+// `last_ok` is included rather than only `reachable` because the card prints it
+// ("answered 3 minutes ago"), and because it changes once per successful probe --
+// which is exactly when a repaint is wanted. The fields that change on *every*
+// poll are deliberately excluded: including `consecutive_failures` would repaint
+// once per failed probe during backoff, which is the keyboard-juggling this
+// guard exists to prevent.
+const peerSig = JSON.stringify(peers.map(p => [p.fingerprint, p.name, p.alias, p.active, p.is_default, p.address,
+          p.health ? [p.health.reachable, p.health.last_ok] : null])) + '|' + (selectedPeerTarget || '');
         const headerFocused = document.activeElement && document.activeElement.id === 'headerPeerSelect';
         // Skip re-render while the user interacts with the header select;
         // lastPeerSignature stays stale so the deferred update lands on a
@@ -2834,7 +2850,68 @@
       }
     }
 
-    function renderPeersList(peers) {
+    // How long ago a timestamp was, in the coarsest honest unit.
+//
+// Coarse on purpose. "42 seconds ago" invites a refresh to make it read better;
+// "3 minutes ago" is a fact. Past an hour it switches to hours and past a day
+// to days, because the useful precision falls as the number grows.
+function sinceLabel(iso) {
+  if (!iso) return null;
+  const then = new Date(iso).getTime();
+  if (!then || Number.isNaN(then)) return null;
+  const secs = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (secs < 45) return 'just now';
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return mins + (mins === 1 ? ' minute ago' : ' minutes ago');
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return hours + (hours === 1 ? ' hour ago' : ' hours ago');
+  const days = Math.floor(hours / 24);
+  return days + (days === 1 ? ' day ago' : ' days ago');
+}
+
+// The reachability chip for one peer.
+//
+// Three states, not two. A peer the heartbeat has not probed yet is *unknown*,
+// and it must not be drawn as unreachable: it would flash red on every Hub start
+// and every reload, which is the fastest way to teach someone that a red dot
+// means nothing.
+//
+// State is carried by text first and colour second. A coloured dot alone is
+// invisible to a screen reader and invisible to a colourblind reader, and this
+// panel's whole job is to say something true about another machine.
+//
+// The wording for "not answering" deliberately keeps the last success, because
+// "stopped answering 4 minutes ago" and "never answered" are different problems:
+// the first is a sleeping laptop, the second is a wrong address or a machine that
+// was never really paired.
+function peerHealthChip(pr) {
+  const h = pr && pr.health;
+  if (!h || !h.last_checked) return '';
+
+  // data-reach is the hook the harness asserts on. A chip identified as "the
+  // first div in the row" is the same class of selector that made an earlier
+  // version of this gate pass while reading the peer's name: when there is no
+  // chip the first div is still the header row, it still has text, and the
+  // assertion still passes. A named hook is absent when the thing is absent.
+  const okSince = sinceLabel(h.last_ok);
+  if (h.reachable) {
+    const when = okSince ? ' &middot; answered ' + escapeHTML(okSince) : '';
+    return '<div data-reach="ok" style="display:flex; align-items:center; gap:0.4rem; font-size:0.8rem; ' +
+      'color:var(--success-text); margin-bottom:0.5rem;">' +
+      '<span aria-hidden="true">&#9679;</span>' +
+      '<span>Reachable' + when + '</span></div>';
+  }
+
+  const detail = okSince
+    ? 'last answered ' + escapeHTML(okSince)
+    : 'has not answered since pairing';
+  return '<div data-reach="down" style="display:flex; align-items:center; gap:0.4rem; font-size:0.8rem; ' +
+    'color:var(--warning-text); margin-bottom:0.5rem;">' +
+    '<span aria-hidden="true">&#9679;</span>' +
+    '<span>Not answering &middot; ' + detail + '</span></div>';
+}
+
+function renderPeersList(peers) {
       const peersList = document.getElementById('peersList');
       peersList.innerHTML = peers.map(function(pr) {
         const defaultBadge = pr.is_default ? '<span class="tag tag-oauth">Default</span>' : '';
@@ -2843,6 +2920,7 @@
         const fpShort = pr.fingerprint ? (pr.fingerprint.slice(0, 16) + '...') : '-';
 
         return '<div style="background: rgba(255,255,255,0.02); border:1px solid var(--border); border-radius:8px; padding:0.85rem 1rem; margin-bottom:0.75rem;">' +
+          peerHealthChip(pr) +
           '<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">' +
             '<div style="display:flex; align-items:center; gap:0.5rem;">' +
               '<span style="font-weight:600; color:var(--text); font-size:1rem;">' + escapeHTML(pr.name || 'Unnamed Peer') + '</span>' +

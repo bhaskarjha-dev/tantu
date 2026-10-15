@@ -6263,3 +6263,73 @@ against 360 is the same signature as CI's 381 against 360.
 
 Both self-checks run in the dashboard job rather than only locally, because the
 difficulty is that neither reproduces off the platform that exhibits the defect.
+## Batch Z77 - a heartbeat that asks, and a Peers tab that can answer (2026-10-15)
+
+Closed the gap Z71 opened. `last_address_confirmed` had been written to the
+store and read by nothing, and the reason it was unreadable was a design problem
+rather than an oversight: it advanced only on pairing and on transfers, so a peer
+that was up and idle looked identical to one that had been gone for a week.
+Surfacing it would have shipped a misleading indicator.
+
+### The primitive that was missing
+
+Every `heartbeat` send in the product sat inside an `if env.Type == heartbeat`
+branch. Nothing initiated one. `ARCHITECTURE.md` has called the heartbeat
+"Bi-directional" throughout, which was false: it could only ever be answered, so
+it refreshed a NAT binding for the duration of a transfer and not for the hours
+between transfers, which is the only case a binding matters in.
+
+`bridge.PingRemote` sends one and **requires an answer**. That requirement is the
+whole feature: an open socket and a matching certificate prove something is
+listening and who it is, not that it is running rather than wedged, and
+reachability is the one thing in the Peers tab a user will act on.
+
+### The defect underneath it
+
+The dashboard skips repainting peer cards when a computed signature is unchanged.
+That signature listed a peer's identity and addressing -- and not its reachability.
+So a peer that became reachable never repainted, and the chip never appeared, while
+the API served it correctly the whole time. Every Go gate stayed green; only the
+browser could see it.
+
+It is recorded here as the fifth instance of one shape: an optimisation whose
+assumption outlived the feature it was written for. The repaint guard assumed the
+peer set is the only thing about a peer that can change, and reachability is the
+first thing that is not. `last_ok` is in the signature but `consecutive_failures`
+deliberately is not, because that changes on every failed probe during backoff and
+would repaint exactly as often as the guard exists to prevent.
+
+### Gates that were not honest about themselves
+
+Both new browser checks passed while testing nothing. The first selected "the
+first div in the peer row", which is the peer's *name* row whenever no chip exists
+-- so it read a name, found no leading "Reachable", and passed. The chip now
+carries `data-reach`, and a named hook is absent when the thing is absent.
+
+The second asserted that *a* chip existed rather than that it said "reachable",
+so it would have passed against a chip that always read "Not answering". It now
+requires one that reads `ok`.
+
+The `--peers` rig turned out to be the wrong place for the negative case at all:
+its Hub runs `--transport loopback`, which correctly never probes. A check
+demanding a verdict there would fail forever or tempt someone into making
+loopback probe, which is worse than no chip. It now asserts the absence instead,
+and the positive case lives in the two-Hub section where the transport really is
+lan and the peer really is another process.
+
+Also worth recording: the harness truncates check details at 240 characters, and a
+verbose DOM dump pushed the one field that distinguished "the heartbeat never
+ran" from "the dashboard did not render it" out of view. That is what made the
+defect above cost as long as it did.
+
+### Scheduling, and one guard with no red proof
+
+60s steady state, first probe at 5s, doubling to a 15-minute ceiling. The first
+failure retries at the base interval rather than twice it: a peer that was
+answering a second ago is the one most likely to come straight back.
+
+Removing `!h.last_checked` from the chip guard cannot be shown red -- neither rig
+produces a peer with health but no `last_checked`. It is defence in depth over a
+contract that *is* gated, by `TestPeersAPIReportsNoHealthBeforeTheFirstProbe`,
+which asserts the API omits health entirely rather than emitting a zero value. A
+red proof that cannot be produced is not worth inventing one for.

@@ -820,6 +820,45 @@ let hubs2 = null;
       }
     }
     await js("(function(){var s=document.getElementById('uxtest-noanim'); if(s) s.remove(); return 'ok';})()");
+
+    // No peer in this rig may claim to be reachable.
+    //
+    // With --peers every seeded peer points at 192.0.2.0/24, which is TEST-NET-1:
+    // reserved for documentation and unroutable by design. A probe against one
+    // hangs and fails, so "Reachable" on any of these rows would be a lie -- and
+    // it is the lie that matters, because reachability is the one thing in the
+    // Peers tab a user will act on.
+    //
+    // "No chip yet" is allowed. The heartbeat's first probe has a five-second
+    // delay by design, so at this point in the run the honest answer for most
+    // peers is "not probed yet", and a gate that demanded a verdict here would
+    // be demanding one the product has not earned.
+    // No peer in this rig may claim to be reachable -- and since the harness's own
+    // Hub runs --transport loopback, none of them is ever probed at all.
+    //
+    // Loopback is the same machine by definition, so a heartbeat there would
+    // spend a handshake per interval to learn nothing. That makes this rig the
+    // wrong place to look for a chip, and it is worth asserting rather than
+    // leaving to chance: a check that demanded a reachability verdict from a
+    // loopback Hub would either fail forever or tempt someone into making
+    // loopback probe, which is worse than having no chip.
+    //
+    // The positive half lives in the two-Hub section, where the transport really
+    // is lan and the peer really is another process.
+    await tab('tab-peers');
+    const reachNow = await js(`(function () {
+      var chips = document.querySelectorAll('#peersList [data-reach]');
+      var claims = [];
+      for (var i = 0; i < chips.length; i++) {
+        if (chips[i].getAttribute('data-reach') === 'ok') {
+          claims.push((chips[i].innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 80));
+        }
+      }
+      return { chips: chips.length, claims: claims };
+    })()`).catch((e) => ({ error: String(e) }));
+    check('peers: a loopback Hub never reports a peer as reachable',
+      reachNow && reachNow.chips === 0 && Array.isArray(reachNow.claims) && reachNow.claims.length === 0,
+      JSON.stringify(reachNow));
     // One check per failing element, so the log names the element rather than
     // reporting a count the reader has to go and count.
     for (const f of sweepFails) {
@@ -1811,6 +1850,75 @@ const OVERFLOW_PROBE = `(function(){
           })()`);
           check('two-Hub: the receiver dashboard shows the text that was sent',
             received && received.found === true, JSON.stringify(received));
+
+          // Reachability, asserted from both directions in the same run.
+          //
+          // A false "Reachable" is the dangerous failure here: it would tell a
+          // user their peer is there when it is not, which is worse than saying
+          // nothing at all. The seeded TEST-NET peers below are the case for it --
+          // 192.0.2.0/24 is unroutable by design, so no probe can ever succeed
+          // against them and the chip must never claim otherwise.
+          const readA2 = () => pageA2.evaluate(`(function () {
+            var list = document.getElementById('peersList');
+            var chips = document.querySelectorAll('#peersList [data-reach]');
+            var t = [];
+            for (var i = 0; i < chips.length; i++) {
+              t.push((chips[i].getAttribute('data-reach') || '?') + ': ' +
+                     (chips[i].innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 60));
+            }
+            return {
+              chips: t,
+              rows: list ? list.children.length : -1,
+              hasPeersList: !!list,
+              rowsHtml: list ? list.innerHTML.slice(0, 60) : '',
+            };
+          })()`).catch((e) => ({ error: String(e) }));
+
+          // The API payload is part of the detail, not just the DOM. A check
+          // that only reports "no chips" cannot distinguish "the heartbeat never
+          // ran" from "the heartbeat ran and the dashboard did not render it",
+          // and those are different bugs in different places.
+          const apiPeers = async () => pageA2.evaluate(`fetch('/api/status')
+            .then(function (r) { return r.json(); })
+            .then(function (j) {
+              var ps = (j && j.peers) || [];
+              return ps.map(function (p) {
+                return (p.name || '?') + ' health=' +
+                  (p.health ? JSON.stringify(p.health) : 'ABSENT');
+              }).join(' | ');
+            })
+          `).catch((e) => '(api: ' + e + ')');
+
+          // Look at the Peers tab before asking about it. The status poll
+          // repaints the peer rows, and a page sitting on another tab may not
+          // have repainted since the first probe landed -- so the API says the
+          // peer is reachable while the DOM still shows a page from before that.
+          // A user opens the Peers tab; so does this.
+          await pageA2.click('#tab-peers').catch(() => {});
+          await sleep(700);
+          // Force one refresh by hand before reading. If the chip appears, the
+          // poll loop was not repainting; if it does not, the chip itself is not
+          // rendering. One forced call separates two bugs that look identical
+          // from here.
+          await pageA2.evaluate('typeof updateStatus === "function" ? updateStatus() : null')
+            .catch(() => {});
+          await sleep(900);
+
+          let reachLive = await readA2();
+          const reachLiveDeadline = Date.now() + 30000;
+          while (Date.now() < reachLiveDeadline && !(reachLive && reachLive.chips.length > 0)) {
+            await sleep(500);
+            reachLive = await readA2();
+          }
+          check('two-Hub: a live paired peer is reported reachable',
+            reachLive && Array.isArray(reachLive.chips) &&
+            reachLive.chips.some((c) => c.indexOf('ok: ') === 0),
+            // API first, and deliberately short. `check` truncates its detail at
+            // 240 characters, so a verbose DOM dump pushes the one field that
+            // distinguishes "the heartbeat never ran" from "the dashboard did not
+            // render it" out of sight -- which is exactly what happened while
+            // this was being written.
+            JSON.stringify({ api: await apiPeers(), chips: reachLive ? reachLive.chips : null }));
 
           // The file leg, which is the one that proves bytes moved: a file has to
           // appear in B's own output directory with its contents intact.

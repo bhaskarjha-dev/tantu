@@ -76,6 +76,16 @@ type HubConfig struct {
 	AutoAcceptPairing         bool               // Automatically accept incoming pairings without interactive confirmation
 	OpenBrowser               func(string) error // Optional hook for opening browser (defaults to browser.OpenURL)
 	Logger                    *log.Logger        // Optional logger
+	// PeerHeartbeatInterval is how often the proactive heartbeat asks each
+	// paired lan peer whether it is there. Zero uses peerHeartbeatInterval.
+	//
+	// It exists because the default is a guess, and guesses about networks
+	// belong to the person on the network: 60s keeps a stateful binding alive
+	// and keeps the status readable, and someone on a metered or battery-powered
+	// link may reasonably want it longer. It is also what lets the gates run
+	// this loop at a speed a test can afford, which is the other reason a knob
+	// like this exists.
+	PeerHeartbeatInterval time.Duration
 }
 
 // ReceivedDropItem represents a received text snippet or file transfer.
@@ -231,8 +241,15 @@ type Hub struct {
 	actualP2P  net.Addr
 	// reconcileMu guards reconcileTried, the cooldown that stops a beacon which
 	// keeps arriving from driving one outbound dial per broadcast.
-	reconcileMu      sync.Mutex
-	reconcileTried   map[string]time.Time
+	reconcileMu    sync.Mutex
+	reconcileTried map[string]time.Time
+	// peerHealth is what this Hub currently believes about each peer's
+	// reachability, filled in by the proactive heartbeat. Runtime state, kept
+	// deliberately off the store -- see PeerHealth.
+	peerHealthMu sync.RWMutex
+	peerHealth   map[string]PeerHealth
+	// heartbeatCancel stops the proactive heartbeat, mirroring discoveryCancel.
+	heartbeatCancel  context.CancelFunc
 	actualWeb        string
 	startTime        time.Time
 	logger           *EventLogger
@@ -1219,6 +1236,7 @@ func (h *Hub) Stop() error {
 	runDone := h.runDone
 	discoveryCancel := h.discoveryCancel
 	discoveryEngine := h.discoveryEngine
+	heartbeatCancel := h.heartbeatCancel
 	httpServer := h.httpServer
 	p2pLn := h.p2pLn
 	h.mu.Unlock()
@@ -1232,6 +1250,9 @@ func (h *Hub) Stop() error {
 	}
 	if discoveryCancel != nil {
 		discoveryCancel()
+	}
+	if heartbeatCancel != nil {
+		heartbeatCancel()
 	}
 	if discoveryEngine != nil {
 		_ = discoveryEngine.Close()
@@ -2327,6 +2348,24 @@ func (h *Hub) Start(parent context.Context) (err error) {
 			go h.watchDiscoveryHealth(discCtx, discEngine)
 		}
 	}
+
+	// The proactive heartbeat, for the life of the Hub.
+	//
+	// Started unconditionally rather than only under `transportType == "lan"`,
+	// because the loop itself decides per tick whether probing applies and pushes
+	// every peer out of the schedule when it does not. Deciding here instead would
+	// mean two places that have to agree about which transports probe.
+	//
+	// Its context is the Hub's own run context, so Stop ends it with everything
+	// else. A heartbeat loop that outlived its Hub would keep dialling peers from
+	// a process that is on its way down, and the dials would fail for reasons
+	// having nothing to do with the peers.
+	heartbeatCtx, heartbeatStop := context.WithCancel(ctx)
+	h.mu.Lock()
+	h.heartbeatCancel = heartbeatStop
+	h.peerHealth = make(map[string]PeerHealth)
+	h.mu.Unlock()
+	go h.runPeerHeartbeat(heartbeatCtx)
 
 	// Claim the single-instance slot before either listener starts serving.
 	// WriteRuntimeInfo refuses to replace a descriptor whose owner still probes
