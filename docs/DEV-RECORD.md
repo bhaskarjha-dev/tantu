@@ -6612,3 +6612,82 @@ The remaining three are pure decision gates over a `PeerHealth`, which is the
 right shape here because a `PeerHealth` genuinely is the whole domain for the
 wording. They are not a substitute for the two produced gates: those are what
 prove the cockpit reads the Hub's health at all, which is the defect.
+## Batch Z83 - a gate that knew more than it had measured (2026-10-15)
+
+Windows CI went red on `TestPerfBudget_LocalActionAcknowledgement`: p95 522ms
+against a 250ms budget, over thirty samples.
+
+The failure message said: **"the path itself regressed, not the machine."**
+
+Its own log line, printed immediately above, said `p50=62.8ms max=522.9ms`. A
+regression in the path moves the median. Sixty-three milliseconds against a
+five-hundred-and-twenty-two millisecond outlier is one stalled request on a loaded
+runner -- which is the opposite of what the message asserted, and the evidence
+against it was in the same two lines.
+
+That is the defect, and it is worth more than the red. A failure message that
+names a cause it has not established is worse than one that names none, because
+it tells the next reader to stop looking. Somebody reading "not the machine" would
+not go and check whether the machine was the machine.
+
+### What was checked before concluding anything
+
+The heartbeat, which lands in the same window and writes the peer store on every
+successful probe, was the obvious suspect: `syncProbes` runs on every tick
+regardless of transport, and each call does a full read and parse of `peers.json`,
+plus one more per probe in the deletion loop. On a loopback Hub -- which will
+never probe anything -- that is a disk read every second forever, taking the
+store's read lock against the write lock the alias endpoint needs.
+
+Measured rather than argued: **555 microseconds** for a full `ListPeers`. So the
+heartbeat's per-tick work is roughly 2ms a second, and it cannot account for a
+522ms sample. It is still worth knowing that a transport which will never probe
+re-reads the store every second, and that is noted below rather than fixed here,
+because it is not this failure.
+
+Five consecutive local runs of the budget gave p50 1.7-4.3ms, p95 10.2-12.9ms, max
+10.3-20.3ms. Nowhere near the budget and nowhere near the CI shape. Not
+reproducible locally, and not attributable to a change.
+
+### What changed
+
+The gate now reports the median, and the failure message states the shape of the
+distribution and stops:
+
+    A regression moves the median; one stalled request moves p95 alone --
+    p50 300ms against max 300ms says which of these this is, and this message
+    deliberately does not guess
+
+The count of samples over budget is logged alongside, so a reader can see at a
+glance whether one sample or thirty are responsible. `cmd/tantu`'s twin gate had
+the same blind spot and now carries the median too, with a `medianOf` helper.
+
+The sample count stays at thirty. p95 at n=30 is `sorted[28]` -- the twenty-ninth
+of thirty, so effectively the second-worst sample. That is correct nearest-rank
+arithmetic and it is also very sensitive, which is exactly why a budget failure
+here is worth *reading* rather than acting on by reflex. Raising n would make
+every CI run slower to catch the same single stall; the median carries the
+diagnosis instead.
+
+### Proof the gate can still fail
+
+The obvious break for a gate like this is to make the claim weaker until nothing
+trips it, so the break goes the other way: every sample forced to 300ms, which is
+a true regression, and the budget is exceeded.
+
+    RED  a path that is genuinely 300ms fails the 250ms budget
+      says: p50=300ms p95=300ms max=300ms budget=250ms (n=30, 0 below clock
+            resolution, 30 over budget)
+      the failure carries p50=300ms, so a reader can tell this from a stall: true
+
+Thirty of thirty over budget, against the CI run's one. Same red, opposite
+diagnosis, and now the message shows which is which.
+
+### Still open, and named rather than fixed
+
+The heartbeat re-reads the peer store from disk every second on a transport that
+will never probe, and once per probe in its deletion loop. Measured at 555
+microseconds a read, so it is not the cause of anything here, and it is a
+background cost rather than a user-visible one. It is worth doing and it is worth
+doing when it is looked at rather than as a side effect of chasing a red that it
+did not cause.

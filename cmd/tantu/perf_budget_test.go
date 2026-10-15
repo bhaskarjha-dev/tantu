@@ -94,6 +94,16 @@ func withStdoutDiscarded(t *testing.T, fn func()) {
 	fn()
 }
 
+func medianOf(samples []time.Duration) time.Duration {
+	if len(samples) == 0 {
+		return 0
+	}
+	sorted := make([]time.Duration, len(samples))
+	copy(sorted, samples)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	return sorted[len(sorted)/2]
+}
+
 func p95Of(samples []time.Duration) time.Duration {
 	if len(samples) == 0 {
 		return 0
@@ -104,9 +114,14 @@ func p95Of(samples []time.Duration) time.Duration {
 	return sorted[(len(sorted)*95)/100]
 }
 
-// summarize returns the p95, the maximum, and the count of samples that read
-// as exactly zero (the sub-clock-resolution artifact described above).
-func summarize(samples []time.Duration) (p95, max time.Duration, zeros int) {
+// summarize returns the median, the p95, the maximum, and the count of samples
+// that read as exactly zero (the sub-clock-resolution artifact described above).
+//
+// The median is here so that a budget failure can be read rather than acted on:
+// a regression moves the median, one stalled request moves p95 alone. See the
+// longer note on reportBudget in internal/hub/perf_budget_test.go.
+func summarize(samples []time.Duration) (p50, p95, max time.Duration, zeros int) {
+	p50 = medianOf(samples)
 	p95 = p95Of(samples)
 	for _, s := range samples {
 		if s == 0 {
@@ -116,7 +131,7 @@ func summarize(samples []time.Duration) (p95, max time.Duration, zeros int) {
 			max = s
 		}
 	}
-	return p95, max, zeros
+	return p50, p95, max, zeros
 }
 
 // TestPerfBudget_CLIStatusResponse measures the whole plain `tantu status`
@@ -135,12 +150,19 @@ func TestPerfBudget_CLIStatusResponse(t *testing.T) {
 		samples = append(samples, time.Since(start))
 	}
 
-	p95, max, zeros := summarize(samples)
-	t.Logf("tantu status (local, populated store): p95=%s max=%s budget=%s (n=%d, %d below clock resolution)",
-		p95, max, budgetCLIStatusResponse, len(samples), zeros)
+	// p50 is reported alongside p95 for the same reason as in
+	// internal/hub/perf_budget_test.go, which explains it in full: a regression
+	// moves the median and one stalled request moves p95 alone, and a failure
+	// message carrying the median lets the reader tell those apart without the
+	// gate guessing which it saw.
+	p50, p95, max, zeros := summarize(samples)
+	t.Logf("tantu status (local, populated store): p50=%s p95=%s max=%s budget=%s (n=%d, %d below clock resolution)",
+		p50, p95, max, budgetCLIStatusResponse, len(samples), zeros)
 	if p95 > budgetCLIStatusResponse {
-		t.Errorf("tantu status p95 %s exceeds the %s budget (max %s): first status response must stay under 500 ms locally",
-			p95, budgetCLIStatusResponse, max)
+		t.Errorf("tantu status p95 %s exceeds the %s budget (p50 %s, max %s): the first "+
+			"status response must stay under 500 ms locally. A regression moves the median; "+
+			"one stalled sample moves p95 alone",
+			p95, budgetCLIStatusResponse, p50, max)
 	}
 }
 
@@ -160,11 +182,12 @@ func TestPerfBudget_CLIDoctorLocalWork(t *testing.T) {
 		}
 	}
 
-	p95, max, zeros := summarize(samples)
-	t.Logf("buildHealthReport (doctor local work): p95=%s max=%s budget=%s (n=%d, %d below clock resolution)",
-		p95, max, budgetDoctorLocalWork, len(samples), zeros)
+	p50, p95, max, zeros := summarize(samples)
+	t.Logf("buildHealthReport (doctor local work): p50=%s p95=%s max=%s budget=%s (n=%d, %d below clock resolution)",
+		p50, p95, max, budgetDoctorLocalWork, len(samples), zeros)
 	if p95 > budgetDoctorLocalWork {
-		t.Errorf("buildHealthReport p95 %s exceeds the %s budget (max %s; doctor, excluding network probes)",
-			p95, budgetDoctorLocalWork, max)
+		t.Errorf("buildHealthReport p95 %s exceeds the %s budget (p50 %s, max %s; doctor, "+
+			"excluding network probes)",
+			p95, budgetDoctorLocalWork, p50, max)
 	}
 }

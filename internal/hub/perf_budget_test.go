@@ -126,24 +126,49 @@ func sampleEndpoint(t *testing.T, token, method, url string, body []byte, n int)
 	return samples
 }
 
+// reportBudget asserts a percentile against a budget.
+//
+// What it does *not* do is diagnose the cause, and the message used to: "the path
+// itself regressed, not the machine". That is a conclusion the measurement cannot
+// support, and its own numbers contradicted it on the run that prompted this --
+// p50=63ms against p95=522ms over thirty samples is one stalled request on a
+// loaded runner, which is the opposite of a regression in the path. A failure
+// message that names a cause it has not established is worse than one that names
+// none, because it tells the next reader to stop looking.
+//
+// So the failure reports the shape of the distribution and stops there. A
+// regression moves the median; a stall moves one sample. The median is in the
+// message precisely so that the reader can tell which it was.
+//
+// On the sample count: p95 at n=30 is sorted[28] -- the 29th of 30, so the second
+// worst. That is correct nearest-rank arithmetic and it is also very sensitive,
+// which is why the budget failures above are worth reading rather than acting on
+// by reflex. Thirty is kept, because raising it makes every CI run slower to
+// catch the same one stall; the median carries the diagnosis instead.
 func reportBudget(t *testing.T, what string, samples []time.Duration, budget time.Duration) {
 	t.Helper()
 	p50, p95 := p50AndP95(samples)
 	var max time.Duration
-	zeros := 0
+	zeros, over := 0, 0
 	for _, s := range samples {
 		if s == 0 {
 			zeros++
+		}
+		if s > budget {
+			over++
 		}
 		if s > max {
 			max = s
 		}
 	}
-	t.Logf("%s: p50=%s p95=%s max=%s budget=%s (n=%d, %d below clock resolution)",
-		what, p50, p95, max, budget, len(samples), zeros)
+	t.Logf("%s: p50=%s p95=%s max=%s budget=%s (n=%d, %d below clock resolution, %d over budget)",
+		what, p50, p95, max, budget, len(samples), zeros, over)
 	if p95 > budget {
-		t.Errorf("%s p95 %s exceeds the %s budget (max %s, p50 %s): the path itself regressed, not the machine",
-			what, p95, budget, max, p50)
+		t.Errorf("%s p95 %s exceeds the %s budget (p50 %s, max %s, %d of %d samples over "+
+			"budget, %d below clock resolution). A regression moves the median; one stalled "+
+			"request moves p95 alone -- p50 %s against max %s says which of these this is, and "+
+			"this message deliberately does not guess",
+			what, p95, budget, p50, max, over, len(samples), zeros, p50, max)
 	}
 }
 
