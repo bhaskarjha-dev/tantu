@@ -106,6 +106,27 @@ func cockpitTruncate(s string, max int) string {
 	return b.String()
 }
 
+const (
+	// cockpitPeerLineWidth is the column budget for one peer line.
+	//
+	// Not 80. The line carries an index, a name, an address, a pairing code, a
+	// reachability sentence and a selection marker, and 80 does not hold them
+	// once a peer has stopped answering. 100 is a width a terminal is very likely
+	// to have, and a line that fits 100 still reads at 120.
+	cockpitPeerLineWidth = 100
+
+	// cockpitPeerNameFloor is how much of the name survives when the rest of the
+	// line is long. A truncated name is still recognisable; an empty one leaves a
+	// bare list of addresses.
+	cockpitPeerNameFloor = 10
+
+	// cockpitReachDetailShort and cockpitReachBareWidth are the budgets the
+	// reachability sentence is shortened to, in that order, when the name has
+	// already reached its floor.
+	cockpitReachDetailShort = 16
+	cockpitReachBareWidth   = 13
+)
+
 // cockpitBox draws the banner around rows, sizing the border to the widest row
 // and capping it so one enormous value cannot produce a box nobody can read.
 // The lines are returned as well as printed, because the only way to know a box
@@ -723,6 +744,126 @@ func promptSendText(ctx context.Context, scanner *bufio.Scanner, h *hub.Hub, tar
 	}(content, targetPeer)
 }
 
+// cockpitReachMarker is the short form of what the Hub knows about a peer, for the
+// banner.
+//
+// It used to be the literal string "[Online 🟢]", applied to every paired
+// peer unconditionally. That is not a label, it is a claim: pairing records that
+// you trust a machine, which says nothing about whether it is switched on. A peer
+// whose address is unroutable was reported Online for as long as it stayed in
+// the store -- including after the heartbeat had spent several minutes proving
+// that it was not answering.
+//
+// The dashboard has carried a truthful reachability chip since the heartbeat
+// landed, which made the cockpit's version worse than merely wrong: the same Hub,
+// at the same moment, two interfaces, one of them honest.
+//
+// Silence is a legitimate answer. A peer the loopback transport never probes, or
+// one added since the last tick, has no evidence either way, and "Online" would
+// be inventing one.
+func cockpitReachMarker(health hub.PeerHealth) string {
+	switch {
+	case health.LastChecked.IsZero():
+		return ""
+	case health.Reachable:
+		return " [🟢]"
+	default:
+		return " [Not answering 🔴]"
+	}
+}
+
+// cockpitReachDetail is the long form, for the listing where there is room to say
+// when a peer was last heard from.
+//
+// "Not answering" alone tells a reader they have a problem without telling them
+// which one, and the two are different problems: a peer that stopped answering
+// four minutes ago is a laptop that went to sleep, and a peer that has never
+// answered is a wrong address or a pairing that never actually worked.
+func cockpitReachDetail(health hub.PeerHealth) string {
+	switch {
+	case health.LastChecked.IsZero():
+		return ""
+	case health.Reachable:
+		return "Online"
+	default:
+		was := "has not answered since pairing"
+		if !health.LastOK.IsZero() {
+			was = "last answered " + formatRelativeTime(health.LastOK)
+		}
+		return "Not answering · " + was
+	}
+}
+
+// cockpitReachDetailFitting shortens the sentence until it fits budget.
+//
+// The sentence is the one part of the line that grows without bound as a peer's
+// problem gets more interesting, so it is what gives way -- but only after the
+// name has, and never by being dropped. "Not answering" in any form is the fact
+// a reader most needs; the age of the last success is a refinement.
+func cockpitReachDetailFitting(health hub.PeerHealth, budget int) string {
+	full := cockpitReachDetail(health)
+	if full == "" || cockpitWidth(full) <= budget {
+		return full
+	}
+	if health.Reachable {
+		return "Online"
+	}
+	// A peer that has never answered has no age to report. "never answered" is the
+	// whole truth and is shorter than the sentence it replaces, but it is still
+	// 14 columns, so it has to be checked against the budget like every other
+	// rung rather than assumed to fit.
+	if health.LastOK.IsZero() {
+		if cockpitWidth("never answered") <= budget {
+			return "never answered"
+		}
+		for _, terse := range []string{"not answering", "down"} {
+			if cockpitWidth(terse) <= budget {
+				return terse
+			}
+		}
+		return "down"
+	}
+	// "not answering (12m)" -- the age of the last success, which is what a
+	// reader scanning a list is actually looking for.
+	short := "not answering (" + formatRelativeTime(health.LastOK) + ")"
+	if cockpitWidth(short) <= budget {
+		return short
+	}
+	// The age itself is too long -- weeks, on a peer gone a long time. Drop the
+	// age rather than the fact.
+	// Every form must fit the budget it is given, so the ladder bottoms out in
+	// something shorter rather than returning whatever was closest.
+	for _, terse := range []string{"not answering", "down"} {
+		if cockpitWidth(terse) <= budget {
+			return terse
+		}
+	}
+	// Four columns is the tightest case the line can reach, and "down" fits it.
+	// If a smaller budget is ever asked for, the fact still has to be stated:
+	// returning "" here would drop it silently, which is the one outcome this
+	// whole function exists to avoid.
+	return "down"
+}
+
+// reachPrefix renders the reachability sentence with its separator, or nothing
+// when there is nothing to say.
+func reachPrefix(reach string) string {
+	if reach == "" {
+		return ""
+	}
+	return " · " + reach + " "
+}
+
+// tagSuffix renders the selection marker with a leading space, so a peer line
+// never runs two parts together. "[active]—" was printed once, and it is
+// exactly the kind of thing a reader takes for "[active]-192.0.2.44:9877".
+func tagSuffix(tag string) string {
+	if tag == "" {
+		return ""
+	}
+	return "  " + tag
+}
+
 func printCockpitBanner(h *hub.Hub) {
 	peerLabel := "Waiting for peers (LAN Ready 🟢)"
 	if h.TransportType() == "loopback" {
@@ -733,18 +874,18 @@ func printCockpitBanner(h *hub.Hub) {
 		if len(peers) == 1 {
 			p := peers[0]
 			name := p.DisplayName()
-			peerLabel = fmt.Sprintf("%s (%s) [Online 🟢]", name, p.Address)
+			peerLabel = fmt.Sprintf("%s (%s)%s", name, p.Address, cockpitReachMarker(h.PeerHealthOf(p.Fingerprint)))
 		} else if len(peers) > 1 {
 			activeFP := h.GetActivePeer()
 			activePeer, _ := h.Store().ResolvePeer(activeFP)
 			var parts []string
 			for _, p := range peers {
 				dName := p.DisplayName()
+				star := ""
 				if activePeer != nil && activePeer.Fingerprint == p.Fingerprint {
-					parts = append(parts, fmt.Sprintf("%s* [Online 🟢]", dName))
-				} else {
-					parts = append(parts, dName)
+					star = "*"
 				}
+				parts = append(parts, dName+star+cockpitReachMarker(h.PeerHealthOf(p.Fingerprint)))
 			}
 			peerLabel = fmt.Sprintf("Peers (%d): %s", len(peers), strings.Join(parts, " • "))
 		}
@@ -842,11 +983,87 @@ func printPeerStatus(h *hub.Hub) {
 		for idx, p := range peers {
 			tag := ""
 			if activePeer != nil && p.Fingerprint == activePeer.Fingerprint {
-				tag = " [ACTIVE 🟢]"
+				// No green dot. "Active" says which peer a send would go to --
+				// it is a selection, not a status, and a green circle on the
+				// same line as the reachability reads as a health signal. It was
+				// "[ACTIVE 🟢]", which is the claim removed from the
+				// banner above, restated.
+				tag = " [active]"
 			} else if p.IsDefault {
-				tag = " [DEFAULT]"
+				tag = " [default]"
 			}
-			fmt.Printf("  [%d] %s — %s (SAS: %s, FP: %s)%s\n", idx+1, p.DisplayName(), p.Address, p.SAS(), p.Fingerprint, tag)
+
+			// The full 64-character fingerprint used to be printed inline here,
+			// which made every peer line about 128 columns -- wrapping across two
+			// lines on an 80-column terminal and pushing everything else off the
+			// screen. The banner above spends seven tests and a good deal of code
+			// respecting the terminal's width; the listing underneath it respected
+			// nothing.
+			//
+			// The fingerprint is dropped rather than truncated, because it is not
+			// what a reader of this line is for: the SAS is the code two people
+			// compare out loud, the address is where it claims to be, and whether
+			// it is answering is the thing a reader can act on. It remains in the
+			// dashboard's peer listing and in the pair output, which is where
+			// someone comparing two machines actually looks.
+			index := fmt.Sprintf("  [%d] ", idx+1)
+			address := fmt.Sprintf("— %s (SAS: %s)", p.Address, p.SAS())
+
+			// Fit by measurement, not by a budget computed from the parts.
+			//
+			// An estimate that disagrees with the measurement produces a line
+			// that is over budget while appearing to have been fitted, which is
+			// the exact failure this code exists to prevent. The parts contain
+			// runes whose width is not their byte length -- an em dash, a bullet,
+			// an ellipsis -- and cockpitTruncate's own ellipsis adds a column the
+			// budget never had. So: assemble, measure, cut by the excess, repeat.
+			//
+			// The name is what gives way first. A peer that is down is the fact
+			// worth most on this line, and the name is still identifiable from
+			// the address and pairing code beside it -- so the sentence is tried
+			// at full length, then short, then as a bare fact, and only then is
+			// the name allowed to reach its floor.
+			assemble := func(name, reach string) string {
+				// The trailing space belongs to the name, so that truncating the
+				// name never leaves "laptop-3—" -- which happened, and which a
+				// reader takes for part of the address.
+				if name != "" {
+					name += " "
+				}
+				return index + name + address + reachPrefix(reach) + tagSuffix(tag)
+			}
+			fitName := func(reach string) string {
+				name := p.DisplayName()
+				for pass := 0; pass < 8; pass++ {
+					excess := cockpitWidth(assemble(name, reach)) - cockpitPeerLineWidth
+					if excess <= 0 || cockpitWidth(name) <= cockpitPeerNameFloor {
+						break
+					}
+					name = cockpitTruncate(p.DisplayName(), cockpitWidth(name)-excess)
+				}
+				return name
+			}
+
+			health := h.PeerHealthOf(p.Fingerprint)
+			reach := cockpitReachDetail(health)
+			name := fitName(reach)
+			if cockpitWidth(assemble(name, reach)) > cockpitPeerLineWidth {
+				for _, budget := range []int{cockpitReachDetailShort, cockpitReachBareWidth} {
+					shorter := cockpitReachDetailFitting(health, budget)
+					if shorter == "" || shorter == reach {
+						continue
+					}
+					reach = shorter
+					name = fitName(reach)
+					if cockpitWidth(assemble(name, reach)) <= cockpitPeerLineWidth {
+						break
+					}
+				}
+			}
+
+			// Order: index, name, address, reachability, selection. The two
+			// growing parts come last so the line stays readable as it grows.
+			fmt.Println(assemble(name, reach))
 		}
 	}
 	fmt.Println("-------------------------")

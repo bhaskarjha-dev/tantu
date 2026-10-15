@@ -6480,3 +6480,135 @@ another mystery.
 
 It is recorded here as unattributed rather than resolved, because that is what it
 is.
+## Batch Z82 - looking at the cockpit (2026-10-15)
+
+Four batches had gone by with nothing wrong found by adding gates, which is the
+signal to stop adding gates and go look at a product. The cockpit was the obvious
+thing to look at: 887 lines, nineteen functions, 334 lines of tests across three
+files -- one of them thirty-seven lines -- and seven of those tests covering the
+banner box alone. A browser harness cannot cover a terminal UI, so nothing here
+was ever looked at by anything.
+
+So it was rendered, and read.
+
+### The banner said Online about a peer it had proved was not there
+
+`printCockpitBanner` wrote `"%s (%s) [Online 🟢]"` for every paired peer,
+unconditionally. Pairing records that you trust a machine; it says nothing about
+whether the machine is switched on. A peer at `192.0.2.44` -- TEST-NET-1,
+reserved by RFC 5737 and unroutable by design -- was reported Online for as long
+as it stayed in the store, including after the heartbeat had spent minutes
+proving otherwise.
+
+Rendered, with a column ruler, the line said:
+
+    |  ➜ Peer:       laptop-1 (192.0.2.44:9877) [Online 🟢]           |
+
+and the listing underneath it, after the Hub had six consecutive failed probes on
+record, said the same thing.
+
+This was made worse rather than merely wrong by the heartbeat landing in Z77. The
+dashboard grew a truthful reachability chip, so from then on the same Hub, at the
+same moment, was honest in one interface and lying in the other. Two peers of the
+project's own reasoning -- "address is not identity", "reachability is the one
+thing a user acts on" -- applied to the cockpit's banner and were not applied
+there at all, because nobody had opened the file.
+
+### The green circle was doing two jobs
+
+`[ACTIVE 🟢]` on the peer listing is the same claim in a different place. "Active"
+says which peer a send would go to: it is a selection. It wore a status light,
+on the same line as the reachability, in the same green.
+
+That is now `[active]`, lowercase and without a circle, and it sits at the end of
+the line where a growing selection does not push the address off the screen.
+
+### The listing ignored terminal width entirely
+
+The banner spends seven tests and a good deal of code sizing its box to its
+content. The listing directly beneath it printed the full 64-character
+fingerprint inline, making every peer line about 128 columns -- wrapping across
+two lines on an 80-column terminal, with the pairing code and any reachability
+pushed off the screen.
+
+The fingerprint is gone from the line rather than truncated, because it is not
+what a reader of that line is for: the SAS is the code two people compare out
+loud, the address is where it claims to be, and whether it is answering is the
+thing a reader can act on. It remains in the dashboard's peer listing, in the pair
+output, and in the store the other cockpit commands read from -- and a gate
+asserts a peer named in the listing is still resolvable to a fingerprint, so the
+removal is a relocation rather than a deletion.
+
+### Fitting a line, by measurement
+
+The budget is 100 columns, not 80: with an index, a name, an address, a pairing
+code, a sentence and a marker, 80 does not hold them once a peer has stopped
+answering.
+
+The first attempt computed the budget from the widths of the parts. That does not
+work, and the reason is worth recording: the parts contain runes whose width is
+not their byte length -- an em dash, a bullet, an ellipsis -- and
+`cockpitTruncate`'s own ellipsis adds a column the budget never accounted for. So
+a line that appeared to have been fitted was two columns over. Measuring the
+assembled line and cutting by the measured excess fixed it, and the red proof for
+"estimate from the parts" reproduces the 147-column line.
+
+Truncation happens in a fixed order, because the parts are not equally worth
+their columns: the name gives way first, then the sentence shortens from
+"Not answering · last answered 12m ago" through "not answering (12m)" to "down",
+and the address and pairing code are never touched. A peer that is down is the
+fact a reader most needs, and it is the last thing cut rather than the first.
+
+### Four things this got wrong on the way, all recorded
+
+**A gate grepping for a token the surface does not contain.** The red proof for
+"call every peer Online" came back NOT RED twice. The first attempt inserted a
+second `LastChecked` case before the `Reachable` case, which Go never reaches --
+a build-clean, test-clean no-op. The second inserted the green circle into the
+default arm and *still* passed, because the gate grepped for the literal word
+"Online", and the banner's marker is now the circle on its own. The gate was
+checking the banner for a string the banner does not emit, so it passed for any
+reason whatsoever.
+
+That is the fifth time this repository has produced a gate that cannot fail
+because it asserts against the wrong surface, and it is the same shape as the
+first: not a missing check, but a check pointed at nothing. The gate now asserts
+on U+1F7E2, the mark that actually means reachable on that surface.
+
+**A produced condition built from the wrong certificate.** The reachable-peer
+gate built its second Hub's peer record from a freshly generated identity, which
+is a valid certificate that the Hub does not hold. The handshake failed at the
+certificate check rather than at the reachability check, and the gate reported
+"could not produce a reachable peer" -- a skip wearing a diagnostic. It now reads
+the second Hub's real identity, so a successful probe means a completed mTLS
+handshake.
+
+**A floor that is not observable.** The name floor of ten columns cannot be shown
+to matter: with the shortening ladder above it intact, the truncation loop
+converges at seventeen and never reaches the floor. It is kept as a safety net and
+is not claimed to be gated. The ladder, which does the actual work, is gated.
+
+**An assertion that was wrong, not weak.** "fitting the line dropped the port"
+asserted on `:9877)` while the rendered line ends `]:9877 (SAS: ...)`. Two of
+these were spent on the assertion and one on the code; both are the same mistake.
+
+### What is gated, and how
+
+Five gates, nine red proofs, every break verified to build before it is counted,
+and every skip detected -- a skipped check exits zero, which is the same trap as a
+check that cannot fail.
+
+`TestCockpitDoesNotCallAnUnroutablePeerOnline` starts a Hub, registers a peer at a
+TEST-NET address, waits for the Hub's own loop to produce a failed probe, and then
+reads what was printed. The condition is produced rather than constructed: a
+struct written by the test proves the renderer agrees with a struct the test
+wrote. `TestCockpitReportsAReachablePeerAsReachable` produces the opposite
+condition from a second real Hub over a real handshake, and skips with a reason
+naming what covers it if the machine will not let two Hubs reach each other --
+`TestCockpitReachWordingForEveryHealth` covers every wording exhaustively without
+needing the wire.
+
+The remaining three are pure decision gates over a `PeerHealth`, which is the
+right shape here because a `PeerHealth` genuinely is the whole domain for the
+wording. They are not a substitute for the two produced gates: those are what
+prove the cockpit reads the Hub's health at all, which is the defect.
