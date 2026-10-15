@@ -1874,7 +1874,71 @@ const OVERFLOW_PROBE = `(function(){
             };
           })()`).catch((e) => ({ error: String(e) }));
 
-          // The API payload is part of the detail, not just the DOM. A check
+          // Every reachability state, rendered by the product's own renderer.
+//
+// The sustained-failure copy cannot be reached end to end: the backoff starts at
+// 60s and doubles, so a peer has to be genuinely absent for about three minutes
+// before the wording changes, and no browser run waits that long to look at a
+// chip. So the states are driven through renderPeersList instead, with the health
+// the Hub would have produced. That is the real renderer and the real DOM --
+// only the clock is supplied rather than waited for.
+//
+// The claim being held is the copy's: a peer that is up says so, a peer that
+// just went quiet is not yet alarming, a peer that has been quiet through several
+// checks says so and says what has been done about it, and a peer that has never
+// answered is distinguished from one that has stopped.
+const RENDER_STATES = await js(`(function () {
+  function ago(secs) { return new Date(Date.now() - secs * 1000).toISOString(); }
+  var cases = [
+    ['reachable', { reachable: true,  last_checked: ago(5),    last_ok: ago(5),       consecutive_failures: 0 }],
+    ['just-went-quiet', { reachable: false, last_checked: ago(30),  last_ok: ago(20),    consecutive_failures: 1 }],
+    ['sustained', { reachable: false, last_checked: ago(400), last_ok: ago(600),   consecutive_failures: 7 }],
+    ['never-answered', { reachable: false, last_checked: ago(400), last_ok: '',    consecutive_failures: 7 }],
+    ['unprobed', { reachable: false, last_checked: '',       last_ok: '',        consecutive_failures: 0 }],
+  ];
+  var out = {};
+  for (var i = 0; i < cases.length; i++) {
+    var name = cases[i][0], health = cases[i][1];
+    var list = document.getElementById('peersList');
+    var before = list ? list.innerHTML : '';
+    renderPeersList([{
+      name: 'gate-peer', fingerprint: 'ff', address: '192.0.2.1:9877',
+      sas: 'ABCDEF', active: false, is_default: false, health: health,
+    }]);
+    var chip = document.querySelector('#peersList [data-reach]');
+    out[name] = {
+      rendered: chip ? (chip.getAttribute('data-reach') + ' | ' +
+                        (chip.innerText || '').replace(/\\s+/g, ' ').trim()) : null,
+    };
+    if (list) list.innerHTML = before;
+  }
+  return JSON.stringify(out);
+})()`).catch((e) => JSON.stringify({ error: String(e) }));
+
+const reachStates = (() => { try { return JSON.parse(RENDER_STATES); } catch (_) { return null; } })();
+const wantStates = {
+  // reachable -> says so, and says when.
+  reachable: (c) => c && c.rendered && c.rendered.indexOf('ok |') === 0 && /Reachable/.test(c.rendered),
+  // A single failed check is not yet a story; it must not claim otherwise.
+  'just-went-quiet': (c) => c && c.rendered && c.rendered.indexOf('down |') === 0 &&
+    /Not answering/.test(c.rendered) && !/checked/.test(c.rendered),
+  // Persisted: says so, and says what has been done about it.
+  sustained: (c) => c && c.rendered && c.rendered.indexOf('down |') === 0 &&
+    /Not answering/.test(c.rendered) && /checked \d+ times/.test(c.rendered),
+  // Never answered is a different problem from stopped answering, and saying
+  // "last answered just now" for a peer that never has would be a lie.
+  'never-answered': (c) => c && c.rendered && /has not answered since pairing/.test(c.rendered) &&
+    !/last answered/.test(c.rendered),
+  // No probe yet: no verdict at all, and specifically not a red one.
+  unprobed: (c) => c && c.rendered === null,
+};
+for (const [name, predicate] of Object.entries(wantStates)) {
+  check('peers: reachability copy for a peer that is "' + name + '"',
+    predicate(reachStates && reachStates[name]),
+    JSON.stringify(reachStates && reachStates[name]));
+}
+
+// The API payload is part of the detail, not just the DOM. A check
           // that only reports "no chips" cannot distinguish "the heartbeat never
           // ran" from "the heartbeat ran and the dashboard did not render it",
           // and those are different bugs in different places.

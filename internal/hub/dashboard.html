@@ -2884,6 +2884,14 @@ function sinceLabel(iso) {
 // "stopped answering 4 minutes ago" and "never answered" are different problems:
 // the first is a sleeping laptop, the second is a wrong address or a machine that
 // was never really paired.
+//
+// The sustained copy is the second half of a promise made when the heartbeat was
+// designed: grey out first, say more only once it has persisted. With the backoff
+// at 60s doubling to 15 minutes, three failures is roughly three minutes of a
+// machine that is genuinely not there, which is long enough to be worth a second
+// sentence and short enough that the first one was not noise.
+const PEER_UNANSWERED_SUSTAINED = 3;
+
 function peerHealthChip(pr) {
   const h = pr && pr.health;
   if (!h || !h.last_checked) return '';
@@ -2902,13 +2910,20 @@ function peerHealthChip(pr) {
       '<span>Reachable' + when + '</span></div>';
   }
 
-  const detail = okSince
+  const was = okSince
     ? 'last answered ' + escapeHTML(okSince)
     : 'has not answered since pairing';
+  // Naming the number of checks is how the reader learns that something is being
+  // done about it, rather than that the page gave up and is now showing a
+  // stale fact. It is the honest half of an automatic repair.
+  const effort = (h.consecutive_failures || 0) >= PEER_UNANSWERED_SUSTAINED
+    ? ' &middot; checked ' + escapeHTML(String(h.consecutive_failures)) + ' times'
+    : '';
+
   return '<div data-reach="down" style="display:flex; align-items:center; gap:0.4rem; font-size:0.8rem; ' +
     'color:var(--warning-text); margin-bottom:0.5rem;">' +
     '<span aria-hidden="true">&#9679;</span>' +
-    '<span>Not answering &middot; ' + detail + '</span></div>';
+    '<span>Not answering &middot; ' + was + effort + '</span></div>';
 }
 
 function renderPeersList(peers) {

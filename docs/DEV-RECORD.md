@@ -6387,3 +6387,40 @@ asserted by nothing, and the arithmetic it consults is asserted directly.
 
 Recorded rather than quietly left as a passing check, which is the thing this
 repository has been getting wrong in one form or another for seven batches.
+## Batch Z79 - the second half of a promise (2026-10-15)
+
+When the heartbeat was designed the copy was agreed: grey a peer out, and say
+more only once it has persisted. The greying shipped. The rest did not, which is
+a commitment left open on this project's own terms.
+
+A peer that has failed one check and a peer that has failed seven are now worded
+differently. The first gets "Not answering - last answered 20 seconds ago" and
+nothing else, because a single failed check after a blip is not a story. The
+second gets the same sentence plus "checked N times", which is the honest half of
+an automatic repair: it is how the reader learns something is being done about it
+rather than that the page gave up and is now showing a stale fact.
+
+Three consecutive checks is roughly three minutes at the current backoff --
+60s, then doubling -- long enough that the first wording was not noise and short
+enough that a sleeping laptop has not been declared dead.
+
+A peer that has *never* answered is still worded differently from one that has
+stopped, and that distinction is now held by a gate rather than by intention.
+
+### Gating the copy without waiting for it
+
+The sustained wording cannot be reached end to end: the backoff means a peer has
+to be genuinely absent for about three minutes, and no browser run waits that long
+to look at a chip.
+
+So the states are driven through `renderPeersList` -- the product's own renderer,
+producing the real DOM -- with the health the Hub would have produced. Only the
+clock is supplied rather than waited for. Five states, each with a red proof that
+fails that state and only that state: reachable, just-went-quiet, sustained,
+never-answered, and unprobed.
+
+The red proof for this batch initially reported **four NOT RED**, which was the
+red proof's fault and not the gates': it ran `--peers`, while the checks live in
+the two-Hub section, so they were skipped and a skipped run exits zero. A skipped
+check is not a passing check, and the harness says so -- but only if someone reads
+which section ran. Worth remembering that "not red" can mean "never ran".
