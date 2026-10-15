@@ -29,6 +29,21 @@ type SendDropConfig struct {
 	// is the only way a sender can tell the user that nothing new was written
 	// rather than claiming a second verified copy exists.
 	OnComplete func(DropComplete)
+	// OnProgress optionally observes how many bytes have been handed to the
+	// transport, cumulatively, after each chunk is sent. It is local
+	// instrumentation and is not sent on the wire.
+	//
+	// It exists because a transfer has exactly one honest mid-flight signal and
+	// the sender was throwing it away: the sender knows the running byte count
+	// after every chunk, and nothing above it could see it. Without this, any
+	// progress a user sees is XHR-local -- a browser watching its own upload
+	// socket -- so a transfer started anywhere else has no progress at all, and
+	// an interrupted one cannot be distinguished from one that never started.
+	//
+	// Cumulative and monotonic: the value is what has been *sent*, so on a
+	// resumed transfer it continues from the receiver's offset rather than
+	// restarting from zero. Callers that want a rate diff consecutive calls.
+	OnProgress func(bytesSent int64)
 }
 
 func generateDropID() string {
@@ -127,6 +142,18 @@ func SendDrop(ctx context.Context, conn transport.Conn, meta DropSend, payload i
 	hasher := sha256.New()
 	startChunkIndex := 0
 
+	// sent counts what has gone to the transport, and notify reports it. The
+	// counter starts at the receiver's resume offset rather than zero, so a
+	// resumed transfer continues rather than appearing to restart.
+	sent := int64(0)
+	notify := func(justSent int64) {
+		if cfg.OnProgress == nil {
+			return
+		}
+		sent += justSent
+		cfg.OnProgress(sent)
+	}
+
 	// Handle offset resumption if receiver already has partial bytes.
 	if ack.ReceivedBytes > 0 {
 		if ack.ReceivedBytes < 0 || ack.ReceivedBytes%int64(meta.ChunkSize) != 0 {
@@ -147,6 +174,7 @@ func SendDrop(ctx context.Context, conn transport.Conn, meta DropSend, payload i
 			return fmt.Errorf("seek to resume offset %d: %w", ack.ReceivedBytes, err)
 		}
 		startChunkIndex = int(ack.ReceivedBytes / int64(meta.ChunkSize))
+		sent = ack.ReceivedBytes
 	}
 
 	buf := make([]byte, meta.ChunkSize)
@@ -171,6 +199,9 @@ func SendDrop(ctx context.Context, conn transport.Conn, meta DropSend, payload i
 		if err := conn.Send(TypeDropData, chunk); err != nil {
 			return fmt.Errorf("send drop_data chunk %d: %w", startChunkIndex, err)
 		}
+		// Nothing to report: an empty payload has no bytes in flight, and a
+		// progress callback that fired with zero would be indistinguishable from
+		// a stalled one.
 	} else if err == io.ErrUnexpectedEOF {
 		// Exactly one partial chunk
 		if err := ctx.Err(); err != nil {
@@ -190,6 +221,7 @@ func SendDrop(ctx context.Context, conn transport.Conn, meta DropSend, payload i
 		if err := conn.Send(TypeDropData, chunk); err != nil {
 			return fmt.Errorf("send drop_data chunk %d: %w", startChunkIndex, err)
 		}
+		notify(int64(len(chunkData)))
 	} else {
 		// Full chunk read, read-ahead loop
 		currentData := make([]byte, n)
@@ -220,6 +252,7 @@ func SendDrop(ctx context.Context, conn transport.Conn, meta DropSend, payload i
 				if err := conn.Send(TypeDropData, chunk); err != nil {
 					return fmt.Errorf("send drop_data chunk %d: %w", chunkIndex, err)
 				}
+				notify(int64(len(currentData)))
 				break
 			} else if nextErr == io.ErrUnexpectedEOF {
 				// currentData is not final, but next is final
@@ -232,6 +265,7 @@ func SendDrop(ctx context.Context, conn transport.Conn, meta DropSend, payload i
 				if err := conn.Send(TypeDropData, chunk); err != nil {
 					return fmt.Errorf("send drop_data chunk %d: %w", chunkIndex, err)
 				}
+				notify(int64(len(currentData)))
 
 				chunkIndex++
 				lastData := make([]byte, nextN)
@@ -248,6 +282,7 @@ func SendDrop(ctx context.Context, conn transport.Conn, meta DropSend, payload i
 				if err := conn.Send(TypeDropData, lastChunk); err != nil {
 					return fmt.Errorf("send drop_data chunk %d: %w", chunkIndex, err)
 				}
+				notify(int64(len(lastData)))
 				break
 			} else {
 				// nextN == meta.ChunkSize, currentData is not final
@@ -260,6 +295,7 @@ func SendDrop(ctx context.Context, conn transport.Conn, meta DropSend, payload i
 				if err := conn.Send(TypeDropData, chunk); err != nil {
 					return fmt.Errorf("send drop_data chunk %d: %w", chunkIndex, err)
 				}
+				notify(int64(len(currentData)))
 
 				chunkIndex++
 				currentData = make([]byte, nextN)

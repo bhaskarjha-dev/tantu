@@ -967,6 +967,22 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			sendCfg := drop.SendDropConfig{Timeout: h.cfg.Timeout}
 			sendCfg.OnAck = func(drop.DropAck) { negotiated = true }
 			sendCfg.OnComplete = func(c drop.DropComplete) { suppressedDuplicate = c.Duplicate }
+
+			// An in-flight record, so there is something for the progress ticks to
+			// advance. Recorded with no State: the outcome is not known yet, and a
+			// reader must be able to tell "moving" from "finished" without guessing.
+			//
+			// This persists once, at the start, so an interrupted transfer leaves a
+			// trace saying a transfer was attempted -- which is the difference between
+			// "nothing happened" and "it died halfway". The ticks that follow do not
+			// persist, because a tick arrives once per chunk.
+			progressID := h.beginOutboundOperation(OperationRecord{
+				OperationID: opID,
+				DropID:      dropID, Kind: opKind, Name: opName, Size: opSize,
+				Destination: destName, DestinationFingerprint: destFP, DestinationAddress: destAddr,
+				CreatedAt: opCreated, UpdatedAt: time.Now(),
+			})
+			sendCfg.OnProgress = func(sent int64) { h.advanceOutboundProgress(progressID, sent) }
 			if err = drop.SendDrop(sendCtx, conn, meta, strings.NewReader(textReq.Text), sendCfg); err != nil {
 				bytesForClassify := int64(0)
 				if negotiated {
@@ -1118,6 +1134,18 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 		sendCfg := drop.SendDropConfig{Timeout: h.cfg.Timeout}
 		sendCfg.OnAck = func(drop.DropAck) { negotiated = true }
 		sendCfg.OnComplete = func(c drop.DropComplete) { suppressedDuplicate = c.Duplicate }
+		// As for the text path: one persisted in-flight record, then ticks that
+		// deliberately do not touch the disk. A transfer interrupted by a crash
+		// leaves this entry behind saying a transfer was attempted, which is the
+		// difference between "nothing happened" and "it died halfway".
+		progressID := h.beginOutboundOperation(OperationRecord{
+			OperationID: opID,
+			DropID:      dropID, Kind: opKind, Name: opName, Size: opSize,
+			Destination: destName, DestinationFingerprint: destFP, DestinationAddress: destAddr,
+			CreatedAt: opCreated, UpdatedAt: time.Now(),
+		})
+		sendCfg.OnProgress = func(sent int64) { h.advanceOutboundProgress(progressID, sent) }
+
 		if err = drop.SendDrop(sendCtx, conn, meta, file, sendCfg); err != nil {
 			bytesForClassify := int64(0)
 			if negotiated {

@@ -102,8 +102,50 @@ func NewOperationLedger(capacity int) *OperationLedger {
 	}
 }
 
-// Add appends an operation, evicting the oldest when at capacity and
-// pruning entries older than the retention window.
+// UpdateProgress advances an in-flight operation's byte count, returning false if
+// no such operation is in the ledger.
+//
+// Separate from Add because a progress tick is not a new event. Appending one
+// per chunk would fill the ledger with hundreds of entries for a single transfer,
+// evict every real operation, and -- since the caller persists the ledger on every
+// record -- write the whole history to disk once per chunk.
+//
+// An operation is only advanced while it is in flight. A completed record's
+// BytesSent is the verified total, and letting a late callback overwrite it
+// would restate a verified fact as something still moving.
+func (l *OperationLedger) UpdateProgress(operationID string, bytesSent int64) bool {
+	if l == nil || operationID == "" {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for i := range l.items {
+		if l.items[i].OperationID != operationID {
+			continue
+		}
+		if l.items[i].State != "" {
+			return false
+		}
+		if bytesSent > l.items[i].BytesSent {
+			l.items[i].BytesSent = bytesSent
+		}
+		return true
+	}
+	return false
+}
+
+// Add appends an operation, or replaces the one already recorded under the same
+// operation ID.
+//
+// Replacing rather than always appending is what keeps a transfer to a single
+// row in the history. An in-flight record is written at the start of a send and
+// the terminal record at the end, and they are the same operation -- a list that
+// showed both would tell a user their transfer happened twice, once of them
+// apparently unverifiable, which is worse than showing no progress at all.
+//
+// The first version of in-flight progress appended, and three existing gates
+// caught it within one run. Those gates were asserting one record per transfer,
+// which is the property that matters here; they had no idea progress existed.
 func (l *OperationLedger) Add(op OperationRecord) {
 	if l == nil {
 		return
@@ -112,6 +154,14 @@ func (l *OperationLedger) Add(op OperationRecord) {
 	defer l.mu.Unlock()
 	if l.capacity <= 0 {
 		l.capacity = maxOutboundOperations
+	}
+	if op.OperationID != "" {
+		for i := range l.items {
+			if l.items[i].OperationID == op.OperationID {
+				l.items[i] = op
+				return
+			}
+		}
 	}
 	for len(l.items) >= l.capacity && len(l.items) > 0 {
 		l.items = l.items[1:]
@@ -361,6 +411,53 @@ func (h *Hub) recordOutboundOperation(op OperationRecord) {
 			h.logger.Warn(DomainDrop, fmt.Sprintf("Could not save transfer history: %v", err))
 		}
 	}
+}
+
+// beginOutboundOperation records a transfer that is about to start, so there is
+// an in-flight entry to advance before the first byte moves, and returns the
+// operation ID its progress ticks should carry.
+//
+// The caller must pass the operation ID it will use for the terminal record.
+// Passing the same ID on both ends is what lets the ledger *replace* the in-flight
+// entry when the transfer finishes; a second ID produced a second row, so every
+// send appeared in the history twice -- once as an apparently unverifiable ghost.
+// That was caught by three gates that had been asserting one record per transfer
+// long before progress existed.
+//
+// The empty State is the marker: an operation with no state is one whose outcome
+// nobody knows yet, which is exactly what UpdateProgress refuses to advance once
+// it learns otherwise. A reader can therefore tell "moving" from "finished"
+// without a second field, and a crash leaves an entry with no state -- a transfer
+// that was attempted and never finished, which is the difference between
+// "nothing happened" and "it died halfway".
+func (h *Hub) beginOutboundOperation(op OperationRecord) string {
+	if h == nil {
+		return ""
+	}
+	if op.OperationID == "" {
+		op.OperationID = newOperationID()
+	}
+	h.recordOutboundOperation(op)
+	return op.OperationID
+}
+
+// advanceOutboundProgress reports that an in-flight operation has sent bytes.
+//
+// Deliberately does not persist. recordOutboundOperation rewrites the whole
+// history to disk on every call, and a progress tick arrives once per chunk --
+// persisting here would mean writing the entire transfer history every few
+// hundred kilobytes, which is a far larger cost than the progress is worth. An
+// in-flight record is lost on a crash, which is correct: a transfer interrupted
+// by a crash did not reach its verified total, and reporting the last progress
+// tick as the outcome would be a claim nobody made.
+func (h *Hub) advanceOutboundProgress(operationID string, bytesSent int64) {
+	if h == nil {
+		return
+	}
+	h.mu.RLock()
+	ledger := h.outboundOps
+	h.mu.RUnlock()
+	ledger.UpdateProgress(operationID, bytesSent)
 }
 
 // listOutboundOperations returns a copy of the generation ledger.

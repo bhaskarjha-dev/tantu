@@ -6793,3 +6793,108 @@ Writing that down is more use than a mutation that silently proved nothing.
 
 The other break is red, and by a wide margin: restoring the per-peer reconcile
 gives **131 reads in fifteen seconds against a budget of 45**.
+## Batch Z85 - the last Evidence gap that was not blocked on a person (2026-10-15)
+
+2.5 was the last entry in KNOWN-LIMITATIONS that did not need a person, a second
+machine, or the deferred tag. It read:
+
+> Still open: active upload progress (progress advancing every 250ms). That
+> genuinely cannot be measured here. The progress bar is driven by
+> `xhr.upload.onprogress`, a client-side event, and the operation ledger writes
+> `BytesSent` only on completion, always as the full size, with no in-flight state
+> at all.
+
+That sentence had the blocker and the diagnosis backwards. It is not a
+measurement problem. **The server had no mid-transfer signal to measure** --
+`BytesSent` was written once, at the end, always as the full size. Any progress
+a user saw was their own browser watching its own upload socket, which is nothing
+for a transfer started anywhere else: not `tantu send`, not a second dashboard,
+not anyone but the person who started it.
+
+### The signal already existed and was being thrown away
+
+The sender's chunk loop knows exactly how many bytes the transport has accepted
+after every `conn.Send`. `SendDropConfig` gained an `OnProgress` callback, called
+at all five send sites with the running total.
+
+Cumulative, and starting from the receiver's resume offset rather than zero, so a
+resumed transfer continues instead of appearing to restart. A resumed transfer
+restarting its count is the kind of thing that reads as a bug because it looks
+like one.
+
+The Hub records an in-flight operation before the first byte moves, and each tick
+advances that record in place. Three rules, each of which was a gate:
+
+- A tick **advances**, never appends. Appending one per chunk would fill the
+  bounded ledger with hundreds of entries for one transfer and evict every real
+  operation.
+- A tick **cannot rewind a record that has an outcome**. `BytesSent` on a
+  completed record is a verified total, and a late callback restating it as
+  still moving is the same class of defect as the cockpit calling an unreachable
+  peer Online.
+- A tick **does not touch the disk**. `recordOutboundOperation` rewrites the
+  entire transfer history on every call; wiring progress through it -- the
+  obvious way -- would mean a full-history write per chunk, about sixty-four for a
+  4 MiB transfer, and a transfer measurably slower than the progress it reports.
+  That last one has no behavioural gate: counting writes needs a counter in
+  production code, and timing a transfer does not depend on the write. It is a
+  structural check over the two functions the tick path goes through.
+
+### Three gates that had never heard of progress, and were right
+
+The first version worked. Then three tests failed on the next full run:
+
+    records after upload wrong: [{OperationID:op-9a15... State:  Verified:false}
+                                 {OperationID:op-0dfa... State:completed Verified:true}]
+
+Every send was writing **two** history rows: the in-flight record and the terminal
+one, under different IDs, so nothing could correlate them. A user opening their
+transfer history would see each transfer happen twice, once of them apparently
+unverifiable -- which is worse than showing no progress at all.
+
+Those three gates had been asserting *one record per transfer* since long before
+progress existed. They had no idea it existed, and they were exactly right about
+the property that mattered. The fix is that both ends now carry the same
+operation ID, and the ledger *replaces* a record it already holds rather than
+appending beside it.
+
+This is the clearest result of the batch, and it argues for something this
+repository has been arguing for on its own: the gates that caught this were not
+written for this work. They were written for a property, and the work violated
+the property.
+
+### The cadence gate had to be lengthened before it meant anything
+
+The first version throttled the sender at 3ms per 64 KiB chunk, making a 4 MiB
+transfer finish in about 200ms -- **inside the 250ms budget**. So "no gap between
+reports exceeded the budget" was a claim about how short the transfer was, not
+about the reporting. A sender that reported once every two megabytes would have
+passed it.
+
+At 25ms per chunk the transfer spans about 1.6 seconds, several budgets, and a
+regression in reporting density now has to clear four times the budget to
+survive. A window has to be several budgets long before "never exceeded the
+budget" is a claim about the mechanism.
+
+### Two red proofs that were not red, and both were my fault
+
+**A break on dead code.** "Report a chunk's bytes only on the final one" inserted
+an early return next to the *final* chunk's report. It compiled, it changed the
+code, and the tests passed -- because returning early from the last chunk ends
+the transfer at exactly the point it ended anyway. A break has to alter the path
+the test runs. The replacement anchors the full-chunk branch, and goes red.
+
+**A break anchored on a branch that never executes.** Removing the progress
+report from the partial-chunk branch also passed, because 3 MiB divides evenly
+into 64 KiB chunks: 48 whole chunks, and the partial-chunk branch is dead. The
+gate passed against a defect because the test never walked the line the defect
+was on -- the same shape as the early-snapshot problem in Z78, in a different
+place.
+
+### What is not gated
+
+The browser-visible cadence: that the wire-level progress and the dashboard's own
+client-side progress agree inside a real browser during a real upload. Staging
+that needs an upload slow enough to watch, which needs a slow peer this harness
+cannot produce. Recorded in 2.5 as still open, in those terms, rather than
+claimed on the strength of a Go gate.
