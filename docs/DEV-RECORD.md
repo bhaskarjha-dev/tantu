@@ -7731,3 +7731,27 @@ The first version of the "distinguishable" gate asserted that both outcomes were
 non-nil. One of them is *supposed* to be nil -- nil is how it says "it stopped". I
 had written the assertion without asking what success looks like. It failed, which
 is the correct outcome, but it failed on my test rather than on the product.
+### Unattributed: one browser-job failure on Z96
+
+`064ca96` (Z96) failed **Dashboard acceptance (browser)**; its other eight checks
+passed, and the next commit containing the same code, `12dd3a0`, is 9/9 green.
+
+The log is not fetchable from here (the API returns 403 without a token), so I
+cannot say what failed. What I can say is what it is not:
+
+- **All nine harness runs pass locally** -- three engines x {peerless, `--peers`,
+  `--peers --two-hub`} -- and so do both self-check probes.
+- **A fast `Stop` cannot race a read in this harness.** Z96 made `Stop` return in
+  under a second where it previously waited out a probe's 10s handshake, and that
+  is exactly the shape of change that exposes a latent read-after-shutdown race.
+  Checked: `run.mjs` kills the main Hub and the `--two-hub` pair only at the very
+  end of the run, after every check, and reads nothing afterwards. The extra wait
+  was not covering anything here.
+- **The font hypothesis does not hold either.** The narrow-viewport self-check runs
+  a "native font" case with no font pinned, which is the obvious way a gate could
+  pass on Windows and fail on ubuntu. But it measures 53-62px of slack at 320px and
+  360px locally, so it is not near a boundary on either platform.
+
+Recorded as unattributed rather than as a flake, because "it did not recur" is not
+the same as knowing why. The next failure of this job should be read from its log
+before it is attributed.
