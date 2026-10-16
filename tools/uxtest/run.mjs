@@ -366,22 +366,65 @@ let hubs2 = null;
     // documented collateral failure in Batch Z31, once in this batch), so the
     // measurement waits for the state it is asserting, with a bounded deadline:
     // a thumbnail that never becomes visible still resolves to -1 and fails.
-    const thumb = await js(`(function(){return new Promise(function(resolve){
-      var t=document.getElementById('filePreviewThumb');
+    // The wait re-queries the element on every tick and, on timeout, reports what
+    // state the image was actually in.
+//
+// It did neither before, and that is why this check has now failed three times
+    // for reasons nobody could name: the first two are recorded in the comment
+    // above as "the blob's decode finished late", which is an assumption, and the
+    // third arrived on CI as loaded:false, op:"0", nw:0 after the full 4s --
+// indistinguishable from a CSP block, a load event that never fired, and an
+    // element that is no longer in the document.
+//
+// Those are three different bugs with three different fixes, and a check that
+// cannot tell them apart costs a full CI cycle per occurrence. So the timeout
+// path now answers which one it was:
+//
+//   connected=false  the element left the document; the wait was watching a node
+//                    nobody renders any more
+//   complete=false   the image never finished loading -- decode stalled, or the
+//                    blob was refused before any load could fire
+//   complete=true, nw=0
+//                    it loaded and failed to decode, which is what a CSP block
+//                    on blob: actually looks like, and is what this check's name
+//                    claims to be about
+//
+// The element is re-queried each tick because re-querying is free and it removes
+// a whole class of failure that no diagnostic could otherwise explain.
+const thumb = await js(`(function(){return new Promise(function(resolve){
       var dest=document.getElementById('filePreviewDest');
       var t0=performance.now();
       (function tick(){
-        var op=Number(getComputedStyle(t).opacity);
-        if(op>=0.99){ resolve({nw:t.naturalWidth, loaded:t.classList.contains('loaded'), op:String(op),
-                              settleMs:Math.round(performance.now()-t0), dest:dest.textContent}); return; }
-        if(performance.now()-t0>4000){ resolve({nw:t.naturalWidth, loaded:t.classList.contains('loaded'), op:String(op),
-                              settleMs:-1, dest:dest.textContent}); return; }
+        var t=document.getElementById('filePreviewThumb');
+        if(!t){
+          resolve({missing:true, settleMs:-1, dest:dest?dest.textContent:''}); return;
+        }
+        var snapshot=function(settleMs){
+          return {nw:t.naturalWidth,
+                  loaded:t.classList.contains('loaded'),
+                  op:String(Number(getComputedStyle(t).opacity)),
+                  complete:!!t.complete,
+                  connected:t.isConnected,
+                  src:(t.currentSrc||t.src||'').slice(0,5),
+                  settleMs:settleMs,
+                  dest:dest?dest.textContent:''};
+        };
+        if(Number(getComputedStyle(t).opacity)>=0.99){ resolve(snapshot(Math.round(performance.now()-t0))); return; }
+        if(performance.now()-t0>4000){ resolve(snapshot(-1)); return; }
         setTimeout(tick,25);
       })();
     });})()`);
     console.log('uxtest: preview thumbnail settled in ' + (thumb && thumb.settleMs) + 'ms');
-    check('preview thumbnail decodes (CSP allows blob:)', thumb && thumb.nw > 0, JSON.stringify(thumb));
-    check('preview thumbnail is visible', thumb && thumb.loaded && Number(thumb.op) > 0.9 && thumb.settleMs >= 0, JSON.stringify(thumb));
+    // Two failures rather than one, because they are two different claims and the
+    // difference between them is the diagnosis: a decode failure and a load that
+    // never completed have different causes and different fixes, and merging them
+    // is what made this check expensive three times.
+    check('preview thumbnail decodes (CSP allows blob:)',
+      thumb && !thumb.missing && thumb.nw > 0,
+      thumb && thumb.missing ? 'the preview element is not in the document' : JSON.stringify(thumb));
+    check('preview thumbnail is visible',
+      thumb && !thumb.missing && thumb.loaded && Number(thumb.op) > 0.9 && thumb.settleMs >= 0,
+      JSON.stringify(thumb));
     check('preview names its destination', thumb && /Destination: /.test(thumb.dest || ''), thumb && thumb.dest);
     await js('cancelPendingSend(); "ok"');
 

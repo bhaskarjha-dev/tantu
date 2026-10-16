@@ -6898,3 +6898,68 @@ client-side progress agree inside a real browser during a real upload. Staging
 that needs an upload slow enough to watch, which needs a slow peer this harness
 cannot produce. Recorded in 2.5 as still open, in those terms, rather than
 claimed on the strength of a Go gate.
+## Batch Z86 - a check that has failed three times for unnamed reasons (2026-10-15)
+
+Z85 went red on one job: Dashboard acceptance, WebKit with three seeded peers,
+three checks -- first useful render, preview thumbnail decodes, preview thumbnail
+visible. All three with `nw:0, loaded:false, op:"0"` after the full four-second
+deadline.
+
+The first thing to establish was whether my change had done it. It had not:
+
+- My change touches `internal/drop/sender.go`, the operation ledger, and two
+  send handlers. Nothing in `dashboard.html`, and nothing on the path that
+  renders a preview thumbnail.
+- All three failing checks are in the harness's **base** section, at line 383,
+  long before the `--peers` block at line 2040. So the same checks had **passed**
+  in CI's base WebKit run and failed in its peers run: same code, different run.
+- `--browser=webkit --peers` passes locally, 105/105.
+
+Same code, different run, unreproducible locally: the check is flaky, and the
+question worth asking is why a flaky check costs a full CI cycle every time it
+happens.
+
+### The answer is that the check could not explain itself
+
+The wait polled `opacity >= 0.99` for four seconds and then reported
+`{nw, loaded, op, settleMs}`. Those four fields describe the *symptom* -- a
+thumbnail that is not visible -- and cannot distinguish:
+
+| cause | how it presents |
+|---|---|
+| the element left the document | `nw:0, loaded:false, op:0` |
+| the load never finished | `nw:0, loaded:false, op:0` |
+| CSP refused the blob, so it loaded and failed to decode | `nw:0, loaded:false, `sometimes` op:0` |
+
+Three different bugs, three different fixes, one indistinguishable report. And
+this check had already cost two runs on an earlier occasion -- the comment
+above it said so, and attributed both to "the blob's decode finished late", which
+was an assumption written down as a finding.
+
+So the wait now re-queries the element on every tick and, on timeout, reports the
+state that separates them:
+
+    connected=false   the element left the document
+    complete=false    the image never finished loading
+    complete=true, nw=0
+                      it loaded and failed to decode -- which is what a CSP block
+                      on blob: actually looks like, and what the check's name
+                      claims to be about
+
+Re-querying each tick costs nothing and removes a class of failure no diagnostic
+could otherwise explain. The two checks are also split rather than merged, since
+"it decoded" and "it became visible" are two claims with two causes.
+
+**This is the third occurrence of one pattern in this repository**: a check that
+cannot say why it failed. The budget gate that claimed "the path regressed, not
+the machine" (Z83), the relay window that reported only "within 5s" (Z81), and
+now this. Each was fixed by making the failure *report its shape* rather than
+its verdict. The recurring lesson is not "add more checks" -- it is that a check
+which names a cause it has not established costs more than one which names none,
+because it ends the investigation.
+
+### Not established
+
+Which of the three it was, on that run. It did not reproduce locally on any of
+the three engines, and the diagnostic that would have said is the change made
+after it. Recorded as unexplained rather than resolved.
