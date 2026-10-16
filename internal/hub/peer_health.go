@@ -430,7 +430,12 @@ func (h *Hub) probePeerOnce(ctx context.Context, fingerprint string) (answered b
 	probeCtx, cancel := context.WithTimeout(ctx, bridge.PingRemoteTimeout)
 	defer cancel()
 
-	conn, err := h.DialPeer(fingerprint)
+	// Dial cancellably, so a Hub shutting down does not wait out the handshake.
+	//
+	// The cancellable path costs nothing when the peer answers and is the
+	// difference between quitting promptly and quitting after
+	// transport.defaultHandshakeTimeout when it does not.
+	conn, err := h.DialPeerContext(ctx, fingerprint)
 	if err != nil {
 		return false, h.healthFor(fingerprint).failed(now)
 	}

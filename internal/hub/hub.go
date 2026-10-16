@@ -2727,7 +2727,29 @@ func (h *Hub) observeAuthenticatedPeer(fingerprint, remoteAddr string, learnPort
 // transport.DialPinned has verified the remote certificate against the resolved
 // fingerprint, so the connection's remote address is authenticated truth about
 // where that peer is, and is recorded through observeAuthenticatedPeer.
+// DialPeer connects to a trusted paired peer.
+//
+// It is DialPeerContext with no cancellation, which is the right shape for a call
+// made on behalf of a user who is waiting for the result.
 func (h *Hub) DialPeer(target string) (transport.Conn, error) {
+	return h.DialPeerContext(context.Background(), target)
+}
+
+// DialPeerContext is the cancellable form of DialPeer.
+//
+// It exists because the transport layer already has a cancellable pinned dial
+// (transport.DialPinnedContext) and nothing above it was using one. The heartbeat
+// probe is the caller that needs it: it dials in the background, and a dial to a
+// peer that is not answering runs to transport.defaultHandshakeTimeout -- ten
+// seconds. Stop cancels the heartbeat and then waits for the probe goroutines, so
+// without this, quitting took as long as the dial it was waiting for.
+//
+// Cancelling is the right instrument rather than a shorter timeout. A heartbeat
+// only has to be right often enough to be useful, and someone on a slow or
+// battery-powered link -- which PeerHeartbeatInterval's own comment names as a
+// legitimate case -- should not be told a peer is unreachable because the probe
+// gave up early.
+func (h *Hub) DialPeerContext(ctx context.Context, target string) (transport.Conn, error) {
 	h.mu.RLock()
 	tr := h.tr
 	store := h.store
@@ -2754,7 +2776,7 @@ func (h *Hub) DialPeer(target string) (transport.Conn, error) {
 			return nil, fmt.Errorf("peer target is not a trusted paired peer: %w", err)
 		}
 		dialTarget = EnsurePeerLANPort(resolved.Address)
-		conn, err := transport.DialPinned(tr, dialTarget, resolved.Fingerprint)
+		conn, err := transport.DialPinnedContext(ctx, tr, dialTarget, resolved.Fingerprint)
 		if err != nil {
 			return nil, err
 		}

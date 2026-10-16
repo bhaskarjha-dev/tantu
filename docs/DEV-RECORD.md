@@ -7603,3 +7603,70 @@ record (5/5), the probe recording its own verdict (5/5), and the dropped-peer
 clear. Plus `TestUnpairingAReachablePeerStopsDescribingIt`, the other half of the
 property -- a peer that *had* health, whose record must be cleared -- because the
 mid-probe case cannot observe it (its health was already zero).
+## Batch Z96 - quitting took nine and a half seconds (2026-10-16)
+
+Z95's measuring turned up something I noted and deferred: `bridge.PingRemoteTimeout`
+(5s) bounds the *ping*, but the dial is outside that context and is bounded by
+`transport.defaultHandshakeTimeout`, which is **10s**.
+
+So I asked what that costs. It is the difference between a Hub quitting and a Hub
+appearing to hang.
+
+Measured, with one peer at an unroutable TEST-NET-1 address and a probe mid-dial:
+
+```
+Stop with a peer at 192.0.2.96:9877 took 9.5s
+Stop with a peer at 192.0.2.97:9877 took 9.5s
+```
+
+### How this happened
+
+Z80 made `Stop` wait on `heartbeatWG`. That was correct and necessary: `Stop` was
+returning while a probe goroutine was still writing to the peer store, which CI
+found as a file-lock failure on Windows. I fixed the race and did not ask what the
+wait was worth.
+
+The answer is that it turned an unbounded *background* dial into a bounded wait
+*on* that dial. `Stop` cancels the heartbeat context and then waits for the probe
+goroutines -- and the dial ignored the cancellation. Nine and a half seconds of a
+user's terminal doing nothing after they asked it to quit, for every unreachable
+peer.
+
+### The machinery was already there
+
+`transport.DialPinnedContext` exists, with an optional
+`ContextPeerPinningTransport` interface and a documented fallback for transports
+that cannot do better. The whole cancellable path was written and simply not
+called from above. The only missing link was `Hub.DialPeer`, which had no context
+parameter, so `probePeerOnce` -- the one caller that dials in the background --
+could not reach it.
+
+`Hub.DialPeerContext` now exists and `Hub.DialPeer` delegates to it with
+`context.Background()`, so nothing else changes.
+
+### Cancelling, not a shorter timeout
+
+The tempting fix is a smaller handshake budget for probes. That is wrong. Someone
+on a slow or battery-powered link -- which `PeerHeartbeatInterval`'s own comment
+names as a legitimate case -- would be told a peer is unreachable because the
+probe gave up early. Cancellation fixes the shutdown path without touching what a
+slow link concludes about its peers.
+
+Measured after: **under a second**, and the broken path measured 9.5s against a 3s
+budget, so the threshold sits far from both rather than between them.
+
+### A duration gate, which is usually the wrong instrument here
+
+Every other timing gate in this repository avoids durations for a reason: a fast
+machine passes them while carrying the defect. **This defect is slowness.** The
+broken path is slow on every machine and the fixed path is fast on every machine,
+so a slow machine makes this defect more visible, never less. That is the
+condition under which a duration is the right thing to measure, and it is worth
+naming because it is the exception and not the rule.
+
+Two gates: one unreachable peer, and ten -- more than the probe pool is wide, so at
+least one dial is mid-handshake whatever the scheduler does, and cancelling one
+dial out of an idle pool is not enough.
+
+One red proof, red, and it reports the measured latency rather than only that the
+gate failed.
