@@ -380,13 +380,29 @@ const staged = await js(`(function(){
       return JSON.stringify({type:f.type, size:f.size, isBlob:(f instanceof Blob)});
     })()`);
 const stagedFile = (() => { try { return JSON.parse(staged); } catch (_) { return null; } })();
-check('the staged preview file is an image this engine will accept',
-    stagedFile && stagedFile.isBlob && stagedFile.type === 'image/png' && stagedFile.size > 0,
-    'the dashboard previews an image only when its type starts with image/ and it is ' +
-    'non-empty, so a file this engine built differently turns a one-line precondition ' +
-    'failure into a four-second timeout and three unrelated red checks, one of them ' +
-    '"first useful render" with an undefined duration. File as this engine built it: ' +
-    JSON.stringify(stagedFile));
+// The data first, the prose second, and that ordering is deliberate: check() caps
+// the detail at 240 characters, and the first version of this message put the
+// explanation first, so CI truncated away the only thing that mattered and
+// reported a red whose cause was invisible. Put the evidence at the front.
+const stagedOK = !!(stagedFile && stagedFile.isBlob && stagedFile.type === 'image/png' && stagedFile.size > 0);
+check('the staged preview file is an image this engine will accept', stagedOK,
+    JSON.stringify(stagedFile) + ' | the dashboard previews an image only when its type ' +
+    'starts with image/ and it is non-empty, so a file this engine built differently turns ' +
+    'a one-line precondition failure into a four-second timeout and three unrelated reds');
+if (!stagedOK) {
+  // Skip, do not fail, the checks that depend on this one. They cannot pass, and
+  // a dependent check failing because its precondition failed reports a second
+  // fault where there is one -- including "first useful render" with an undefined
+  // duration, which has nothing to do with first render. skip() is its own line and
+  // its own count in the summary, so this is visibly not-run rather than quietly
+  // green and not silently red.
+  skip('preview thumbnail decodes (CSP allows blob:)',
+       'no file this engine will stage as an image; file was ' + JSON.stringify(stagedFile));
+  skip('preview thumbnail is visible',
+       'no file this engine will stage as an image; file was ' + JSON.stringify(stagedFile));
+  skip('preview names its destination',
+       'no file this engine will stage as an image; file was ' + JSON.stringify(stagedFile));
+} else {
 await js(`stageFileForSend(window.__uxtestStagedFile); 'ok'`);
     // Wait for the fade to settle rather than sampling once. The transition is
     // 250ms, so a single read at 1200ms cannot legitimately catch it mid-fade
@@ -473,6 +489,7 @@ const thumb = await js(`(function(){return new Promise(function(resolve){
       JSON.stringify(thumb));
     check('preview names its destination', thumb && /Destination: /.test(thumb.dest || ''), thumb && thumb.dest);
     await js('cancelPendingSend(); "ok"');
+    } // end of: only when this engine produced a file the dashboard will preview
 
     // --- paste/drop preview feedback under 100ms (plan section 12.1) ---
     // Dispatches a real 'paste' event carrying an image file â€” the path the

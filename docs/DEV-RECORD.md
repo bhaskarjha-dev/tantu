@@ -7168,3 +7168,61 @@ rejects, and did not check. Whether CI's WebKit drops the `type` option, or
 differs some other way that produces the same state, is not established -- and no
 longer matters much, because the precondition is now asserted and any such
 difference reports itself in one line rather than as three mysteries.
+## Batch Z90 - four red checks where there was one (2026-10-16)
+
+Z89's precondition check fired on the next CI run -- and the annotation showed the
+explanation but not the evidence, because `check()` caps a detail at 240 characters
+and this repository's own note says, in as many words: **put the diagnostic field
+first or it is invisible.**
+
+It was second. So the run produced a red whose cause I could see and could not
+read. Fixed by putting the file's JSON first, which is the whole fix.
+
+### A failed precondition invalidates what depends on it
+
+The precondition failing meant the preview never appeared, so three dependent
+checks timed out after four seconds and went red as well. Four reds for one cause,
+and the fourth was `first useful render under 1s` reporting `undefinedms` -- a check
+about first render that has never had anything to do with first render.
+
+So the dependent checks now **skip** rather than fail. `skip()` already existed and
+already says what it is for: its own line, its own count in the summary, never a
+pass, never quietly green. A check that cannot run because its precondition failed
+is not evidence of a second fault, and reporting it as one sends the next reader
+looking for a bug that is not there.
+
+### Proven, not assumed
+
+A skip path that has never executed is a path that does not work. Deliberately
+breaking the staged file's type and running the harness:
+
+```
+FAIL count: 1  ['the staged preview file is an image this engine will accept']
+SKIP count: 4  ['preview thumbnail decodes (CSP allows blob:)',
+                'preview thumbnail is visible',
+                'preview names its destination', ...]
+ok   exactly one FAIL, naming the precondition
+ok   all three dependent checks SKIPPED, not failed
+ok   the detail leads with the evidence (data at 69, prose at 107)
+```
+
+The fourth skip is pre-existing and unrelated. The three new ones are the point.
+
+The first version of this proof measured the wrong thing -- it checked where the
+JSON begins on the console line, which includes the check name, rather than
+whether the data precedes the prose in the detail. It reported a failure that was
+not one. Measuring the right thing took one edit; guessing took two.
+
+### What this whole thread cost and returned
+
+Four batches -- Z86 through Z90 -- on a check that turned out to be **the
+harness's own unverified precondition**, not a product defect at all. Every one of
+them was work on making a failure explain itself, and none of them would have
+found the cause: they made the cause *reportable*.
+
+The alternative was to widen the four-second deadline, or to drop the preview
+checks, or to re-run CI until it went green. Each of those would have produced a
+green run and taught nothing. What actually happened is that a flake nobody could
+diagnose across three batches became, in one red run, the statement "this engine
+did not give us a file the dashboard will preview" -- which is a true sentence
+about the harness, and which now costs one red check instead of four.
