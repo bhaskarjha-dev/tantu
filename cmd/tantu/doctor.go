@@ -21,6 +21,20 @@ type healthCheck struct {
 	OK         bool   `json:"ok"`
 	Message    string `json:"message"`
 	NextAction string `json:"next_action,omitempty"`
+
+	// Advisory marks a check that reports something true and actionable about
+	// *something other than this installation*.
+	//
+	// A peer that is not answering is real, worth saying, and has a next action.
+	// It is also the normal state of a laptop that has gone to sleep, and folding
+	// it into the overall verdict would make `tantu doctor` and
+	// `tantu status --json` report the machine degraded and exit 1 for a peer
+	// being asleep -- which trains whatever consumes that exit code to ignore it.
+	//
+	// The distinction is *whose* fault: the store cannot be opened and the
+	// identity is missing are faults of this machine and mean degraded. A remote
+	// peer is offline is information about another machine.
+	Advisory bool `json:"advisory,omitempty"`
 }
 
 // healthPeer is redacted peer metadata for diagnostics (no certificates).
@@ -316,8 +330,13 @@ func buildHealthReport(storeDir, bridgeAddr string) healthReport {
 				msg += fmt.Sprintf(" %d not yet probed.", verdict.unprobed)
 			}
 			report.Checks = append(report.Checks, healthCheck{
-				Name:       "peers_reachability",
-				OK:         false,
+				Name: "peers_reachability",
+				OK:   false,
+				// Advisory, not a fault of this machine. A peer asleep is the
+				// ordinary state of a laptop, and reporting this installation as
+				// degraded for it -- and exiting 1 -- is how an exit code stops
+				// being read.
+				Advisory:   true,
 				Message:    msg,
 				NextAction: "A peer that is not answering is usually asleep, on another network, or at a new address. Wake it, or let it broadcast on this network and Tantu will find it.",
 			})
@@ -370,16 +389,12 @@ func buildHealthReport(storeDir, bridgeAddr string) healthReport {
 
 	// Overall status and one next action: the first failing check wins so
 	// every warning has a concrete recovery path and no dead end.
-	report.Status = "healthy"
-	for _, c := range report.Checks {
-		if !c.OK {
-			report.Status = "degraded"
-			if c.NextAction != "" {
-				report.NextAction = c.NextAction
-				break
-			}
-		}
-	}
+	//
+	// Advisory checks are skipped here. They are true and actionable, but they are
+	// about another machine, and a sleeping peer must not make this installation
+	// report degraded -- see healthCheck.Advisory for why that matters more than it
+	// looks.
+	finaliseHealthReport(&report)
 	if report.NextAction == "" {
 		if len(peers) > 0 && report.HubRunning {
 			report.NextAction = "Send a test file or snippet from the dashboard or with `tantu send`."
@@ -454,8 +469,16 @@ func runDoctor(args []string) {
 	fmt.Println("\nChecks:")
 	degraded := false
 	for _, c := range report.Checks {
+		// Three states, not two. "warning" is a finding about something other
+		// than this machine: true, actionable, and not a fault here. Rendering
+		// it as "attention" would be wrong in the other direction, implying
+		// something is broken that is not.
 		mark := "ok"
-		if !c.OK {
+		switch {
+		case c.OK:
+		case c.Advisory:
+			mark = "warning"
+		default:
 			mark = "attention"
 			degraded = true
 		}
@@ -468,6 +491,41 @@ func runDoctor(args []string) {
 	if degraded {
 		os.Exit(1)
 	}
+}
+
+// finaliseHealthReport sets the overall status and the single next action.
+//
+// The first failing check that is *not* advisory wins, so every problem reported
+// has a concrete recovery path and no dead end.
+//
+// Advisory checks are excluded on purpose. They are true and actionable, but
+// they are about another machine: a peer asleep is the ordinary state of a
+// laptop, and reporting this installation degraded for it -- and exiting 1 -- is
+// how a consumer of that exit code learns to ignore it. That was broken once,
+// by adding the reachability check, and is gated by
+// TestAnOfflinePeerDoesNotMakeTheInstallationDegraded.
+func finaliseHealthReport(report *healthReport) {
+	report.Status = "healthy"
+	for _, c := range report.Checks {
+		if c.OK || c.Advisory {
+			continue
+		}
+		report.Status = "degraded"
+		if c.NextAction != "" {
+			report.NextAction = c.NextAction
+			return
+		}
+	}
+}
+
+// buildHealthReportFromChecks applies the status contract to a set of checks.
+//
+// It exists so the contract can be gated without standing up a Hub and a store
+// per case; buildHealthReport does the real work and ends at finaliseHealthReport.
+func buildHealthReportFromChecks(checks []healthCheck) healthReport {
+	r := healthReport{Checks: checks, Status: "healthy"}
+	finaliseHealthReport(&r)
+	return r
 }
 
 // fetchHubLogs returns the Hub's redacted ring-buffer events. The server

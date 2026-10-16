@@ -7338,3 +7338,76 @@ occurrence has a much better starting point than this one did: three shutdown
 paths are now known-good, so the search starts at the web server's in-flight
 handlers and at the drop staging sweeper rather than at the place everyone looks
 first.
+## Batch Z93 - the exit code I broke (2026-10-16)
+
+Z87 added a `peers_reachability` check that is `OK: false` when a peer is not
+answering. `report.Status` is computed as degraded if **any** check fails, and
+`tantu status --json` exits 1 when the status is not healthy.
+
+So adding a true and useful check silently changed a documented CLI contract:
+
+| | before Z87 | after Z87 |
+|---|---|---|
+| Hub running, 2 peers configured, both unreachable | `healthy`, exit 0 | `degraded`, exit 1 |
+
+A laptop that goes to sleep is the **ordinary state of this product's peer**. A
+monitoring script consuming that exit code would now fire whenever anyone was
+asleep, which is how an exit code stops being read.
+
+I did not notice this when I made the change, and I should have. It was in the
+code I had just written, and the consequence was one line away.
+
+### The distinction is *whose* fault
+
+`healthCheck` gains `Advisory`, which marks a finding that is true and actionable
+about **something other than this installation**:
+
+- store cannot be opened, identity missing, Hub not running -- faults *here*,
+  and they degrade.
+- a peer is not answering -- information about **another machine**.
+
+Advisory checks still print, still say what is wrong, still name the peer, and
+still carry a next action. They just do not decide whether this machine is
+healthy.
+
+The human output gains a third state rather than folding advisory into one of the
+existing two:
+
+```
+  [ok]       peers: 2 trusted peer(s) configured.
+  [warning]  peers_reachability: 1 of 2 not answering (waking-laptop). 1 not yet probed.
+        Next: A peer that is not answering is usually asleep, on another network, or at a
+              new address. Wake it, or let it broadcast on this network and Tantu will find it.
+  ...
+  Status: healthy
+```
+
+Rendering it as "attention" would be wrong in the other direction -- implying
+something is broken that is not.
+
+The verdict now lives in `finaliseHealthReport`, one named function, so the
+contract can be gated without standing up a Hub and a store per case.
+
+### Two halves of one property, gated in two places
+
+The first version of the gate built its own checks and tested that advisories do
+not degrade. That is half the property. The red proof for **"drop the advisory
+flag from the reachability check"** came back NOT RED, because a gate that
+constructs its own checks never sees the check the product produces.
+
+So the produced gate now asserts `check.Advisory` and the resulting `Status`
+directly. "Advisories do not degrade" and "reachability is one" fail in different
+places, and each is gated where it can actually fail.
+
+Three red proofs, all red, including **"ignore real faults, because advisories
+are exempt too"** -- the over-correction, where making advisories harmless
+accidentally makes every fault harmless. That is the break most likely to be
+written by someone reading the fix without reading the reason.
+
+### What rendering showed
+
+The first render passed the wrong moment and printed "Hub has not probed any peer
+yet" -- the wait condition tested that the check *existed*, which it always does,
+rather than that it held a verdict. Fixed, the render shows `1 not yet probed`
+alongside the one proved down, which is exactly the distinction the whole design
+turns on and which is worth being able to see in the output rather than infer.

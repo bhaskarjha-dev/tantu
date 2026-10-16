@@ -120,6 +120,24 @@ func TestDoctorReportsAPeerThatIsNotAnswering(t *testing.T) {
 	if check.NextAction == "" {
 		t.Error("a failing check carries no next action, so the diagnostic ends in a dead end")
 	}
+	// Advisory, and asserted here rather than only in the contract gate.
+	//
+	// TestAnOfflinePeerDoesNotMakeTheInstallationDegraded builds its own checks
+	// and so exercises finaliseHealthReport's rule without exercising the wiring:
+	// dropping `Advisory: true` from this call site left that gate green, because
+	// it never sees the check this code produces. The two halves of the property
+	// are "advisories do not degrade" and "reachability is one", and they have to
+	// be gated in the place each can actually fail.
+	if !check.Advisory {
+		t.Error("the reachability check is not marked advisory, so a peer that is asleep makes " +
+			"this installation report degraded and `tantu status --json` exit 1")
+	}
+	// Which is also visible end to end, since this report goes through the same
+	// contract.
+	if report.Status != "healthy" {
+		t.Errorf("overall status = %q with a live Hub, a working store and one sleeping peer; "+
+			"that is a healthy installation", report.Status)
+	}
 }
 
 // The check must not exist when no Hub is running, and must not claim anything
@@ -165,6 +183,43 @@ func TestDoctorSaysNothingAboutReachabilityWithoutAnOpinion(t *testing.T) {
 	if !found || !peers.OK {
 		t.Errorf("the peers check should report configuration, which is true with no Hub "+
 			"running: got %+v", peers)
+	}
+}
+
+// An offline peer must not make this installation degraded.
+//
+// This is the contract, stated as a gate, because it was broken once already.
+// Adding the reachability check made every `tantu status --json` exit 1 while a
+// laptop slept -- which is how an exit code stops being read. The check is still
+// there, still false, and still carries a next action; it just does not decide
+// whether *this* machine is healthy.
+//
+// The exit code is the part that matters and it is what automation consumes, so
+// the assertion is on Status rather than on the check's OK.
+func TestAnOfflinePeerDoesNotMakeTheInstallationDegraded(t *testing.T) {
+	report := buildHealthReportFromChecks([]healthCheck{
+		{Name: "store", OK: true, Message: "ready"},
+		{Name: "peers", OK: true, Message: "2 trusted peer(s) configured."},
+		{
+			Name: "peers_reachability", OK: false, Advisory: true,
+			Message:    "2 of 2 not answering (studio-mac, waking-laptop).",
+			NextAction: "Wake it, or let it broadcast on this network.",
+		},
+		{Name: "hub", OK: true, Message: "Hub running (transport lan)."},
+	})
+	if report.Status != "healthy" {
+		t.Errorf("status = %q with an offline peer; a machine whose store, identity and Hub "+
+			"are all fine is healthy, and `tantu status --json` exiting 1 for a sleeping laptop "+
+			"is how that exit code stops being read", report.Status)
+	}
+
+	// And the opposite must still hold: a fault of *this* machine does degrade it.
+	report = buildHealthReportFromChecks([]healthCheck{
+		{Name: "store", OK: false, Message: "Cannot open config directory.", NextAction: "Fix permissions."},
+	})
+	if report.Status != "degraded" {
+		t.Errorf("status = %q with an unopenable store; that is a fault of this machine and "+
+			"must degrade it", report.Status)
 	}
 }
 
