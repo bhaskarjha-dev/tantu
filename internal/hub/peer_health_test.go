@@ -697,6 +697,105 @@ func seedBlackholePeer(t *testing.T, h *Hub, address string) pairing.Peer {
 	return p
 }
 
+// A probe that finishes after its peer is unpaired must not report on it.
+//
+// Produced by unpairing a peer whose dials are hanging. TEST-NET-1 is unroutable,
+// so every dial to it takes the full bridge.PingRemoteTimeout.
+//
+// What this is really about: syncProbes clears a dropped peer's health, and then
+// an in-flight probe finishes and writes a verdict about a machine this Hub no
+// longer trusts. The store check that used to guard the probe ran *before* the
+// dial, so it could not have caught that either -- trust can be withdrawn during
+// the five seconds a dial is hanging.
+//
+// Getting probes reliably in flight took three attempts, and the first two were
+// not gates at all. Both errors were in the *timing*, and both made the gate pass
+// on a product that recorded health unconditionally:
+//
+//   - It waited on `PeerReadCount() > 0`, which is true after the *sync* read on
+//     the very first tick, so the unpair landed roughly twenty milliseconds after
+//     the peer was seeded -- before any probe had started. The guard was never
+//     exercised at all.
+//   - It then slept `bridge.PingRemoteTimeout` (5s) plus four seconds, and
+//     asserted at nine. But 5s bounds the *ping*, not the dial. The dial is
+//     `transport.DialPinned`, bounded by transport.defaultHandshakeTimeout, which
+//     is **10s** -- measured, not assumed. The gate was still sampling before the
+//     probe it is about had finished.
+//
+// So the window is derived from the code's own bounds:
+//
+//	t=0.0s   peer scheduled
+//	t=0.2s   first probe starts, dial hangs for defaultHandshakeTimeout (10s)
+//	t=3.0s   unpair; syncProbes drops the peer and clears its health by ~4s
+//	t=10.2s  the in-flight probe finishes and would record a verdict
+//	t=20s    assert nothing was recorded
+//
+// Nothing needs to be observed for that chain to hold, which is the point. The
+// one premise that cannot be checked from outside -- that probes run at all -- is
+// covered by running the red proof five times and requiring five reds.
+func TestAProbeFinishingAfterUnpairDoesNotReportOnThePeer(t *testing.T) {
+	const (
+		unpairAt = 3 * time.Second
+		// Comfortably past the 10s handshake bound, with room for a slow tick.
+		assertAt = 20 * time.Second
+	)
+
+	h := startHeartbeatHub(t, "lan", 200*time.Millisecond)
+	p := seedBlackholePeer(t, h, "192.0.2.93:9877")
+
+	time.Sleep(unpairAt)
+
+	if err := h.Store().RemovePeer(p.Fingerprint); err != nil {
+		t.Fatalf("RemovePeer: %v", err)
+	}
+
+	// Past the dial, so the in-flight probe really has finished and tried to
+	// record something. syncProbes has also had several ticks to clear the peer.
+	time.Sleep(assertAt - unpairAt)
+
+	got := h.PeerHealthOf(p.Fingerprint)
+	if !got.LastChecked.IsZero() || got.ConsecutiveFailures != 0 || !got.LastOK.IsZero() {
+		t.Errorf("a probe that finished after its peer was unpaired reported %+v; a peer this "+
+			"Hub no longer trusts must not be described, and syncProbes already cleared it", got)
+	}
+}
+
+// Unpairing a peer that was answering stops this Hub describing it as reachable.
+//
+// The other half of the property above, and separate because it fails for a
+// different reason and cannot be arranged the same way. There, the peer had no
+// health to begin with, so the assertion is that nothing is written. Here the
+// peer is genuinely reachable and genuinely green, and the assertion is that
+// withdrawing trust clears what was known -- otherwise the dashboard keeps
+// reporting a machine this Hub can no longer talk to, as though it were fine.
+func TestUnpairingAReachablePeerStopsDescribingIt(t *testing.T) {
+	a, _ := startHeartbeatHubs(t)
+	peer := solePeer(t, a)
+
+	if health := waitForHealth(t, a, peer.Fingerprint, true, 20*time.Second); health.LastOK.IsZero() {
+		t.Fatalf("the peer never became reachable, so this gate cannot arrange the condition "+
+			"it is about; it reported %+v", health)
+	}
+
+	if err := a.Store().RemovePeer(peer.Fingerprint); err != nil {
+		t.Fatalf("RemovePeer: %v", err)
+	}
+
+	// syncProbes reconciles once per tick, so give it several.
+	deadline := time.Now().Add(15 * time.Second)
+	var last PeerHealth
+	for time.Now().Before(deadline) {
+		last = a.PeerHealthOf(peer.Fingerprint)
+		if last.LastChecked.IsZero() && last.LastOK.IsZero() && last.ConsecutiveFailures == 0 {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Errorf("after unpairing a peer that had answered, this Hub still reports %+v; the peer's "+
+		"verdict is about a machine that is no longer trusted, and the dashboard and `tantu "+
+		"doctor` both read it", last)
+}
+
 // A transport that will never probe must not read the peer store.
 //
 // This is a produced count, not a duration. The store counts full reads and

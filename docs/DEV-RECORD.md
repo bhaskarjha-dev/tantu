@@ -7503,3 +7503,103 @@ worth recording:
 And one break worth keeping for what it catches: **restoring the original
 hand-drawn borders** reproduces the ragged card exactly, with a 49-column row
 against a 79-column one.
+## Batch Z95 - the read I declined, and the race it was standing in for (2026-10-16)
+
+In Z84 I left a note: `probePeerOnce` reads the whole peer store to look up the
+peer it is about to dial, and the read is dead -- its only use is `p.Fingerprint`,
+which is the value already in hand. I declined to remove it, because
+distinguishing "not trusted" from "dial failed" needs a sentinel on
+`ResolvePeer`'s errors, and that is trust-resolution code.
+
+**The reason was wrong.** No sentinel is needed. The caller already holds the
+probe schedule and already knows whether the peer is still tracked.
+
+### The read, and what it was guarding
+
+```go
+p, ok := store.GetPeer(fingerprint)   // a full read and parse of peers.json
+if !ok {
+    return false
+}
+```
+
+`DialPeer` resolves the peer itself and refuses an untrusted one, so the check was
+redundant for its stated purpose. But it was not redundant for the thing it was
+*accidentally* doing: suppressing the health record for a peer that is no longer
+trusted.
+
+And it could not do that job either way. It ran **before** the dial, and a dial to
+an unroutable address takes ten seconds, so trust can be withdrawn in the middle
+of one. So the arrangement was:
+
+1. a probe starts, dials a black hole, hangs for ten seconds
+2. the peer is unpaired; `syncProbes` drops it and clears its health
+3. the probe finishes and writes a verdict about a machine this Hub no longer
+   trusts
+
+`probePeerOnce` now returns the verdict and the caller records it only while the
+peer is still scheduled. Checking *after* the dial is what closes the window.
+
+The guard turns out to be load-bearing twice over: `probes` is a
+`map[string]*peerProbe`, so a missing key is a **nil pointer**, and
+`scheduleProbeNext` dereferences it. I learned that from a red proof that
+panicked.
+
+### Two unrelated things the measuring turned up
+
+**`bridge.PingRemoteTimeout` (5s) does not bound the dial.** The probe wraps the
+ping in a 5s context and then dials outside it; the dial is `transport.DialPinned`,
+bounded by `transport.defaultHandshakeTimeout`, which is **10s**. Measured, not
+assumed: one dial to TEST-NET-1 took 10s while the ping budget was 5s. Not fixed
+here -- threading a context through `DialPeer` is a signature change on a method
+used everywhere, and `Stop` already waits on `heartbeatWG`, so shutdown is
+correct today. Worth its own batch.
+
+**The per-probe read count cannot be gated by counting.** With one peer over 12
+seconds: 18 reads, ~12 of them the per-tick sync and ~6 probe-related from ~5
+probes -- one read per probe, which is `DialPeer`'s own resolution and is correct.
+The dead read added a second, so the two designs differ by 18 against 23. A 25%
+margin on a measurement whose probe count depends on a backoff ladder is not a
+gate. So: the per-tick property stays gated by counting
+(`TestHeartbeatReadsTheStoreOncePerTickNotOncePerPeer`, where the measurement is
+clean) and the per-probe property is checked structurally, and the structural
+check says so in its own header.
+
+I first wrote the per-probe gate as a counting gate with a tighter budget. Against
+the restored read it was **not red**, because at a 20s interval a per-probe read
+cannot move a budget of 45.
+
+### The gate that was not a gate
+
+`TestAProbeFinishingAfterUnpairDoesNotReportOnThePeer` took three attempts, and the
+first two passed on a product that recorded health unconditionally.
+
+The runner reported **0 of 5 red**. It was not five green runs. It was five
+**crashed** runs: my break passed the map's nil pointer to `scheduleProbeNext`, the
+process panicked, no `--- FAIL` line was printed, and a runner that only looks for
+`FAIL` reads that as green. Two gates failing at once -- one that cannot fail, and
+one that cannot tell a pass from a crash. The runner now treats a panic as an
+invalid break, and reports `red/n` rather than a verdict.
+
+The two timing errors, both mine:
+
+- It waited on `PeerReadCount() > 0`, which is true after the *sync* read on the
+  first tick, so the unpair landed ~20ms after seeding -- before any probe had
+  started. The guard was never exercised.
+- It then slept `PingRemoteTimeout + 4s` = 9s. That is shorter than the 10s
+  handshake bound, so it asserted before the probe it is about had finished.
+
+Both are the same mistake as Z87's render probe: **sampling on a condition that is
+true before the thing you are about.** The window is now derived from the code's
+bounds rather than sampled for -- probe starts at t+0.2s, dial hangs 10s, unpair
+at t=3s, probe finishes at t=10.2s, assert at t=20s -- and the red proof is run
+five times and must be five reds, which is the evidence the window is real rather
+than an argument that it should be.
+
+### Gates
+
+Four red proofs, all red: the restored store read (structural), the unconditional
+record (5/5), the probe recording its own verdict (5/5), and the dropped-peer
+clear. Plus `TestUnpairingAReachablePeerStopsDescribingIt`, the other half of the
+property -- a peer that *had* health, whose record must be cleared -- because the
+mid-probe case cannot observe it (its health was already zero).

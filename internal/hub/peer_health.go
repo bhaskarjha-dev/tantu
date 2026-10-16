@@ -370,10 +370,20 @@ func (h *Hub) runPeerHeartbeat(ctx context.Context) {
 					go func() {
 						defer h.heartbeatWG.Done()
 						defer func() { <-sem }()
-						answered := h.probePeerOnce(ctx, k)
+						answered, health := h.probePeerOnce(ctx, k)
 						finished := time.Now()
 						probesMu.Lock()
+						// Record only while the peer is still scheduled.
+						//
+						// syncProbes drops a peer the moment it stops being trusted,
+						// and clears its health. A probe that was already in flight
+						// finishes afterwards -- and used to write a verdict then,
+						// resurrecting a record about a machine this Hub no longer
+						// trusts. Checking *after* the dial is what closes that, and a
+						// check before it cannot: the trust can be withdrawn during the
+						// ten seconds a dial to an unroutable address hangs.
 						if probe, still := probes[k]; still {
+							h.setPeerHealth(k, health)
 							scheduleProbeNext(probe, answered, finished, base)
 						}
 						probesMu.Unlock()
@@ -384,7 +394,21 @@ func (h *Hub) runPeerHeartbeat(ctx context.Context) {
 	}
 }
 
-// probePeerOnce asks one peer whether it is there and records the answer.
+// probePeerOnce asks one peer whether it is there, and returns the verdict to
+// record.
+//
+// It does not record it. The caller holds the probe schedule and already knows
+// whether the peer is still tracked, and a verdict about a peer whose trust has
+// been withdrawn should not be written at all -- see the call site.
+//
+// It also does not read the peer store to check the peer exists. It used to, and
+// the read was dead: its result was used only for `p.Fingerprint`, which is the
+// value already in hand, and DialPeer performs its own resolution and refuses an
+// untrusted peer. So every probe paid a full read and parse of peers.json to
+// learn something it already knew and to guard something checked again a moment
+// later -- and guarding it *again* on this side is not what mattered. What
+// mattered was guarding it *before* the dial, which cannot work, because trust can
+// be withdrawn during the ten seconds a dial to an unroutable address hangs.
 //
 // It dials through DialPeer rather than the transport directly, and that is
 // deliberate: DialPeer verifies the peer's certificate against its pinned
@@ -393,36 +417,29 @@ func (h *Hub) runPeerHeartbeat(ctx context.Context) {
 // week keeps `last_address_confirmed` honest without a single transfer, which is
 // what turns that field from "when did we last happen to send something" into
 // "when did we last prove this address works".
-func (h *Hub) probePeerOnce(ctx context.Context, fingerprint string) bool {
+func (h *Hub) probePeerOnce(ctx context.Context, fingerprint string) (answered bool, health PeerHealth) {
 	h.mu.RLock()
 	store := h.store
 	h.mu.RUnlock()
-	if store == nil {
-		return false
-	}
-	p, ok := store.GetPeer(fingerprint)
-	if !ok {
-		return false
-	}
 
 	now := time.Now()
+	if store == nil {
+		return false, PeerHealth{}
+	}
 
 	probeCtx, cancel := context.WithTimeout(ctx, bridge.PingRemoteTimeout)
 	defer cancel()
 
-	conn, err := h.DialPeer(p.Fingerprint)
+	conn, err := h.DialPeer(fingerprint)
 	if err != nil {
-		h.setPeerHealth(fingerprint, h.healthFor(fingerprint).failed(now))
-		return false
+		return false, h.healthFor(fingerprint).failed(now)
 	}
 	defer conn.Close()
 
 	if err := bridge.PingRemote(probeCtx, conn); err != nil {
-		h.setPeerHealth(fingerprint, h.healthFor(fingerprint).failed(now))
-		return false
+		return false, h.healthFor(fingerprint).failed(now)
 	}
-	h.setPeerHealth(fingerprint, h.healthFor(fingerprint).succeeded(now))
-	return true
+	return true, h.healthFor(fingerprint).succeeded(now)
 }
 
 // PeerHealthOf returns what this Hub currently believes about a peer, by
