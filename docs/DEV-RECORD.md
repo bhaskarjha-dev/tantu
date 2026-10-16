@@ -7226,3 +7226,65 @@ green run and taught nothing. What actually happened is that a flake nobody coul
 diagnose across three batches became, in one red run, the statement "this engine
 did not give us a file the dashboard will preview" -- which is a true sentence
 about the harness, and which now costs one red check instead of four.
+## Batch Z91 - seventy bytes that needed three attempts to deliver (2026-10-16)
+
+Z90's precondition reported the evidence at last, and it read:
+
+```
+{"type":"image/png","size":0,"isBlob":true}
+```
+
+Not the type. The **size**. The harness had built the file it stages for the
+preview test from 70 bytes of base64, and on CI's WebKit the File came out empty.
+`type` and `isBlob` were right, which is what a `File` built from an empty
+`Uint8Array` looks like exactly.
+
+So the harness's own precondition was still wrong in a way nobody had checked,
+one field later than the last one.
+
+### The bytes are now a literal array
+
+Seventy numbers, written out. No decoder, no fetch, no CSP exemption, so the same
+bytes arrive in every engine. The first eight are the PNG signature, and the
+precondition check reports both the size and the signature, so a mistake there is
+a number rather than a mystery.
+
+Two environment-dependent routes were tried and both are recorded, because both
+looked obviously right:
+
+**`atob`.** Well specified and widely implemented, and it produced an empty string
+on a CI runner. Not reproducible locally on any of the three engines.
+
+**`fetch` on a `data:` URL.** Refused -- and *correctly* so, because the dashboard's
+own Content Security Policy blocks `data:`, which is the product being right and
+the harness being unable to use it. Worth noting that the harness's
+zero-console-errors check caught the refusal immediately, which is a gate doing
+what it is for.
+
+### Five batches, one harness bug, and what it actually bought
+
+Z86 gave the check a vocabulary. Z88 turned "unattributable" into "the image
+completed with no source". Z89 turned that into "staging ran and its guard
+rejected the file". Z90 turned four reds into one plus three skips, and moved the
+evidence ahead of the prose so the evidence survived truncation. Z91 found the
+last field.
+
+Not one of those five would have found this on its own, and not one of them was
+about the product. What they did was convert a red run nobody could read into a
+sequence of statements that each named the next thing to look at -- which is the
+only reason the last one could be a sentence about a 70-byte array rather than
+"the thumbnail did not appear".
+
+The uncomfortable part is the alternative. Widening the four-second deadline would
+have gone green. Dropping the preview checks would have gone green. Re-running
+until it passed would have gone green, and would have left the harness staging a
+file no engine would preview, which is a check that covers nothing while reporting
+everything.
+
+### Where it stands
+
+Not reproducible locally on chromium, firefox or webkit: all three stage the file
+and all preview checks pass. So whether CI's WebKit really mishandled `atob`, or
+did something else that produced the same empty file, is still not established --
+but it no longer matters, because the harness no longer has a decoder to
+misbehave and no longer depends on one.

@@ -369,15 +369,31 @@ let hubs2 = null;
 // mean that if it ever is not, this fails in one line naming the engine instead
 // of three failures four seconds later with no cause.
 const staged = await js(`(function(){
-      var b='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
-      var bin=atob(b), arr=new Uint8Array(bin.length); for(var i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
-      // The type comes from the options bag, not from the parts: new File([blob])
-      // yields type "". That was measured here -- all three engines rejected the
-      // preview when the file was built through a Blob without an explicit type,
-      // and the precondition check caught it before the four-second deadline did.
-      var f=new File([arr],'uxtest-shot.png',{type:'image/png'});
+      // A 1x1 PNG, written out as bytes rather than decoded from base64.
+      //
+      // Both of the obvious ways to get these 70 bytes into the page turned out
+      // to be environment-dependent. atob produced a zero-byte File on CI's
+      // WebKit -- type and isBlob right, size 0, which is exactly what an empty
+      // Uint8Array looks like. fetch on a data: URL is refused, and rightly: the
+      // dashboard's own CSP blocks data:, which is correct behaviour on the
+      // product's part and unusable for the harness.
+      //
+      // A literal array needs no decoder, no fetch, and no CSP exemption, so it
+      // is the same bytes everywhere. The first eight are the PNG signature; if
+      // that is ever wrong nothing will decode, and the precondition check below
+      // says so with the size it actually got.
+      var bytes=[
+      137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,
+      0,0,0,1,0,0,0,1,8,6,0,0,0,31,21,196,
+      137,0,0,0,13,73,68,65,84,120,218,99,252,207,192,80,
+      15,0,4,133,1,128,132,169,140,33,0,0,0,0,73,69,
+      78,68,174,66,96,130
+      ];
+      var f=new File([new Uint8Array(bytes)],'uxtest-shot.png',{type:'image/png'});
       window.__uxtestStagedFile=f;
-      return JSON.stringify({type:f.type, size:f.size, isBlob:(f instanceof Blob)});
+      return JSON.stringify({type:f.type, size:f.size, isBlob:(f instanceof Blob),
+                             bytes:bytes.length,
+                             pngSig:bytes.slice(0,4).join(',')});
     })()`);
 const stagedFile = (() => { try { return JSON.parse(staged); } catch (_) { return null; } })();
 // The data first, the prose second, and that ordering is deliberate: check() caps
