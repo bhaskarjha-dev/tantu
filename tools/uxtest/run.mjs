@@ -406,6 +406,23 @@ const thumb = await js(`(function(){return new Promise(function(resolve){
                   complete:!!t.complete,
                   connected:t.isConnected,
                   src:(t.currentSrc||t.src||'').slice(0,5),
+                  // The state of the staging itself, so a missing src can be
+                  // attributed. CI produced complete:true with src:"" -- the
+                  // state immediately after removeAttribute('src') and before
+                  // thumb.src is assigned -- which narrows it to either "the
+                  // staging branch never ran" or "its guard was false", and these
+                  // three separate those:
+                  //   pending:false      stageFileForSend returned without staging
+                  //                        (an upload was already in flight, or the
+                  //                        expert immediate-send opt-in is ticked)
+                  //   display:'block'    staging ran, so the image guard rejected
+                  //                        the file -- wrong MIME type, or a size
+                  //                        outside the 8 MiB preview ceiling
+                  //   display:'none'     staging never reached the image branch
+                  pending:(typeof pendingFile!=='undefined') ? (pendingFile!==null) : 'unavailable',
+                  display:t.style.display,
+                  expert:(function(){var x=document.getElementById('expertImmediateSend');
+                                    return x?String(x.checked):'no-box';})(),
                   settleMs:settleMs,
                   dest:dest?dest.textContent:''};
         };

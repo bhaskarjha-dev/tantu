@@ -7053,3 +7053,58 @@ heard of, case-insensitive fingerprints, several down.
 Six red proofs, all red. One of them -- "treat an empty opinion as an all-clear" --
 is the failure mode most likely to be written by accident later: it compiles,
 looks like defensive code, and inverts the whole point of the change.
+## Batch Z88 - what the diagnostic bought (2026-10-16)
+
+Z86 added diagnostics to the preview-thumbnail check without knowing which of the
+three causes it was. Z87 went red on Dashboard acceptance three pushes later, and
+the first thing CI reported was:
+
+```
+{"nw":0,"loaded":false,"op":"0","complete":true,"connected":true,"src":"","settleMs":-1}
+```
+
+Read against the table Z86 wrote, that is neither of the two cases it was built to
+separate:
+
+- `connected: true` -- the element is in the document, so it is not a stale node.
+- `complete: true` -- the image **finished**. It did not stall.
+- `src: ""` -- **it has no source at all.**
+
+`complete: true` with an empty `src` is the exact state an `<img>` is in
+immediately after `removeAttribute('src')` and before `thumb.src` is assigned.
+Which means staging ran, reached `removeAttribute('src')`, and then never set a
+source -- or returned before it got that far.
+
+So an unattributable flake became a specific question in one CI run. That is the
+entire return on Z86, and it is the argument for spending a batch on making a
+failure *explain* itself when the cause is unknown and the check is known to
+misbehave.
+
+### What was ruled out, and how
+
+**Not a detached element.** The element is a static one in the document at line
+1316, created once. The wait re-queried it every tick anyway, so this was already
+handled.
+
+**Not a silent cancel.** `cancelPendingSend` is reachable only from the explicit
+`cancel-preview` action. Nothing on a timer or a poll calls it.
+
+**Not a stuck upload blocking staging.** `stageFileForSend` returns early when
+`uploadXhr` is non-null, which would produce exactly this state, so this was the
+most promising theory -- and it is wrong: `finishUpload` sets `uploadXhr = null`
+and is wired to `onload`, `onerror` **and** `onabort`. A cancelled upload clears
+it. Worth checking, and it is clean.
+
+**Not the expert immediate-send opt-in.** The harness never ticks
+`#expertImmediateSend`, and it is unchecked by default. That path would also have
+produced this state.
+
+### Not established
+
+Which of the two remains. So the check now also reports, on timeout, the state of
+the staging itself -- `pending`, the inline `display`, and the opt-in's checked
+value -- which separate "staging never happened" from "staging happened and the
+image guard rejected the file". A third run will say which, and this one cannot.
+
+Recorded as **narrowed, not confirmed**. The difference matters: the earlier note
+said "unattributable", and this one can say precisely which stage failed.
