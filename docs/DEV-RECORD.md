@@ -7108,3 +7108,63 @@ image guard rejected the file". A third run will say which, and this one cannot.
 
 Recorded as **narrowed, not confirmed**. The difference matters: the earlier note
 said "unattributable", and this one can say precisely which stage failed.
+## Batch Z89 - a harness that had never checked its own precondition (2026-10-16)
+
+The second CI run after the staging diagnostics reported:
+
+```
+{"nw":0,"loaded":false,"op":"0","complete":true,"connected":true,"src":"",
+ "pending":true,"display":"none","expert":"false","settleMs":-1}
+```
+
+`pending: true` -- staging ran, and `pendingFile` is set. `display: "none"` and
+`src: ""` -- and `stageFileForSend` sets `thumb.style.display = 'block'` on the very
+next line after `thumb.src`. Both absent. So the code reached the image branch and
+its **guard rejected the file**:
+
+```js
+if (file.type && file.type.indexOf('image/') === 0 && file.size > 0 && file.size <= 8*1024*1024) {
+```
+
+The harness had been staging `new File([bytes],'uxtest-shot.png',{type:'image/png'})`
+since Z-something and had **never verified that the engine honoured the option**.
+When it did not, the harness sat out a four-second deadline and reported three
+unrelated failures -- including `first useful render under 1s` with an
+`undefined` duration, which was collateral damage from the same missing
+precondition and had nothing to do with first render.
+
+Two batches spent making this check able to explain itself, and the explanation
+turned out to be about the harness, not the product. That is worth stating plainly:
+Z86 and Z88 were not wasted, and they were not about the dashboard.
+
+### The precondition now fails in one line
+
+The file is built and then checked, before it is staged:
+
+```
+FAIL  the staged preview file is an image this engine will accept
+```
+
+with the engine's own reading of it in the detail. One red check naming the cause
+instead of three red checks four seconds later naming nothing.
+
+### A spec detail, measured rather than assumed
+
+While making that check, the obvious "more portable" construction was tried first:
+build a `Blob` with the type, then wrap it, `new File([blob], name)`. **All three
+engines rejected the preview**, because per the File constructor the type comes
+from the *options bag* and is otherwise the empty string -- it is not inherited
+from the parts.
+
+That is a good way to be wrong about a web platform API: confidently, uniformly,
+and in a way that looks more correct than what it replaced. The precondition check
+caught it in one run, which is the check earning its place before it has ever
+needed to catch anything in CI.
+
+### Where this leaves it
+
+The cause is confirmed: the harness staged a file the dashboard's preview guard
+rejects, and did not check. Whether CI's WebKit drops the `type` option, or
+differs some other way that produces the same state, is not established -- and no
+longer matters much, because the precondition is now asserted and any such
+difference reports itself in one line rather than as three mysteries.

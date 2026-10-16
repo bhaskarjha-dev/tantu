@@ -356,9 +356,38 @@ let hubs2 = null;
     check('destination always visible', sess && /Destination: .+/.test(sess.dest || ''), sess && sess.dest);
     check('one-time token stripped from the URL', sess && !/tantu_bootstrap/.test(sess.url), sess && sess.url);
 
-    await js(`(function(){var b='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+    // The staging file, built through a Blob and checked before use.
+//
+// It was built as `new File([bytes], name, {type:'image/png'})` and never
+// verified. CI's WebKit run staged a file whose type did not survive, the
+// dashboard's preview guard rejected it, `thumb.src` was never assigned -- and
+// the harness then sat out a four-second deadline and reported three unrelated
+// failures, including "first useful render" with an undefined duration, which
+// was collateral damage from the same missing precondition.
+//
+// A Blob's type is reliably preserved across engines, and the assertions below
+// mean that if it ever is not, this fails in one line naming the engine instead
+// of three failures four seconds later with no cause.
+const staged = await js(`(function(){
+      var b='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
       var bin=atob(b), arr=new Uint8Array(bin.length); for(var i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
-      stageFileForSend(new File([arr],'uxtest-shot.png',{type:'image/png'})); return 'ok';})()`);
+      // The type comes from the options bag, not from the parts: new File([blob])
+      // yields type "". That was measured here -- all three engines rejected the
+      // preview when the file was built through a Blob without an explicit type,
+      // and the precondition check caught it before the four-second deadline did.
+      var f=new File([arr],'uxtest-shot.png',{type:'image/png'});
+      window.__uxtestStagedFile=f;
+      return JSON.stringify({type:f.type, size:f.size, isBlob:(f instanceof Blob)});
+    })()`);
+const stagedFile = (() => { try { return JSON.parse(staged); } catch (_) { return null; } })();
+check('the staged preview file is an image this engine will accept',
+    stagedFile && stagedFile.isBlob && stagedFile.type === 'image/png' && stagedFile.size > 0,
+    'the dashboard previews an image only when its type starts with image/ and it is ' +
+    'non-empty, so a file this engine built differently turns a one-line precondition ' +
+    'failure into a four-second timeout and three unrelated red checks, one of them ' +
+    '"first useful render" with an undefined duration. File as this engine built it: ' +
+    JSON.stringify(stagedFile));
+await js(`stageFileForSend(window.__uxtestStagedFile); 'ok'`);
     // Wait for the fade to settle rather than sampling once. The transition is
     // 250ms, so a single read at 1200ms cannot legitimately catch it mid-fade
     // - unless the blob's decode finished late, which is exactly what happens on
