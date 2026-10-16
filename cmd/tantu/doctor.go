@@ -50,6 +50,101 @@ type healthReport struct {
 	Status      string        `json:"status"`
 }
 
+// peerHealthView mirrors the heartbeat's verdict as /api/status reports it.
+//
+// A pointer, because the distinction is the whole point: a peer the Hub has not
+// probed yet has no answer, and "no answer yet" is not "unreachable". Collapsing
+// the two would make every peer read as down for the first seconds after a Hub
+// starts and after every restart, which is the fastest way to teach someone not
+// to believe a diagnostic.
+type peerHealthView struct {
+	Reachable           bool      `json:"reachable"`
+	LastChecked         time.Time `json:"last_checked"`
+	LastOK              time.Time `json:"last_ok"`
+	ConsecutiveFailures int       `json:"consecutive_failures"`
+}
+
+// peerReachability is what a running Hub believes about one peer.
+type peerReachability struct {
+	Name        string          `json:"name"`
+	Fingerprint string          `json:"fingerprint"`
+	Health      *peerHealthView `json:"health"`
+}
+
+// reachVerdict counts what a Hub believes about the peers in the store.
+type reachVerdict struct {
+	// down is how many peers the Hub has probed and found not answering.
+	down int
+	// unprobed is how many it has reached no verdict about.
+	unprobed int
+	// names lists the peers that are not answering, for the message.
+	names string
+}
+
+// summarisePeerReachability counts a Hub's opinion, matching it against the store
+// so a peer it has never heard of counts as unprobed rather than silently
+// dropping out of the arithmetic.
+//
+// A nil opinion -- the Hub could not be asked -- yields every peer unprobed, which
+// is what keeps a caller from mistaking "we do not know" for "they are fine".
+func summarisePeerReachability(peers []pairing.Peer, opinion []peerReachability) reachVerdict {
+	byFingerprint := make(map[string]*peerReachability, len(opinion))
+	for i := range opinion {
+		byFingerprint[strings.ToLower(opinion[i].Fingerprint)] = &opinion[i]
+	}
+	v := reachVerdict{}
+	var down []string
+	for _, p := range peers {
+		seen, ok := byFingerprint[strings.ToLower(p.Fingerprint)]
+		if !ok || seen.Health == nil || seen.Health.LastChecked.IsZero() {
+			v.unprobed++
+			continue
+		}
+		if !seen.Health.Reachable {
+			v.down++
+			down = append(down, p.DisplayName())
+		}
+	}
+	v.names = strings.Join(down, ", ")
+	return v
+}
+
+// fetchPeerReachability asks a running Hub what it believes about each peer.
+//
+// Returns nil when the Hub cannot be asked, which is not the same as "no peer
+// answers" -- the caller must read an absent opinion as no opinion.
+func fetchPeerReachability(webAddr, storeDir string) []peerReachability {
+	token := hub.RuntimeIPCTokenForAddr(storeDir, webAddr)
+	if token == "" {
+		return nil
+	}
+	client := &http.Client{
+		Timeout:   2 * time.Second,
+		Transport: &http.Transport{Proxy: nil},
+	}
+	defer client.CloseIdleConnections()
+	req, err := http.NewRequest(http.MethodGet, "http://"+webAddr+"/api/status", nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set(hub.IPCTokenHeader, token)
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return nil
+	}
+	defer resp.Body.Close()
+	var payload struct {
+		Peers []peerReachability `json:"peers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil
+	}
+	return payload.Peers
+}
+
 // fetchHubOutputDir asks a running Hub for its receiver directory via the
 // capability-protected config endpoint. It returns "" when unavailable.
 func fetchHubOutputDir(webAddr, storeDir string) string {
@@ -143,6 +238,14 @@ func buildHealthReport(storeDir, bridgeAddr string) healthReport {
 		})
 	}
 
+	// The Hub is probed before the peer checks rather than after, because what
+	// the Hub believes about its peers is the most useful thing doctor can say,
+	// and a check cannot be built from an opinion nobody has asked for.
+	live, hubReachable := hub.ProbeHubWithStoreDir(bridgeAddr, storeDir)
+	if !hubReachable || live == nil {
+		live = nil
+	}
+
 	peers := store.ListPeers()
 	for _, p := range peers {
 		report.Peers = append(report.Peers, healthPeer{
@@ -168,7 +271,60 @@ func buildHealthReport(storeDir, bridgeAddr string) healthReport {
 		})
 	}
 
-	if live, ok := hub.ProbeHubWithStoreDir(bridgeAddr, storeDir); ok && live != nil {
+	// Reachability, as its own check rather than folded into "peers".
+	//
+	// It did not exist, and "peers: OK" was emitted purely on the presence of
+	// peers in the store -- so doctor told a user whose peer had moved networks or
+	// gone to sleep that their peers were fine. That is the same false claim the
+	// cockpit's banner used to make, on the one surface where it costs most:
+	// doctor is the command a person runs when something is already broken, on a
+	// machine where something is already broken.
+	//
+	// Separate on purpose. "Peers are configured" stays true when the Hub is down
+	// and should keep saying so -- the store is fine, the Hub is the problem, and
+	// a user needs to be told which. Merging them would report one failure for two
+	// different causes.
+	if live != nil && len(peers) > 0 {
+		switch verdict := summarisePeerReachability(peers, fetchPeerReachability(live.WebAddr, storeDir)); {
+		case verdict.unprobed == len(peers):
+			// No opinion about any of them yet. Saying nothing would lose the fact
+			// that the Hub is up and has simply not asked yet; claiming all are
+			// reachable would be inventing an answer.
+			//
+			// Guarded on there being peers at all. The first version ran
+			// unconditionally and, with an empty store, emitted "Hub has not
+			// probed any peer yet" beside a failing "No trusted peers" check --
+			// answering a question nobody asked, marked ok beside a failure.
+			// Rendering the output is what found that; no gate did.
+			report.Checks = append(report.Checks, healthCheck{
+				Name:    "peers_reachability",
+				OK:      true,
+				Message: "Hub has not probed any peer yet.",
+			})
+		case verdict.down == 0:
+			report.Checks = append(report.Checks, healthCheck{
+				Name:    "peers_reachability",
+				OK:      true,
+				Message: fmt.Sprintf("All %d answering.", len(peers)),
+			})
+		default:
+			// "0 unprobed" is noise. It only carries information when the Hub has
+			// a verdict about some peers and not others, which is a different
+			// situation from all of them being down.
+			msg := fmt.Sprintf("%d of %d not answering (%s).", verdict.down, len(peers), verdict.names)
+			if verdict.unprobed > 0 {
+				msg += fmt.Sprintf(" %d not yet probed.", verdict.unprobed)
+			}
+			report.Checks = append(report.Checks, healthCheck{
+				Name:       "peers_reachability",
+				OK:         false,
+				Message:    msg,
+				NextAction: "A peer that is not answering is usually asleep, on another network, or at a new address. Wake it, or let it broadcast on this network and Tantu will find it.",
+			})
+		}
+	}
+
+	if live != nil {
 		report.HubRunning = true
 		report.Transport = live.Transport
 		dash := live.WebAddr

@@ -6963,3 +6963,93 @@ because it ends the investigation.
 Which of the three it was, on that run. It did not reproduce locally on any of
 the three engines, and the diagnostic that would have said is the change made
 after it. Recorded as unexplained rather than resolved.
+## Batch Z87 - the diagnostic command that never asked (2026-10-15)
+
+`tantu doctor` reported:
+
+```go
+report.Checks = append(report.Checks, healthCheck{
+	Name:    "peers",
+	OK:      true,
+	Message: fmt.Sprintf("%d trusted peer(s) configured.", len(peers)),
+})
+```
+
+That is `OK: true` whenever peers exist in the store. It never consulted
+reachability, because reachability did not exist when it was written -- and then
+the heartbeat arrived and `/api/status` began carrying exactly the answer, and
+doctor kept not asking.
+
+So a user whose peer had moved networks or gone to sleep ran the command written
+for the moment something is already broken, on a machine where something is
+already broken, and was told their peers were fine.
+
+This is the third surface in three batches to make the same false claim, after the
+cockpit's `[Online 🟢]` banner and its `[ACTIVE 🟢]` selection marker. Three
+independent surfaces reported something the Hub could have known was untrue, and
+in every case the honest signal existed elsewhere in the same binary. That is the
+finding worth more than the fix: **a truth added in one place is not a truth
+everywhere, and nothing in the build fails when a surface opts out of one.**
+
+### The fix, and the design question it forced
+
+`fetchPeerReachability` is the same authenticated fetch as `fetchHubOutputDir`,
+against `/api/status`, which already returns each peer's `health` as a pointer.
+
+The real work was deciding what the check should say when there is no Hub, because
+that is what forced the two checks to stay separate:
+
+- `peers` keeps reporting **configuration**, which stays true with the Hub down.
+  It should keep saying so -- the store is fine, the Hub is the problem, and a
+  user needs to be told *which*.
+- `peers_reachability` reports **what the Hub believes**, and is emitted only
+  when there is a Hub to believe something.
+
+Merging them would report one failure for two different causes, and would tell a
+user with the Hub stopped that their peers were unreachable -- which is exactly
+the kind of confident wrong answer this repository keeps finding.
+
+"No opinion" is a third state, not a second. A Hub that has not probed yet, and a
+Hub that has probed and found nothing wrong, are both `ok` but say different
+things, and a nil opinion -- the fetch failed -- counts every peer as *unprobed*
+rather than as answering. "We do not know" must never collapse into "they are
+fine".
+
+### What rendering it found that no gate did
+
+The first version ran the check unconditionally. Rendered, with no peers in the
+store, it emitted:
+
+```
+[FAIL] peers               No trusted peers.
+[ok  ] peers_reachability  Hub has not probed any peer yet.
+```
+
+Answering a question nobody asked, marked ok, sitting directly beside a failure.
+Three gates passed against it: the produced one needs a peer to exist, and the
+pure one tests the summariser, which is not what decides whether the check is
+emitted.
+
+Fixed by guarding on `len(peers) > 0`. Also tidied two things rendering showed:
+`"; 0 unprobed"` is noise when there are none, and "2 peer(s)" is not English a
+person would write.
+
+### Gates
+
+One produced: a real Hub on `lan`, a peer at a TEST-NET-1 address -- reserved by
+RFC 5737, unroutable by design, so the dial hangs and then fails -- waiting for
+the Hub's *own* loop to produce the verdict, then asserting doctor names the peer
+and offers a next action. Constructing a health value would prove the summariser
+agrees with a value the test wrote.
+
+One produced for the absence: with no Hub, `peers_reachability` must not appear
+at all, and `peers` must still report configuration as true.
+
+One pure, over ten shapes of opinion, because that is the whole domain for a
+summariser: no opinion at all, an empty opinion, all answering, one down by name,
+never-checked, zero-timestamp, missing health field, a peer the Hub has never
+heard of, case-insensitive fingerprints, several down.
+
+Six red proofs, all red. One of them -- "treat an empty opinion as an all-clear" --
+is the failure mode most likely to be written by accident later: it compiles,
+looks like defensive code, and inverts the whole point of the change.
