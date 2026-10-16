@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bhaskarjha-dev/tantu/internal/browser"
 	"github.com/bhaskarjha-dev/tantu/internal/drop"
@@ -1069,6 +1070,81 @@ func printPeerStatus(h *hub.Hub) {
 	fmt.Println("-------------------------")
 }
 
+// snippetRenderWidth is the column width a snippet line is wrapped to before the
+// card is drawn.
+//
+// cockpitBox caps its content at 74 columns and pads to that, so anything wider
+// is cut off at the edge -- which loses the tail of every long line rather than
+// showing it on the next row. Wrapping first turns that truncation into a wrap.
+const snippetRenderWidth = 74
+
+// snippetMaxLines bounds how many rows a single drop may produce.
+//
+// The guard used to be a byte count, which bounded volume without bounding
+// *rows*: 4096 bytes with no newlines is one 4096-column line, and on an
+// 80-column terminal that is fifty-one visual rows carrying a single "│" prefix.
+// A peer could still obliterate the cockpit without ever exceeding a byte cap.
+const snippetMaxLines = 24
+
+// snippetMaxBytes still bounds how much of a drop is considered at all, so a
+// 10MB paste is not walked to find its line breaks.
+const snippetMaxBytes = 64 << 10
+
+// cockpitWrap breaks text into lines of at most width columns, on rune
+// boundaries.
+//
+// Rune boundaries, not byte offsets: cutting a string by bytes can split a
+// multi-byte character, and a terminal renders the halves as mojibake. The same
+// reason cockpitTruncate exists.
+func cockpitWrap(text string, width int) []string {
+	if width <= 0 {
+		return []string{""}
+	}
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		if cockpitWidth(line) <= width {
+			out = append(out, line)
+			continue
+		}
+		var cur strings.Builder
+		w := 0
+		for _, r := range line {
+			rw := cockpitRuneWidth(r)
+			if w+rw > width {
+				out = append(out, cur.String())
+				cur.Reset()
+				w = 0
+			}
+			cur.WriteRune(r)
+			w += rw
+		}
+		out = append(out, cur.String())
+	}
+	if len(out) == 0 {
+		return []string{""}
+	}
+	return out
+}
+
+// snippetContentBounds returns the content to render, and whether anything was
+// left out.
+//
+// The byte cut moves back to a rune boundary. The first version sliced by bytes
+// (`content[:4096]`), so a drop whose 4096th byte landed inside a three-byte
+// character emitted a replacement character into the user's terminal -- in the
+// same file where cockpitTruncate exists precisely to prevent that.
+func snippetContentBounds(content string) (string, bool) {
+	if len(content) <= snippetMaxBytes {
+		return content, false
+	}
+	cut := snippetMaxBytes
+	// Step back to the start of the rune that straddles the cut.
+	for cut > 0 && !utf8.RuneStart(content[cut]) {
+		cut--
+	}
+	return content[:cut], true
+}
+
 // RenderSnippetCard prints a prominent boxed frame with 2-space indentation for incoming text drops.
 func RenderSnippetCard(item hub.ReceivedDropItem) {
 	timeStr := item.Timestamp.Format("15:04:05")
@@ -1081,24 +1157,49 @@ func RenderSnippetCard(item hub.ReceivedDropItem) {
 		kindLabel = "URL Link"
 	}
 
-	fmt.Println()
-	fmt.Printf("┌── 📝 QuickDrop %s (%s • %s) ──────────────────────────────\n", kindLabel, from, timeStr)
-	// Never dump megabytes into the terminal: a malicious or careless peer
-	// could otherwise scroll-bomb the cockpit with a 10MB text drop.
-	content := item.Content
-	const maxSnippetRender = 4096
-	truncated := false
-	if len(content) > maxSnippetRender {
-		content = content[:maxSnippetRender]
-		truncated = true
+	// Never dump an arbitrary amount into the terminal: a careless or hostile
+	// peer could scroll-bomb the cockpit. Bounded twice, because the two are not
+	// the same bound -- see snippetMaxBytes and snippetMaxLines.
+	content, cutBytes := snippetContentBounds(item.Content)
+	lines := cockpitWrap(content, snippetRenderWidth)
+
+	truncatedLines := false
+	if len(lines) > snippetMaxLines {
+		lines = lines[:snippetMaxLines]
+		truncatedLines = true
 	}
-	lines := strings.Split(content, "\n")
+
+	rows := make([]cockpitRow, 0, len(lines)+2)
+	rows = append(rows, cockpitRow{text: "📝 QuickDrop " + kindLabel + " (" + from + " • " + timeStr + ")"})
+	rows = append(rows, cockpitRow{})
 	for _, line := range lines {
-		fmt.Printf("│  %s\n", line)
+		rows = append(rows, cockpitRow{text: line})
 	}
-	if truncated {
-		fmt.Printf("│  … (%d total bytes, truncated)\n", len(item.Content))
+	if cutBytes || truncatedLines {
+		what := ""
+		switch {
+		case truncatedLines:
+			what = fmt.Sprintf("%d lines shown", len(lines))
+		default:
+			what = fmt.Sprintf("%d bytes", len(item.Content))
+		}
+		rows = append(rows, cockpitRow{text: "… (" + what + ", truncated)", color: "33"})
 	}
-	fmt.Println("└─────────────────────────────────────────────────────────────────────────────")
+
+	// cockpitBox, not hand-drawn borders.
+	//
+	// This drew its own top and bottom rules, and they disagreed: the top was
+	// sized by the label, the peer and the time, while the bottom was a fixed
+	// run of dashes. A URL card rendered 74 columns against a 78-column base and
+	// a card from a long-named peer rendered 90 against 78. Every QuickDrop a
+	// user received came out ragged, and only agreed by accident when the
+	// content happened to fit.
+	//
+	// cockpitBox already sizes both borders from the widest row, truncates with
+	// cockpitTruncate (which cuts on rune boundaries), and prints what it builds.
+	// Rendering the card found that last part: the first version of this fix
+	// looped over the returned lines as well, and drew every QuickDrop twice.
+	fmt.Println()
+	cockpitBox(rows)
 	fmt.Println()
 }

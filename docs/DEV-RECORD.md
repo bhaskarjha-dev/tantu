@@ -7411,3 +7411,95 @@ yet" -- the wait condition tested that the check *existed*, which it always does
 rather than that it held a verdict. Fixed, the render shows `1 not yet probed`
 alongside the one proved down, which is exactly the distinction the whole design
 turns on and which is worth being able to see in the output rather than infer.
+## Batch Z94 - the card every QuickDrop arrives in (2026-10-16)
+
+The cockpit's *interactive* half had never been rendered by anything. Not the
+snippet card, not the sign-in listing, not peer selection. So: rendered it, with
+a column ruler, and read it.
+
+`RenderSnippetCard` is exported and runs for every incoming text drop. It had
+three defects, none of which any gate had ever seen, and it sits **137 lines below
+`cockpitBox`** -- a tested helper that solves all of them.
+
+### The borders disagreed
+
+It drew its own top and bottom rules:
+
+```
+top:    ┌── 📝 QuickDrop %s (%s • %s) ─────────────   ← sized by label, peer, time
+bottom: └──────────────────────────────────────────     ← a fixed run of dashes
+```
+
+Measured, not guessed:
+
+| card | top | bottom |
+|---|---|---|
+| URL link | 74 | 78 |
+| from a long-named peer | 90 | 78 |
+
+They agree only when the content happens to fit, which is the definition of a
+defect that survives review by reading the source. Every QuickDrop a user received
+came out ragged.
+
+### It sliced a string by bytes
+
+```go
+if len(content) > maxSnippetRender {
+    content = content[:maxSnippetRender]
+```
+
+A drop whose 4096th byte landed inside a three-byte character emitted a
+**replacement character into the user's terminal** -- in the same file where
+`cockpitTruncate` exists with the comment "It cuts on a rune boundary and never
+leaves a double-width rune straddling the edge." The card was doing the opposite,
+two functions away.
+
+The gate arranges the cut to land inside a character at all three byte offsets,
+rather than trusting one fixture.
+
+### The scroll-bomb guard bounded the wrong thing
+
+"Never dump megabytes into the terminal" was guarded by 4096 **bytes**. Bytes do
+not bound rows: 4096 of them with no newline is one 4096-column line, which is
+fifty-one visual rows on an 80-column terminal carrying a single `│`. A peer could
+still obliterate the cockpit without exceeding any byte cap.
+
+Now bounded twice -- 64 KiB considered, 24 rows rendered, wrapped at 74 columns so
+a long line wraps instead of being cut at the box edge. And the card says what it
+dropped, rather than looking complete.
+
+### Rendered again, because it is what finds things
+
+The first fix drew every card **twice**. `cockpitBox` prints what it builds *and*
+returns it, and the new code looped over the return as well. Nothing failed: 59 rows
+instead of 29, all the right width.
+
+A probe is not a gate. It is a thing you look at, and it earned its keep twice
+here -- once for the card being ragged, once for the card being printed twice.
+
+### Fixing it by using the thing that already worked
+
+The card now builds `[]cockpitRow` and hands it to `cockpitBox`, which sizes both
+borders from the widest row and truncates through `cockpitTruncate`. A fourth
+hand-rolled box is what the bug was; the fix was to stop hand-rolling.
+
+### Gates
+
+Nine card shapes asserted for uniform row width -- empty, short, URL, anonymous
+peer, long peer name, long name *and* long URL, one enormous line, many lines,
+and wide runes throughout. Plus rune-safe byte cutting, the row bound, and
+`cockpitWrap` against width, rune validity and content preservation.
+
+Five red proofs, all red. Three of my five were wrong on the first attempt and are
+worth recording:
+
+- **A build error counted as a break.** Removing the rune-boundary loop made
+  `utf8` unused, which is a compile failure. A build error is not a red proof;
+  the break now keeps a reference so it compiles.
+- **A comment as a mutation.** "wrap by bytes" appended a comment. It compiled,
+  changed nothing and exited zero.
+- **An ambiguous anchor.** "draw the card twice" matched two sites.
+
+And one break worth keeping for what it catches: **restoring the original
+hand-drawn borders** reproduces the ragged card exactly, with a 49-column row
+against a 79-column one.
