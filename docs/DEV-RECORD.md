@@ -7288,3 +7288,53 @@ and all preview checks pass. So whether CI's WebKit really mishandled `atob`, or
 did something else that produced the same empty file, is still not established --
 but it no longer matters, because the harness no longer has a decoder to
 misbehave and no longer depends on one.
+## Batch Z92 - a Linux teardown race, recorded with its negative results (2026-10-16)
+
+`TestPairedHubsTransferFileOverLANTransport` failed on Ubuntu:
+
+```
+TempDir RemoveAll cleanup: unlinkat /tmp/TestPairedHubs.../004: directory not empty
+```
+
+"Directory not empty" during `RemoveAll` means a file appeared between Go's
+readdir and its rmdir -- something was still writing into a temp directory that
+testing had decided to delete. One occurrence, not reproducible locally.
+
+It has the same shape as Z80, where a Windows test wiped a *stopped* Hub's store
+and found `Stop` returning while a heartbeat probe was still writing. So the first
+thing to check was whether `Stop` fails to quiesce some other background writer.
+
+### What was checked, and what it found
+
+All three tracked background writers **do** wait:
+
+- **Heartbeat probes** -- `h.heartbeatWG.Wait()` in `Stop`, outside the lock (Z80).
+- **P2P sessions** -- `Dispatcher.Serve` holds `var wg sync.WaitGroup` with
+  `defer wg.Wait()`, so it returns only once every session goroutine is done, and
+  it closes active connections on cancellation before that.
+- **Discovery watchers** -- `Engine.Close` cancels, closes sockets, then
+  `e.wg.Wait()`, all under a `stopOnce`.
+
+And `Stop` waits on `runDone` itself, with a 5s deadline, a forced close of both
+listeners, and a further 2s wait.
+
+So the second instance of the Z80 defect class is **not** the same defect. The
+writer is not accounted for by anything I can find.
+
+### Why nothing was changed
+
+The tempting moves are all bad:
+
+- Making `Stop` wait longer would hide it without explaining it, and `Stop` already
+  has a bounded deadline on purpose -- a Hub that will not stop is worse than a
+  test that races.
+- Adding a WaitGroup somewhere to "cover" it would be a guess, in shutdown code,
+  on a failure that does not reproduce on any machine I have.
+- The Z80 fix was justified because the mechanism was *found*. This one has not
+  been.
+
+Recorded as **unattributed**, with the negative results attached. The next
+occurrence has a much better starting point than this one did: three shutdown
+paths are now known-good, so the search starts at the web server's in-flight
+handlers and at the drop staging sweeper rather than at the place everyone looks
+first.
