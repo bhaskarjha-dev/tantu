@@ -1222,6 +1222,46 @@ func (h *Hub) SetOnSnippetReceived(fn func(ReceivedDropItem)) {
 	h.onSnippetReceived = fn
 }
 
+// hubStopForceGrace is how long Stop waits for the run loop to finish after
+// force-closing its listeners.
+const hubStopForceGrace = 2 * time.Second
+
+// errHubStopRunTimeout is what Stop reports when the run loop does not finish,
+// including after its listeners have been force-closed.
+var errHubStopRunTimeout = errors.New("hub stop timed out waiting for run completion")
+
+// waitForRunCompletion waits for done, up to grace, and reports whether the run
+// loop actually finished.
+//
+// This exists as a named function because it once was not one, and the two
+// branches of the select it replaced returned the *same* error:
+//
+//	select {
+//	case <-runDone:
+//	    return errors.New("hub stop timed out waiting for run completion")
+//	case <-time.After(2 * time.Second):
+//	    return errors.New("hub stop timed out waiting for run completion")
+//	}
+//
+// So the one path where force-closing the listeners worked and the Hub did stop
+// was reported as the one where it failed to stop. Nobody would have seen it:
+// reaching it needs the run loop to still be going after five seconds, and
+// closing a listener normally ends it in microseconds. But a diagnostic that
+// misreports its own recovery is worse than no diagnostic, because it teaches
+// whoever reads it that this message means "the Hub is wedged" when it can also
+// mean "the Hub stopped, after being forced".
+func waitForRunCompletion(done <-chan struct{}, grace time.Duration) error {
+	if done == nil {
+		return errHubStopRunTimeout
+	}
+	select {
+	case <-done:
+		return nil
+	case <-time.After(grace):
+		return errHubStopRunTimeout
+	}
+}
+
 func shutdownHTTPServer(server *http.Server) {
 	if server == nil {
 		return
@@ -1293,11 +1333,8 @@ func (h *Hub) Stop() error {
 			if httpServer != nil {
 				_ = httpServer.Close()
 			}
-			select {
-			case <-runDone:
-				return errors.New("hub stop timed out waiting for run completion")
-			case <-time.After(2 * time.Second):
-				return errors.New("hub stop timed out waiting for run completion")
+			if err := waitForRunCompletion(runDone, hubStopForceGrace); err != nil {
+				return err
 			}
 		}
 	}

@@ -7670,3 +7670,64 @@ dial out of an idle pool is not enough.
 
 One red proof, red, and it reports the measured latency rather than only that the
 gate failed.
+## Batch Z97 - the recovery path reported itself as the failure (2026-10-16)
+
+Found by reading `Stop` after Z96, looking for other places where the shutdown
+wait could be wrong. Both branches of its second `select` returned the same
+error:
+
+```go
+select {
+case <-runDone:
+    return errors.New("hub stop timed out waiting for run completion")
+case <-time.After(2 * time.Second):
+    return errors.New("hub stop timed out waiting for run completion")
+}
+```
+
+So the branch where **force-closing the listeners worked and the Hub did stop** --
+the entire point of the fallback -- was reported as the branch where the Hub failed
+to stop. One error value meaning both "it stopped" and "it did not stop".
+
+### Why nobody would have seen it
+
+Reaching this needs the run loop to still be going after five seconds, and closing
+a listener normally ends its serve loop in microseconds. So the path is nearly
+unreachable, which is exactly why it survived: a rare path with a plausible-looking
+body is reviewed as a shape, not as a decision.
+
+It is still worth fixing. The message is the only thing an operator has when a Hub
+does not stop, and teaching them that this string means "the Hub is wedged" when it
+can also mean "the Hub stopped, after being forced" is the kind of diagnostic that
+costs someone an afternoon.
+
+### Fix
+
+`waitForRunCompletion(done, grace)` -- a named function with the decision in it, so
+it can be gated. Success returns nil; only the grace expiry returns the timeout
+error. `hubStopForceGrace` names the two seconds.
+
+### A pure gate, and saying so
+
+This is a decision function: whether the run loop finished, and by when, relative to
+the grace period. The input *is* the whole domain, so the right gate is to feed it
+constructed values and assert on the answer -- not to stand up a Hub. Producing a run
+loop that is still going after five seconds would mean building a listener that
+ignores `Close`, which is a different product.
+
+The gate's comment says what it cannot cover: that `Stop` reaches this call on the
+timeout path at all. That is two lines in `Stop` passing `hubStopForceGrace`, and it
+is checked by reading them, not pretended to otherwise.
+
+Four cases, all producible instantly: already finished, finished inside the grace,
+never finished, and a nil channel -- which blocks forever, so it must become the
+timeout rather than an unbounded wait.
+
+One red proof, red, restoring the both-branches-error select.
+
+### And a gate bug of my own, worth recording
+
+The first version of the "distinguishable" gate asserted that both outcomes were
+non-nil. One of them is *supposed* to be nil -- nil is how it says "it stopped". I
+had written the assertion without asking what success looks like. It failed, which
+is the correct outcome, but it failed on my test rather than on the product.
