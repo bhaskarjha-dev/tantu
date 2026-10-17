@@ -25,6 +25,7 @@
 // build, test, or run Tantu itself.
 
 import { spawn, execFileSync } from 'node:child_process';
+import { createEngineFailureNote } from './engine-failure.cjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -57,8 +58,36 @@ const checks = [];
 // product defects. Recorded once, here, so the run can say so instead.
 let hubDeath = null;
 let lastHubOut = '';
+// Set when the *engine* fails a request to the Hub, rather than the Hub
+// answering wrongly. Same purpose as hubDeath and the same reasoning: one cause,
+// recorded once, so the run says so instead of presenting every consequential
+// failure as an independent finding.
+//
+// This exists because on 2026-10-16 a webkit run on the runner reported six
+// failures -- an unmeasured render, a rejected preview file, a reconnect
+// reporting -1ms, a staleness banner that never cleared, a notification that did
+// not persist, and unexpected console errors -- when the console errors
+// themselves said `WebKit encountered an internal error` against two Hub
+// endpoints. Five of the six were downstream of the sixth, and nothing in the
+// output said so. Reading that log costs an hour and proves nothing, because the
+// one line that explains all of it is the one buried in the middle.
+//
+// Only the phrasing actually observed is matched. Adding other engines'
+// phrasings is a change to make when one is seen failing, not to guess at in
+// advance: a pattern loose enough to catch a legitimate resource failure would
+// mislabel a product defect as an engine defect, which is worse than saying
+// nothing at all.
+const noteEngineFailure = createEngineFailureNote();
+let engineFailure = null;
 function check(name, ok, detail) {
-  const suffix = (!ok && hubDeath) ? ' [HUB DIED: ' + hubDeath + ']' : '';
+  // The engine note goes first when both are true, because it is the more
+  // specific cause: a Hub that exited during an engine failure is still a Hub
+  // that exited, and saying only "the engine failed a request" would point
+  // away from the real cause.
+  engineFailure = noteEngineFailure.last;
+  const suffix = hubDeath
+    ? ' [HUB DIED: ' + hubDeath + ']'
+    : (engineFailure ? ' [ENGINE FAILED THE REQUEST: ' + engineFailure + ']' : '');
   checks.push({ name, ok: !!ok, detail: String(detail ?? '').slice(0, 240) + suffix });
   if (!ok) console.log('  FAIL  ' + name + '  ' + String(detail ?? '').slice(0, 200) + suffix);
 }
@@ -282,6 +311,7 @@ let hubs2 = null;
       const loc = (typeof m.location === 'function' ? m.location() : null) || {};
       const entry = 'console: ' + m.text() + (loc.url ? ' @ ' + loc.url : '');
       if (statusBlocked && /\/api\/status/.test(entry)) return;
+      noteEngineFailure(entry);
       consoleErrors.push(entry);
     });
 
@@ -345,10 +375,36 @@ let hubs2 = null;
     // only the render instant is gated, because the settle loop's 250ms poll
     // granularity is harness latency, not product behaviour.
     const firstUseful = await js('window.__tantuFirstUsefulMs');
-    console.log('uxtest: first useful render ' + firstUseful + 'ms (bootstrap hop ' + bootstrapWallMs + 'ms)');
-    check('first useful render under 1s',
-      typeof firstUseful === 'number' && firstUseful >= 0 && firstUseful < 1000,
-      'render ' + firstUseful + 'ms, bootstrap ' + bootstrapWallMs + 'ms');
+    const rendered = typeof firstUseful === 'number' && firstUseful >= 0;
+    console.log('uxtest: first useful render '
+      + (rendered ? firstUseful + 'ms' : 'not measured')
+      + ' (bootstrap hop ' + bootstrapWallMs + 'ms)');
+    // Two questions, not one, because "render undefinedms" is the answer to
+    // neither.
+    //
+    // The old gate folded them: `typeof firstUseful === 'number' && ... < 1000`.
+    // On 2026-10-16 a webkit run reported `FAIL first useful render under 1s
+    // render undefinedms, bootstrap 202ms` -- a duration check that had no
+    // duration, reported in the vocabulary of a duration. The stamp is set when
+    // the status slots first hold a real value, so a Hub that never answered
+    // leaves it unset, and the gate then reported the *consequence* as if it were
+    // the measurement.
+    //
+    // Splitting it keeps the property covered: the first check fails when nothing
+    // was stamped, which is the real condition, and the budget check says plainly
+    // that it has nothing to measure rather than inventing a number for it.
+    check('the document stamps a first-useful-render instant',
+      rendered,
+      rendered ? 'stamped ' + firstUseful + 'ms'
+        : 'nothing stamped __tantuFirstUsefulMs; it is set when the status slots first hold a real value, so the Hub never gave the page one');
+    if (rendered) {
+      check('first useful render under 1s',
+        firstUseful < 1000,
+        'render ' + firstUseful + 'ms, bootstrap ' + bootstrapWallMs + 'ms');
+    } else {
+      skip('first useful render under 1s',
+        'nothing measured: the render instant was never stamped, so there is no duration to compare against a budget. The preceding check fails on that condition itself');
+    }
 
     // --- session and the send preview (the CSP regression) ---
     const sess = await js('(function(){return {banner:getComputedStyle(document.getElementById("sessionBanner")).display, dest:document.getElementById("destinationSummary").textContent, url:location.href};})()');
@@ -1622,15 +1678,32 @@ const OVERFLOW_PROBE = `(function(){
               next:/Next:/.test(text), afterDismiss:!!region.querySelector('.toast'),
               dismissLabelled: !!(dismiss && /dismiss/i.test(dismiss.getAttribute('aria-label') || ''))};
     })()`);
+    // A detail is truncated at 240 characters, and this flow captures the whole
+    // notification copy in `text`. Leading with the object as-is meant the fields
+    // a failing predicate actually reads were the ones cut off: on 2026-10-16 a
+    // webkit run reported `an error notification persists until dismissed` with
+    // a detail ending in "..." — still, dismissLabelled and afterDismiss were all
+    // gone, so the log could not say why it had failed, only that it had.
+    //
+    // So each check leads with the fields its own predicate reads, and the copy
+    // goes last and shortened: it is the longest field and the least diagnostic
+    // for a predicate made of booleans.
+    const toastDetail = (fields) => {
+      if (!toastFlow) return 'no toast flow was captured';
+      const o = {};
+      for (const f of fields) o[f] = toastFlow[f];
+      o.text = String(toastFlow.text || '').replace(/\s+/g, ' ').slice(0, 60);
+      return JSON.stringify(o);
+    };
     check('a failure is announced as an alert with a next step',
       !!(toastFlow && toastFlow.has && toastFlow.role === 'alert' && toastFlow.live === 'assertive' && toastFlow.next),
-      JSON.stringify(toastFlow));
+      toastDetail(['has', 'role', 'live', 'next']));
     check('an error notification persists until dismissed',
       !!(toastFlow && toastFlow.still && toastFlow.dismissLabelled && !toastFlow.afterDismiss),
-      JSON.stringify(toastFlow));
+      toastDetail(['still', 'dismissLabelled', 'afterDismiss']));
     check('a notification is not modal and does not steal focus',
       !!(toastFlow && toastFlow.keptFocus),
-      JSON.stringify(toastFlow));
+      toastDetail(['keptFocus']));
     await context.unroute('**/api/open-folder');
 
     // --- an empty list offers a way forward ---

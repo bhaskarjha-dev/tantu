@@ -7731,27 +7731,205 @@ The first version of the "distinguishable" gate asserted that both outcomes were
 non-nil. One of them is *supposed* to be nil -- nil is how it says "it stopped". I
 had written the assertion without asking what success looks like. It failed, which
 is the correct outcome, but it failed on my test rather than on the product.
-### Unattributed: one browser-job failure on Z96
+### Unattributed: a browser-job failure that recurred (2026-10-16)
 
-`064ca96` (Z96) failed **Dashboard acceptance (browser)**; its other eight checks
-passed, and the next commit containing the same code, `12dd3a0`, is 9/9 green.
+**Correction first, because I wrote the wrong conclusion into this file.**
 
-The log is not fetchable from here (the API returns 403 without a token), so I
-cannot say what failed. What I can say is what it is not:
+When `064ca96` (Z96) failed **Dashboard acceptance (browser)** and `12dd3a0` came
+back 9/9 green, I recorded it as a flake -- "it did not recur". Then the user asked
+whether anything was pending, I checked the tip, and found `fd85456` -- the
+docs-only commit that carried that very record -- **also red, in the same job.**
+
+So it did recur, on the very next push, and the conclusion was written down before
+the evidence for it arrived. The negative results below were real and still are;
+what was wrong was promoting "it did not recur" from an observation to a finding on
+the strength of a single green run.
+
+### What the annotation actually said
+
+The check-runs annotation is readable even though the log is not (the logs endpoint
+returns 403 without a token):
+
+```
+FAIL  first useful render under 1s  render undefinedms, bootstrap 202ms
+FAIL  the staged preview file is an image this engine will accept
+FAIL  reconnect snapshot reconciliation under 2s  banner cleared in -1ms
+FAIL  staleness clears on recovery  {"b":"block","a":"true"}
+FAIL  an error notification persists until dismissed
+FAIL  zero unexpected console errors  ["console: Failed to load resource: WebKit
+      encountered an internal error @ http://127.0.0.1:18976/api/transfers/recent", ...]
+```
+
+Six failures, webkit, peerless. **Five are downstream of the sixth.** The console
+errors say the *engine* failed to load two Hub endpoints; the dashboard then had
+no data, so nothing stamped a render instant, the preview could not be staged, the
+staleness banner never cleared, and the notification behaved oddly. One cause, six
+findings, and nothing in the output connected them.
+
+### Three harness defects it exposed, all fixed
+
+**The harness had no vocabulary for "the engine failed a request".** It had
+`hubDeath` for exactly this shape of problem -- one cause, recorded once, appended to
+every downstream failure -- and nothing for the case where the Hub was fine and the
+engine was not. `tools/uxtest/engine-failure.cjs` adds it, and it is deliberately
+narrow: both the resource-failure prefix *and* the internal-error phrasing must be
+present, because "encountered an internal error" alone could come from the page's
+own script. Only the phrasing actually observed is matched; other engines' phrasings
+get added when one is seen failing, because a pattern loose enough to catch a
+legitimate resource failure would relabel a product defect as an engine defect,
+which is worse than saying nothing.
+
+**`FAIL first useful render under 1s  render undefinedms`.** A duration gate
+reporting a duration it never measured. The predicate folded "did it measure" into
+"was it under budget", so a page whose status slots never held a real value --
+because the Hub never answered -- reported the *consequence* in the vocabulary of
+the *measurement*. Now two checks: one that fails when nothing was stamped, which is
+the real condition, and one that skips with a reason because it has no duration to
+compare against a budget.
+
+**The toast detail could not say why it failed.** All three toast checks passed the
+same object, whose longest field is the whole notification copy, and `check()`
+truncates a detail at 240 characters. So `still`, `dismissLabelled` and
+`afterDismiss` -- the three fields the failing predicate reads -- were exactly the
+ones cut off. Each check now leads with the fields its own predicate reads.
+
+### And a bug in the module I'd just written, caught on its first run
+
+`createEngineFailureNote` was:
+
+```js
+let note = null;
+const fn = function note(entry) {
+  if (note !== null) return note;   // <- the function, not the variable
+```
+
+A *named function expression* binds its own name inside its own body, so `note` in
+that line is the function, which is never null, so the first call returned the
+function for **every** entry -- including entries that are not engine failures. The
+self-check caught it on the first run. That is the only argument for having written
+one, and it is the second time this batch that a gate written to catch one thing
+caught something else first.
+
+### Red proofs
+
+Four, all red: loosening the detector until it swallows a server error; dropping the
+resource-context requirement so a page error becomes an engine failure; letting a
+later cause replace the first; and removing the render stamp, which makes the stamp
+check fail *and* the budget check skip without reporting a duration.
+
+### The negative results, which still hold
 
 - **All nine harness runs pass locally** -- three engines x {peerless, `--peers`,
-  `--peers --two-hub`} -- and so do both self-check probes.
+  `--peers --two-hub`} -- as do all three self-check probes.
 - **A fast `Stop` cannot race a read in this harness.** Z96 made `Stop` return in
-  under a second where it previously waited out a probe's 10s handshake, and that
-  is exactly the shape of change that exposes a latent read-after-shutdown race.
-  Checked: `run.mjs` kills the main Hub and the `--two-hub` pair only at the very
-  end of the run, after every check, and reads nothing afterwards. The extra wait
-  was not covering anything here.
-- **The font hypothesis does not hold either.** The narrow-viewport self-check runs
-  a "native font" case with no font pinned, which is the obvious way a gate could
-  pass on Windows and fail on ubuntu. But it measures 53-62px of slack at 320px and
-  360px locally, so it is not near a boundary on either platform.
+  under a second where it previously waited out a probe's 10s handshake, and that is
+  exactly the shape of change that exposes a latent read-after-shutdown race.
+  Checked: `run.mjs` kills the main Hub and the `--two-hub` pair only at the very end
+  of the run, after every check, and reads nothing afterwards.
+- **The font hypothesis does not hold.** The narrow-viewport self-check runs a
+  "native font" case with no font pinned, which is the obvious way a gate could pass
+  on Windows and fail on ubuntu. But it measures 53-62px of slack at 320px and 360px
+  locally, so it is not near a boundary on either platform.
 
-Recorded as unattributed rather than as a flake, because "it did not recur" is not
-the same as knowing why. The next failure of this job should be read from its log
-before it is attributed.
+**Still unattributed.** The harness now says *when* a run's failures shared a cause;
+it does not say why webkit failed to load those two endpoints on the runner. That is
+a separate question, and the next occurrence now carries enough in its output to be
+worth reading.
+## Batch Z98 - one cause, six findings, and a gate about a gate that caught a bug (2026-10-17)
+
+The question was "is anything pending?", the answer was to check the tip, and the
+tip was red. `fd85456` -- the docs-only commit carrying the Z97 record -- failed
+**Dashboard acceptance (browser)**, the same job that failed on Z96.
+
+So the "it did not recur" in that record was wrong, and it was wrong in the worst
+way: it was written down, pushed, and would have been read as settled. The
+negative results behind it were real and are kept; what was wrong was promoting an
+observation to a finding on the strength of one green run.
+
+### What the annotation said
+
+The logs endpoint returns 403 without a token, but the check-runs annotation does
+not, and it named the failure:
+
+```
+FAIL  first useful render under 1s  render undefinedms, bootstrap 202ms
+FAIL  the staged preview file is an image this engine will accept
+FAIL  reconnect snapshot reconciliation under 2s  banner cleared in -1ms
+FAIL  staleness clears on recovery  {"b":"block","a":"true"}
+FAIL  an error notification persists until dismissed
+FAIL  zero unexpected console errors  ["console: Failed to load resource: WebKit
+      encountered an internal error @ http://127.0.0.1:18976/api/transfers/recent", ...]
+```
+
+Six failures. **Five are downstream of the sixth.** The engine failed to load two
+Hub endpoints; the dashboard then had no data, so nothing stamped a render instant,
+the preview could not be staged, the staleness banner never cleared, and the
+notification misbehaved. One cause, six findings, nothing in the output connecting
+them.
+
+Reading that annotation costs an hour and proves nothing, because the line that
+explains all of it is the one buried in the middle. That is a defect in the harness,
+not a fact about webkit.
+
+### Three fixes, all in how the harness reports
+
+**No vocabulary for "the engine failed a request".** The harness already had
+`hubDeath` for precisely this shape -- one cause, recorded once, appended to every
+downstream failure -- and nothing for the case where the Hub is fine and the engine
+is not. `tools/uxtest/engine-failure.cjs` adds it, deliberately narrow: the
+resource-failure prefix *and* the internal-error phrasing must both be present,
+since "encountered an internal error" alone could come from the page's own script.
+Only the observed phrasing is matched. Other engines' phrasings get added when one
+is seen failing, because a pattern loose enough to catch a legitimate resource
+failure would relabel a product defect as an engine defect, which is worse than
+saying nothing.
+
+**A duration gate reporting a duration it never measured.** `first useful render
+under 1s` folded "did it measure" into "was it under budget", so a page whose status
+slots never held a real value reported the *consequence* in the vocabulary of the
+*measurement* -- `render undefinedms`. Now two checks: one fails when nothing was
+stamped, which is the real condition, and the budget check skips with a reason
+because it has no duration to compare against anything.
+
+**A detail that could not say why it failed.** All three toast checks passed one
+object whose longest field is the whole notification copy, and `check()` truncates
+at 240 characters -- so `still`, `dismissLabelled` and `afterDismiss`, the three
+fields the failing predicate reads, were precisely the ones cut off. Each check now
+leads with the fields its own predicate reads.
+
+### A gate about a gate, which caught a bug on its first run
+
+`tools/uxtest/engine-failure.cjs` is a separate module precisely so
+`selfcheck-engine-failure.cjs` can test it, the way `selfcheck-overflow-probe.cjs`
+already does. It failed immediately:
+
+```js
+let note = null;
+const fn = function note(entry) {
+  if (note !== null) return note;   // the function, not the variable
+```
+
+A *named function expression* binds its own name inside its own body, so `note` in
+that line is the function -- never null -- so the first call returned the function
+for **every** entry, including entries that are not engine failures. A detector
+that always fires is worse than no detector: it would relabel product defects as
+engine defects on the next bad run.
+
+That is the second time this batch that a gate written to catch one thing caught
+something else first, and the strongest argument in this file for writing the gate
+before trusting the module.
+
+### Red proofs
+
+Four, all red: loosening the detector until it swallows a server error; dropping the
+resource-context requirement; letting a later cause replace the first; and removing
+the render stamp, which makes the stamp check fail **and** the budget check skip
+**without reporting a duration** -- the last of which is the only one that actually
+demonstrates the split rather than the presence of a check.
+
+### Still unattributed
+
+Why webkit failed to load those two endpoints on the runner. The harness now says
+*when* a run's failures shared a cause; it does not say why. The next occurrence
+carries enough in its output to be worth reading, which is an improvement in the
+ability to attribute it and not an attribution.

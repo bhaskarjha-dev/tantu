@@ -394,6 +394,12 @@ jobs:
           set -o pipefail
           node tools/uxtest/selfcheck-overflow-probe.cjs
           node tools/uxtest/selfcheck-narrow-viewport-button.cjs
+          # Third gate about a gate: the engine-failure detector. It exists because
+          # on 2026-10-16 a webkit run reported six failures when one engine-level
+          # request failure caused five of them, and nothing said so. A detector
+          # that cannot be tested is a detector that quietly stops matching, and
+          # then the run goes back to reporting every consequence separately.
+          node tools/uxtest/selfcheck-engine-failure.cjs
       - name: Run acceptance harness across engines
         # Same reasoning as the test step: the harness's diagnostics are the
         # only diagnosis available for this job, and a log nobody can read
