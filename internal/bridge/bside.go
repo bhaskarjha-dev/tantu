@@ -91,24 +91,92 @@ func ExtractCallbackPort(oauthURL string) (int, error) {
 
 	redirectURIStr := q.Get("redirect_uri")
 	stateStr := q.Get("state")
+
+	// A loopback callback named only in state is enough, with or without a
+	// redirect_uri.
+	//
+	// The redirect_uri check used to come first and return early, so a client that
+	// put its loopback URL in `state` and omitted `redirect_uri` entirely was
+	// refused here while callbackExpectation -- which supports that shape on
+	// purpose, for VS Code-style trampolines -- accepted it. The two functions
+	// disagreed about which URLs exist, and nothing caught it because the fuzz
+	// invariant that compares them had not been written until a different
+	// disagreement prompted it.
+	//
+	// Reading state first is also the more permissive direction: a URL this
+	// change starts accepting was previously refused outright, so nothing that
+	// worked can regress.
+	statePortFromLoopbackState := func() (int, bool) {
+		if stateStr == "" {
+			return 0, false
+		}
+		u, err := url.Parse(stateStr)
+		if err != nil {
+			if unescaped, uerr := url.QueryUnescape(stateStr); uerr == nil {
+				u, err = url.Parse(unescaped)
+			}
+		}
+		if err != nil || u == nil {
+			return 0, false
+		}
+		if !isLoopbackHost(strings.ToLower(u.Hostname())) || !strings.EqualFold(u.Scheme, "http") {
+			return 0, false
+		}
+		return extractPortFromURLStr(stateStr)
+	}
+
 	if redirectURIStr == "" {
+		if port, ok := statePortFromLoopbackState(); ok {
+			return port, nil
+		}
 		return 0, errors.New("missing redirect_uri parameter in oauth url")
 	}
 	redirectURI, err := url.Parse(redirectURIStr)
 	if err != nil {
-		// Avoid echoing redirect_uri, which can contain provider-specific
-		// state or other sensitive material.
+		// An unparseable redirect_uri is not the end of the conversation: state is
+		// independent evidence of where the callback goes, and callbackExpectation
+		// has always been willing to use it on its own. Refusing here outright made
+		// the two functions disagree about a URL that is perfectly relayable --
+		// found by the fuzz invariant comparing them, on a redirect_uri of "0%000".
+		//
+		// Only fall through when state actually names a loopback port. Otherwise
+		// keep refusing, and do so without echoing redirect_uri, which can carry
+		// provider-specific material.
+		if statePort, ok := statePortFromLoopbackState(); ok {
+			return statePort, nil
+		}
 		return 0, errors.New("invalid redirect_uri parameter in oauth url")
 	}
 	redirectHost := strings.ToLower(redirectURI.Hostname())
 	if !isLoopbackHost(redirectHost) {
-		stateURL, stateErr := url.Parse(stateStr)
-		if stateErr == nil && isLoopbackHost(strings.ToLower(stateURL.Hostname())) && strings.EqualFold(stateURL.Scheme, "http") {
-			if statePort, ok := extractPortFromURLStr(stateStr); ok {
-				return statePort, nil
-			}
+		if statePort, ok := statePortFromLoopbackState(); ok {
+			return statePort, nil
 		}
 		return 0, fmt.Errorf("redirect_uri host %q has no supported loopback callback", redirectURI.Hostname())
+	}
+	// A loopback redirect_uri must be http, which the state branch above already
+	// required and this branch did not.
+	//
+	// The catcher this port leads to is a **plaintext** HTTP listener, and it has
+	// to be: Tantu relays a callback, it does not terminate TLS for an
+	// application's loopback listener, and it holds no certificate such an
+	// application would trust. So an application registering
+	// `redirect_uri=https://localhost:9000/cb` was being handed a port where its
+	// browser would speak TLS to a server that answers in cleartext -- a failure
+	// with no useful diagnosis, arriving long after the browser had opened.
+	//
+	// Refusing here is the honest point to refuse: before anything is requested,
+	// before a browser opens, and with a reason the user can act on. It also makes
+	// this function agree with callbackExpectation, which required http all along
+	// and therefore marked every such flow `unbound` while the flow was in fact
+	// unreachable rather than merely weaker.
+	//
+	// The scheme is named; the URL is not, because a redirect_uri can carry
+	// provider-specific material.
+	if !strings.EqualFold(redirectURI.Scheme, "http") {
+		return 0, fmt.Errorf("redirect_uri scheme %q is not supported for a loopback callback; "+
+			"Tantu relays the callback over plain HTTP and cannot serve TLS on the "+
+			"application's behalf. Use an http:// loopback redirect_uri", redirectURI.Scheme)
 	}
 	portStr := redirectURI.Port()
 	if portStr == "" {

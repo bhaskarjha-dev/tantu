@@ -8181,3 +8181,99 @@ log tab. So for the largest remaining class of flows, the person who clicked
 sign-in is not told that the guarantees just got weaker before deciding to
 continue. That is the same shape as Z99's dead-end page: a finding that exists,
 runs, and reaches nobody. It is the next thing to fix, and it is not fixed here.
+## Batch Z101 - two functions that disagreed about which URLs exist (2026-10-17)
+
+Started from the Z100 note, which called the `unbound` warning "the next thing to
+fix". **That was wrong, and in an instructive way.** Investigating it rather than
+plumbing it forward found something better.
+
+### What `unbound` actually is
+
+`callbackExpectation` sets `unbound` when an authorization URL carries no loopback
+redirect binding. Its warning goes to `a.logf`, a log tab. My conclusion in Z100
+was "a finding that reaches nobody" -- the shape of Z99's dead-end page.
+
+It is not that. It is a **disagreement between two functions**:
+
+| | loopback host | scheme | port |
+|---|---|---|---|
+| `ExtractCallbackPort` (B-side, before anything is requested) | required | **any** | required, `> 0` |
+| `callbackExpectation` (catcher side) | required | `http` | **not checked** |
+
+Each was right about its own question, and together they meant:
+
+- An application registering `redirect_uri=https://localhost:9000/cb` was handed
+  a port where its browser would speak **TLS to a plaintext HTTP listener**.
+  Tantu relays a callback; it does not terminate TLS for an application, and it
+  holds no certificate one would trust. The flow cannot work.
+- `callbackExpectation` marked it `unbound`, so the user was warned, in a log tab,
+  that the flow was "weaker" and to "continue only if you trust the page" --
+  implying it might work.
+- A loopback URL with **no port** was treated as a binding, its path constrained
+  the catcher, and `ExtractCallbackPort` refused it outright: it deliberately will
+  not assume 80 or 443, since binding a privileged port either fails or hands an
+  authorization code to an unrelated local service.
+- A loopback callback named **only in `state`**, with no `redirect_uri`, was
+  supported by `callbackExpectation` on purpose -- the VS Code trampoline form --
+  and refused by `ExtractCallbackPort`, which demanded `redirect_uri` first.
+- The same for an **unparseable** `redirect_uri`: `state` was never consulted.
+
+### The fix, and the part that made it stick
+
+The B-side now refuses a non-http loopback `redirect_uri`, before anything is
+requested and before a browser opens, with a reason naming the scheme and the
+remedy -- and without echoing the URL, which can carry provider-specific material.
+`state` is read before `redirect_uri` is required, and again when `redirect_uri`
+will not parse. The catcher requires an explicit **usable** port, 1 to 65535.
+
+The part that makes it stick is not the fix. It is the invariant added to the
+fuzz target:
+
+> Anything the catcher is willing to constrain is something the B-side agreed to
+> relay.
+
+That is the general statement, and **it found three more of these on its first
+run**, none of which any table would have:
+
+- `state=http://localhost:0` -- port 0. "Present" is not "usable": the catcher
+  passed, the B-side refused.
+- The state-only form, which no seed covered.
+- `redirect_uri=0%000` with a valid loopback `state` -- unparseable redirect, and
+  the early return skipped the evidence that would have saved it.
+
+Each is now a committed reproducer, and each tightening is red on the **seed
+corpus alone**, with no generation at all.
+
+### Four times a table could not hold it
+
+This is the fourth time in two batches that "a table cannot express this" pointed
+at the fuzz target rather than at another example:
+
+1. The path rule in Z100.
+2. Loosening the catcher's scheme check introduces **no disagreement on any listed
+   URL** -- https simply becomes bound on both sides -- so every table gate stays
+   green while the two functions have drifted.
+3. Adding a state-only seed, because the red proof for "refuse a callback named
+   only in state" came back NOT RED: no seed was state-only *with a port*.
+4. The port-0 case, which is not in any shape anyone would list.
+
+A table holds the shapes someone imagined. Four of these are shapes nobody would
+have imagined.
+
+### A rule written twice, drifting
+
+The fuzz target states the expected path independently, so it can catch the
+product drifting from the rule. When I added the port requirement to the product
+I did not update the harness, and the committed reproducer caught the harness
+instead -- which is the cheapest available signal that a duplicated rule needs
+enforcing, and the reason the reproducer corpus is committed rather than deleted.
+
+### What this does not change
+
+No flow that worked before stops working. Every tightening refuses something that
+previously either failed confusingly or was already refused; the one widening --
+reading `state` when `redirect_uri` is absent or unparseable -- only accepts URLs
+that were previously refused outright.
+
+Measured: 566,396 executions over 120s, 303 corpus entries, no finding in the
+product.

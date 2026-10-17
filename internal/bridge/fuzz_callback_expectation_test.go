@@ -45,6 +45,15 @@ func FuzzCallbackExpectation(f *testing.F) {
 		"https://accounts.google.com/o/oauth2/v2/auth?state=S&client_id=x&redirect_uri=http%3A%2F%2Flocalhost%3A53682%2Foauth2%2Fcallback&response_type=code",
 		// VS Code, loopback in state, external redirect_uri.
 		"https://vscode.dev/redirect?state=http%3A%2F%2Flocalhost%3A54321%2Fcallback&redirect_uri=https%3A%2F%2Fvscode.dev%2Fredirect",
+		// The same trampoline with redirect_uri omitted entirely. This seed is
+		// load-bearing: it is the only one where ExtractCallbackPort has to read
+		// `state` without a redirect_uri to consult, so it is the only one that
+		// catches the early return which used to refuse that shape. Added after a
+		// red proof for exactly that break came back NOT RED.
+		"https://vscode.dev/redirect?state=http%3A%2F%2Flocalhost%3A54321%2Fcallback",
+		// And the same with no port, which must NOT be treated as a binding: there
+		// is no listener to bind, and Tantu deliberately will not assume 80 or 443.
+		"https://example.com/auth?state=http%3A%2F%2Flocalhost%2Fcallback&redirect_uri=http%3A%2F%2F127.0.0.1%2Fcb",
 		// A CLI, loopback on 127.0.0.1 rather than localhost.
 		"https://github.com/login/oauth/authorize?client_id=x&state=S&redirect_uri=http%3A%2F%2F127.0.0.1%3A49152",
 		// An explicit root path, which IS a stated path.
@@ -116,6 +125,34 @@ func FuzzCallbackExpectation(f *testing.F) {
 				exp.path, want, redirectPathOf(rawURL), trampolinePathOf(rawURL), rawURL)
 		}
 
+		// Property 6: anything the catcher is willing to constrain is something
+		// the B-side agreed to relay.
+		//
+		// These two functions answer different questions and were answering them
+		// differently: ExtractCallbackPort accepted a loopback redirect_uri of any
+		// scheme and handed the port on, while callbackExpectation required http
+		// and so called the flow `unbound`. Both were right about their own
+		// question, and together they meant an application registering
+		// `redirect_uri=https://localhost:9000/cb` was given a **plaintext**
+		// listener on the port its browser would speak TLS to.
+		//
+		// This lives here rather than in a table because a table cannot hold it.
+		// Loosening the catcher's scheme check introduces no disagreement on any
+		// URL the table lists -- https simply becomes bound on both sides -- so
+		// every table gate stays green while the two functions have drifted. Only
+		// a property over generated URLs sees the drift, when some shape exists
+		// that one accepts and the other rejects.
+		if !exp.unbound {
+			if _, err := ExtractCallbackPort(rawURL); err != nil {
+				t.Fatalf("the catcher treats this URL as bound -- a loopback path, a real "+
+					"constraint -- but the B-side refuses to relay it: %v.\n"+
+					"  One accepting what the other rejects means the far side either binds "+
+					"a port for a flow that cannot work, or the catcher waits for a "+
+					"callback that was never going to be sent.\n  URL: %q",
+					err, rawURL)
+			}
+		}
+
 		// Property 4: monotonicity. Appending a path to a loopback redirect_uri
 		// must not make the catcher accept more, so a second URL that states a
 		// path cannot be the weaker of the pair.
@@ -136,6 +173,12 @@ func FuzzCallbackExpectation(f *testing.F) {
 }
 
 // redirectPathOf is the path the redirect_uri states, empty if it states none.
+//
+// The http-scheme and explicit-port requirements are part of the rule, not
+// decoration. The port was added to the product *after* this harness was
+// written, by the loopback-agreement invariant, and this helper not being
+// updated is what the committed reproducer caught -- the cheapest available
+// signal that a rule written in two places can drift.
 func redirectPathOf(rawURL string) string {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
@@ -149,8 +192,11 @@ func redirectPathOf(rawURL string) string {
 	if err != nil || r.Hostname() == "" {
 		return ""
 	}
-	if !isLoopbackHost(r.Hostname()) || !strings.EqualFold(r.Scheme, "http") {
+	if !isLoopbackHost(strings.ToLower(r.Hostname())) || !strings.EqualFold(r.Scheme, "http") {
 		return ""
+	}
+	if !usableLoopbackPort(r) {
+		return "" // no usable port, no listener, so no binding to constrain
 	}
 	return r.Path
 }
@@ -169,8 +215,11 @@ func trampolinePathOf(rawURL string) string {
 	if err != nil || u.Hostname() == "" {
 		return ""
 	}
-	if !isLoopbackHost(u.Hostname()) || !strings.EqualFold(u.Scheme, "http") {
+	if !isLoopbackHost(strings.ToLower(u.Hostname())) || !strings.EqualFold(u.Scheme, "http") {
 		return ""
+	}
+	if !usableLoopbackPort(u) {
+		return "" // no usable port, no listener, so no binding to constrain
 	}
 	return u.Path
 }

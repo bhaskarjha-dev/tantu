@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -99,6 +100,30 @@ type callbackExpectationSpec struct {
 	unbound bool
 }
 
+// usableLoopbackPort reports whether u carries a port a listener can actually be
+// bound to and delivered on.
+//
+// "Present" is not the same as "usable", and the difference is found by fuzzing
+// rather than by reading. `state=http://localhost:0` carries a non-empty port, so
+// a presence test treats it as a binding and constrains the catcher -- while
+// ExtractCallbackPort refuses it, because port 0 binds nowhere and delivering to
+// it would be meaningless. Both were then right about their own question and
+// wrong together.
+//
+// 1 to 65535, matching the range the transport already uses. Port 0 is excluded
+// deliberately: it is not "any free port" to a loopback listener, it is no port.
+func usableLoopbackPort(u *url.URL) bool {
+	if u == nil {
+		return false
+	}
+	raw := u.Port()
+	if raw == "" {
+		return false
+	}
+	p, err := strconv.Atoi(raw)
+	return err == nil && p > 0 && p <= 65535
+}
+
 // callbackExpectation extracts the callback path/state from a normal OAuth
 // redirect_uri.  Older callers in the repository used synthetic URLs without
 // a redirect_uri; those remain supported for compatibility, but real OAuth
@@ -125,7 +150,23 @@ func callbackExpectation(rawURL string) callbackExpectationSpec {
 	if redirect != "" {
 		if redirectURL, parseErr := url.Parse(redirect); parseErr == nil && redirectURL.Hostname() != "" {
 			host := strings.ToLower(redirectURL.Hostname())
-			if isLoopbackHost(host) && strings.EqualFold(redirectURL.Scheme, "http") {
+			// http, an explicit port, and a loopback host: all three.
+			//
+			// The port was the third condition to be required here, and it was
+			// found by the fuzz invariant that compares this function with
+			// ExtractCallbackPort -- not by reading. A loopback URL with no port
+			// was treated as a binding here, so its path constrained the catcher,
+			// while ExtractCallbackPort refused it outright: it deliberately will
+			// not assume 80 or 443, since binding a privileged port either fails
+			// or hands an authorization code to an unrelated local service.
+			//
+			// With no port there is no listener to catch anything, so a path
+			// constraint here was constraining nothing real while making the flow
+			// look bound. Which matters more than it sounds: "unbound" is read
+			// elsewhere as "this flow is weaker", and a flow with no port is not
+			// weaker -- it is unrelayable.
+			if isLoopbackHost(host) && strings.EqualFold(redirectURL.Scheme, "http") &&
+				usableLoopbackPort(redirectURL) {
 				constrained = true
 				// Only a path the application actually stated constrains the
 				// callback. See the long note below before changing this.
@@ -140,7 +181,8 @@ func callbackExpectation(rawURL string) callbackExpectationSpec {
 	// state. Inspect that form even when redirect_uri points at an external
 	// HTTPS service; otherwise the callback listener would be unconstrained.
 	if stateURL, stateErr := url.Parse(state); stateErr == nil && stateURL.Hostname() != "" &&
-		isLoopbackHost(stateURL.Hostname()) && strings.EqualFold(stateURL.Scheme, "http") {
+		isLoopbackHost(stateURL.Hostname()) && strings.EqualFold(stateURL.Scheme, "http") &&
+		usableLoopbackPort(stateURL) {
 		constrained = true
 		// A trampoline's path is the real callback path and supersedes the
 		// redirect_uri's -- but only when it states one, or an empty trampoline
