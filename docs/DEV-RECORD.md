@@ -8360,3 +8360,71 @@ its output was *nonsensical* rather than merely wrong.
 Four attempts at the same class of mistake, all mine: a PowerShell glob that did
 not recurse (Z99), an inline `node -e` mangling quotes (twice), and an invented
 enum-range assumption. Each cost more time than the defect it eventually surfaced.
+## Batch Z103 - the field report closed (2026-10-17)
+
+**Kiro IDE sign-in now works through Tantu across two laptops**, confirmed by the
+person who reported the failure, on the binary built from `764c1b6`.
+
+That is worth more than every gate in this repository put together, and for a
+specific reason: it is the only evidence so far produced by something that is not
+this codebase. Every other thing claiming the OAuth relay works is a test written
+by whoever wrote the feature.
+
+### What it closes, and what it does not
+
+It closes **one** shape: a client registering `redirect_uri` with no path. It says
+nothing about a client whose `redirect_uri` names a path, or one that uses only
+`state`, or one that finishes with `fetch()`.
+
+So 3.19 was **split rather than closed**, which is what the register's rule asks
+for -- "if something here becomes untrue, either fix it or move it to Resolved
+with the evidence that closed it":
+
+- **Section 6, Resolved**: the specific defect, with the field confirmation as the
+  evidence. A person's report that the product works is stronger than a test
+  asserting it should.
+- **Section 3, still open, rewritten**: not a known bug but an untested surface.
+  Its three "still unproven" examples were stale in all three, so they are
+  replaced by the three that genuinely remain: an `https://localhost` registration
+  (now refused, with no evidence a real client does one), `state`-only, and
+  `fetch()`-based completion.
+
+### Writing the split nearly introduced a second defect
+
+I inserted the section-6 row with a splice that had no trailing newline. That is
+the **exact** mistake that merged 4.99 into 4.1 in Z102, and it would have merged
+this row into the one below it.
+
+What stopped it was the gate Z102 added, minutes earlier, for the same class of
+mistake. A gate written for a bug I had just made caught the same bug again, the
+next time I made it. That is the argument for having built it despite the batch
+looking like busywork.
+
+### The audit that audited nothing
+
+Verifying the two new rows, I wrote a script to compare column counts across every
+section. It reported `rows=64 mismatches=2` for **every** section -- including
+sections that do not contain 64 rows.
+
+The cause: the loop started at the `## heading` line and broke on `## `, so it
+exited immediately every time and counted the whole file below. It reported a
+plausible number, a real-looking mismatch count, and had verified nothing. Caught
+by noticing that section 1 cannot contain 64 rows.
+
+Then a second finding from checking the same thing by hand: line 99 of section 6
+legitimately contains pipes inside code spans, so **pipe-counting cannot validate
+a markdown table at all**. That is a third independent reason the Z102 separator
+property had to go, and it is why it was not reinstated to "check the new row".
+
+I verified the two rows I touched by hand instead: the new 3.19 row carries five
+columns like its neighbours, the new section-6 row carries three like its
+neighbours. Two checks in this batch were written by me, run by me, and found to
+verify nothing.
+
+### Still not done
+
+4.99 remains open and its reason has not moved: nobody outside this session has
+read the twelve rejection pages, and no screen-reader pass exists over them. A
+field report that a sign-in *works* says nothing about what a user reads when one
+fails -- which is the surface 4.99 is about, and the one a successful run never
+reaches.
