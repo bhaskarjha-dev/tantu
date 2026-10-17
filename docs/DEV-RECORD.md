@@ -7933,3 +7933,157 @@ Why webkit failed to load those two endpoints on the runner. The harness now say
 *when* a run's failures shared a cause; it does not say why. The next occurrence
 carries enough in its output to be worth reading, which is an improvement in the
 ability to attribute it and not an attribution.
+## Batch Z99 - a field report: Kiro IDE could not sign in, and Tantu was at fault (2026-10-17)
+
+Two Windows laptops, LAN peer-to-peer. Kiro IDE sign-in relayed through Tantu
+failed; Antigravity IDE worked in the same session. The user saw:
+
+```
+http://localhost:3128/oauth/callback?login_option=google&code=601a8936-...&state=0eccf62b-...
+-> invalid OAuth callback
+```
+
+and nothing came back to the source laptop.
+
+### I got the first answer wrong
+
+I told the user `invalid OAuth callback` was Kiro's own message, on the grounds
+that neither the string nor the port `3128` appears in Tantu's source. **That
+grep was wrong** -- the PowerShell glob `internal\**\*.go` did not recurse, so it
+found nothing and I read "not found" as "not ours". The string is in
+`internal/bridge/aside.go`, four files from where I looked.
+
+This is the fourth time this session a search I ran did not do what I assumed it
+did, and the second time the error made me confidently wrong rather than
+uncertain. The correction matters: it moves the bug from "third-party quirk" to
+"ours", which is the difference between filing nothing and fixing something.
+
+### Where the diagnosis actually came from
+
+Not from guessing between the four rejection branches -- from three things, in
+order:
+
+1. **The code.** `aside.go` binds the callback port on `127.0.0.1:<port>` with no
+   fallback. So *something answered on :3128 with our page*, which means the
+   catcher bound successfully and then refused the request.
+2. **The user's own machine.** `tantu doctor --bundle-path` on the source laptop,
+   which I had never used for this, held the relay history:
+
+   | Time | `safe_origin` | State |
+   |---|---|---|
+   | 15:30 | `accounts.google.com` | **complete** in 8.9s |
+   | 15:36 | -- | cancelled |
+   | 15:41 | -- | cancelled |
+   | 15:42 | `app.kiro.dev` | **waiting_callback** |
+
+   So the source side was correct and waiting; the browser side had discarded the
+   callback. And the only field differing between the working flow and the failing
+   one was the authorization host.
+3. **The function.** My leading hypothesis -- that `authOrigin` stored a hostname
+   while browsers send a full origin -- was **eliminated on evidence**:
+   `aside.go:122` builds `scheme://host`. Then the next candidate:
+
+```go
+if path == "" {
+    path = "/"
+}
+```
+
+Kiro registers `redirect_uri=http://localhost:3128`. The path is **empty**. Tantu
+normalised it to `/`, marked the flow constrained, and then required the callback
+to arrive on exactly `/`. Kiro's listener serves whatever path it likes and calls
+back on `/oauth/callback`. So Tantu was **stricter than the application it exists
+to serve**, and refused the callback for violating a restriction Kiro never
+stated.
+
+Verified against the real function with the user's real URL before changing
+anything:
+
+| | derived path | callback | result |
+|---|---|---|---|
+| Kiro | `/` (invented) | `/oauth/callback` | **rejected** |
+| Antigravity-style | `/oauth2/callback` (stated) | `/oauth2/callback` | accepted |
+
+The fix is to delete the normalisation: a `redirect_uri` that omits a path states
+a host and a port and nothing else. A VS Code trampoline in `state` also only
+overrides the path when it states one, so a later, vaguer statement cannot loosen
+an earlier specific one.
+
+Nothing is given up, and the comment says why: the listener is bound to loopback
+on the exact port, the Host must be loopback, the browser-CSRF defence requires a
+top-level navigation with a matching `Origin`, and the `state` comparison stands
+-- and `state` is the flow's own secret, which is what actually stops a hostile
+page forging a callback.
+
+**Why it survived.** The only end-to-end OAuth test used a synthetic client whose
+`redirect_uri` carried `/callback`. The empty-path shape was exercised nowhere, by
+any test, at any time.
+
+### Gates
+
+Two end-to-end, both produced: a real loopback listener accepting **any** path, a
+real bridge pair, a real navigation carrying the browser headers. One asserts
+Kiro's flow now relays; the other asserts a *stated* path is still enforced --
+without the second, the first could be satisfied by deleting the check.
+
+Three red proofs, all red. The second is the important one: **deleting the path
+check fails the other gate**, so the fix is a correction and not a removal.
+
+Plus a pure gate over nine authorization-URL shapes -- Kiro, stated path, explicit
+root path, VS Code trampoline with and without a path, both-stated, non-loopback,
+unbound. Its red proof found a rule I had written and never tested: the trampoline
+guard.
+
+### Z99b: the page a person sees was a dead end
+
+Independent of the cause, and the reason the failure was undiagnosable from the
+outside. Four different rejections returned the same four words:
+
+```
+invalid OAuth callback
+```
+
+The specific reason went to `a.logf`, i.e. a log tab. And **no test asserted
+anything about that page** -- `invalid OAuth callback` and `Rejected callback
+request` appeared in zero tests.
+
+Rejections are now classified by type, never by message text, and each renders its
+own page: what happened, and what to do. Twelve kinds. The one the user hit reads:
+
+> **This sign-in is no longer waiting for a callback**
+> The callback belongs to a sign-in that has already finished, was cancelled, or
+> was replaced by a newer one.
+> Start the sign-in again from the application. This usually follows a second
+> sign-in attempt, or a sign-in that was cancelled.
+
+No `state`, no query value, and no internal check text is rendered -- gated, by
+rendering a page full of secrets and finding none of it in the output, and by
+reading the advice table for internal fragments. The detail stays in the log.
+
+Six red proofs, all red, and **three of them found real gaps in my own gates**:
+
+- "drop the next action" passed against the table-completeness gate, because the
+  table still held the text -- only the page stopped rendering it. The dead end
+  rebuilt with the remedy still in the data structure. Needed a gate that reads the
+  bytes.
+- "add a kind to the enum with no advice entry" passed, because iterating
+  `rejectNone..rejectDuplicate` cannot see a constant appended after the last one,
+  and Go cannot enumerate a const block at runtime. The gate now scans the source
+  -- structural, and it says so.
+- "collapse every rejection back to one message" passed against the renderer gate,
+  which calls `renderCallbackRejection` directly and so cannot see the mux call
+  site at all. Same class as Z95's "gate that cannot fail": the renderer and its
+  caller need separate gates.
+
+And two of my own gate implementations were wrong in ways worth recording: a
+first attempt asserted both stop outcomes were non-nil when one is *supposed* to be
+nil, and a completeness check listed kinds by hand so the count matched whenever
+the table and the list were edited together.
+
+### What is still unproven
+
+Recorded as 3.19 and 4.99 rather than closed. Only the URL shapes in the pure
+gate and two end-to-end flows have been run: a client unusual in some other way --
+a form POST rather than a GET redirect, an encoded path -- has never been tried.
+And nobody outside this session has read the twelve pages; a screen-reader pass
+over them belongs with 2.2.

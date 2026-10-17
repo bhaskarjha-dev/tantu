@@ -126,8 +126,12 @@ func callbackExpectation(rawURL string) callbackExpectationSpec {
 		if redirectURL, parseErr := url.Parse(redirect); parseErr == nil && redirectURL.Hostname() != "" {
 			host := strings.ToLower(redirectURL.Hostname())
 			if isLoopbackHost(host) && strings.EqualFold(redirectURL.Scheme, "http") {
-				path = redirectURL.Path
 				constrained = true
+				// Only a path the application actually stated constrains the
+				// callback. See the long note below before changing this.
+				if redirectURL.Path != "" {
+					path = redirectURL.Path
+				}
 			}
 		}
 	}
@@ -137,8 +141,13 @@ func callbackExpectation(rawURL string) callbackExpectationSpec {
 	// HTTPS service; otherwise the callback listener would be unconstrained.
 	if stateURL, stateErr := url.Parse(state); stateErr == nil && stateURL.Hostname() != "" &&
 		isLoopbackHost(stateURL.Hostname()) && strings.EqualFold(stateURL.Scheme, "http") {
-		path = stateURL.Path
 		constrained = true
+		// A trampoline's path is the real callback path and supersedes the
+		// redirect_uri's -- but only when it states one, or an empty trampoline
+		// path would erase a path the redirect_uri did give.
+		if stateURL.Path != "" {
+			path = stateURL.Path
+		}
 	}
 	if !constrained {
 		// No loopback redirect binding: the application supplied neither a
@@ -147,9 +156,29 @@ func callbackExpectation(rawURL string) callbackExpectationSpec {
 		// validateCallbackRequestState, so it is reported as unbound.
 		return callbackExpectationSpec{state: state, authOrigin: authOrigin, unbound: true}
 	}
-	if path == "" {
-		path = "/"
-	}
+	// Deliberately no default for an empty path.
+	//
+	// This used to read `if path == "" { path = "/" }`, and it rejected a real
+	// sign-in on 2026-10-17. Kiro IDE registers
+	// `redirect_uri=http://localhost:3128` -- host and port, no path -- and its
+	// own listener serves whatever path it likes, calling back on
+	// `/oauth/callback`. Normalising the empty path to "/" made Tantu stricter
+	// than the application it exists to serve, and the callback was refused with
+	// "callback path /oauth/callback does not match redirect URI" for violating a
+	// restriction the application never stated. The same trap catches any client
+	// whose redirect_uri omits a path, which is a large class.
+	//
+	// A redirect_uri with no path states a host and a port and nothing else.
+	// Leaving `path` empty means validateCallbackRequestState skips the path
+	// comparison, which is the accurate reading rather than a weaker one.
+	//
+	// What still defends the flow, and why nothing is given up: the listener is
+	// bound to 127.0.0.1 on the exact port (aside.go), the Host must be
+	// loopback, and the browser-CSRF defence requires a top-level navigation with
+	// a matching authorization Origin. Above all the `state` comparison stands,
+	// and state is a secret issued by this flow and never guessable -- which is
+	// what actually stops a hostile page from forging a callback, whether or not
+	// a path was declared.
 	return callbackExpectationSpec{path: path, state: state, constrained: true, authOrigin: authOrigin}
 }
 
@@ -186,10 +215,10 @@ func validateCallbackRequest(r *http.Request, expected callbackExpectationSpec) 
 
 func validateCallbackRequestState(r *http.Request, expected callbackExpectationSpec, formState string) error {
 	if r.Method != http.MethodGet && r.Method != http.MethodPost {
-		return fmt.Errorf("unsupported callback method %q", r.Method)
+		return reject(rejectMethod, "unsupported callback method %q", r.Method)
 	}
 	if !requestHostIsLoopback(r.Host) {
-		return errors.New("callback host is not loopback")
+		return reject(rejectNotLoopback, "callback host is not loopback")
 	}
 	// A loopback Host only defeats DNS rebinding, where the attacker controls
 	// the hostname. A page that simply addresses 127.0.0.1 with an IP literal
@@ -202,7 +231,7 @@ func validateCallbackRequestState(r *http.Request, expected callbackExpectationS
 	}
 	if expected.constrained {
 		if expected.path != "" && r.URL.Path != expected.path {
-			return fmt.Errorf("callback path %q does not match redirect URI", r.URL.Path)
+			return reject(rejectPath, "callback path %q does not match redirect URI", r.URL.Path)
 		}
 	}
 	state := r.URL.Query().Get("state")
@@ -213,7 +242,7 @@ func validateCallbackRequestState(r *http.Request, expected callbackExpectationS
 		// state is the application's own CSRF token when it supplies one.
 		// Compare in constant time; it is a secret until the flow completes.
 		if state == "" || subtle.ConstantTimeCompare([]byte(state), []byte(expected.state)) != 1 {
-			return errors.New("callback state does not match authorization request")
+			return reject(rejectState, "callback state does not match authorization request")
 		}
 	}
 	return nil
@@ -234,7 +263,7 @@ func validateCallbackRequestState(r *http.Request, expected callbackExpectationS
 func validateCallbackFetchMetadata(r *http.Request, expected callbackExpectationSpec) error {
 	if mode := strings.TrimSpace(r.Header.Get("Sec-Fetch-Mode")); mode != "" {
 		if !strings.EqualFold(mode, "navigate") && !strings.EqualFold(mode, "websocket") {
-			return fmt.Errorf("callback was not a top-level navigation (Sec-Fetch-Mode: %s)", mode)
+			return reject(rejectNotNavigation, "callback was not a top-level navigation (Sec-Fetch-Mode: %s)", mode)
 		}
 	}
 	// A subresource destination (image, script, style, ...) is never an OAuth
@@ -242,17 +271,17 @@ func validateCallbackFetchMetadata(r *http.Request, expected callbackExpectation
 	switch dest := strings.TrimSpace(r.Header.Get("Sec-Fetch-Dest")); dest {
 	case "", "document", "iframe", "frame", "object", "embed", "empty":
 	default:
-		return fmt.Errorf("callback destination %q is a subresource, not a navigation", dest)
+		return reject(rejectSubresource, "callback destination %q is a subresource, not a navigation", dest)
 	}
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	if origin != "" && !strings.EqualFold(origin, "null") {
 		if expected.authOrigin == "" {
 			// No authorization origin is known, so a browser-supplied Origin
 			// cannot be checked against anything. Refuse rather than guess.
-			return fmt.Errorf("callback carried Origin %s but the authorization origin is unknown", origin)
+			return reject(rejectOriginUnknown, "callback carried Origin %s but the authorization origin is unknown", origin)
 		}
 		if !strings.EqualFold(strings.TrimRight(origin, "/"), expected.authOrigin) {
-			return fmt.Errorf("callback Origin %s does not match the authorization origin", origin)
+			return reject(rejectOriginMismatch, "callback Origin %s does not match the authorization origin", origin)
 		}
 	}
 	return nil
@@ -525,8 +554,8 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if err := validateCallbackRequest(r, callbackExpectationSpec{}); err != nil {
-			a.logf("⚠️ Rejected callback request: %v", err)
-			http.Error(w, "invalid OAuth callback", http.StatusBadRequest)
+			advice := renderCallbackRejection(w, rejectionKindOf(err))
+			a.logf("⚠️ Rejected callback request (%s): %v", advice.Title, err)
 			return
 		}
 
@@ -534,14 +563,14 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 		if readErr != nil {
 			a.logf("⚠️ Failed to read callback body: %v", readErr)
 			callbackErrCh <- fmt.Errorf("read callback body: %w", readErr)
-			http.Error(w, "invalid OAuth callback", http.StatusBadRequest)
+			renderCallbackRejection(w, rejectBodyUnreadable)
 			return
 		}
 		if len(body) > 1<<20 {
 			err := errors.New("callback body exceeds 1 MiB limit")
 			a.logf("⚠️ %v", err)
 			callbackErrCh <- err
-			http.Error(w, "invalid OAuth callback", http.StatusRequestEntityTooLarge)
+			renderCallbackRejection(w, rejectBodyTooLarge)
 			return
 		}
 		formState := ""
@@ -551,8 +580,8 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 			}
 		}
 		if err := validateCallbackRequestState(r, expected, formState); err != nil {
-			a.logf("⚠️ %v", err)
-			http.Error(w, "invalid OAuth callback", http.StatusBadRequest)
+			advice := renderCallbackRejection(w, rejectionKindOf(err))
+			a.logf("⚠️ Rejected callback request (%s): %v", advice.Title, err)
 			return
 		}
 		captureMu.Lock()
@@ -563,9 +592,7 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 		captureMu.Unlock()
 		a.logf("📥 Callback received: %s %s", r.Method, r.URL.Path)
 		if alreadyCaptured {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.WriteHeader(http.StatusConflict)
-			_, _ = w.Write([]byte("<html><body>OAuth callback was already captured.</body></html>"))
+			renderCallbackRejection(w, rejectDuplicate)
 			return
 		}
 		relay := &protocol.CallbackRelay{
