@@ -84,6 +84,9 @@ func run(args []string) error {
 	if f, ok := checkDocumentedFlags(documentedFlags, files); !ok {
 		report(f)
 	}
+	if f, ok := checkLimitationsRegister(files); !ok {
+		report(f)
+	}
 	if f, ok := checkEnvironmentVariables(files); !ok {
 		report(f)
 	}
@@ -91,7 +94,7 @@ func run(args []string) error {
 	if failures > 0 {
 		return fmt.Errorf("docgate: %d documented claim(s) no longer match the code", failures)
 	}
-	fmt.Printf("docgate: %d constant claim(s), %d documented phrase(s), the CLI command surface, %d documented flag(s) and %d environment variable(s) all match the code\n",
+	fmt.Printf("docgate: %d constant claim(s), %d documented phrase(s), the CLI command surface, the KNOWN-LIMITATIONS row shape, %d documented flag(s) and %d environment variable(s) all match the code\n",
 		len(constantClaims), len(phraseClaims), len(documentedFlags), len(documentedEnvVars))
 	return nil
 }

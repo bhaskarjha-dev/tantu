@@ -8277,3 +8277,86 @@ that were previously refused outright.
 
 Measured: 566,396 executions over 120s, 303 corpus entries, no finding in the
 product.
+## Batch Z102 - reading a register row, and deleting one of them (2026-10-17)
+
+Asked what rows 3.19 and 4.99 said. Reading them found that **4.99 had swallowed
+4.1**: the row was inserted without a trailing newline, so `| 4.1 |` ended up
+inside 4.99's final cell, and the register had gone from eight rows in section 4
+to seven, with a **closed** limitation silently deleted.
+
+The register's own header says "do not delete it". And nothing noticed, across two
+batches -- encgate, docgate, wfcheck, the Go suite and the browser suite were all
+green throughout.
+
+### 3.19 is now partly untrue, and the register says what to do about that
+
+3.19's "what is still unproven" named three untried shapes: a non-loopback host, a
+URL-encoded path, and a redirect issued as a form POST rather than a GET.
+
+Z101 answered all three:
+
+- A non-loopback host is **refused before a browser opens**, with a message naming
+  what is wrong. Not a silent failure.
+- A URL-encoded path is exercised and accepted -- `redirect_uri` of
+  `http://localhost:9000/my%20path` derives `/my path` and a callback on
+  `/my%20path` is accepted.
+- A form POST redirect is accepted; the method check has always allowed POST.
+
+So 3.19's list is stale in three of its three examples. The register's rule is
+explicit: if something here becomes untrue, fix it or move it with the evidence
+that closed it. **Rewriting it is the next thing**, not something to leave for a
+batch that may not come.
+
+### The gate that would have caught it
+
+`docgate` now checks the register's shape. Two properties, and only two:
+
+1. **No line carries two row ids.** The bug that actually happened.
+2. **Row ids are unique across the document**, so a closure cannot be mistaken for
+   a reopening -- which is what a merged row turns one row into.
+
+Both red-proofed: reintroducing the merge reports
+`one line carries 2 row ids (4.99, 4.1); rows have merged and a limitation has
+been deleted from the register`, and duplicating an id reports where it already
+was.
+
+Structural, and it says so: the input is the file's own text, so reading it is the
+complete check rather than a sample. It also refuses to report success if it
+finds no numbered rows at all -- the same reasoning as the fuzz job's executions
+floor, because a checker pointed at the wrong thing is green for the worst reason.
+
+### A third property, written and then removed
+
+There was a third: "a row carries at least three separators". It could not be
+made to fail. The break written for it replaced `| 4.7 |` with `| 4.7` mid-row,
+which leaves the row's remaining columns untouched -- so the separator count never
+changed and the gate stayed green against a no-op. A genuine truncation of a final
+cell is not detectable by counting separators at all.
+
+A check that cannot fail is decorative, so it is not in the file, and its removal
+is recorded in the function's own comment rather than left as a silent absence.
+
+### I had the return convention backwards, and it inverted the gate
+
+`docgate`'s call sites are `if f, ok := check(...); !ok { report(f) }`, so `ok ==
+false` means **a problem was found**. This check returned `true` on failure and
+`false` on success -- the exact opposite. So it:
+
+- reported a clean run as a failure, with an **empty** message, and
+- **silently ignored** real problems.
+
+The empty `::error title=documentation drift::` with nothing after it was the
+symptom I could not explain, and the reason I read the file rather than guessing
+further. It is now `false` on failure and `true` when clean, matching its
+siblings.
+
+Worth stating plainly: for a while this gate was worse than absent, because it
+made a clean register look broken and would have passed a broken one. A gate that
+cannot be trusted is worse than no gate, and the only reason it was caught is that
+its output was *nonsensical* rather than merely wrong.
+
+### What this batch cost to find
+
+Four attempts at the same class of mistake, all mine: a PowerShell glob that did
+not recurse (Z99), an inline `node -e` mangling quotes (twice), and an invented
+enum-range assumption. Each cost more time than the defect it eventually surfaced.
