@@ -8428,3 +8428,73 @@ read the twelve rejection pages, and no screen-reader pass exists over them. A
 field report that a sign-in *works* says nothing about what a user reads when one
 fails -- which is the surface 4.99 is about, and the one a successful run never
 reaches.
+## Batch Z104 - "how would anyone see a failure page if sign-ins work?" (2026-10-17)
+
+Asked how 4.99 could be checked at all, given that a successful sign-in never
+renders a rejection page. It is the right objection and it had been sitting under
+the row unexamined, because the evidence offered for it was "the gates assert the
+pages are complete, carry no secret, and leak no internal text" -- which is true
+and answers a different question. It says nothing about whether a person can
+*reach* one.
+
+### Only two of the twelve are reachable by a person
+
+Looking at where each kind is raised, rather than at what each one says:
+
+- **Eight** are raised by a check on the incoming request: an unexpected method, a
+  non-loopback `Host`, a `fetch` instead of a navigation, a subresource
+  destination, an unexpected `Origin`, an unknown authorization origin, a path the
+  sign-in never registered, a state that no longer matches. Each needs the
+  application, the network or the browser to misbehave in one specific way.
+- **Three** are the caller's own: an unreadable body, an oversized one, and a
+  callback that arrives twice.
+- **One** is the fallback, and should be unreachable now that every check returns
+  a typed rejection.
+
+Narrowing that to what a person can do on purpose: **two**. Open the callback URL
+twice, and complete a sign-in that was cancelled or superseded. The second is not
+hypothetical -- the 2026-10-17 field report's own relay history shows two
+`cancelled` attempts at 15:36 and 15:41, so completing one of those would have
+shown that page without anyone arranging it.
+
+The other ten are never seen in normal use. That is not a reason to leave them
+unread.
+
+### So: a way to read them
+
+`TestExportRejectionPages` renders all twelve into one HTML file, using the
+product's own `renderCallbackRejection` -- not a copy of the copy -- and naming for
+each one what would have to happen to produce it, marked by whether a person can
+bring that about:
+
+```powershell
+$env:TANTU_EXPORT_REJECTION_PAGES = "$PWD\rejection-pages.html"
+go test ./internal/bridge/ -run TestExportRejectionPages -v
+```
+
+Skipped when the variable is unset, so it costs nothing on an ordinary run.
+
+Verified by reading the output rather than by asserting on it: twelve pages, twelve
+iframes, real copy in each, `Sec-Fetch` / `does not match` / `goroutine` / the old
+`invalid OAuth callback` all absent, and no state value present.
+
+### Two false alarms of my own, in one command
+
+The extracted text showed `application&#39;s` in pages 7 and 12, which looks like a
+double-escaped apostrophe. It is not: `html.EscapeString` correctly encodes `'`,
+and putting that HTML inside an iframe `srcdoc` attribute requires `&` -> `&amp;`
+as well, so the file legitimately contains `&amp;#39;`. Decoding the way a browser
+does -- attribute first, then the inner document -- renders `application's` and
+`sign-in's`. **My extractor was decoding in the wrong order**, and the check I
+wrote to confirm it used a regex that matched the tail of the correctly-escaped
+sequence.
+
+Both were caught by decoding rather than by pattern-matching, which is the fourth
+time in this batch's neighbourhood that reading the artefact beat asserting on a
+substring of it.
+
+### What this does not do
+
+It does not close 4.99, and the row says so. One reader is still one reader, and
+opening a page in a browser is not a screen-reader pass. 2.2 is what would move
+this, and 2.2 needs a person.
