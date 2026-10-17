@@ -187,10 +187,18 @@ jobs:
         # Baselines measured 2026-10-13: FuzzDecode 1,021,828 execs in 32s, the
         # other three 250,000 to 300,000 in 15-30s. The floor is well below the
         # slowest, so it cannot flake.
+        #
+        # FuzzCallbackExpectation joined on 2026-10-17 and measured 607,973 execs
+        # in 90s locally, so it clears the floor comfortably. It is a target
+        # rather than only a table because the Kiro defect was a *rule* -- "the
+        # catcher must never require anything the authorization URL did not state"
+        # -- and a table can only hold the shapes somebody thought of. Both of its
+        # breaks are red on the seed corpus alone, with no generation at all.
         run: |
           status=0
           for spec in "./internal/protocol/:FuzzDecode" \
                       "./internal/bridge/:FuzzValidateCallbackRelay" \
+                      "./internal/bridge/:FuzzCallbackExpectation" \
                       "./internal/discovery/:FuzzValidBeacon" \
                       "./internal/drop/:FuzzValidateDropMetadata"; do
             pkg="${spec%%:*}"

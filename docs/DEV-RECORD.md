@@ -8087,3 +8087,97 @@ gate and two end-to-end flows have been run: a client unusual in some other way 
 a form POST rather than a GET redirect, an encoded path -- has never been tried.
 And nobody outside this session has read the twelve pages; a screen-reader pass
 over them belongs with 2.2.
+## Batch Z100 - answering "any application" with a rule instead of a list (2026-10-17)
+
+Asked how to be sure the OAuth relay works for any platform, application or
+portal, rather than for the handful that had been tried. The honest answer is
+that **no number of examples gets you there.** A table samples. Every shape in
+`callback_expectation_test.go` was chosen by someone thinking about shapes, which
+is the same failure mode as the nine-shape e2e suite: it covers what its author
+imagined.
+
+So the question became: what would have caught the Kiro defect *as a class*?
+
+### The rule
+
+> A callback catcher must never require anything the authorization URL did not
+> state.
+
+Kiro broke that rule, so any client that omits a path breaks it, and that class is
+large. Stated as a rule it is checkable over inputs nobody thought of. That is the
+difference between a table and a property.
+
+### FuzzCallbackExpectation
+
+The repository already had four fuzz targets and a CI job that genuinely runs them
+-- with a comment recording that they had once never been executed at all, and an
+executions floor so a mis-pointed target cannot pass by doing nothing. The
+machinery was there and simply not pointed at the OAuth callback. That is the
+answer to the question: not a new tool, a new target.
+
+Five properties, over the derivation and the validator:
+
+1. **Nothing panics.** This is the literal "will it crash on any portal" claim.
+2. **The derived path is never stronger than the URL stated.** The Kiro invariant.
+3. **Round-trip**: a callback on the stated path is accepted; where none was
+   stated, a callback on any path is accepted.
+4. **Monotonicity**: a more specific authorization URL must not become a weaker
+   catcher.
+5. **A stated constraint is never silently dropped.** Properties 2 and 3 only
+   forbid being stricter, and are satisfied together by constraining *nothing* --
+   so without this, "never derive a path at all" passed.
+
+The seeds are real clients' authorization URLs with the secrets replaced: Kiro,
+Google, VS Code's trampoline, a CLI on `127.0.0.1`, an explicit root path, a
+hosted redirect, an empty one, and four degenerate strings no client would send.
+
+**Measured: 607,973 executions in 90s, 175 new interesting inputs, no finding in
+the product.** Both breaks are red on the seed corpus alone, with no generation
+at all -- so this is a gate, not a lottery.
+
+### What the fuzzer found first was in my harness
+
+Three seconds in, it wrote a reproducer:
+
+```
+string("//0?state=http%3A%2F%2FloCAlhost%2F 00000000000000000000")
+```
+
+A `state` of `http://LoCAlhost/ ` -- note the trailing space -- derives the path
+`/ `, and concatenating that into a URL made `httptest.NewRequest` panic. The
+product does not panic: it compares strings, refuses the callback, and the person
+gets "The callback arrived on an address this sign-in did not register" with a
+next action. A safe, actionable outcome rather than a crash.
+
+So the harness now builds the request structurally and the fuzzer is free to
+derive whatever it likes. Recorded because it is the same lesson as the whole
+file: **the first finding was in the thing I wrote to find things.**
+
+### A property placed after an early return
+
+Property 5 was first written *after* `if exp.path == "" { return }` in the
+monotonicity check -- so removing path derivation entirely skipped it, which is
+precisely the case it exists to catch. The red proof "never derive a path at all"
+passed because of where the check sat, not because the property was wrong. Moved
+above the early exit.
+
+### What this does and does not buy
+
+It converts the crash question from an assertion into a measurement, and it makes
+the path rule a checked property rather than a table row. It does **not** prove
+any portal works, and nothing in this batch should be read as claiming that.
+
+Three classes remain outside it, measured in Z99 and recorded as 3.19: a
+`redirect_uri` that is not `http://loopback` gets no port binding at all, and the
+weaker-flow warning reaches only the Hub log; the callback port must be free on
+the browser machine, with no fallback; and a client that completes the flow with
+`fetch()` rather than a navigation is refused by design.
+
+### The fourth silence
+
+`unbound` is computed, and its own field comment says it "must be reported as
+weaker to the user". It *is* warned about -- at `aside.go`, through `a.logf`, in a
+log tab. So for the largest remaining class of flows, the person who clicked
+sign-in is not told that the guarantees just got weaker before deciding to
+continue. That is the same shape as Z99's dead-end page: a finding that exists,
+runs, and reaches nobody. It is the next thing to fix, and it is not fixed here.
