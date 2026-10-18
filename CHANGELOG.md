@@ -8,16 +8,20 @@ rollback procedures.
 ## Unreleased
 
 ### Fixed
+- **Quitting the Hub during a transfer killed it instead of letting it finish.**
+  Shutdown closed every in-flight connection the instant it began, so a session
+  that was seconds from done was killed at the ninety percent mark, and the
+  handler unwinding after its connection died kept writing — to the peer store
+  among other things — while the Hub had already stopped. Sessions now get a
+  five-second drain window, and are released after it. A transfer that overruns
+  is still aborted, which is safe: the receiver stages to a `.part` and
+  publishes atomically, so an interrupted transfer leaves a resumable partial
+  rather than a truncated file under a delivered name.
 - **A gate that asserted on the sender's half of a transfer and returned while
   the receiver was still writing.** `TestOutboundSendConfirmsThePeerAddress`
-  failed under `-race` on Linux with a temp-directory cleanup error. The Hub's
-  shutdown already waits for every background goroutine that writes the peer
-  store, but it cannot wait for an in-flight wire transfer, so the receiver was
-  still inside the callback that writes its own store when the test's cleanup
-  removed that directory. The test now waits for the receiving side's
-  observation too. The product half — shutdown not waiting for in-flight
-  transfers — is recorded as limitation 4.8 rather than quietly patched at the
-  wire boundary.
+  failed under `-race` on Linux with a temp-directory cleanup error. The test
+  now waits for the receiving side's observation too, which is the claim it was
+  actually about.
 - **A send the peer suppressed was reported as a successful send.** When a
   receiver recognises an idempotency key from an earlier completion it writes
   nothing and says so; the dashboard ignored that and showed "File sent to

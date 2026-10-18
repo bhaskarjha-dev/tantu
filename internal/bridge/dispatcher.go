@@ -109,6 +109,14 @@ type DispatcherConfig struct {
 	Registry         *SessionRegistry
 	Logger           *log.Logger
 	HandshakeTimeout time.Duration
+	// SessionDrainGrace overrides how long shutdown waits for sessions already
+	// in flight before closing their connections underneath them. Values <= 0
+	// use sessionDrainGrace.
+	//
+	// It is configurable because the *abort* half of the drain contract can only
+	// be gated by waiting out the real grace, and five seconds per run is a tax
+	// every run pays to test a branch that matters a handful of times.
+	SessionDrainGrace time.Duration
 }
 
 // Dispatcher multiplexes incoming connections on a single transport.Listener,
@@ -161,6 +169,28 @@ func (d *Dispatcher) logf(format string, v ...any) {
 	}
 }
 
+// sessionDrainGrace is how long shutdown waits for sessions already in flight
+// before it closes their connections underneath them.
+//
+// Five seconds is a judgement about a quit button, not about transfers. A large
+// transfer will not finish inside it and is not meant to: the point is that the
+// common case -- a sign-in completing, a snippet landing, a file that was
+// seconds from done -- is allowed to *be* done before the user gets their
+// terminal back. Whatever overruns is aborted, and aborting is safe by
+// construction: the receiver stages to a .part and publishes atomically, so an
+// interrupted transfer leaves a resumable partial rather than a truncated file
+// under a delivered name.
+const sessionDrainGrace = 5 * time.Second
+
+// drainGrace reports the configured session drain window, defaulting to
+// sessionDrainGrace.
+func (d *Dispatcher) drainGrace() time.Duration {
+	if d.cfg.SessionDrainGrace > 0 {
+		return d.cfg.SessionDrainGrace
+	}
+	return sessionDrainGrace
+}
+
 // Serve accepts connections on the listener and routes each connection based on its
 // opening envelope type. It blocks until ctx is cancelled or the listener is closed.
 func (d *Dispatcher) Serve(ctx context.Context) error {
@@ -173,15 +203,75 @@ func (d *Dispatcher) Serve(ctx context.Context) error {
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 
+	// Sessions run on a context detached from ctx.
+	//
+	// This is the root of limitation 4.8, and it was not the force-close loop
+	// below. receiveEnvelope installs context.AfterFunc(ctx, conn.Close), so
+	// handing a session the Serve context meant that cancelling shutdown closed
+	// every live connection on the spot. No amount of grace in the dispatcher's
+	// own teardown could help: by the time the loop was consulted, the session
+	// was already dead.
+	//
+	// context.WithoutCancel keeps the context's values, which session handlers
+	// do read, and drops only the cancellation. What a session keeps is its
+	// lifetime: the connection, or endSessions when the drain window closes.
+	//
+	// There is deliberately no `defer endSessions()`. Serve returns from the
+	// accept loop the moment the listener closes, which is the *normal* drain
+	// path and still has sessions running; a deferred cancel would therefore
+	// fire at exactly the moment the drain is meant to be giving them room, and
+	// the whole feature would be a no-op that looked like it worked. The drain
+	// watcher below is the only thing that ends a session's life.
+	sessionCtx, endSessions := context.WithCancel(context.WithoutCancel(ctx))
+
+	// acceptDone closes when the accept loop below has returned, which is the
+	// first moment at which no further wg.Add can happen. drained closes once
+	// every session has finished. Both are needed, and in that order: a
+	// WaitGroup must not be waited on while its counter can still grow from
+	// zero, and the accept loop is the only thing that grows it.
+	//
+	// Note the defer order. Serve returns into close(acceptDone) before it
+	// reaches wg.Wait(), so the drain watcher is never waiting on a signal that
+	// the backstop below is holding shut.
+	acceptDone := make(chan struct{})
+	defer close(acceptDone)
+	drained := make(chan struct{})
+	go func() {
+		<-acceptDone
+		wg.Wait()
+		close(drained)
+	}()
+
 	go func() {
 		select {
 		case <-ctx.Done():
+			// Stop accepting first, so every session still running is one that
+			// was already running when shutdown began.
 			_ = d.listener.Close()
-			mu.Lock()
-			for c := range activeConns {
-				_ = c.Close()
+
+			// Then the graceful window.
+			//
+			// A session already in flight is usually seconds from done -- a
+			// sign-in completing, a snippet landing, a file that is nearly on
+			// disk. Killing it at the ninety percent mark is safe (the receiver
+			// stages to a .part and publishes atomically) and it is still a waste,
+			// and a handler unwinding after its connection died keeps writing
+			// while the Hub finishes stopping. That is how the peer store could
+			// still be mutating after the Hub was gone, which is what made
+			// TestOutboundSendConfirmsThePeerAddress fail on 2026-10-18.
+			select {
+			case <-drained:
+			case <-time.After(d.drainGrace()):
+				// Out of time. endSessions reaches every session through the
+				// same AfterFunc path; the sweep is for a connection that was
+				// handed out between the last snapshot and now.
+				endSessions()
+				mu.Lock()
+				for c := range activeConns {
+					_ = c.Close()
+				}
+				mu.Unlock()
 			}
-			mu.Unlock()
 		case <-stopCh:
 		}
 	}()
@@ -228,7 +318,7 @@ func (d *Dispatcher) Serve(ctx context.Context) error {
 					_ = c.Close()
 				}
 			}()
-			d.handleConn(ctx, c)
+			d.handleConn(sessionCtx, c)
 		}(conn)
 	}
 }
