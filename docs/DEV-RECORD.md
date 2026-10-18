@@ -8616,3 +8616,252 @@ do, and I could not reproduce it in any local run. It shares a run with the
 stamp failure and it may share a cause -- a read landing during teardown -- but
 that is a guess and it is recorded as one. Correcting the settle condition
 changes when those reads happen, which may retire it. It is not fixed.
+
+---
+
+## Batch Z109 - a gate that could not run, and a route forward that lasted three seconds (2026-10-18)
+
+The starting position was `go test ./...` **failing on this machine** while CI
+was green on run #122. Both of the failures below were real, and neither was
+the product the gates are supposed to protect.
+
+### 1. `go run ./tools/wfcheck` could not run at all
+
+Red, first thing, before anything else was changed:
+
+```
+--- FAIL: TestTeePipelineRuleMatchesWhatBashActuallyDoes/without_pipefail
+    /bin/bash: C:Usersai2AppDataLocalTemp...probe.sh: No such file or directory
+--- FAIL: TestTeePipelineRuleMatchesWhatBashActuallyDoes/with_pipefail
+$ go run ./tools/wfcheck
+FAIL .github\workflows\ci.yml:696 does not parse as bash
+wfcheck: 18 block(s) failed
+```
+
+All 18 shell blocks "failed to parse", on a tree CI had just reported as 18 of
+18 clean. `Get-Command bash` gives the answer: `C:\WINDOWS\system32\bash.exe`,
+which is the **WSL launcher**, not Git Bash. WSL reads a native Windows path's
+backslashes as escapes, so `C:\Users\...\probe.sh` becomes
+`C:Usersai2...probe.sh` and reports a file that exists as missing.
+
+This is the third version of this defect in this test, and the second version is
+still in the tree for the third argument. `runProbe` already had a comment
+describing exactly this failure -- from the first version, which converted the
+child's path with `filepath.ToSlash` -- and it fixed the *child*. The script's
+own path was still native, one argument along. A fix that moves the problem one
+step down the argument list has not fixed it.
+
+Git Bash accepts native paths, so CI was green and always would be. That is the
+worst shape for a local gate: it works for the people whose CI proves it works.
+
+**Fixed by never passing a path.** `bash -n` reads a script from standard input,
+so the block goes in on stdin and the temporary file -- its creation, its
+cleanup, and the unwritable-tempdir failure mode -- is gone entirely. The probe
+does the same: stdin for the script, `cmd.Dir` for the working directory, a
+relative name for the child. That form is correct under every bash a developer
+might have installed.
+
+`parseStatus` also replaces a bare `atoi`, which returned **0** for anything
+unparsable. That is how the first version agreed with the right answer for the
+wrong reason: a probe that never reached its `echo` produced 0, 0 is what a
+passing pipeline produces, and the case passed. A non-numeric last field now
+fails the test instead.
+
+### 2. `renderPeersList` had no empty branch
+
+`TestWebDashboard_EmptyStatesOfferANextAction` asserts against
+`elementInnerHTML`, which is the **server-rendered first paint**. The peers
+first paint is correct: "No paired peers yet", with "+ Pair a device" and
+"Look for nearby hubs".
+
+`renderPeersList` then did `peersList.innerHTML = peers.map(...)` with no
+guard, and it runs on the three-second status poll. So the two buttons survived
+until the first poll and were replaced by an empty `<div>`. A user who had paired
+nothing was offered a route forward on arrival and given nothing three seconds
+later.
+
+The gate's own next paragraph says: *"The JavaScript re-renders must carry the
+same affordance, or the next poll silently removes it."* It then checked three
+constants. There were four regions. The fourth was the broken one, and a second
+literal list is what made the omission invisible -- the same shape as a
+`needs` column declared and never read, which this file already documents
+catching once.
+
+**Established rather than argued.** The browser check added here calls
+`renderPeersList([])` and then **waits out a real poll cycle with the page
+untouched** before reading the DOM:
+
+```
+FAIL  the peers empty state survives a status poll  {"has":false,"actions":[]}
+uxtest: 106/107 checks passed
+```
+
+Red against the product as it stood; 107/107 after. The 3.5s wait is
+`STATUS_POLL_LIVE_MS` (3000) plus margin, and that is the entire point: the
+three checks above it call a render function and read the result, which proves
+the function produces an empty state and says nothing about whether the page
+still has one thirty seconds later. A gate that reads the state before the timer
+fires cannot fail for a defect that only appears after it.
+
+### 3. A generated artefact in the repository
+
+`t.err`: 2,744 bytes of a Go test binary's usage message, committed in `e7ec439`
+when a fuzz command's stderr was redirected to it and the file was added
+wholesale.
+
+`docgate` now checks for the class. It reads git's **index**, not the working
+tree -- the question is what is *committed*, since a generated file in a working
+tree is nobody's problem and in the index is in every clone -- and **found the
+real file on its first run**, before it was removed:
+
+```
+::error::t.err: this file sits in the repository root and is not one of the 11
+files that belong there.
+```
+
+The rule is an allowlist rather than a denylist of extensions, because the
+artefact has no extension signature: it is called `.err`. A denylist would have
+needed `*.err` and would have caught this one file and nothing like it. The root
+of a Go repository has a knowable set of legitimate contents, and a new source
+file belongs under `cmd/` or `internal/`.
+
+It refuses to pass when git cannot be read, like every other check here.
+
+### 4. `wfcheck` was not in the README's list of gates
+
+The README listed four local gates. CI's quality job runs five. `wfcheck` --
+the one that keeps `release.yml` from breaking at tag time, and the one that was
+broken in section 1 -- was named in `AGENTS.md` and in `ci.yml` and nowhere
+else a contributor would look. Now listed, and `docgate` derives the list from
+`ci.yml` so adding a fifth gate to CI makes the check demand it be documented
+without anyone editing the check.
+
+Red proof: delete the line, and the check reports exactly that gate.
+
+### Other product defects found and fixed
+
+| Defect | Why reading did not show it |
+|---|---|
+| Cancel on the OAuth forwarder posted `operation_id: ""` | `currentOperationID` was declared and documented as "filled in from the relay response", and assigned nowhere. The response cannot fill it: `POST /api/relay/open` blocks for the whole sign-in. The Hub falls back to `active[0]`, the *oldest* open relay -- which may be a `tantu wrap` in a terminal, while its own comment says cancelling the wrong sign-in "would be worse than doing nothing". |
+| The header peer `<select>` had `outline:none` inline | The one control that decides the destination had no focus ring. The author rule for `select:focus-visible` is in the file; an inline declaration outranks it. |
+| `#activeRelaysList` was `aria-live="polite"` | Repainted on a 5s poll with a ticking seconds counter, so a screen reader re-read the same sentence for the whole life of the sign-in. WCAG 4.1.3. The sibling `#nextActionBanner` was fixed for exactly this and carries a comment explaining why. |
+| A hidden tab polled at ~1.2 req/s forever | The Hub is a background process, so the cost never appears as the browser being slow. Ten open tabs is twelve requests a second, indefinitely. |
+| `notify()` had an action button no caller used | ~30 lines of registry, handler and CSS described in the function's comment as ensuring "a message never dead-ends". 37 call sites, none of which pass the options. |
+| `.status-chip.pending` was used and defined nowhere | A chip with padding, a rounded pill, and no colour. |
+| `dialogFocusables()` read `el.style.display` | Cannot see an element hidden by `hidden` or by a class, so the Tab trap could move focus onto an invisible control. |
+| `emptyStateHTML`'s "cannot drift" comment was false | The server writes the four blocks by hand, the function writes them again, and they already differed. Narrowed to what is true, and enforced from one table. |
+
+### Not root-caused
+
+Nothing outstanding. Every item above has a named gate, and each gate has a red
+proof recorded here or in `KNOWN-LIMITATIONS.md`.
+
+### A fourth thing, which was not a product defect at all
+
+Investigating a cascade of browser failures led to a single orphaned
+`tantu-uxtest` process holding port 18976. Two details made it expensive.
+
+**The Hub did not fail.** The web UI falls back to the next port in its scan, so
+this run's Hub could not bind 18976, moved to 18977, and stayed alive. Every
+readiness condition therefore passed -- the process was up, the port answered,
+and the version tag matched. The tag check is no defence here: both Hubs were
+built from the same commit, so `v1.0.0-dev+bf1edd3.dirty` satisfies
+`includes('bf1edd3')` from either process.
+
+**The failure had four vocabulations.** No render stamp. No session. `403` on
+`/api/session`. No pairing banner. An inert `javascript:void(0)` bookmarklet.
+`Dashboard session not established` for a send. That reads as a product that
+broke in eleven places at once, and the obvious -- and wrong -- reading is that
+something in the dashboard regressed. It cost two full runs before the cause was
+found, and it is the same class as exit 4, which exists because "the Hub under
+test died" once read as "the product is broken".
+
+So the harness now checks that its ports are free **before it builds**, and
+exits 3 if they are not -- `not a product result`, with the port named and the
+process to kill. Verified by occupying 18976 with a real listener and by
+occupying 19877 the same way; both produce the message and exit 3 before a
+single check runs, where the same conditions previously produced a failing
+check list.
+
+The check asks the question with a raw TCP connect rather than an HTTP GET,
+which is worth a line because the first version of it was wrong in a way that
+would have shipped. Three reasons, in order of how much damage each does:
+
+1. `P2P_PORT` speaks TLS, so there is no HTTP to speak to it. The question is
+   "is there a listener", not "does it understand me".
+2. **`fetch` honours the HTTP proxy environment.** This machine already carries
+   `NO_PROXY=127.0.0.1,localhost,::1` for exactly this reason. With
+   `NODE_USE_ENV_PROXY` set and `NO_PROXY` absent, a request to `127.0.0.1:18976`
+   can be answered by a proxy on another host while the local port is free --
+   and the run would then refuse to start, for ever, with a message blaming a
+   process that does not exist.
+3. `net.connect` cannot be redirected by anything, so the answer it gives is the
+   one the question asks.
+
+The second is a gate that blocks every run on a correctly configured machine
+while reporting a fault that does not exist. It is the same shape as the bugs
+this batch is about: not a crash, but a verdict that does not follow from what
+was measured.
+
+This is also the one place in this batch where the gate I added was aimed at the
+tooling rather than at the product, and it is recorded here because the tooling
+is what makes every other claim in this record checkable.
+
+### A note on method
+
+Two things in this batch would have been shipped green.
+
+`suppressedDuplicateMessage` was first declared inside `uploadFile`, where
+`sendTextDrop` could not reach it. The text path answered **"suppressedDuplicate
+Message is not defined"** -- a suppressed duplicate turned into a visible failure
+naming an internal identifier. A Go test cannot see that, and neither can
+`node --check`: it is valid JavaScript. Only driving the real function in a real
+browser found it, which is the argument for the browser gate in one sentence.
+
+And the peers empty state (section 2) is the shape this repository has now hit
+repeatedly: the gate read the state before the timer that removes it. A marker
+over the markup passes; a browser that waits out the timer and then asks what
+the user is looking at does not.
+
+### A third thing, caused by the tooling rather than the product
+
+Part way through, a shell one-liner meant to make a red proof damaged
+`dashboard.html`: `Get-Content -Raw` reads with the system ANSI code page on
+Windows PowerShell, and `Set-Content -Encoding utf8` then wrote back the
+mis-decoded text with a BOM. Every emoji in the file became mojibake, and 37 C1
+control characters appeared where none had been.
+
+`tools/encgate` caught it on the next run, which is the whole argument for that
+gate existing: nothing in the toolchain notices encoding damage in a file that
+still parses, still embeds, still passes every test, and still looks plausible.
+It was recovered from a byte-exact copy, and `encgate` was green again.
+
+The copy was safe because it was made with a byte-level copy. Had it been made
+with the same read/write pipeline, there would have been nothing to recover
+from. The operational rule that came out of this: **edit these files with a
+byte-preserving tool, not with a text round-trip through the shell.** The
+`edit` tool is byte-preserving; `Get-Content | Set-Content` is not. This is
+worth writing down because the failure is invisible until a gate catches it, and
+the gate that catches it lives in this repository rather than in the editor.
+
+### Verified
+
+- `gofmt -l .` clean; `go vet ./...`, `staticcheck v0.8.2` exit 0
+- `go test -count=1 ./...` -- 15 packages green, including `tools/wfcheck` and
+  `tools/docgate`, which were red when this batch started
+- `encgate`, `docgate`, `wfcheck` green
+- `uxtest`, all six runs, exit 0, no skips other than the two that are
+  topology-dependent and say so on their own line:
+
+  | engine | peerless | `--peers` |
+  |---|---|---|
+  | chromium | 108/108 | 109/109 |
+  | firefox | 106/106 | 107/107 |
+  | webkit | 108/108 | 109/109 |
+
+  The two-check difference is the blackhole-peer transfer budget, which is
+  skipped on a peerless rig because there is no peer store to make the
+  blackhole selectable from. The counts are the harness's own, printed by the
+  run rather than copied into this record; README deliberately does not carry a
+  number, for the reason this batch gave the second demonstration of.
+- all four harness self-checks green

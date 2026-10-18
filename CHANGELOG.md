@@ -7,7 +7,73 @@ rollback procedures.
 
 ## Unreleased
 
+### Fixed
+- **A send the peer suppressed was reported as a successful send.** When a
+  receiver recognises an idempotency key from an earlier completion it writes
+  nothing and says so; the dashboard ignored that and showed "File sent to
+  devbox · verified" for a transfer in which the peer wrote nothing at all —
+  reachable by re-sending with the same idempotency key, which is the
+  documented way to retry safely. It now reads "Already saved on devbox by an
+  earlier send — nothing new was written".
+- **Cancelling a sign-in from the dashboard's URL forwarder could release
+  somebody else's login.** The Cancel button sent an empty operation id,
+  because the id cannot be read from the relay response — that request blocks
+  for the whole sign-in and returns only when it ends. An empty id makes the Hub
+  fall back to the *oldest* open relay, which may be one started by
+  `tantu wrap` in a terminal or by another browser tab. The form now works out
+  which relay is its own by snapshotting what was open before it posted, and
+  refuses to guess when the answer is ambiguous, naming the per-sign-in Cancel
+  in the in-flight list instead.
+- **The Peers tab's route forward disappeared after three seconds.** A user with
+  no machine paired was offered "Pair a device" and "Look for nearby hubs" on
+  arrival, and then left with an empty box: the three-second status poll
+  re-rendered the peer list with no empty state. The gate that was supposed to
+  catch this read the server's first paint, which was correct.
+- **The peer switcher in the header had no visible focus indicator.** It was the
+  only control written with an inline `outline:none`, which overrode the focus
+  ring every other control gets — on the one control that decides who you are
+  sending to.
+- **A hidden dashboard tab kept polling forever**, at roughly 1.2 requests a
+  second whether or not anyone was looking at it. Ten tabs left open put a steady
+  twelve requests a second at the Hub, indefinitely, and because the Hub is a
+  background process the cost never showed up as the browser being slow. Polling
+  now pauses when the tab is hidden and refreshes immediately when it returns.
+- **The sign-in list announced itself every five seconds.** It was a live region
+  repainted on a five-second poll, with a running seconds counter in each row, so
+  a screen reader re-read "sign-in in progress, 35 seconds" for as long as the
+  sign-in lasted. It now announces when a sign-in appears and when the last one
+  ends, and is silent in between.
+- **`go run ./tools/wfcheck` reported all 18 workflow blocks broken on any
+  machine where `bash` resolves to the WSL launcher.** It handed bash a native
+  Windows path to a temporary file; WSL reads the backslashes as escapes and
+  reports a file that exists as missing. The gate AGENTS.md tells contributors
+  to run before pushing could not be run. It is now also listed in the README,
+  and `docgate` fails if a gate added to CI is not listed there.
+- **`t.err` was committed** — 2.7 KB of a Go test binary's usage message, added
+  wholesale when a fuzz command's stderr was redirected to it.
+- **The in-flight sign-in state chip rendered with no colour.** `pending` was
+  used and defined nowhere, so it got padding and a rounded pill and nothing
+  else.
+- **The Tab trap in the confirm dialog could land focus on an invisible
+  control.** It decided visibility by reading an inline style, which cannot see
+  an element hidden by the `hidden` attribute or by a class.
+
 ### Added
+- **A gate against generated artefacts in the repository.** `docgate` now reads
+  git's index — the question is what is *committed*, since a generated file in a
+  working tree is nobody's problem and in the index is in every clone — and
+  requires every file in the repository root to be one of the eleven that belong
+  there. It found `t.err` on its first run. It also refuses to pass when it
+  cannot read git, rather than reporting success having examined nothing.
+- **A gate that every gate CI runs is documented in the README.** The list is
+  derived from `ci.yml`, so adding a gate to the quality job makes the check
+  demand it be documented without anyone editing the check.
+
+### Changed
+- Removed `notify()`'s toast action button. No caller had ever passed its
+  options, so ~30 lines of registry, handler and CSS described a capability that
+  did not exist. It is also the wrong surface: a toast is transient, and
+  anything a user may act on belongs next to the control that produced it.
 - **Release artifacts are now signed, keyless.** Every archive, every SBOM and
   `checksums.txt` gets a detached cosign signature and the Fulcio certificate
   that vouches for the signing identity, so a downloader can prove an artifact
