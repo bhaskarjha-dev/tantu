@@ -26,6 +26,7 @@
 
 import { spawn, execFileSync } from 'node:child_process';
 import { createEngineFailureNote } from './engine-failure.cjs';
+import { bootSettled, describeBootState } from './settle.cjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -267,6 +268,15 @@ let hubs2 = null;
     // polling from here would measure the harness, not the render.
     await page.addInitScript(() => {
       window.__tantuFirstUsefulMs = undefined;
+      // Which document is this? Only the pre-bootstrap document ever sees a
+      // fragment token; the one that survives the reload never does. The settle
+      // loop waits on this rather than on the hash, because the product strips
+      // the fragment and only then reloads (dashboard.html:1686-1689) -- so "the
+      // fragment is gone" is true one step before the boot has finished, and on
+      // a loaded runner the next read can still land in the old document.
+      const m = /tantu_bootstrap=([^&]*)/.exec(location.hash || '');
+      window.__tantuBootFragment = m ? m[1] : null;
+      window.__tantuDocId = Math.random().toString(36).slice(2, 10);
       let elapsed = 0;
       const probe = () => {
         const el = document.getElementById('idTransport');
@@ -353,15 +363,56 @@ let hubs2 = null;
         color:s.color, bg:bg.map(Math.round), at:(el.className||el.tagName),
         rootMuted:getComputedStyle(document.documentElement).getPropertyValue('--text-muted').trim()};})(${JSON.stringify(sel)})`);
 
-    // Navigate, then wait for the bootstrap exchange to settle rather than
-    // assuming four seconds is enough: the exchange POSTs, strips the fragment
-    // and reloads, so "the fragment is gone" means the page is done booting.
+    // Navigate, then wait for the bootstrap exchange to settle.
+    //
+    // The wait used to be "location.hash is empty", on the reasoning that "the
+    // fragment is gone means the page is done booting". That reasoning is wrong
+    // and the product says why: bootstrapDashboard() calls
+    // history.replaceState() and only then window.location.reload()
+    // (dashboard.html:1686-1689). There is therefore a guaranteed window in
+    // which the fragment is gone and the boot is not done, and the live document
+    // is the pre-reload one -- which has no session cookie and so correctly
+    // renders nothing. Reading the render stamp from it yields nothing, and the
+    // failure message then blames the Hub for the harness having read the wrong
+    // document. On a fast machine the reload lands before the next 250ms poll;
+    // on a loaded CI runner it does not. That is why this appeared on webkit
+    // only, roughly one run in ten, and never locally.
+    //
+    // The fragment identifies the document instead: only the pre-bootstrap
+    // document ever sees one. See settle.cjs, and selfcheck-settle.cjs, which
+    // drives a browser to hold that condition to account.
     const navWallStart = Date.now();
     await page.goto(`http://127.0.0.1:${WEB_PORT}/#tantu_bootstrap=${token}`);
+    const BOOT_STATE = 'JSON.stringify({hash: location.hash, bootFragment: '
+        + 'window.__tantuBootFragment === undefined ? "UNREADABLE" : window.__tantuBootFragment, '
+        + 'docId: window.__tantuDocId === undefined ? "UNREADABLE" : window.__tantuDocId})';
     let settled = false;
+    let bootState = null;
+    let settledOn = 'poll budget exhausted';
+    // A failed exchange strips the fragment and does NOT reload (the 403 and
+    // 503 branches return before window.location.reload()), so there the
+    // pre-bootstrap document is terminal and bootSettled() can never be true.
+    // Grant a bounded grace period after the fragment empties, then take
+    // whatever is live and let the session-banner check below say which case it
+    // was. Without this, a failed bootstrap would cost the full poll budget.
+    const GRACE_MS = 3000;
+    let hashEmptySince = null;
+    let torn = 0;
     for (let i = 0; i < 60 && !settled; i++) {
-      const hash = await js('location.hash');
-      settled = typeof hash === 'string' && hash === '';
+      const raw = await js(BOOT_STATE);
+      if (raw === null) { torn++; await sleep(250); continue; }
+      try { bootState = JSON.parse(raw); } catch (_) { bootState = null; }
+      if (bootSettled(bootState)) {
+        settled = true;
+        settledOn = 'the post-bootstrap document';
+      } else if (bootState && bootState.hash === '') {
+        if (hashEmptySince === null) hashEmptySince = Date.now();
+        if (Date.now() - hashEmptySince > GRACE_MS) {
+          settled = true;
+          settledOn = 'the fragment emptied but no reload landed within ' + GRACE_MS
+            + 'ms; ' + describeBootState(bootState);
+        }
+      }
       if (!settled) await sleep(250);
     }
     const bootstrapWallMs = Date.now() - navWallStart;
@@ -378,7 +429,8 @@ let hubs2 = null;
     const rendered = typeof firstUseful === 'number' && firstUseful >= 0;
     console.log('uxtest: first useful render '
       + (rendered ? firstUseful + 'ms' : 'not measured')
-      + ' (bootstrap hop ' + bootstrapWallMs + 'ms)');
+      + ' (bootstrap hop ' + bootstrapWallMs + 'ms, settled on ' + settledOn
+      + (torn ? ', ' + torn + ' read(s) torn down mid-reload' : '') + ')');
     // Two questions, not one, because "render undefinedms" is the answer to
     // neither.
     //
@@ -393,10 +445,17 @@ let hubs2 = null;
     // Splitting it keeps the property covered: the first check fails when nothing
     // was stamped, which is the real condition, and the budget check says plainly
     // that it has nothing to measure rather than inventing a number for it.
+    //
+    // The failure message names which document the harness was reading rather
+    // than asserting that the Hub withheld data. Those are different faults with
+    // different owners, and the old wording could only ever describe the second,
+    // which is why a harness race was reported as a product fault. check() caps
+    // the detail at 240 characters, so the state goes first.
     check('the document stamps a first-useful-render instant',
       rendered,
       rendered ? 'stamped ' + firstUseful + 'ms'
-        : 'nothing stamped __tantuFirstUsefulMs; it is set when the status slots first hold a real value, so the Hub never gave the page one');
+        : 'settled on ' + settledOn + '; ' + describeBootState(bootState)
+          + '; nothing stamped __tantuFirstUsefulMs');
     if (rendered) {
       check('first useful render under 1s',
         firstUseful < 1000,

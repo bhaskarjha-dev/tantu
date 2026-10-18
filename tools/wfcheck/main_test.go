@@ -1,6 +1,9 @@
 package main
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -128,5 +131,76 @@ func TestBlockExtractionStillCrossChecks(t *testing.T) {
 	bs := blocks(goodWorkflow)
 	if len(bs) != 2 {
 		t.Fatalf("parsed %d blocks from a document with 2 `run: |` keys", len(bs))
+	}
+}
+
+// The bash invocation itself is a gate, so it is gated.
+//
+// Every other check in this package is a pure decision function over text.
+// parsesAsBash is not: it shells out. That makes it the one place this gate can
+// break silently -- a mis-wired stdin, a flag that stopped parsing, a bash that
+// was never invoked -- and every one of those failures looks identical from the
+// outside, namely "clean".
+//
+// This is not hypothetical. parsesAsBash's previous form passed a temporary
+// file's path as an argument, which worked under Git Bash and failed under the
+// WSL launcher, so the gate reported every block broken on a machine where CI
+// reported every block clean. Both outcomes were "the tool ran"; neither was
+// "the workflows are fine".
+func TestBashInvocationRejectsAScriptBashWouldRefuse(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skipf("bash is not on PATH, so bash's own behaviour cannot be checked: %v", err)
+	}
+
+	// Broken in a way that is a syntax error, not a runtime error, because
+	// `bash -n` parses without executing and a runtime failure would not be seen.
+	for _, tc := range []struct{ name, body string }{
+		{"unterminated if", "if true; then\n  echo hi\n"},
+		{"stray closing brace", "echo ok\n}\n"},
+		{"unfinished pipeline", "node run.mjs 2>&1 |\n"},
+		{"unclosed quote", `echo "unterminated` + "\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ok, perr := parsesAsBash(bash, tc.body)
+			if ok {
+				t.Fatalf("bash accepted a script with a syntax error:\n%s", tc.body)
+			}
+			// The caller prints this next to the line number, so an error with no
+			// diagnostic in it turns a red run into a mystery.
+			if perr == nil || strings.TrimSpace(perr.Error()) == "" {
+				t.Errorf("rejection carried no diagnostic for a reviewer to read")
+			}
+		})
+	}
+}
+
+func TestBashInvocationAcceptsEveryBlockInTheRealWorkflows(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skipf("bash is not on PATH, so bash's own behaviour cannot be checked: %v", err)
+	}
+	files, err := filepath.Glob(filepath.Join("..", "..", ".github", "workflows", "*.yml"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no workflows found; this test would pass having checked nothing: %v", err)
+	}
+	checked := 0
+	for _, wf := range files {
+		raw, err := os.ReadFile(wf)
+		if err != nil {
+			t.Fatalf("read %s: %v", wf, err)
+		}
+		for _, b := range blocks(string(raw)) {
+			if ok, perr := parsesAsBash(bash, b.body); !ok {
+				t.Errorf("%s:%d does not parse: %v", wf, b.line, perr)
+			}
+			checked++
+		}
+	}
+	// The count is asserted so that a change which made `blocks` return nothing
+	// cannot turn this into a vacuous pass.
+	if checked < 10 {
+		t.Errorf("only %d block(s) checked across %d workflow(s); the extractor is probably broken",
+			checked, len(files))
 	}
 }

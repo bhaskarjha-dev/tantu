@@ -408,6 +408,14 @@ jobs:
           # that cannot be tested is a detector that quietly stops matching, and
           # then the run goes back to reporting every consequence separately.
           node tools/uxtest/selfcheck-engine-failure.cjs
+          # Fourth gate about a gate: the boot-settled condition. The harness
+          # waited for "the fragment is gone", on a comment claiming that meant
+          # the page had finished booting. dashboard.html strips the fragment and
+          # only then reloads, so the condition was true one step early, and a
+          # read landing in that window blamed the Hub for a harness race. It
+          # never reproduced locally because the reload outran the 250ms poll;
+          # this gate reproduces the window deliberately.
+          node tools/uxtest/selfcheck-settle.cjs
       - name: Run acceptance harness across engines
         # Same reasoning as the test step: the harness's diagnostics are the
         # only diagnosis available for this job, and a log nobody can read

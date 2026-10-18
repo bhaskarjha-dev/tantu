@@ -101,24 +101,24 @@
     /* Small text on a light accent tint needs more depth than the accent
        used for large text: #2563eb measured 3.71:1 on the .path-label
        tint at 11.2px, #1d4ed8 measures 4.64:1 on the same tint. */
-    --accent-text: #1d4ed8;
-    /* Opaque rather than translucent, unlike the dark theme. At 0.4 alpha
-       over #f4f6fb the nav measured rgb(154, 157, 164): murky, and not
-       dark enough to be the deliberate chrome it is meant to be.
-       --chrome-text #a8b3c7 on --nav-bg measures 7.1:1, and
-       --accent-on-chrome #60a5fa measures 6.0:1 where the plain light
-       --accent #2563eb managed only 3.0:1 on this band. */
-    --bar-bg: rgb(26, 31, 45);
-    --nav-bg: rgb(31, 37, 53);
-    --chrome-text: #a8b3c7;
-    --chrome-text-strong: #e8eef7;
-    --chrome-btn-bg: rgba(255, 255, 255, 0.08);
-    --chrome-btn-bg-hover: rgba(255, 255, 255, 0.16);
-    --accent-on-chrome: #60a5fa;
-    /* Lighter than --accent on purpose: this one is painted on the dark
-       chrome. #60a5fa measures 6.0:1 there and #818cf8 5.3:1, where the
-       body-text accent managed 3.0:1. */
-    --accent-gradient-on-chrome: linear-gradient(135deg, #60a5fa, #818cf8);
+      --accent-text: #1d4ed8;
+      /* Opaque rather than translucent, unlike the dark theme. At 0.4 alpha
+         over #f4f6fb the nav measured rgb(154, 157, 164): murky, and not
+         dark enough to be the deliberate chrome it is meant to be.
+         --chrome-text #a8b3c7 on --nav-bg measures 7.1:1, and
+         --accent-on-chrome #60a5fa measures 6.0:1 where the plain light
+         --accent #2563eb managed only 3.0:1 on this band. */
+      --bar-bg: rgb(26, 31, 45);
+      --nav-bg: rgb(31, 37, 53);
+      --chrome-text: #a8b3c7;
+      --chrome-text-strong: #e8eef7;
+      --chrome-btn-bg: rgba(255, 255, 255, 0.08);
+      --chrome-btn-bg-hover: rgba(255, 255, 255, 0.16);
+      --accent-on-chrome: #60a5fa;
+      /* Lighter than --accent on purpose: this one is painted on the dark
+         chrome. #60a5fa measures 6.0:1 there and #818cf8 5.3:1, where the
+         body-text accent managed 3.0:1. */
+      --accent-gradient-on-chrome: linear-gradient(135deg, #60a5fa, #818cf8);
       --shadow-sm: 0 1px 2px rgba(22, 33, 58, 0.08);
       --shadow-md: 0 4px 20px rgba(22, 33, 58, 0.1);
       --shadow-lg: 0 25px 50px -12px rgba(22, 33, 58, 0.25);
@@ -722,6 +722,41 @@
     min-height: 24px;
     padding: 0.1rem 0.25rem;
   }
+  /* The peer switcher as it renders inside the dark header chrome.
+   *
+   * It is a bare <select> on purpose -- no border, no fill, so it reads as the
+   * wordmark's neighbour rather than as a form control -- and that is exactly
+   * why it was previously written with an inline `outline:none`. An inline
+   * declaration outranks the author rule at the top of this file, so the
+   * deliberate 2px accent ring that every other control gets was silently
+   * removed from the control that chooses the destination. WCAG 2.4.7.
+   *
+   * The ring is re-established here, on a rounded outline offset so it reads
+   * against the chrome rather than being clipped by it, and it is stated on
+   * :focus-visible so a pointer click does not leave a ring behind.
+   */
+  .header-peer-select {
+    background: transparent;
+    color: var(--chrome-text);
+    border: none;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    max-width: 16rem;
+    min-height: 24px;
+  }
+  .header-peer-select:focus-visible {
+    outline: 2px solid var(--accent-on-chrome);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+  /* The option list renders with the OS popup panel, not with the page's
+   * styles, on every engine except Firefox. An explicit colour keeps the
+   * closed control legible in the dark chrome without depending on that. */
+  .header-peer-select option {
+    background: var(--card-bg);
+    color: var(--text);
+  }
   .tab-btn {
     position: relative;
     border-radius: 8px 8px 0 0;
@@ -793,7 +828,19 @@
   .status-chip.ok { background: var(--success-bg); border-color: var(--success); color: var(--success-text); }
   .status-chip.warn { background: var(--warning-bg); border-color: var(--warning); color: var(--warning-text); }
   .status-chip.err { background: var(--error-bg); border-color: var(--error); color: var(--error-text); }
-  .status-chip.info { background: rgba(59, 130, 246, 0.1); border-color: var(--accent); color: var(--accent); }
+  .status-chip.info { background: rgba(59, 130, 246, 0.1); border-color: var(--accent); color: var(--accent-text); }
+  /* `pending` is the in-flight state -- a sign-in is open and waiting. It was
+     used by the OAuth relay's in-flight list and defined nowhere, so the chip
+     rendered with the base .status-chip padding and no colour at all: padding,
+     a rounded pill, and not one readable property. The state is genuinely
+     useful ("starting up" is not "waiting for the sign-in"), so it is styled
+     rather than removed, on --accent-text, which is the token deepened for
+     small text in both themes. */
+  .status-chip.pending {
+    background: rgba(59, 130, 246, 0.1);
+    border-color: var(--accent);
+    color: var(--accent-text);
+  }
   .status-chip.neutral { background: rgba(139, 148, 158, 0.12); border-color: var(--border-light); color: var(--text-muted); }
   .record-state { margin-top: 0.25rem; }
   .record-next { font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem; }
@@ -1152,7 +1199,6 @@
     font-size: 0.82rem;
     color: var(--text-muted);
   }
-  .toast-actions { display: flex; gap: 0.5rem; margin-top: 0.6rem; flex-wrap: wrap; }
   .toast-dismiss {
     background: none;
     border: 1px solid transparent;
@@ -1402,7 +1448,21 @@
           <button type="button" class="btn-sm" id="btnCancelRelay" data-action="cancel-relay" style="display: none;">Cancel</button>
         </form>
         <div class="status-banner" id="relayStatus" role="status" aria-live="polite"></div>
-        <div id="activeRelaysList" aria-live="polite"></div>
+        <!-- Not a live region, and the difference matters.
+             A live region announces whatever replaces its content. This list is
+             repainted by a five-second poll, and each row carries the sign-in's
+             age in seconds, so as a live region it re-announced "Sign-in in
+             progress via devbox, 35 seconds" every five seconds for the entire
+             life of the sign-in -- the single most irritating way for a screen
+             reader to report that nothing has changed. WCAG 4.1.3 (Status
+             Messages) asks for determinable updates, not a metronome.
+
+             So the announcements are made by loadActiveRelays at the two moments
+             that are actually news: a sign-in appearing, and the last one going
+             away. Between those the list updates silently and stays readable on
+             demand. This is the same rule the next-action banner follows, for
+             the same reason. -->
+        <div id="activeRelaysList"></div>
       </div>
 
       <div class="card">
@@ -1705,14 +1765,29 @@
     // the operation records already use.
     const TOAST_TIMEOUT_MS = { info: 6000, success: 6000, warn: 10000, error: 0 };
     const TOAST_MAX_PER_REGION = 4;
-    const toastActions = Object.create(null);
     let toastSequence = 0;
 
     // notify() reports one outcome. `next` is the single safe next step in the
-    // product's own language; `actionLabel`/`actionId` offer the one control
-    // that performs it, so a message never dead-ends. `error` keeps its toast
-    // until the user dismisses it - a failure that vanishes on its own is a
-    // failure the user never learns about.
+    // product's own language. `error` keeps its toast until the user dismisses
+    // it - a failure that vanishes on its own is a failure the user never
+    // learns about.
+    //
+    // There is deliberately no action button on a toast. This one had one -
+    // `actionLabel`/`actionId`/`onAction`, a registry, a delegated handler and a
+    // stylesheet row - and nothing in the page ever passed those options, so it
+    // was thirty-odd lines of unreachable code described in this comment as
+    // ensuring "a message never dead-ends". A comment describing a capability
+    // that does not exist is the failure this repository keeps meeting, in a
+    // watcher nobody called and in a document nobody verified.
+    //
+    // The reason it stayed unused is that it should be unused. A toast is the
+    // transient surface, and anything a user may need to act on belongs next to
+    // the control that produced it, where it persists, where it is reachable by
+    // keyboard without a timing race, and where the eye already is. The next
+    // step that matters is always rendered inline: the Transfers list carries
+    // the operation's own next_action, the pairing card carries Approve and
+    // Reject, the relay card carries Cancel. The toast states the same step in
+    // words so it is never lost to a scroll.
     function notify(kind, message, options) {
       options = options || {};
       const region = document.getElementById(kind === 'error' ? 'toastRegionAssertive' : 'toastRegionPolite');
@@ -1743,19 +1818,6 @@
       body.appendChild(dismiss);
       toast.appendChild(body);
 
-      if (options.actionLabel && options.actionId) {
-        const row = document.createElement('div');
-        row.className = 'toast-actions';
-        const action = document.createElement('button');
-        action.type = 'button';
-        action.className = 'btn-sm';
-        action.setAttribute('data-action', 'toast-action');
-        action.setAttribute('data-value', options.actionId);
-        action.textContent = options.actionLabel;
-        row.appendChild(action);
-        toast.appendChild(row);
-      }
-
       region.appendChild(toast);
       while (region.children.length > TOAST_MAX_PER_REGION) {
         region.removeChild(region.children[0]);
@@ -1763,7 +1825,6 @@
 
       const id = 'toast-' + (++toastSequence);
       toast.dataset.toastId = id;
-      toastActions[id] = function() { return options.onAction ? options.onAction() : undefined; };
       dismiss.addEventListener('click', function() { dismissToast(id); });
 
       let timer = null;
@@ -1774,7 +1835,7 @@
       };
       const pause = function() { if (timer) { clearTimeout(timer); timer = null; } };
       // WCAG 2.2.1 Timing Adjustable: a notification must not disappear while
-      // the user is reading it or operating its action button.
+      // the user is reading it or dismissing it.
       toast.addEventListener('mouseenter', pause);
       toast.addEventListener('focusin', pause);
       toast.addEventListener('mouseleave', schedule);
@@ -1788,18 +1849,6 @@
         if (!region) continue;
         const node = region.querySelector('[data-toast-id="' + id + '"]');
         if (node) region.removeChild(node);
-      }
-      delete toastActions[id];
-    }
-
-    function runToastAction(id) {
-      const action = toastActions[id];
-      if (!action) return;
-      dismissToast(id);
-      try {
-        action();
-      } catch (err) {
-        notify('error', 'That action could not start: ' + err.message);
       }
     }
 
@@ -1963,9 +2012,6 @@
           break;
         case 'dialog-confirm':
           submitActionDialog();
-          break;
-        case 'toast-action':
-          runToastAction(target.getAttribute('data-value') || '');
           break;
         case 'goto-drop':
           switchTab('tab-drop');
@@ -2538,13 +2584,29 @@ const peerSig = JSON.stringify(peers.map(p => [p.fingerprint, p.name, p.alias, p
           peerDot.className = 'status-dot';
           const activePeer = peers.find(p => p.active) || peers[0];
 
-          // Header dropdown
+          // Header dropdown.
+          //
+          // The presentation is a CSS class rather than an inline style, and
+          // that is the whole point of this change. The class had to include a
+          // focus ring, because the inline version carried `outline:none` --
+          // which beats the author rule at the top of this file
+          // (`select:focus-visible { outline: 2px solid var(--accent) }`) and
+          // left the one control that decides *who you are sending to* with no
+          // visible focus indicator at all.
+          //
+          // That is WCAG 2.4.7 (Focus Visible) failing on the most consequential
+          // control in the header, and it is invisible to reading: the rule is
+          // right there in the file and something overrides it. It is the same
+          // shape as the `checkbox` omission this stylesheet already documents
+          // and fixed once at 846-858.
           const optionsHTML = peers.map(p => {
             const sel = (p.fingerprint === activePeer.fingerprint) ? 'selected' : '';
             const defBadge = p.is_default ? ' (Default)' : '';
-            return '<option value="' + escapeHTML(p.fingerprint) + '" ' + sel + ' style="background:var(--card-bg); color:var(--text);">' + escapeHTML(p.name) + defBadge + '</option>';
+            return '<option value="' + escapeHTML(p.fingerprint) + '" ' + sel + '>' + escapeHTML(p.name) + defBadge + '</option>';
           }).join('');
-          peerLabel.innerHTML = '<label class="sr-only" for="headerPeerSelect">Active peer</label><select id="headerPeerSelect" data-action="active-peer" aria-label="Active peer" style="background:transparent; color:var(--text); border:none; outline:none; font-size:0.85rem; font-weight:600; cursor:pointer;">' + optionsHTML + '</select>';
+          peerLabel.innerHTML = '<label class="sr-only" for="headerPeerSelect">Active peer</label>' +
+            '<select id="headerPeerSelect" class="header-peer-select" data-action="active-peer" aria-label="Active peer">' +
+            optionsHTML + '</select>';
 
           // Tab 1 destination pills
           if (dropSelector && dropPills) {
@@ -3751,6 +3813,27 @@ function renderPeersList(peers) {
     // is not known until it ends. Listing it separately is what lets a user see
     // "there is a login open" and stop it, rather than concluding the Hub is
     // stuck and restarting it.
+    //
+    // The container is deliberately not a live region (see the markup), so the
+    // two moments worth announcing are announced here instead. `announce` is
+    // only ever called on a transition, never on a repaint.
+    let lastActiveRelayIds = '';
+
+    function announceRelayChange(message) {
+      const list = document.getElementById('activeRelaysList');
+      if (!list) return;
+      let region = document.getElementById('activeRelaysAnnounce');
+      if (!region) {
+        region = document.createElement('div');
+        region.id = 'activeRelaysAnnounce';
+        region.setAttribute('role', 'status');
+        region.setAttribute('aria-live', 'polite');
+        region.className = 'sr-only';
+        list.parentNode.insertBefore(region, list);
+      }
+      region.textContent = message;
+    }
+
     async function loadActiveRelays() {
       const list = document.getElementById('activeRelaysList');
       if (!list) return;
@@ -3759,6 +3842,19 @@ function renderPeersList(peers) {
         if (!res.ok) return;
         const data = await res.json();
         const active = Array.isArray(data.active) ? data.active : [];
+        const ids = active.map(function(relay) { return (relay && relay.operation_id) || ''; })
+          .filter(function(id) { return id !== ''; });
+        const signature = ids.slice().sort().join(',');
+        if (signature !== lastActiveRelayIds) {
+          if (lastActiveRelayIds !== '' && ids.length === 0) {
+            announceRelayChange('No sign-in is in progress.');
+          } else if (ids.length > 0) {
+            announceRelayChange(ids.length === 1
+              ? 'A sign-in is in progress.'
+              : ids.length + ' sign-ins are in progress.');
+          }
+          lastActiveRelayIds = signature;
+        }
         if (active.length === 0) {
           list.innerHTML = '';
           return;
@@ -3770,13 +3866,15 @@ function renderPeersList(peers) {
           const state = relay.state === 'starting' ? 'starting up' : 'waiting for the sign-in';
           return '<div class="received-item">' +
             '<div class="received-item-header"><span><strong>Sign-in in progress</strong> via ' + escapeHTML(peer) + '</span>' +
-            '<span>' + seconds + 's</span></div>' +
+            // The age is a count-up for the eye, not a value to be read out on
+            // every poll. The container is not a live region, so it is silent.
+            '<span aria-hidden="true">' + seconds + 's</span></div>' +
             '<div class="record-state"><span class="status-chip pending">' + escapeHTML(state) + '</span></div>' +
             '<div class="record-next">Holding a callback port on the other machine. Cancel to free it so you can retry.</div>' +
             '<div style="margin-top:0.5rem;"><button class="btn-sm" data-action="cancel-active-relay" data-operation-id="' + escapeHTML(id) + '">Cancel sign-in</button></div>' +
           '</div>';
         }).join('');
-        list.innerHTML = '<div class="stack" style="margin-top:0.75rem;">' + rows + '</div>';
+        list.innerHTML = '<div style="margin-top:0.75rem;">' + rows + '</div>';
       } catch (_) {}
     }
 
@@ -4088,12 +4186,65 @@ function renderPeersList(peers) {
       }
     }
 
-    // Shared by the manual forwarder and the in-flight list. currentOperationID is
-    // filled in from the relay response; before that a cancel goes out without one
-    // and the Hub resolves the open relay itself.
-    let relayInFlight = false;
-    let currentOperationID = '';
+    // The manual forwarder and the in-flight list share one cancel path, and
+    // they must both name the sign-in they mean.
+    //
+    // The forwarder cannot simply read the id off the relay response: the POST
+    // to /api/relay/open blocks for the whole sign-in, so the response that
+    // carries the operation id arrives when the flow has already ended. For the
+    // entire window in which the user can press Cancel, the only id the form
+    // could send was "".
+    //
+    // An empty id is not "cancel whatever". The Hub's own comment on that code
+    // path says cancelling the wrong sign-in is worse than doing nothing -- and
+    // then falls back to `active[0]`, the oldest open relay. That fallback is
+    // right for a caller with nothing better to go on and wrong for this one:
+    // a sign-in opened by `tantu wrap` in a terminal, or by another browser tab,
+    // can be older than this one. Pressing Cancel next to the URL this user
+    // just pasted would have released somebody else's login.
+    //
+    // So the id is derived instead, by differencing: snapshot which relays were
+    // open *before* the POST, then subtract. Anything open afterwards that was
+    // not open before is this form's. When the arithmetic is ambiguous -- more
+    // than one new relay, or none, because the coordinator joined a flow that
+    // was already open -- the form refuses and points at the in-flight list,
+    // which shows every open sign-in with its own Cancel. A refusal is a
+    // correct answer here; a wrong release is not recoverable by the user.
     let relayAbort = null;
+    let activeRelaysBeforeSend = null;
+
+    // The set of open relay ids, or null when the Hub could not be asked.
+    async function activeRelayIDs() {
+      try {
+        const res = await apiFetch('/api/relay/active');
+        if (!res.ok) return null;
+        const data = await res.json();
+        const active = Array.isArray(data.active) ? data.active : [];
+        return active
+          .map(function(relay) { return (relay && relay.operation_id) || ''; })
+          .filter(function(id) { return id !== ''; });
+      } catch (_) {
+        return null;
+      }
+    }
+
+    // resolveOwnRelayID answers "which open sign-in did this form start?" and
+    // refuses, with a reason, when the answer is not determinable.
+    async function resolveOwnRelayID() {
+      if (activeRelaysBeforeSend === null) {
+        return { ok: false, reason: 'unknown' };
+      }
+      const after = await activeRelayIDs();
+      if (after === null) {
+        return { ok: false, reason: 'unknown' };
+      }
+      const before = new Set(activeRelaysBeforeSend);
+      const fresh = after.filter(function(id) { return !before.has(id); });
+      if (fresh.length === 1) {
+        return { ok: true, id: fresh[0] };
+      }
+      return { ok: false, reason: fresh.length === 0 ? 'none-new' : 'ambiguous', count: fresh.length };
+    }
 
     async function relayOAuth(e) {
       e.preventDefault();
@@ -4120,8 +4271,11 @@ function renderPeersList(peers) {
       // was restarting the Hub.
       const cancelBtn = document.getElementById('btnCancelRelay');
       if (cancelBtn) cancelBtn.style.display = 'inline-block';
-      relayInFlight = true;
       relayAbort = new AbortController();
+
+      // Snapshot before the POST, so the difference measured on Cancel is this
+      // form's doing and nothing else's.
+      activeRelaysBeforeSend = await activeRelayIDs();
 
       try {
         const res = await apiFetch('/api/relay/open', {
@@ -4130,7 +4284,6 @@ function renderPeersList(peers) {
           body: JSON.stringify(payload),
           signal: relayAbort.signal
         });
-        relayInFlight = false;
         const data = await res.json();
         if (res.ok && data.status === 'success') {
           status.className = 'status-banner success';
@@ -4148,7 +4301,6 @@ function renderPeersList(peers) {
         }
         loadAuthorizations();
       } catch (err) {
-        relayInFlight = false;
         if (err.name === 'AbortError') {
           // The user cancelled, and the cancel request reports the real outcome.
           // Saying "connection error" here would contradict the banner.
@@ -4160,6 +4312,7 @@ function renderPeersList(peers) {
         loadAuthorizations();
       } finally {
         if (cancelBtn) cancelBtn.style.display = 'none';
+        activeRelaysBeforeSend = null;
         btn.disabled = false;
       }
     }
@@ -4171,11 +4324,34 @@ function renderPeersList(peers) {
       // Stop waiting on the relay response first: the POST blocks for the whole
       // sign-in, so leaving it pending would strand this handler.
       if (relayAbort) relayAbort.abort();
+
+      const mine = await resolveOwnRelayID();
+      if (!mine.ok) {
+        // Say what is wrong rather than releasing a sign-in that may not be
+        // this one. Each refusal names the list that can answer it.
+        const msg = mine.reason === 'ambiguous'
+          ? 'More than one sign-in started at once, so this cannot tell which one to release. ' +
+            'Use the Cancel button on the sign-in you want, in Sign-ins in progress below.'
+          : mine.reason === 'none-new'
+            ? 'This sign-in may have joined one that was already open, so it cannot be told apart from it. ' +
+              'Use the Cancel button on the sign-in you want, in Sign-ins in progress below.'
+            : 'Could not read the list of open sign-ins, so this will not guess which one to release. ' +
+              'Use the Cancel button on the sign-in you want, in Sign-ins in progress below.';
+        status.className = 'status-banner';
+        status.textContent = msg;
+        addLog('OAUTH', msg);
+        btn.disabled = false;
+        btn.style.display = 'none';
+        document.getElementById('btnRelay').disabled = false;
+        loadActiveRelays();
+        return;
+      }
+
       try {
         const res = await apiFetch('/api/relay/active', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ operation_id: currentOperationID })
+          body: JSON.stringify({ operation_id: mine.id })
         });
         const data = await res.json();
         const msg = (data && data.message) || 'Sign-in cancelled. You can start again.';

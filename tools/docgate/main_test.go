@@ -12,6 +12,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -417,4 +418,130 @@ func findRepoRoot() (string, error) {
 func mustGetwd() string {
 	dir, _ := os.Getwd()
 	return dir
+}
+
+// ---- tracked artefacts ------------------------------------------------------
+
+// initRepo creates a throwaway git repository containing the given paths and
+// returns its root. The artefact check reads git's index rather than the working
+// tree, so testing it any other way would test a different thing.
+func initRepo(t *testing.T, paths ...string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, p := range paths {
+		full := filepath.Join(dir, filepath.FromSlash(p))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatalf("mkdir for %s: %v", p, err)
+		}
+		if err := os.WriteFile(full, []byte("x\n"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", p, err)
+		}
+	}
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"add", "-A"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git is unavailable or refused in this sandbox (%v: %s); the check cannot be exercised",
+				err, out)
+		}
+	}
+	return dir
+}
+
+func artefactProblems(t *testing.T, dir string) []string {
+	t.Helper()
+	var out []string
+	for _, f := range checkTrackedArtefacts(dir) {
+		out = append(out, f.doc+": "+f.problem)
+	}
+	return out
+}
+
+// The red proof for the rule that caught a real artefact: `t.err`, a committed
+// dump of a Go test binary's usage message, was in the repository root and was
+// none of the eleven files that belong there.
+func TestTrackedArtefactsRejectsAStrayFileInTheRepositoryRoot(t *testing.T) {
+	dir := initRepo(t, "go.mod", "README.md", "t.err")
+	problems := artefactProblems(t, dir)
+	if len(problems) == 0 {
+		t.Fatal("a stray `t.err` in the repository root was accepted. This is the exact artefact that " +
+			"was committed by accident: a fuzz command's stderr, redirected to a file, added wholesale")
+	}
+	if !strings.Contains(problems[0], "t.err") {
+		t.Errorf("the problem does not name the offending file: %s", problems[0])
+	}
+	// It must also say what to do, because a bare "no" sends the reader to the
+	// project history to work out the intended layout.
+	if !strings.Contains(problems[0], "cmd/") || !strings.Contains(problems[0], "docs/") {
+		t.Errorf("the problem does not say where source and documents belong: %s", problems[0])
+	}
+}
+
+// The suffix rule is separate from the root rule, and reaches anywhere in the
+// tree: `rejection-pages.html` was written into the repository root by
+// TestExportRejectionPages and committed before .gitignore learned about it.
+func TestTrackedArtefactsRejectsGeneratedSuffixesAnywhere(t *testing.T) {
+	dir := initRepo(t, "go.mod", "docs/a.md", "internal/hub/coverage.out")
+	problems := artefactProblems(t, dir)
+	if len(problems) == 0 {
+		t.Fatal("a tracked coverage.out was accepted; captured output is not source wherever it sits")
+	}
+	if !strings.Contains(problems[0], "internal/hub/coverage.out") {
+		t.Errorf("the problem does not name the offending file: %s", problems[0])
+	}
+}
+
+// The gate must not report success on a repository that is simply clean.
+func TestTrackedArtefactsAcceptsACleanRepository(t *testing.T) {
+	dir := initRepo(t,
+		".gitignore", ".gitattributes", ".goreleaser.yaml",
+		"AGENTS.md", "CHANGELOG.md", "LICENSE", "README.md", "SECURITY.md",
+		"go.mod", "go.sum", "staticcheck.conf",
+		"cmd/tantu/main.go", "internal/hub/hub.go", "docs/ARCHITECTURE.md",
+		".github/workflows/ci.yml",
+	)
+	if problems := artefactProblems(t, dir); len(problems) > 0 {
+		t.Fatalf("a clean repository was reported:\n  %v", problems)
+	}
+}
+
+// A file that has been removed from the working tree but is still in the index
+// is exactly the state a `git rm --cached` leaves behind, and it is still in
+// every clone. The check reads the index on purpose, so this must hold.
+func TestTrackedArtefactsReportsAFileRemovedOnlyFromTheWorkingTree(t *testing.T) {
+	dir := initRepo(t, "go.mod", "stray.log")
+	if err := os.Remove(filepath.Join(dir, "stray.log")); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if problems := artefactProblems(t, dir); len(problems) == 0 {
+		t.Fatal("a file deleted from the working tree but still in the index was accepted")
+	}
+}
+
+// A gate that cannot read its own input must say so rather than pass. This is
+// the rule that the encoding gate broke by shipping unable to detect its own
+// damage, and it is asserted here for the artefact check specifically.
+func TestTrackedArtefactsRefusesToPassWhenGitCannotBeRead(t *testing.T) {
+	empty := t.TempDir() // not a repository
+	problems := checkTrackedArtefacts(empty)
+	if len(problems) == 0 {
+		t.Fatal("the check reported success outside a git repository, having examined nothing")
+	}
+	if !strings.Contains(problems[0].problem, "must not pass without running") {
+		t.Errorf("the failure does not say it examined nothing: %s", problems[0].problem)
+	}
+}
+
+// The real repository must pass, so the rule cannot be quietly satisfied by
+// shrinking the allowlist until it stops meaning anything.
+func TestTrackedArtefactsAcceptsThisRepository(t *testing.T) {
+	root, err := findRepoRoot()
+	if err != nil {
+		t.Skipf("no module root above %s", mustGetwd())
+	}
+	if problems := artefactProblems(t, root); len(problems) > 0 {
+		t.Fatalf("this repository has tracked artefacts:\n  %v", problems)
+	}
 }

@@ -121,8 +121,8 @@ func TestTeePipelineRuleMatchesWhatBashActuallyDoes(t *testing.T) {
 		t.Skipf("bash is not on PATH, so bash's own behaviour cannot be checked: %v", err)
 	}
 	dir := t.TempDir()
-	child := filepath.Join(dir, "exitwith.sh")
-	if err := os.WriteFile(child, []byte("#!/usr/bin/env bash\nexit \"${1:-0}\"\n"), 0o644); err != nil {
+	child := filepath.Join(dir, childName)
+	if err := os.WriteFile(child, []byte("exit \"${1:-0}\"\n"), 0o644); err != nil {
 		t.Fatalf("write child: %v", err)
 	}
 
@@ -152,35 +152,81 @@ func TestTeePipelineRuleMatchesWhatBashActuallyDoes(t *testing.T) {
 // runProbe reproduces the ci.yml construct exactly -- pre-set the status, pipe to
 // tee, capture on failure -- and reports what the script saw.
 //
-// Paths are converted to forward slashes. Passing a Windows path into a bash
-// script makes bash read the backslashes as escapes, the child is never found,
-// and the probe measures 127 instead of the child's exit code. That mistake was
-// made here first: it produced a *passing* "without pipefail" case, because a
-// command-not-found failure is swallowed by tee exactly as a real failure is.
-// The test agreed with the right answer for entirely the wrong reason, which is
-// worse than a failing one.
+// The script is delivered on stdin and the child is named relatively, with the
+// working directory set to where it was written. Nothing crosses the process
+// boundary as an absolute path.
+//
+// That is not tidiness; it is the third version of this function, and each of
+// the first two was wrong in a way that produced a *wrong* result rather than an
+// error.
+//
+//   - The first passed a native path into bash. Under Git Bash that works. Under
+//     the WSL launcher in C:\Windows\System32\bash.exe -- which is what `bash`
+//     resolves to first on a machine that has both -- the backslashes are read
+//     as escapes, the child is never found, and the probe measures 127 instead
+//     of the child's exit code. 127 is swallowed by tee exactly as a real
+//     failure is, so the "without pipefail" case agreed with the right answer
+//     for entirely the wrong reason, and the "with pipefail" case failed on a
+//     green product.
+//   - The second fixed the child's path and left the script's own path native,
+//     so the same substitution simply moved up one argument.
+//
+// Relative names plus a working directory are the one form that is correct
+// under every bash a developer might have installed. The child is also invoked
+// with `bash` rather than executed, so the probe does not depend on the
+// executable bit surviving the filesystem.
 func runProbe(t *testing.T, bash, dir, child string, code int, pipefail bool) int {
 	t.Helper()
 	script := "status=0\n"
 	if pipefail {
 		script += "set -o pipefail\n"
 	}
-	script += "bash " + filepath.ToSlash(child) + " " + itoa(code) +
+	script += "bash " + childName + " " + itoa(code) +
 		" | tee /dev/null || status=$?\necho \"$status\"\n"
 
-	path := filepath.Join(dir, "probe.sh")
-	if err := os.WriteFile(path, []byte(script), 0o644); err != nil {
-		t.Fatalf("write probe: %v", err)
-	}
-	out, err := exec.Command(bash, path).CombinedOutput()
+	cmd := exec.Command(bash, "-s")
+	cmd.Dir = dir
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("run probe: %v\n%s", err, out)
+		t.Fatalf("run probe with bash=%s: %v\n%s", bash, err, out)
 	}
 	fields := strings.Fields(strings.TrimSpace(string(out)))
 	if len(fields) == 0 {
 		t.Fatalf("probe produced no output:\n%s", out)
 	}
-	return atoi(fields[len(fields)-1])
+	// The status is the last whitespace-separated token, and it must be a
+	// number. A token like "C:Users...probe.sh" or a bash error means the probe
+	// never reached its echo; reporting that as a status would be the first
+	// version's failure again, so it is refused rather than returned.
+	last := fields[len(fields)-1]
+	status, ok := parseStatus(last)
+	if !ok {
+		t.Fatalf("probe's last line was %q, not a status, so it never reached `echo \"$status\"`:\n%s",
+			last, out)
+	}
+	return status
+}
+
+// childName is the probe child's file name, referenced relatively so that no
+// absolute path is ever passed to bash.
+const childName = "exitwith.sh"
+
+// parseStatus reads the exit status the probe echoed. It reports false rather
+// than 0 for anything that is not a bare non-negative integer, so a probe that
+// failed for an unrelated reason can never be mistaken for a passing one.
+func parseStatus(s string) (int, bool) {
+	if s == "" {
+		return 0, false
+	}
+	n := 0
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n, true
 }
 
 func itoa(n int) string {
@@ -193,15 +239,4 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(b)
-}
-
-func atoi(s string) int {
-	n := 0
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return n
-		}
-		n = n*10 + int(r-'0')
-	}
-	return n
 }

@@ -8498,3 +8498,121 @@ substring of it.
 It does not close 4.99, and the row says so. One reader is still one reader, and
 opening a page in a browser is not a screen-reader pass. 2.2 is what would move
 this, and 2.2 needs a person.
+
+## Batch Z108 - the harness blamed the Hub for reading the wrong document (2026-10-18)
+
+The tip was red again: webkit only, and for the third time the same two lines.
+
+```
+FAIL  the document stamps a first-useful-render instant
+      nothing stamped __tantuFirstUsefulMs; ... so the Hub never gave the page one
+FAIL  the staged preview file is an image this engine will accept
+      {"type":"image/png","size":0,"isBlob":true,"bytes":70,"pngSig":"137,80,78,71"}
+```
+
+### First, is it even a defect?
+
+`b16b5b1` went green on all nine, and it differs from the red `369650c` by one
+`.gitignore` line. A line in `.gitignore` cannot fix a WebKit rendering bug, so
+the failure is non-deterministic. That is the whole of what that establishes,
+and it is worth establishing before spending hours on a root cause that may not
+exist.
+
+It is also why this one went unfixed for three occurrences: every local run is
+green, so there is nothing to reproduce.
+
+### The claim in the harness was false
+
+`run.mjs` settled the boot on `location.hash === ''`, and the comment said why:
+
+> the exchange POSTs, strips the fragment and reloads, so "the fragment is gone"
+> means the page is done booting
+
+It does not. `bootstrapDashboard()` does this (dashboard.html:1686-1689):
+
+```js
+history.replaceState(null, '', location.pathname + location.search);
+window.location.reload();
+```
+
+Fragment stripped, **then** reload. So there is a guaranteed window in which the
+harness's condition is true and the boot is not finished, and the live document
+is the pre-reload one -- which has no session cookie, and therefore correctly
+renders no data at all.
+
+The harness then reads its render stamp from that document. There is nothing
+there. It reports the stamp's absence as "the Hub never gave the page one", which
+sends the reader to the Hub. The Hub did nothing wrong. The harness looked at the
+wrong document and then described what it found as a product fact.
+
+### Produced, not constructed
+
+A synthetic page running those two lines and nothing else, driven in WebKit, with
+a per-document identity that survives the reload:
+
+```
+settled after the harness loop: true
+state at that instant: {"docId":"cxv6g920j9","sawPrevDoc":null,"prevStored":"cxv6g920j9","transport":"-"}
+first document (never reloaded)? true
+```
+
+Not a maybe. The harness settles on the pre-reload document, and that document
+shows `-`.
+
+### The fix, and what it costs
+
+The fragment identifies the document; the empty hash does not. Only the
+pre-bootstrap document ever sees a token. `settle.cjs` holds the condition and
+the harness waits on it.
+
+One wrinkle worth recording: a **failed** exchange strips the fragment and does
+not reload (the 403 and 503 branches return before `reload()`), so there the
+pre-bootstrap document is terminal and no reload is ever coming. Waiting purely
+for the post-bootstrap document would have cost the full 15s poll budget on every
+failed bootstrap. The loop grants a 3s grace after the fragment empties, then
+takes whatever is live and lets the session-banner check say which case it was.
+
+### The failure message now names the document
+
+```
+settled on the post-bootstrap document; the fragment is gone but the live document
+is the pre-reload one (it saw tantu_bootstrap=abc123), which has no session cookie
+and so correctly renders no data -- waiting for the reload to land
+```
+
+A harness race and a Hub that never answered are different faults with different
+owners, and only one of them is a product defect.
+
+### Red proofs
+
+| Break | Gate |
+|---|---|
+| `bootSettled()` ignores `bootFragment` (the old condition) | `FAIL bootSettled() returned true on the pre-reload document (saw tantu_bootstrap=abc123), which is the exact defect it exists to remove` |
+| `reload()` removed from the synthetic page | `FAIL bootSettled() never became true: ... the reload is not landing` |
+
+The gate is a behaviour gate. It does not ask the predicate whether it agrees
+with itself -- it serves the product's sequence and observes which document the
+harness would be reading.
+
+It also asserts the premise. If "the fragment is gone" ever settles on the
+post-bootstrap document again, the gate fails and says the product's ordering has
+changed and the rationale must be re-read, rather than passing on a stale
+premise.
+
+### Six local runs, all green
+
+chromium/firefox/webkit x peerless/peers, 107/107 each, and the new diagnostic
+appears in every log:
+
+```
+uxtest: first useful render 39ms (bootstrap hop 315ms, settled on the post-bootstrap document)
+```
+
+### What I did not root-cause
+
+The `File.size === 0` line. `new File([new Uint8Array(bytes)], ...)` from a
+70-element literal reporting size 0 is not something a conforming engine should
+do, and I could not reproduce it in any local run. It shares a run with the
+stamp failure and it may share a cause -- a read landing during teardown -- but
+that is a guess and it is recorded as one. Correcting the settle condition
+changes when those reads happen, which may retire it. It is not fixed.

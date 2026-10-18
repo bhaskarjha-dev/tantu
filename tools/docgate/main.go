@@ -90,13 +90,33 @@ func run(args []string) error {
 	if f, ok := checkEnvironmentVariables(files); !ok {
 		report(f)
 	}
+	for _, f := range checkTrackedArtefacts(root) {
+		report(f)
+	}
 
 	if failures > 0 {
 		return fmt.Errorf("docgate: %d documented claim(s) no longer match the code", failures)
 	}
-	fmt.Printf("docgate: %d constant claim(s), %d documented phrase(s), the CLI command surface, the KNOWN-LIMITATIONS row shape, %d documented flag(s) and %d environment variable(s) all match the code\n",
-		len(constantClaims), len(phraseClaims), len(documentedFlags), len(documentedEnvVars))
+	fmt.Printf("docgate: %d constant claim(s), %d documented phrase(s), the CLI command surface, the KNOWN-LIMITATIONS row shape, %d documented flag(s) and %d environment variable(s) all match the code; %d tracked path(s) contain no generated artefacts\n",
+		len(constantClaims), len(phraseClaims), len(documentedFlags), len(documentedEnvVars), countTrackedFiles(root))
 	return nil
+}
+
+// countTrackedFiles reports the number of tracked paths, for the summary line.
+// A failure here is reported by checkTrackedArtefacts already, so this only
+// degrades the number to zero rather than hiding anything.
+func countTrackedFiles(root string) int {
+	out, err := exec.Command("git", "-C", root, "ls-files", "-z").Output()
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, p := range strings.Split(strings.TrimRight(string(out), "\x00"), "\x00") {
+		if p != "" {
+			n++
+		}
+	}
+	return n
 }
 
 // file is one loaded tracked text file.
@@ -646,4 +666,96 @@ func checkEnvironmentVariables(files map[string]file) (failure, bool) {
 		}
 	}
 	return failure{}, true
+}
+
+// ---- tracked artefacts ------------------------------------------------------
+
+// repositoryRootFiles is every file that belongs directly in the repository
+// root. The rule is an allowlist rather than a denylist of extensions, because
+// the failure it catches has no extension signature: `t.err` is a two-kilobyte
+// dump of a Go test binary's usage message, committed by accident when a fuzz
+// command's stderr was redirected to it.
+//
+// The allowlist is the stronger form for a structural reason. The root of a Go
+// repository has a small, knowable set of legitimate contents -- module files,
+// licence, the entry documents, the CI and release configuration. A new source
+// file belongs under cmd/ or internal/, and a new document under docs/. So
+// anything else at the root is a decision someone should have to make
+// deliberately, and the gate is that decision being asked for.
+var repositoryRootFiles = map[string]string{
+	".gitattributes":   "attributes",
+	".gitignore":       "ignore rules",
+	".goreleaser.yaml": "release configuration",
+	"AGENTS.md":        "contributor rules",
+	"CHANGELOG.md":     "release history",
+	"LICENSE":          "licence",
+	"README.md":        "entry document",
+	"SECURITY.md":      "security policy",
+	"go.mod":           "module definition",
+	"go.sum":           "module checksums",
+	"staticcheck.conf": "staticcheck configuration",
+}
+
+// generatedExtensions are suffixes that never belong in a source repository.
+// Each one is here because this repository has produced one: `t.err` held a
+// test binary's usage dump, and `rejection-pages.html` was written by
+// TestExportRejectionPages and committed before .gitignore learned about it.
+var generatedExtensions = map[string]string{
+	".err":  "captured standard error",
+	".out":  "captured output",
+	".log":  "log capture",
+	".prof": "profile output",
+	".test": "compiled test binary",
+	".tmp":  "temporary file",
+	".bak":  "editor backup",
+	".orig": "merge residue",
+	".rej":  "merge residue",
+}
+
+// checkTrackedArtefacts reports tracked files that are build or capture output
+// rather than source.
+//
+// It reads git's index rather than the working tree, because the question is
+// what is *committed*. A generated file sitting untracked in a working
+// directory is nobody's problem; the same file in the index is in every clone.
+//
+// git itself is the input, so a missing or failing git is reported rather than
+// skipped. A check that quietly examines nothing is the failure this repository
+// has now met in three separate tools, and the fourth is not a contribution.
+func checkTrackedArtefacts(root string) []failure {
+	cmd := exec.Command("git", "-C", root, "ls-files", "-z")
+	out, err := cmd.Output()
+	if err != nil {
+		return []failure{failf("(git)", "could not read the tracked file list (%v), so this check examined "+
+			"nothing. It must not pass without running.", err)}
+	}
+	tracked := strings.Split(strings.TrimRight(string(out), "\x00"), "\x00")
+	if len(tracked) == 0 || (len(tracked) == 1 && tracked[0] == "") {
+		return []failure{failf("(git)", "git reported no tracked files, so this check examined nothing. "+
+			"It must not pass without running.")}
+	}
+
+	var problems []failure
+	for _, rel := range tracked {
+		if rel == "" {
+			continue
+		}
+		if strings.Contains(rel, "/") {
+			// Not at the root. Only the suffix rule applies, and only to the
+			// suffixes below.
+			if why, bad := generatedExtensions[strings.ToLower(filepath.Ext(rel))]; bad {
+				problems = append(problems, failf(rel, "this is %s, not source. If it is generated, add it "+
+					"to .gitignore and `git rm --cached` it; if it is deliberate, add it to generatedExtensions "+
+					"in tools/docgate with the reason.", why))
+			}
+			continue
+		}
+		if _, known := repositoryRootFiles[rel]; !known {
+			problems = append(problems, failf(rel, "this file sits in the repository root and is not one of "+
+				"the %d files that belong there. Source belongs under cmd/ or internal/, documents under docs/. "+
+				"If it is deliberate, add it to repositoryRootFiles in tools/docgate with its reason.",
+				len(repositoryRootFiles)))
+		}
+	}
+	return problems
 }

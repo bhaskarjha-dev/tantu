@@ -43,6 +43,20 @@ Thumbs.db
 # Temporary
 temp/
 
+# Local gate and tool scratch. `t.err` was committed by accident: a fuzz command's
+# stderr was redirected to it and the file was added wholesale. tools/docgate now
+# rejects any tracked file in the repository root that is not one of the eleven
+# that belong there, so the class cannot recur silently -- but the patterns below
+# are the first line of defence, because a file that is never staged is never
+# tracked. See `.github/workflows/ci.yml` and tools/docgate.
+*.err
+*.out
+*.log
+*.prof
+*.orig
+*.rej
+*.bak
+
 # Dashboard acceptance harness (dev-only tooling; package-lock.json is
 # committed, node_modules is not)
 tools/uxtest/node_modules/

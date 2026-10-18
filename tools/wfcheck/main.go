@@ -235,6 +235,34 @@ func min(a, b int) int {
 	return b
 }
 
+// parsesAsBash reports whether bash accepts body as a script.
+//
+// The body goes in on standard input and nothing else crosses the process
+// boundary. That is deliberate. Writing the block to a temporary file and
+// passing its path to `bash -n` works under Git Bash and fails under the WSL
+// launcher in C:\Windows\System32\bash.exe, which reads a native Windows path's
+// backslashes as escapes and reports "No such file or directory" for a file that
+// exists. Every block then failed to parse, so the gate AGENTS.md tells
+// contributors to run reported all 18 blocks broken on a machine where CI,
+// running Git Bash, reported all 18 clean.
+//
+// A gate whose verdict depends on which of several installed `bash.exe`
+// programs the PATH happens to select first has stopped being a statement about
+// the workflows. `bash -n` reads standard input, so the file is never needed.
+//
+// The returned error is the reason bash rejected the block; the caller prints
+// bash's own diagnostic alongside the line number, which is what makes a
+// failure diagnosable from a public CI log.
+func parsesAsBash(bash, body string) (bool, error) {
+	cmd := exec.Command(bash, "-n")
+	cmd.Stdin = strings.NewReader(body)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return true, nil
+	}
+	return false, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+}
+
 func main() {
 	bash, err := exec.LookPath("bash")
 	if err != nil {
@@ -250,13 +278,6 @@ func main() {
 		os.Exit(1)
 	}
 	sort.Strings(files)
-
-	tmp, err := os.MkdirTemp("", "wfcheck")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "wfcheck: %v\n", err)
-		os.Exit(1)
-	}
-	defer os.RemoveAll(tmp)
 
 	total, failed := 0, 0
 	for _, wf := range files {
@@ -294,18 +315,10 @@ func main() {
 		}
 		for _, b := range bs {
 			total++
-			f, err := os.CreateTemp(tmp, "block-*.sh")
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "wfcheck: %v\n", err)
-				os.Exit(1)
-			}
-			_, _ = f.WriteString(b.body)
-			_ = f.Close()
-			cmd := exec.Command(bash, "-n", f.Name())
-			out, err := cmd.CombinedOutput()
-			if err != nil {
+			ok, perr := parsesAsBash(bash, b.body)
+			if !ok {
 				failed++
-				fmt.Printf("FAIL %s:%d does not parse as bash\n%s\n", wf, b.line, out)
+				fmt.Printf("FAIL %s:%d does not parse as bash\n%v\n", wf, b.line, perr)
 				continue
 			}
 		}
