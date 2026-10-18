@@ -28,6 +28,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { createEngineFailureNote } from './engine-failure.cjs';
 import { bootSettled, describeBootState } from './settle.cjs';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -177,6 +178,52 @@ async function main() {
   if (WITH_PEERS) seedPeers(store);
 
   let hub = null, browser = null, context = null, page = null;
+  // Ports must be free before the Hub starts, or an orphan answers every
+  // probe and a cascade of product failures follows. See the call site.
+  //
+  // A raw TCP connect, deliberately, rather than an HTTP GET. Three reasons,
+  // and the second one is a false positive that would stop every run on a
+  // machine that has it:
+  //
+  //   - P2P_PORT speaks TLS, so there is no HTTP to speak to it at all. What is
+  //     being detected is "is there a listener", not "does it understand me".
+  //   - `fetch` honours the HTTP proxy environment. With NODE_USE_ENV_PROXY
+  //     set -- and this repository's own NO_PROXY already had to be written to
+  //     keep 127.0.0.1 out of a proxy -- a request can be answered by a proxy on
+  //     another host while the local port is free, and the run would refuse to
+  //     start on a perfectly good machine, for ever.
+  //   - `net.connect` cannot be redirected by anything. The answer it gives is
+  //     the one the question asks.
+  //
+  // node:net is the one thing here that needs no new import: it is used by the
+  // browser plumbing already, and adding it is cheaper than a wrong answer.
+  function portIsListening(port, timeoutMs = 1500) {
+    return new Promise((resolve) => {
+      const socket = net.connect({ port, host: '127.0.0.1' });
+      const done = (busy) => {
+        socket.removeAllListeners();
+        socket.destroy();
+        resolve(busy);
+      };
+      socket.setTimeout(timeoutMs, () => done(false));
+      socket.once('connect', () => done(true));
+      socket.once('error', () => done(false));
+    });
+  }
+
+  async function assertPortsFree() {
+    const busy = [];
+    for (const port of [WEB_PORT, P2P_PORT]) {
+      if (await portIsListening(port)) busy.push(port);
+    }
+    if (busy.length) {
+      throw new Error('port(s) ' + busy.join(', ') + ' are already in use before this run started.\n'
+        + 'An earlier harness run was interrupted and left its Hub behind; it answers every probe, '
+        + 'and the web-UI port fallback means this run\'s Hub will move to another port and stay alive, '
+        + 'so the run continues against a Hub that is not the one it built.\n'
+        + 'Stop it and re-run:  taskkill /F /IM tantu-uxtest.exe   (or kill the process holding the port)');
+    }
+  }
 // The extra Hubs the --two-hub scenario spawns.
 //
 // Declared here, beside the other cleanup-visible handles, and not inside the
@@ -188,7 +235,31 @@ async function main() {
 // decided exit code with 1. A passing run reported failure.
 let hubs2 = null;
   try {
-    console.log('uxtest: building');
+    // The ports must be free *before* the Hub starts, and saying so up front is
+  // the only way to tell this apart from a broken product.
+  //
+  // A leftover Hub from an interrupted run holds WEB_PORT. Our Hub then cannot
+  // bind it -- and it does not give up: the web UI falls back to the next port
+  // in its scan, so it stays alive and every readiness condition passes. The
+  // probe below is answered by the *orphan*, and the version-tag check is no
+  // help, because the orphan was built from the same commit and the tag
+  // matches.
+  //
+  // What follows is a cascade in four vocabulations: no render stamp, no
+  // session, 403 on /api/session, no pairing banner, an inert bookmarklet,
+  // "Dashboard session not established" for a send. It reads as the product
+  // having broken in eleven places at once, and on 2026-10-18 it did exactly
+  // that, twice, before the cause -- one orphaned process -- was found.
+  //
+  // Exit 3 is already reserved for "the harness itself failed", which is what
+  // this is. A precondition that is not met must stop the run here, not turn
+  // into twenty product failures somewhere in the middle of it.
+  //
+  // Before the build, deliberately: this run's own Hub is a fixed cost of a few
+  // seconds and produces nothing the reader needs when the run cannot happen.
+  await assertPortsFree();
+
+  console.log('uxtest: building');
     go(['build', '-o', exe, './cmd/tantu']);
     const head = git(['rev-parse', '--short', 'HEAD']).trim();
     console.log('uxtest: HEAD ' + head + (WITH_PEERS ? ' (3 seeded peers)' : ' (peerless)') + ', engine ' + ENGINE);
@@ -1799,6 +1870,83 @@ const OVERFLOW_PROBE = `(function(){
       !!(emptyNav && !emptyNav.missing && emptyNav.paneVisible && emptyNav.tabSelected && emptyNav.focused),
       JSON.stringify(emptyNav));
     await tab('tab-transfers');
+
+    // --- an empty state must survive the poll that re-renders its list ---
+    //
+    // The three checks above all call a render function directly and read the
+    // result. That proves the function produces an empty state; it says nothing
+    // about whether the page still *has* one thirty seconds later.
+    //
+    // Which is how the peers list lost its route forward. The server renders
+    // "No paired peers yet" with two buttons -- "+ Pair a device" and "Look for
+    // nearby hubs" -- so the first paint is correct, and the Go gate
+    // (TestWebDashboard_EmptyStatesOfferANextAction) reads exactly that first
+    // paint. renderPeersList, however, assigned innerHTML unconditionally with
+    // no empty branch at all, so the first three-second status poll replaced a
+    // helpful empty state with an empty <div>. The affordance appeared, and then
+    // disappeared, which is the one thing the same gate's comment says it
+    // exists to prevent: "the next poll silently removes it".
+    //
+    // So this check does not call the render function. It waits out a real poll
+    // cycle with the page untouched and then asks what the user is looking at.
+    // The wait is 3.5s because STATUS_POLL_LIVE_MS is 3000; that is the whole
+    // point -- a gate that renders on demand and then asserts the DOM has not
+    // changed proves nothing about the timer.
+    await js('renderPeersList([]); switchTab("tab-peers"); "ok"');
+    await sleep(3500);
+    const peersAfterPoll = await js(`(function(){
+      var list = document.getElementById('peersList');
+      var es = list ? list.querySelector('.empty-state') : null;
+      var btns = es ? es.querySelectorAll('button[data-action]') : [];
+      return {has:!!es, actions:Array.prototype.map.call(btns,function(b){return b.getAttribute('data-action');})};
+    })()`);
+    check('the peers empty state survives a status poll',
+      !!(peersAfterPoll && peersAfterPoll.has && peersAfterPoll.actions.indexOf('open-pair-modal') !== -1),
+      JSON.stringify(peersAfterPoll));
+
+    // --- a suppressed duplicate is not a delivery ---
+    //
+    // The Hub distinguishes three outcomes on a send and is careful about the
+    // one that matters: when the receiver recognises the idempotency key from an
+    // earlier completion it writes nothing and answers `duplicate: true` with
+    // "Already saved on this peer", and the operation is recorded as
+    // duplicate_suppressed. Both send paths ignored that field and rendered
+    // their ordinary success line from `destination`, so a retry of a send whose
+    // completion acknowledgement was lost told the user "File sent to devbox -
+    // verified" for a transfer in which the peer wrote nothing.
+    //
+    // That is the failure the whole state model is built to avoid -- a
+    // completed-looking outcome that is not one -- and it is reachable by
+    // re-sending with the same idempotency key, which is the documented way to
+    // retry safely. So it is driven here through the real response handler
+    // rather than asserted about the markup.
+    // Both send paths post to /api/drop/upload -- the text one sends a JSON
+    // body where the file one sends multipart -- so one stub covers them, and
+    // a second route for a path the page never requests would be decoration.
+    await context.route('**/api/drop/upload', (route) => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        status: 'success',
+        duplicate: true,
+        message: 'Already saved on this peer; duplicate delivery suppressed',
+        operation_id: 'op-suppressed-1',
+        destination: 'devbox',
+        verified: true
+      })
+    }));
+    const dupText = await js(`(async function(){
+      var ta = document.getElementById('textPayload');
+      ta.value = 'a snippet that was already delivered';
+      await sendTextDrop();
+      var b = document.getElementById('dropStatus');
+      return { cls: b.className, text: b.textContent };
+    })()`);
+    await context.unroute('**/api/drop/upload');
+    check('a duplicate the peer suppressed is not reported as sent',
+      !!(dupText && !/success/.test(dupText.cls) && !/\bsent\b/.test(dupText.text) &&
+         /nothing new was written/i.test(dupText.text)),
+      JSON.stringify(dupText));
 
     // --- tab labels must not wrap ---
     // Fifty checks passed over a nav bar where every one of the five labels had

@@ -95,3 +95,69 @@ func TestCheckboxAndRadioShareTheStandardRing(t *testing.T) {
 		}
 	}
 }
+
+// TestNoFocusableElementCarriesAnInlineOutlineSuppress is the gate the previous
+// two could not be.
+//
+// Both of them read the stylesheet. The peer `<select>` in the dashboard header
+// -- the control that decides who you are sending to -- was written with an
+// inline `outline:none`, and an inline declaration outranks an author rule, so
+// `select:focus-visible { outline: 2px solid var(--accent) }` was present,
+// correct, and doing nothing. The control had no visible focus indicator at all
+// (WCAG 2.4.7), and the stylesheet-based gates were green throughout.
+//
+// That is the same shape as every gate failure this repository records: the
+// thing being checked is correct while the thing actually running is not. So
+// this one does not read the stylesheet at all. It reads what is *rendered into
+// the page* and refuses an inline outline suppression on anything focusable.
+//
+// The scan covers the static markup and the JavaScript-built strings in one
+// pass, because both produce the same text and the defect arrived in the
+// second: `peerLabel.innerHTML = '<select ... style="...outline:none...">'`.
+// A gate that only looked at the server-rendered body would have passed it.
+//
+// A non-suppressing inline outline is allowed. It is only the removal of the
+// indicator that is refused, and the message says so, because the fix is to
+// move the presentation into a class rather than to delete the declaration.
+func TestNoFocusableElementCarriesAnInlineOutlineSuppress(t *testing.T) {
+	// A focusable element, with its attributes in any order, carrying an inline
+	// declaration that removes the outline. `outline\s*:\s*(none|0)` rather than
+	// `outline\s*:` so that an inline `outline: 2px solid ...` -- which
+	// reinforces the ring -- is not reported.
+	inlineOutlineSuppress := regexp.MustCompile(
+		`(?i)<(?:button|input|select|textarea|a)\b[^>]*\sstyle\s*=\s*"[^"]*\boutline\s*:\s*(?:none|0)\b`)
+
+	for _, m := range inlineOutlineSuppress.FindAllString(stripDashboardComments(dashboardHTML), -1) {
+		// Trim to a readable length; the match may run into the rest of a long
+		// style attribute and a 400-character line helps nobody.
+		shown := m
+		if len(shown) > 220 {
+			shown = shown[:220] + "..."
+		}
+		t.Errorf("a focusable element carries an inline `outline: none`, which removes the focus ring "+
+			"that the :focus-visible rules above draw. An inline declaration outranks a stylesheet rule, "+
+			"so the rule is present and doing nothing:\n  %s\nMove the presentation into a class -- do not "+
+			"delete the declaration without replacing it.", shown)
+	}
+}
+
+// The peer switcher specifically, because it is the one control where losing the
+// ring is a correctness problem rather than a cosmetic one: it decides which
+// machine receives the file.
+func TestPeerSwitcherKeepsItsFocusRing(t *testing.T) {
+	code := stripDashboardComments(dashboardHTML)
+	rule := regexp.MustCompile(`(?s)\.header-peer-select:focus-visible[^{]*\{([^}]*)\}`)
+	m := rule.FindStringSubmatch(code)
+	if m == nil {
+		t.Fatal("no .header-peer-select:focus-visible rule; the peer switcher must carry the ring itself, " +
+			"because it is rendered inside the dark header chrome where --text is not the right colour")
+	}
+	if !outlineDecl.MatchString(m[1]) {
+		t.Errorf(".header-peer-select:focus-visible declares no outline:\n%s", m[1])
+	}
+	// Chrome-aware: the ring is painted on the deliberately-dark header, in both
+	// OS themes, so it must use the token built for that surface.
+	if !strings.Contains(m[1], "var(--accent-on-chrome)") {
+		t.Errorf("the peer switcher's focus ring does not use --accent-on-chrome:\n%s", m[1])
+	}
+}

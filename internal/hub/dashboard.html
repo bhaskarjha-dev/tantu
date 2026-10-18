@@ -1864,8 +1864,19 @@
     function dialogFocusables() {
       const modal = document.getElementById('actionDialog');
       if (!modal) return [];
+      // Visibility is read from the rendered box, not from `el.style.display`.
+      // The inline-style test misses two things this dialog actually does:
+      // an element hidden by the `hidden` attribute, and one hidden by a class
+      // or an attribute selector in the stylesheet. Both are invisible to
+      // `style.display`, and both were counted as focusable -- so the Tab trap
+      // below would move focus onto a control the user cannot see, which is the
+      // precise failure a focus trap exists to prevent (WCAG 2.4.3, 2.4.7).
+      // `getClientRects().length` is what the browser itself uses to decide
+      // whether a box is rendered, so it cannot disagree with focus().
       return Array.prototype.slice.call(modal.querySelectorAll('button, input, a[href], select, textarea'))
-        .filter(function(el) { return el.style.display !== 'none' && !el.disabled; });
+        .filter(function(el) {
+          return !el.disabled && el.getClientRects().length > 0;
+        });
     }
 
     function closeActionDialog(result) {
@@ -2990,6 +3001,16 @@ function peerHealthChip(pr) {
 
 function renderPeersList(peers) {
       const peersList = document.getElementById('peersList');
+      // The empty branch, which used to be missing. This function runs on every
+      // three-second status poll and had no guard for an empty list, so the
+      // server's "No paired peers yet" state -- with its two routes forward --
+      // survived only until the first poll and was then replaced by an empty
+      // box. See EMPTY_PEERS_HTML above.
+      if (!peersList) return;
+      if (!peers || peers.length === 0) {
+        peersList.innerHTML = EMPTY_PEERS_HTML;
+        return;
+      }
       peersList.innerHTML = peers.map(function(pr) {
         const defaultBadge = pr.is_default ? '<span class="tag tag-oauth">Default</span>' : '';
         const activeBadge = pr.active ? '<span class="tag tag-drop">Active</span>' : '';
@@ -3700,12 +3721,28 @@ function renderPeersList(peers) {
       return when.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + time;
     }
 
-    // Each empty state is rendered from one function so the markup, the copy and
-    // the next action cannot drift apart between the server-rendered first paint
-    // and a later re-render.
-    // Every empty state is rendered from here, so the markup, the copy and the
-    // next action cannot drift between the server-rendered first paint and a
-    // later re-render.
+    // Each empty state's copy and route forward live here, in one function, so a
+    // change reaches the markup, the wording and the action together.
+    //
+    // The claim this used to make -- "so the markup, the copy and the next
+    // action cannot drift between the server-rendered first paint and a later
+    // re-render" -- was false, and provably so: the server writes these four
+    // blocks by hand in the HTML, this function writes them again in
+    // JavaScript, and the two already differed. What is true, and checked, is
+    // narrower:
+    //
+    //   - every region that renders an empty state in JavaScript declares one
+    //     here, and its render function uses it (see the table in
+    //     dashboard_notify_test.go, which is why that test drives both lists
+    //     from one slice -- a second list drifted once and hid a broken peers
+    //     list for a release);
+    //   - every empty state offers a route forward, not a re-fetch, on the
+    //     first paint and after every poll.
+    //
+    // The markup is still written twice. Collapsing that would mean the Go
+    // server emitting these blocks and the page reading them back, which is a
+    // larger change than the inconsistency is worth; the two agree on the copy
+    // and the actions, which is what a reader and a user actually notice.
     //
     // All three parameters are escaped even though every caller passes a
     // hardcoded literal. Escaping-by-construction is the point: the moment a
@@ -3734,6 +3771,24 @@ function renderPeersList(peers) {
       'Nothing received yet',
       'Snippets and files your peer sends appear here in real time. Items are session-only and clear when the Hub restarts.',
       [{ action: 'goto-peers', label: 'Check the peer is paired' }]);
+
+    // The fourth empty state, and the one that was missing.
+    //
+    // The server renders "No paired peers yet" with two routes forward, so the
+    // first paint was right and the Go gate that checks the first paint was
+    // green. renderPeersList then assigned innerHTML with no empty branch, so
+    // the first three-second status poll replaced that state with an empty div:
+    // the affordance appeared and then disappeared, which is the exact failure
+    // the gate's own comment says it exists to prevent.
+    //
+    // It is in this file, next to the other three, because that is where a
+    // reader editing an empty state will look. The copy matches the server's
+    // first paint verbatim so the two renders are indistinguishable.
+    const EMPTY_PEERS_HTML = emptyStateHTML(
+      'No paired peers yet',
+      'Pairing establishes mutual TLS trust between two machines. Do it once per machine pair; it needs a verification code that matches on both screens.',
+      [{ action: 'open-pair-modal', label: '+ Pair a device' },
+       { action: 'refresh-discovery', label: 'Look for nearby hubs' }]);
 
     function renderTransfers(items) {
       const list = document.getElementById('transfersList');
@@ -3968,6 +4023,31 @@ function renderPeersList(peers) {
       loadTransfers();
     }
 
+    // A duplicate that was suppressed on the receiver is neither a delivery nor a
+    // failure, and saying "File sent to X" for it is the one thing this
+    // dashboard must not do.
+    //
+    // The Hub is careful about this: `/api/drop/upload` returns
+    // `duplicate: true` with "Already saved on this peer; duplicate delivery
+    // suppressed", and records the operation as `duplicate_suppressed` with
+    // DuplicateRisk set, precisely so a second copy is not claimed to exist.
+    // Both send paths ignored `duplicate` and rendered their ordinary success
+    // line from the destination field, so a retry of a send whose completion
+    // acknowledgement was lost reported "File sent to devbox - verified" for a
+    // transfer in which the receiver wrote nothing at all.
+    //
+    // One function, both paths. That is not tidiness: the first version of this
+    // fix declared the helper inside `uploadFile`, where `sendTextDrop` could
+    // not see it, and the text path answered "suppressedDuplicateMessage is
+    // not defined" -- turning a suppressed duplicate into a visible failure and
+    // naming an internal identifier to the user. The browser gate below is what
+    // caught it.
+    function suppressedDuplicateMessage(server) {
+      const dest = (server && server.destination) || destinationDisplayName();
+      const op = (server && server.operation_id) ? ' (ID ' + server.operation_id + ')' : '';
+      return 'Already saved on ' + dest + ' by an earlier send - nothing new was written.' + op;
+    }
+
     async function uploadFile(file) {
       const progress = document.getElementById('uploadProgress');
       const bar = document.getElementById('progressBar');
@@ -4046,12 +4126,27 @@ function renderPeersList(peers) {
           pPercent.innerText = formatBytes(e.loaded) + ' sent...';
         }
       };
+      // The suppressed-duplicate branch, which is neither the success case nor the
+      // failure case. See suppressedDuplicateMessage above for what the Hub
+      // returns and why neither of the other two branches may claim a delivery.
       const finishUpload = (ok, message, server) => {
         uploadXhr = null;
         cancelBtn.style.display = 'none';
         if (fileInput) fileInput.value = '';
         status.style.display = 'block';
-        if (ok) {
+        if (ok && server && server.duplicate) {
+          fill.style.width = '100%';
+          bar.setAttribute('aria-valuenow', '100');
+          pPercent.innerText = '100% · ' + formatBytes(file.size) + ' / ' + formatBytes(file.size);
+          status.className = 'status-banner';
+          status.textContent = suppressedDuplicateMessage(server);
+          addLog('DROP', 'Duplicate suppressed on ' + (server.destination || destinationDisplayName()) +
+            ' for ' + file.name + '; nothing new was written.');
+          notify('info', suppressedDuplicateMessage(server),
+            { next: 'The Transfers tab has this operation and its next step.' });
+          loadTransfers();
+          setTimeout(() => { progress.style.display = 'none'; fill.style.width = '0%'; }, 2500);
+        } else if (ok) {
           fill.style.width = '100%';
           bar.setAttribute('aria-valuenow', '100');
           pPercent.innerText = '100% · ' + formatBytes(file.size) + ' / ' + formatBytes(file.size);
@@ -4154,7 +4249,21 @@ function renderPeersList(peers) {
         // verified only when the server actually confirmed it. The previous
         // behaviour logged the outcome and showed nothing on this tab, so a
         // successful text send looked identical to a dead button.
-        if (res.ok && data.status === 'success') {
+        if (res.ok && data.status === 'success' && data.duplicate) {
+          // See suppressedDuplicateMessage above: the receiver recognised the
+          // idempotency key and wrote nothing. Same treatment as the file path,
+          // because the server's message is the same shape and the two used to
+          // disagree about what to do with it.
+          textarea.value = '';
+          banner.style.display = 'block';
+          banner.className = 'status-banner';
+          banner.textContent = suppressedDuplicateMessage(data);
+          addLog('DROP', 'Duplicate suppressed on ' + (data.destination || destinationDisplayName()) +
+            '; nothing new was written.');
+          notify('info', suppressedDuplicateMessage(data),
+            { next: 'The Transfers tab has this operation and its next step.' });
+          loadTransfers();
+        } else if (res.ok && data.status === 'success') {
           textarea.value = '';
           const dest = data.destination || destinationDisplayName();
           const op = data.operation_id ? ' (ID ' + data.operation_id + ')' : '';
@@ -4682,11 +4791,48 @@ function renderPeersList(peers) {
           Promise.resolve(updateStatus()).catch(() => {}).then(scheduleStatusPoll);
         }, dashboardStale ? STATUS_POLL_STALE_MS : STATUS_POLL_LIVE_MS);
       }
-      scheduleStatusPoll();
       // Poll the in-flight list alongside the status: a sign-in the user cannot
       // see is a sign-in they cannot cancel, and a cancel they cannot reach is
       // the same as no cancel at all.
-      setInterval(loadActiveRelays, 5000);
+      let activeRelayTimer = null;
+      function scheduleActiveRelayPoll() {
+        clearInterval(activeRelayTimer);
+        activeRelayTimer = setInterval(loadActiveRelays, 5000);
+      }
+
+      // A backgrounded tab stops polling.
+      //
+      // One tab at rest issued roughly 1.2 requests a second forever: three
+      // fetches on the 3s status tick, plus the 5s relay poll, plus the SSE
+      // connection, all continuing after the user switched away. Ten tabs left
+      // open on a laptop - a normal state for a tool people keep open - put a
+      // steady twelve requests a second at the Hub for a page nobody was
+      // looking at, indefinitely. The Hub is the machine's *background*
+      // process, so this is the one place the cost is invisible: it does not
+      // show up as the browser being slow.
+      //
+      // The two cadences are suspended, not stopped, and the resume path
+      // refreshes immediately rather than waiting out the remaining interval --
+      // otherwise returning to a tab shows data up to five seconds old, and the
+      // user cannot tell whether it is stale or merely polling.
+      //
+      // Hidden is the right condition rather than "not focused". A window
+      // behind another window is still visible to a person switching back with
+      // alt-tab, and polling for it costs nothing to usefulness.
+      document.addEventListener('visibilitychange', function() {
+        if (document.hidden) {
+          clearTimeout(statusPollTimer);
+          clearInterval(activeRelayTimer);
+          return;
+        }
+        scheduleStatusPoll();
+        scheduleActiveRelayPoll();
+        updateStatus().catch(function() {});
+        loadActiveRelays();
+      });
+
+      scheduleStatusPoll();
+      scheduleActiveRelayPoll();
       updateStatus();
       loadConfig();
       loadRecentDrops();

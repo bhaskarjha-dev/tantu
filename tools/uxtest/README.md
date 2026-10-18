@@ -33,6 +33,28 @@ does not conflict; a second copy of this harness does. A Hub that cannot start
 is reported with its own output rather than as a bare `fetch failed`, so a port
 clash is distinguishable from a slow machine.
 
+**A busy port stops the run before it starts**, with exit 3 — not a product
+result. This is not a refinement: it is the difference between a readable
+message and twenty failures in four vocabulations.
+
+If an interrupted run leaves its Hub behind, that orphan answers every probe
+this run makes, and the version-tag check cannot see it, because both Hubs were
+built from the same commit and the tag matches. Worse, *this* run's Hub does not
+fail — the web UI falls back to the next port in its scan, stays alive, and
+passes every readiness condition. So the run continues against a Hub it did not
+build: no render stamp, no session, `403` on `/api/session`, no pairing banner,
+an inert `javascript:void(0)` bookmarklet, and
+`Dashboard session not established` for a send. All eleven are true of the
+orphan and none of them is the product.
+
+The check runs before the build, because the run's own Hub is a fixed cost that
+produces nothing the reader needs when the run cannot happen. To clear it:
+
+```sh
+taskkill /F /IM tantu-uxtest.exe      # Windows
+pkill -f tantu-uxtest                # macOS, Linux
+```
+
 The harness's own Hub is built as **`tantu-uxtest`**, not `tantu`, on purpose.
 Restarting your own Hub with `Stop-Process -Name tantu` used to kill the Hub
 under test mid-run, and the failure did not look like what it was: four scattered

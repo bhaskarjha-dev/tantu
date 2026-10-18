@@ -220,11 +220,17 @@ func TestWebDashboard_EmptyStatesOfferANextAction(t *testing.T) {
 	regions := []struct {
 		id    string
 		needs string
+		// reRenders is the JS constant that must carry the same route forward.
+		// It is declared here rather than in a second literal list below because
+		// the two lists drifted apart exactly once, and that is how this gate
+		// stayed green over a broken peers list: the first paint of #peersList
+		// is correct, and the re-render list below simply had no entry for it.
+		reRenders string
 	}{
-		{"receivedDropsList", "goto-peers"},
-		{"authorizationsList", "goto-relay"},
-		{"transfersList", "goto-drop"},
-		{"peersList", "open-pair-modal"},
+		{"receivedDropsList", "goto-peers", "EMPTY_INBOX_HTML"},
+		{"authorizationsList", "goto-relay", "EMPTY_AUTHORIZATIONS_HTML"},
+		{"transfersList", "goto-drop", "EMPTY_TRANSFERS_HTML"},
+		{"peersList", "open-pair-modal", "EMPTY_PEERS_HTML"},
 	}
 	for _, r := range regions {
 		inner := elementInnerHTML(t, r.id)
@@ -244,21 +250,37 @@ func TestWebDashboard_EmptyStatesOfferANextAction(t *testing.T) {
 		}
 	}
 
-	// The JavaScript re-renders must carry the same affordance, or the next
-	// poll silently removes it.
+	// The JavaScript re-renders must carry the same affordance, or the next poll
+	// silently removes it.
 	code := stripDashboardComments(dashboardHTML)
 	for _, want := range []string{
-		"const EMPTY_TRANSFERS_HTML =",
-		"const EMPTY_AUTHORIZATIONS_HTML =",
-		"const EMPTY_INBOX_HTML =",
 		"function emptyStateHTML(",
-		"list.innerHTML = EMPTY_TRANSFERS_HTML;",
-		"list.innerHTML = EMPTY_AUTHORIZATIONS_HTML;",
-		"list.innerHTML = EMPTY_INBOX_HTML;",
 	} {
 		if !strings.Contains(code, want) {
 			t.Errorf("empty-state re-render lost %q", want)
 		}
+	}
+	// Every region's re-render, checked by the same table that checked the
+	// first paint -- both the constant's existence and the render function that
+	// must use it. Checking only the constant would pass for a region whose
+	// render function still assigns innerHTML unconditionally, which is the
+	// peers bug itself.
+	for _, r := range regions {
+		if !strings.Contains(code, "const "+r.reRenders+" =") {
+			t.Errorf("#%s has no %s constant, so its empty state cannot survive a re-render", r.id, r.reRenders)
+			continue
+		}
+		if !strings.Contains(code, "innerHTML = "+r.reRenders+";") {
+			t.Errorf("%s is defined but never rendered, so #%s loses its route forward on the next poll",
+				r.reRenders, r.id)
+		}
+	}
+	// renderPeersList must actually reach the empty branch, which is the half
+	// that was missing: the constant alone proves nothing about the assignment.
+	if !strings.Contains(code, "peersList.innerHTML = EMPTY_PEERS_HTML;") {
+		t.Error("renderPeersList does not render the empty state, so the first three-second poll replaces " +
+			"the server's route forward with an empty box. See tools/uxtest/run.mjs, " +
+			"'the peers empty state survives a status poll', which is the browser gate for this")
 	}
 	for _, action := range []string{"goto-drop", "goto-relay", "goto-peers", "refresh-discovery"} {
 		if !strings.Contains(code, "case '"+action+"':") {
