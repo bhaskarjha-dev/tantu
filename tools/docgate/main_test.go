@@ -545,3 +545,150 @@ func TestTrackedArtefactsAcceptsThisRepository(t *testing.T) {
 		t.Fatalf("this repository has tracked artefacts:\n  %v", problems)
 	}
 }
+
+// ---- documented local gates -------------------------------------------------
+
+func documentedGateProblems(t *testing.T, readme, ci string) []string {
+	t.Helper()
+	files := map[string]file{
+		"README.md":                {rel: "README.md", body: readme},
+		".github/workflows/ci.yml": {rel: ".github/workflows/ci.yml", body: ci},
+	}
+	var out []string
+	for _, f := range checkDocumentedGates(files) {
+		out = append(out, f.doc+": "+f.problem)
+	}
+	return out
+}
+
+const readmeWithGates = `# Tantu
+
+### Quality gates you can run locally
+
+` + "```bash" + `
+go test ./...
+go run ./tools/encgate
+go run ./tools/docgate
+go run ./tools/wfcheck
+` + "```" + `
+
+## Build from Source
+`
+
+// The red proof for a real omission: wfcheck was in the CI quality job and in
+// AGENTS.md, and not in the README's list, so the gate that stops release.yml
+// breaking at tag time had no documented route to being run before a push.
+func TestDocumentedGatesReportsAGateCIRunsButReadmeOmits(t *testing.T) {
+	readme := "# Tantu\n\n### Quality gates you can run locally\n\n" +
+		"```bash\ngo test ./...\ngo run ./tools/encgate\ngo run ./tools/docgate\n```\n\n## Next\n"
+	ci := "jobs:\n  quality:\n    steps:\n      - run: go run ./tools/encgate\n" +
+		"      - run: go run ./tools/docgate\n      - run: go run ./tools/wfcheck\n"
+	problems := documentedGateProblems(t, readme, ci)
+	if len(problems) == 0 {
+		t.Fatal("a gate that CI runs and the README does not list was accepted")
+	}
+	if !strings.Contains(problems[0], "wfcheck") {
+		t.Errorf("the problem does not name the gate: %s", problems[0])
+	}
+}
+
+func TestDocumentedGatesAcceptsWhenEveryCIGateIsListed(t *testing.T) {
+	ci := "jobs:\n  quality:\n    steps:\n      - run: go run ./tools/encgate\n" +
+		"      - run: go run ./tools/docgate\n      - run: go run ./tools/wfcheck\n"
+	if problems := documentedGateProblems(t, readmeWithGates, ci); len(problems) > 0 {
+		t.Fatalf("a README that lists every gate was reported:\n  %v", problems)
+	}
+}
+
+// The list must come from the workflow, not from a literal written here. A
+// second list is the failure that produced this check: the two drifted, and the
+// one that went stale was the one that was supposed to be checked.
+func TestDocumentedGatesFollowsTheWorkflowRatherThanAHardcodedList(t *testing.T) {
+	ci := "jobs:\n  quality:\n    steps:\n      - run: go run ./tools/encgate\n" +
+		"      - run: go run ./tools/docgate\n      - run: go run ./tools/wfcheck\n" +
+		"      - run: go run ./tools/newgate\n"
+	problems := documentedGateProblems(t, readmeWithGates, ci)
+	if len(problems) == 0 {
+		t.Fatal("a gate added to CI and absent from the README was accepted; the check is reading a " +
+			"hardcoded list rather than the workflow")
+	}
+	if !strings.Contains(problems[0], "newgate") {
+		t.Errorf("the problem names %q rather than the newly added gate", problems[0])
+	}
+}
+
+// Mentioning the tool somewhere else in the README does not count: the section
+// has to be the one a contributor reads to decide what to run.
+func TestDocumentedGatesRequiresTheGateInTheLocalSection(t *testing.T) {
+	readme := "# Tantu\n\nSomewhere below, in a build recipe:\n\ngo run ./tools/encgate\ngo run ./tools/docgate\n" +
+		"go run ./tools/wfcheck\n\n### Quality gates you can run locally\n\n```bash\ngo test ./...\n" +
+		"go run ./tools/encgate\ngo run ./tools/docgate\n```\n\n## Next\n"
+	ci := "jobs:\n  quality:\n    steps:\n      - run: go run ./tools/encgate\n" +
+		"      - run: go run ./tools/docgate\n      - run: go run ./tools/wfcheck\n"
+	if problems := documentedGateProblems(t, readme, ci); len(problems) == 0 {
+		t.Fatal("a README naming the gate only outside the local-gates section was accepted")
+	}
+}
+
+func TestDocumentedGatesRefusesToPassWithoutItsInputs(t *testing.T) {
+	t.Run("no CI workflow", func(t *testing.T) {
+		files := map[string]file{"README.md": {rel: "README.md", body: readmeWithGates}}
+		problems := checkDocumentedGates(files)
+		if len(problems) == 0 {
+			t.Fatal("the check passed with no workflow to read")
+		}
+		if !strings.Contains(problems[0].problem, "must not pass without running") {
+			t.Errorf("the failure does not say it examined nothing: %s", problems[0].problem)
+		}
+	})
+	t.Run("no README", func(t *testing.T) {
+		files := map[string]file{".github/workflows/ci.yml": {rel: ".github/workflows/ci.yml", body: "run: go run ./tools/wfcheck\n"}}
+		if problems := checkDocumentedGates(files); len(problems) == 0 {
+			t.Fatal("the check passed with no README to read")
+		}
+	})
+	t.Run("no local-gates section", func(t *testing.T) {
+		files := map[string]file{
+			"README.md":                {rel: "README.md", body: "# Tantu\n\nNo section here.\n"},
+			".github/workflows/ci.yml": {rel: ".github/workflows/ci.yml", body: "run: go run ./tools/wfcheck\n"},
+		}
+		if problems := checkDocumentedGates(files); len(problems) == 0 {
+			t.Fatal("the check passed with no section for a contributor to read")
+		}
+	})
+	t.Run("a workflow with no gates in it", func(t *testing.T) {
+		files := map[string]file{
+			"README.md":                {rel: "README.md", body: readmeWithGates},
+			".github/workflows/ci.yml": {rel: ".github/workflows/ci.yml", body: "jobs:\n  build:\n    steps: []\n"},
+		}
+		if problems := checkDocumentedGates(files); len(problems) == 0 {
+			t.Fatal("the check passed having extracted no gates at all")
+		}
+	})
+}
+
+func TestDocumentedGatesAcceptsThisRepository(t *testing.T) {
+	root, err := findRepoRoot()
+	if err != nil {
+		t.Skipf("no module root above %s", mustGetwd())
+	}
+	var problems []string
+	for _, f := range checkDocumentedGates(map[string]file{
+		"README.md":                {rel: "README.md", body: mustRead(t, filepath.Join(root, "README.md"))},
+		".github/workflows/ci.yml": {rel: ".github/workflows/ci.yml", body: mustRead(t, filepath.Join(root, ".github", "workflows", "ci.yml"))},
+	}) {
+		problems = append(problems, f.doc+": "+f.problem)
+	}
+	if len(problems) > 0 {
+		t.Fatalf("this repository does not document every gate CI runs:\n  %v", problems)
+	}
+}
+
+func mustRead(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(b)
+}

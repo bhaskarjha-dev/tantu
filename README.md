@@ -264,20 +264,27 @@ go build -o tantu ./cmd/tantu
 Everything CI runs that has no third-party dependency:
 
 ```bash
-go test ./...                 # 14 packages, including -race on Linux/macOS
+go test ./...                 # every package, including -race on Linux/macOS
 go vet ./... && gofmt -l .
 go run ./tools/encgate         # no encoding damage in tracked text files
 go run ./tools/docgate         # documented claims still match the code
+go run ./tools/wfcheck         # every workflow's shell blocks parse as bash
 ```
+
+`docgate` fails if this list stops matching the gates the CI quality job runs,
+so a fifth gate cannot be added without being documented here.
 
 Two more need a one-time download and are worth running before a release rather
 than on every change:
 
 ```bash
 cd tools/uxtest && npm ci && npx playwright install chromium firefox webkit
-node run.mjs --browser=chromium            # drives the real dashboard, 49 checks
+node run.mjs --browser=chromium            # drives the real dashboard in a real browser
 goreleaser release --snapshot --clean      # builds and signs all 13 artifacts
 ```
+
+The harness prints its own total, and how many checks it skipped and why — a skip
+is always reported on its own line, never folded into the pass count.
 
 `docs/DEV-RECORD.md` records what each gate has actually caught.
 

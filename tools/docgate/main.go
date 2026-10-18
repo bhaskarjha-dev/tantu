@@ -93,11 +93,14 @@ func run(args []string) error {
 	for _, f := range checkTrackedArtefacts(root) {
 		report(f)
 	}
+	for _, f := range checkDocumentedGates(files) {
+		report(f)
+	}
 
 	if failures > 0 {
 		return fmt.Errorf("docgate: %d documented claim(s) no longer match the code", failures)
 	}
-	fmt.Printf("docgate: %d constant claim(s), %d documented phrase(s), the CLI command surface, the KNOWN-LIMITATIONS row shape, %d documented flag(s) and %d environment variable(s) all match the code; %d tracked path(s) contain no generated artefacts\n",
+	fmt.Printf("docgate: %d constant claim(s), %d documented phrase(s), the CLI command surface, the KNOWN-LIMITATIONS row shape, %d documented flag(s), %d environment variable(s) and every CI quality gate documented locally all match the code; %d tracked path(s) contain no generated artefacts\n",
 		len(constantClaims), len(phraseClaims), len(documentedFlags), len(documentedEnvVars), countTrackedFiles(root))
 	return nil
 }
@@ -755,6 +758,74 @@ func checkTrackedArtefacts(root string) []failure {
 				"the %d files that belong there. Source belongs under cmd/ or internal/, documents under docs/. "+
 				"If it is deliberate, add it to repositoryRootFiles in tools/docgate with its reason.",
 				len(repositoryRootFiles)))
+		}
+	}
+	return problems
+}
+
+// ---- the local gate list ----------------------------------------------------
+
+// checkDocumentedGates verifies that every gate the CI quality job runs is
+// listed in the README's "Quality gates you can run locally" section.
+//
+// The section exists to tell a contributor what to run before pushing. A gate
+// that is added to CI and not to that list is a gate nobody runs locally, which
+// is how a defect reaches a pull request that the author could have caught in
+// thirty seconds. `wfcheck` was exactly that: added to the quality job, named in
+// AGENTS.md, and absent from the README's list of four, so the one gate that
+// keeps the release workflow from breaking at tag time had no documented route
+// to being run at all.
+//
+// The list is derived from ci.yml rather than written out again here. A second
+// literal list is precisely what drifted before, and it is why a version of this
+// check that consulted one could have reported green while the thing it was
+// checking was wrong.
+func checkDocumentedGates(files map[string]file) []failure {
+	ci, ok := files[".github/workflows/ci.yml"]
+	if !ok {
+		return []failure{failf(".github/workflows/ci.yml", "not found, so the documented-gate check "+
+			"examined nothing. It must not pass without running.")}
+	}
+	readme, ok := files["README.md"]
+	if !ok {
+		return []failure{failf("README.md", "not found, so the documented-gate check examined nothing")}
+	}
+
+	gates := map[string]bool{}
+	for _, m := range regexp.MustCompile(`go run \./(tools/([a-z]+))`).FindAllStringSubmatch(ci.body, -1) {
+		gates["go run ./"+m[1]] = true
+	}
+	if len(gates) == 0 {
+		return []failure{failf(".github/workflows/ci.yml", "no `go run ./tools/...` gate was found; the "+
+			"extraction is broken, not the workflow")}
+	}
+
+	// Only the "run locally" section counts. README.md names the other tools
+	// elsewhere -- a build recipe, the browser harness, the dependency
+	// inventory -- and matching the whole file would make this vacuous.
+	start := strings.Index(readme.body, "Quality gates you can run locally")
+	if start < 0 {
+		return []failure{failf("README.md", "no \"Quality gates you can run locally\" section, so there is "+
+			"nothing for a contributor to run. The section is what tells someone what to run before pushing")}
+	}
+	section := readme.body[start:]
+	if end := strings.Index(section, "\n## "); end > 0 {
+		section = section[:end]
+	}
+
+	// Sorted so the message is stable from run to run.
+	names := make([]string, 0, len(gates))
+	for g := range gates {
+		names = append(names, g)
+	}
+	sort.Strings(names)
+
+	var problems []failure
+	for _, g := range names {
+		if !strings.Contains(section, g) {
+			problems = append(problems, failf("README.md", "the CI quality job runs `%s` but the "+
+				"\"Quality gates you can run locally\" section does not list it. A gate nobody is told "+
+				"to run is a gate nobody runs", g))
 		}
 	}
 	return problems
