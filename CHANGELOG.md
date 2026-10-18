@@ -8,6 +8,16 @@ rollback procedures.
 ## Unreleased
 
 ### Fixed
+- **A gate that asserted on the sender's half of a transfer and returned while
+  the receiver was still writing.** `TestOutboundSendConfirmsThePeerAddress`
+  failed under `-race` on Linux with a temp-directory cleanup error. The Hub's
+  shutdown already waits for every background goroutine that writes the peer
+  store, but it cannot wait for an in-flight wire transfer, so the receiver was
+  still inside the callback that writes its own store when the test's cleanup
+  removed that directory. The test now waits for the receiving side's
+  observation too. The product half — shutdown not waiting for in-flight
+  transfers — is recorded as limitation 4.8 rather than quietly patched at the
+  wire boundary.
 - **A send the peer suppressed was reported as a successful send.** When a
   receiver recognises an idempotency key from an earlier completion it writes
   nothing and says so; the dashboard ignored that and showed "File sent to

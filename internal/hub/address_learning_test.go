@@ -31,7 +31,7 @@ import (
 // that had been unreachable for a week looked identical to one that had just
 // transferred.
 func TestOutboundSendConfirmsThePeerAddress(t *testing.T) {
-	a, _ := startPairedHubs(t, t.TempDir())
+	a, b := startPairedHubs(t, t.TempDir())
 	target := solePeerName(t, a)
 
 	// Captured *after* pairing, and the assertion is that it advances across the
@@ -58,6 +58,27 @@ func TestOutboundSendConfirmsThePeerAddress(t *testing.T) {
 			"observation that agrees with what is stored must not rewrite it",
 			before.Address, after.Address)
 	}
+
+	// Wait for the *receiving* side too, and this is a correctness fix rather
+	// than tidiness.
+	//
+	// A's confirmation is stamped when A's outbound dial completes, which the
+	// POST above already awaited. B's is stamped inside B's OnDropReceived
+	// callback -- the same callback that writes B's peer store. Returning on
+	// A's stamp alone left B still inside that callback, so the test's own
+	// cleanup removed B's store directory while B was writing it, and Go
+	// reported `TempDir RemoveAll cleanup: directory not empty`.
+	//
+	// That surfaced on 2026-10-18 as a red CI run under -race on Linux and did
+	// not reproduce in 65 local runs, which is the signature of a race whose
+	// window only `-race` widens. The underlying product gap is recorded as
+	// limitation 4.8: Stop() cannot wait for an in-flight wire transfer,
+	// because transport.Listener.Close() stops the listener and has nothing to
+	// report about a connection already handed to the bridge. This assertion is
+	// the part the test can own, and it is the part it was skipping.
+	bSees := solePeerName(t, b)
+	bBefore := peerByName(t, b, bSees)
+	waitForAddressConfirmedAfter(t, b, bSees, bBefore.LastAddressConfirmed)
 }
 
 // TestInboundReceiveConfirmsThePeerAddress is the same claim from the other
