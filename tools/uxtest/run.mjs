@@ -575,10 +575,35 @@ const staged = await js(`(function(){
       15,0,4,133,1,128,132,169,140,33,0,0,0,0,73,69,
       78,68,174,66,96,130
       ];
-      var f=new File([new Uint8Array(bytes)],'uxtest-shot.png',{type:'image/png'});
+      // WebKit intermittently reports size 0 for a File built from a
+      // Uint8Array, while the array itself holds all 70 bytes and the PNG
+      // signature is correct. It is not something a conforming engine should
+      // do, it is not reproducible on demand, and it has cost CI runs twice
+      // (Batch Z108 recorded it as unroot-caused; this run reproduced it again).
+      //
+      // So rather than assert one construction works, try the plausible ones in
+      // order and use the first that actually reports its bytes. The response
+      // carries builtBy, so a red or an unexpected value says which path an
+      // engine needed -- a fact -- instead of failing on a precondition whose
+      // cause is a number.
+      function attempt(make) {
+        try {
+          var f = make();
+          return (f && f.size > 0) ? f : null;
+        } catch (_) { return null; }
+      }
+      var builtBy = '';
+      var f = attempt(function(){ return new File([new Uint8Array(bytes)],'uxtest-shot.png',{type:'image/png'}); });
+      if (f) builtBy = 'uint8array';
+      if (!f) { f = attempt(function(){ return new File([new Uint8Array(bytes).buffer],'uxtest-shot.png',{type:'image/png'}); }); if (f) builtBy = 'arraybuffer'; }
+      if (!f) { f = attempt(function(){ return new File([new Blob([new Uint8Array(bytes)],{type:'image/png'})],'uxtest-shot.png',{type:'image/png'}); }); if (f) builtBy = 'blob'; }
+      // Last resort: rebuild the view fresh and try once more, which covers the
+      // case where the failure is the view's snapshot rather than the
+      // constructor.
+      if (!f) { f = attempt(function(){ return new File([Uint8Array.from(bytes)],'uxtest-shot.png',{type:'image/png'}); }); if (f) builtBy = 'from'; }
       window.__uxtestStagedFile=f;
-      return JSON.stringify({type:f.type, size:f.size, isBlob:(f instanceof Blob),
-                             bytes:bytes.length,
+      return JSON.stringify({type:f?f.type:'', size:f?f.size:0, isBlob:(f instanceof Blob),
+                             bytes:bytes.length, builtBy:builtBy,
                              pngSig:bytes.slice(0,4).join(',')});
     })()`);
 const stagedFile = (() => { try { return JSON.parse(staged); } catch (_) { return null; } })();
@@ -588,9 +613,9 @@ const stagedFile = (() => { try { return JSON.parse(staged); } catch (_) { retur
 // reported a red whose cause was invisible. Put the evidence at the front.
 const stagedOK = !!(stagedFile && stagedFile.isBlob && stagedFile.type === 'image/png' && stagedFile.size > 0);
 check('the staged preview file is an image this engine will accept', stagedOK,
-    JSON.stringify(stagedFile) + ' | the dashboard previews an image only when its type ' +
-    'starts with image/ and it is non-empty, so a file this engine built differently turns ' +
-    'a one-line precondition failure into a four-second timeout and three unrelated reds');
+    JSON.stringify(stagedFile) + ' | builtBy says which construction this engine needed: a plain ' +
+    'Uint8Array works everywhere except that WebKit intermittently reports size 0 for it, so the ' +
+    'file is built through the first construction that reports its bytes rather than asserting one works');
 if (!stagedOK) {
   // Skip, do not fail, the checks that depend on this one. They cannot pass, and
   // a dependent check failing because its precondition failed reports a second
@@ -599,7 +624,7 @@ if (!stagedOK) {
   // its own count in the summary, so this is visibly not-run rather than quietly
   // green and not silently red.
   skip('preview thumbnail decodes (CSP allows blob:)',
-       'no file this engine will stage as an image; file was ' + JSON.stringify(stagedFile));
+       'no construction produced a non-empty image file on this engine; file was ' + JSON.stringify(stagedFile));
   skip('preview thumbnail is visible',
        'no file this engine will stage as an image; file was ' + JSON.stringify(stagedFile));
   skip('preview names its destination',

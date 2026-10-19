@@ -8865,3 +8865,54 @@ the gate that catches it lives in this repository rather than in the editor.
   run rather than copied into this record; README deliberately does not carry a
   number, for the reason this batch gave the second demonstration of.
 - all four harness self-checks green
+
+## Batch Z110 — the WebKit file that reports itself empty
+
+The dashboard-acceptance job went red on `webkit peers`, 98/105. Five of the
+failures carried `[ENGINE FAILED THE REQUEST: WebKit encountered an internal
+error @ .../api/status]` -- the engine-failure detector working exactly as
+built, collapsing one cause into one. Underneath were two distinct faults, and
+only one of them is ours.
+
+**The WebKit engine failure is not ours and is not diagnosed here.** One internal
+error on `/api/status`, five consequences, correctly attributed. The missing
+first-useful-render stamp in the same run is almost certainly collateral: the
+stamp is written by an init-script poll that waits for `#idTransport` to stop
+reading `-`, and that element is populated by `/api/status`. A run where the
+status request fails at the engine level is a run where nothing is stamped. Z108
+recorded these two sharing a run and declined to claim a shared cause; this run
+is a second instance of the pair, and the reason to believe the explanation is
+mechanism rather than coincidence.
+
+**The second one is ours, and it is the one Z108 left open.** `new File([new
+Uint8Array(bytes)], ...)` intermittently yields `size: 0` on WebKit while the
+array holds all 70 bytes and the PNG signature is correct:
+
+```
+{"type":"image/png","size":0,"isBlob":true,"bytes":70,"pngSig":"137,80,78,71"}
+```
+
+Z108 recorded it as "not something a conforming engine should do", could not
+reproduce it, and marked it not fixed. It has now reproduced in CI twice and
+still does not reproduce locally on any engine -- which is the whole difficulty,
+and the reason it survived being called a defect at all.
+
+**The fix is to stop asserting that one construction works.** The harness now
+tries the plausible constructions in order -- a `Uint8Array`, its `ArrayBuffer`,
+a `Blob` wrapping it, and a freshly-built `Uint8Array.from` -- and uses the first
+that reports its bytes. The response carries `builtBy`, so the interesting fact
+is recorded rather than inferred: an engine that needed the second path says so
+in the log, and an engine where all four fail reports four attempts instead of a
+bare `size: 0`.
+
+That is a narrower and more honest fix than the one that would have looked
+better. A workaround that hides an engine bug by constructing the file
+differently is only correct if the *bytes* are what matter -- and here the
+precondition already proves they are, by reporting the array's own length and the
+signature alongside the size the engine claimed. So the harness is asserting
+something true about itself (its bytes are right and the File can carry them)
+rather than something the engine has to be trusted to do.
+
+Verified: webkit 109/109 and 108/108, and the other four runs green, all exit 0.
+As ever, that is Windows; whether it holds on the runner that produced the
+failure is what the next push will say.
