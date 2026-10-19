@@ -9001,3 +9001,148 @@ held still to be observable at all.
 Verified: green locally, and each of the four breaks red with the message above.
 That is Windows/WebKit. What made the old gate red was a runner, so whether this
 one holds there is still the push's answer and not mine to assert.
+
+---
+
+## Batch Z112 — an audit of the whole pipeline, and a ceremony that could not fail (2026-10-19)
+
+The request was for the complete picture: everything still improvable, broken or
+in need of overhaul across the pipeline. That is not a question a reading session
+answers, so it was done as an audit with the register as the spine — four
+read-only passes over `internal/hub`, `internal/drop` + `internal/transport` +
+`internal/protocol`, `internal/pairing` + `internal/bridge` + `internal/discovery` +
+`internal/browser`, and the CI pipeline and gates themselves.
+
+The ground rule was the one this repository already has: **a finding counts only
+if it was run.** Every candidate had to come with a way to reproduce it, and
+anything that could not be reproduced was labelled SPECULATIVE rather than
+promoted. Several findings were produced rather than constructed: a real Hub, a
+real browser, a real socket holding a real port, a real OAuth-shaped POST.
+
+### The result, in one line
+
+**Thirty findings, of which four were register rows that were no longer true.**
+The most valuable output of the audit was not a new defect. It was that the
+register — the document whose whole purpose is "so 'we always knew' is checkable"
+— had drifted out of contact with the code in four places, including one row
+that claimed a defect was fixed when it was not.
+
+### The defect that was fixed in this batch
+
+**The CLI's pairing ceremony could not fail at the one job it exists for.**
+
+The ceremony is a human comparing two screens. The CLI printed the pairing code
+**twice** — as "My Code" and "Peer Code" — and then asked "Do the codes match on
+both machines?". Both values are the same string by construction
+(`internal/pairing/pair.go:386`, `localSAS, peerSAS := sas, sas`), so a user
+comparing the two numbers in front of them got a match every time, and had still
+never looked at the other machine.
+
+It also printed this machine's **identity** SAS — the certificate fingerprint's
+first six hex characters — under the label "Pairing Code (SAS)", and asked the
+user to confirm it. `pairing.SASCode`'s own doc says that value "must never be
+used as a security decision: it is 24 bits, static, and not bound to a session".
+The dashboard had already been fixed for exactly this; the CHANGELOG says so, and
+`internal/hub/dashboard.html:1574` still carries the corrected wording. The CLI
+is the surface that actually runs the ceremony, and it was never changed.
+
+`README.md` made it worse. It told users to compare "a 6-character Short
+Authentication String (e.g. `0949b2`)" — the forbidden value — showed a discovery
+listing carrying a SAS the CLI never prints (`pair.go:127-130` explains that
+discovery broadcasts no identity, "so any code shown here would be
+fabricated"), and contradicted its own Security Model section, which correctly
+describes a 54-bit session-bound word code.
+
+**Why reading missed it.** The code reads correctly. `localSAS, peerSAS := sas,
+sas` has a comment next to it explaining that both machines display the same
+code, and the comment is *true* — the comment and the code agree, and the defect
+is one level above them: two labelled copies of one value on one screen. The
+`SASCode` doc is equally clear, and nobody followed the reference from a string
+literal in a `Printf` back to a function whose doc forbids the use. The README
+was worse than merely wrong: it was *self-consistent* with the old product, and
+inconsistent only with the section fifty lines below it.
+
+**The fix.** One code, compared against the remote screen, worded exactly as the
+dashboard words it. The identity SAS labelled as the identity SAS wherever it is
+printed. `Peer.SAS`'s doc no longer calls a fingerprint prefix a Short
+Authentication String. The README describes the six-word code and shows the
+listing the CLI actually prints.
+
+### Two holes in the gate I wrote for it, in the act of writing it
+
+The first gate drove `printSASPrompt` and passed **against the broken
+ceremony**. The extra prints lived in the caller, so testing the function the
+caller called proved nothing about what the operator sees. The second gate drove
+`confirmSAS` — the thing the ceremony actually calls — and still passed, because
+the closure printed beside the prompt. Both are the shape the register's §6
+rows describe, and both were found only because the break was applied and run
+rather than reasoned about.
+
+The gate that finally holds has three parts: the rendered ceremony is captured
+and the code must appear exactly once; the source is scanned so the identity SAS
+can only be printed under its own label; and the closure is scanned so it cannot
+print anything of its own — because the only way to change what the operator
+sees is to change `confirmSAS`, which the behavioural gate can see.
+
+The first attempt at the source scan failed for a reason worth recording: a
+comment in `pair.go` quotes the old wording *to say why it is gone*, and the scan
+reported the explanation as the defect. The scan now strips comments, which is
+what the dashboard's own source gates do.
+
+### The register corrections
+
+Four rows were wrong, and one of them was wrong in the direction that makes a
+product look safer than it is:
+
+- **4.9 (new).** The §6 row "A hidden dashboard tab kept polling at ~1.2 requests
+  a second, forever" is not accurate. The suspension has two holes — a tab
+  *opened* in the background never suspends, because `visibilitychange` only fires
+  on a transition; and hiding the tab during an in-flight poll clears an
+  already-fired timer id and then re-arms. Measured: a page loaded hidden issued
+  the same 18 requests in 15 s as a visible one. The row's own evidence column
+  admitted the gap — "the resume path is exercised on every run" — and the
+  **suspend** path was exercised by nothing, in any gate.
+- **3.20 (new).** The A-side refuses every legitimate `form_post` OAuth callback.
+  `aside.go:598` validates with an **empty** expectation, so `authOrigin` is `""`
+  and any browser `Origin` is refused as unknown — before the correct check at
+  `:624` runs. Row 3.19 claimed `form_post` was accepted; the only gate
+  mentioning it is a pure-function gate on the second pass, and no test harness
+  can produce a `form_post` because `internal/testutil/oauthserver` implements
+  `GET /authorize` only. **The register was wrong, and in the direction of
+  claiming more compatibility than exists.**
+- **1.11 (new).** `docs/RELEASE.md` still says the shipped archive is never
+  executed on macOS or Linux, which row 1.1 (Closed) contradicts — and row 1.1's
+  own "Where it is visible" column points at that document.
+- **1.7–1.12 (new).** The release workflow publishes from a tag that never
+  passed the quality job; `wfcheck` never parses YAML; `encgate` reports success
+  when it examined nothing and examines 243 of 259 tracked files, leaving the
+  entire browser harness outside it; the always-active `AGENTS.md` names a
+  staticcheck pin the workflows do not use, and the repository records that pin
+  as broken against its own toolchain; the browser harness has no minimum-check
+  floor, so 0 checks is a pass.
+
+### What was NOT done, and why
+
+The `form_post` defect (3.20) is **registered, not fixed**. The fix looks small —
+give the first pass the real expectation — but it sits in the browser-CSRF
+defence, and the honest gate for it is a behaviour gate: a real `HandleASide`
+session whose callback is a `POST` with the provider's `Origin`, plus a
+`form_post` response mode in the test OAuth server, which does not exist yet.
+That is a focused batch with its own red proofs, and it should not be the
+casual continuation of an audit.
+
+Everything else found by the audit is in the register, in the section its
+subject belongs to, with the evidence that found it.
+
+### A note on what the audit could not settle
+
+Two things were left open rather than promoted, and both are recorded in the
+register as unproven rather than as absent: whether the mDNS beacon is actually
+transmitted onto the wire from a socket that has not joined the group (which
+decides whether the multicast fallback in 3.17 is real on some networks), and
+whether the 100-session dispatcher cap is a practical denial of service, since
+the handshake deadline is cleared once the first envelope is read.
+
+Verified: `go build`, `go vet`, `go test` (15 packages), `gofmt -l`, `encgate`,
+`docgate` and the four uxtest selfchecks exit 0. The audit itself was read-only
+and left the tree clean.

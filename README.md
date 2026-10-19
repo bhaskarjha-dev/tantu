@@ -139,8 +139,8 @@ Pairing establishes mutual cryptographic trust. Choose whichever method is easie
   Tantu lists all discovered hubs on your LAN:
   ```text
   Discovered nearby hubs on LAN:
-    [1] devbox (192.168.0.244:9877, SAS: 0949b2)
-  Select peer [1-1] or enter custom IP (or press Enter to view my pairing code): 1
+    [1] devbox (192.168.0.244:9877, not yet paired)
+  Select peer [1-1] or enter custom IP (or press Enter to view my identity SAS): 1
   ```
   Type `1` and press Enter.
 
@@ -149,7 +149,7 @@ Pairing establishes mutual cryptographic trust. Choose whichever method is easie
   ./tantu pair --peer=<REMOTE_MACHINE_IP>:9877
   ```
 
-**Verify SAS Code:** Both machines display a 6-character Short Authentication String (e.g. `0949b2`). Confirm they match on both screens. Done — they are cryptographically bonded for life!
+**Verify the pairing code:** both machines show the same six-word code (for example `WEED-HEAT-EACH-SIGN-CLAY-LENS`), derived from the live handshake so it differs on every attempt. (for example `WEED-HEAT-EACH-SIGN-CLAY-LENS`), derived from the live handshake so it differs on every attempt. Compare the code on this screen with the code on the **other machine's** screen and continue only if they match. A code read twice on one screen proves nothing: the check is between two machines. Done — they are cryptographically bonded for life!
 
 ### 3. Use It
 

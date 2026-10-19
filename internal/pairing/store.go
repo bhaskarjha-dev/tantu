@@ -77,7 +77,13 @@ func (p Peer) DisplayName() string {
 	return "peer-" + p.SAS()
 }
 
-// SAS returns the 6-character Short Authentication String for the peer's certificate.
+// SAS returns the peer's identity code: the first 6 hex characters of the
+// peer's certificate fingerprint.
+//
+// It is a naming aid, not the Short Authentication String of the pairing
+// ceremony -- that one is a session-bound word code (see TranscriptSAS) and is
+// never stored here. Do not present this value as a pairing code; see
+// SASCode for why it must never be a security decision.
 func (p Peer) SAS() string {
 	return SASCode(p.Fingerprint)
 }

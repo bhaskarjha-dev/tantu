@@ -78,6 +78,11 @@ func run(args []string) error {
 			report(f)
 		}
 	}
+	for _, c := range forbiddenPhrases {
+		if f, ok := checkForbidden(c, files); !ok {
+			report(f)
+		}
+	}
 	if f, ok := checkCommandSurface(files, root); !ok {
 		report(f)
 	}
@@ -100,8 +105,8 @@ func run(args []string) error {
 	if failures > 0 {
 		return fmt.Errorf("docgate: %d documented claim(s) no longer match the code", failures)
 	}
-	fmt.Printf("docgate: %d constant claim(s), %d documented phrase(s), the CLI command surface, the KNOWN-LIMITATIONS row shape, %d documented flag(s), %d environment variable(s) and every CI quality gate documented locally all match the code; %d tracked path(s) contain no generated artefacts\n",
-		len(constantClaims), len(phraseClaims), len(documentedFlags), len(documentedEnvVars), countTrackedFiles(root))
+	fmt.Printf("docgate: %d constant claim(s), %d documented phrase(s), %d forbidden phrase(s), the CLI command surface, the KNOWN-LIMITATIONS row shape, %d documented flag(s), %d environment variable(s) and every CI quality gate documented locally all match the code; %d tracked path(s) contain no generated artefacts\n",
+		len(constantClaims), len(phraseClaims), len(forbiddenPhrases), len(documentedFlags), len(documentedEnvVars), countTrackedFiles(root))
 	return nil
 }
 
@@ -386,6 +391,26 @@ var phraseClaims = []phraseClaim{
 		Symbols: []string{"flattenFlag"},
 		Note:    "the flag the README tells users to type for a flat directory send",
 	},
+	{
+		// The README's discovery listing must match what the CLI prints, and
+		// what it prints carries no SAS: discovery broadcasts no identity, so
+		// any code shown there would be fabricated.
+		Doc:     "README.md",
+		Phrases: []string{"(192.168.0.244:9877, not yet paired)"},
+		File:    "cmd/tantu/pair.go",
+		Symbols: []string{"(%s, not yet paired)"},
+		Note:    "the discovery listing the README shows, which must carry no SAS",
+	},
+	{
+		// The pairing instructions must tell the user to compare against the
+		// OTHER machine's screen. The code is one value shown on two screens;
+		// a document that says otherwise is teaching a same-screen comparison.
+		Doc:     "README.md",
+		Phrases: []string{"Compare the code on this screen with the code on the **other machine's** screen"},
+		File:    "cmd/tantu/pair.go",
+		Symbols: []string{"Compare this code with the code shown on the remote screen"},
+		Note:    "the pairing-code comparison the README describes, which the CLI's prompt implements",
+	},
 }
 
 func checkPhrase(c phraseClaim, files map[string]file) (failure, bool) {
@@ -405,6 +430,49 @@ func checkPhrase(c phraseClaim, files map[string]file) (failure, bool) {
 	for _, s := range c.Symbols {
 		if !strings.Contains(src.body, s) {
 			return failf(c.File, "%s: the documented claim (%s) points at %q, which no longer exists here", c.Note, strings.Join(c.Phrases, ", "), s), false
+		}
+	}
+	return failure{}, true
+}
+
+// ---- forbidden phrases ------------------------------------------------------
+
+// forbiddenPhrase is a statement a document must NOT make.
+//
+// A phrase check proves a document still says what it should. This proves it
+// has stopped saying what it must not. The pairing instructions once told a
+// user to compare "a 6-character Short Authentication String", which is the
+// certificate fingerprint's first six hex digits -- a value
+// pairing.SASCode's own doc forbids as a security decision, because it is 24
+// bits, static and not bound to a session. No amount of "the README mentions
+// the SAS" would have caught that, because it did mention it, correctly
+// labelled as the thing it must not be confused with.
+type forbiddenPhrase struct {
+	// Doc is the file that must not contain the phrase.
+	Doc string
+	// Phrases must all be absent from Doc.
+	Phrases []string
+	// Note is the one-line explanation printed on failure.
+	Note string
+}
+
+var forbiddenPhrases = []forbiddenPhrase{
+	{
+		Doc:     "README.md",
+		Phrases: []string{"6-character Short Authentication String", "display a 6-character"},
+		Note: "instructions to compare a hex value the product forbids as a security decision; " +
+			"the pairing code is a session-bound word code",
+	},
+}
+
+func checkForbidden(c forbiddenPhrase, files map[string]file) (failure, bool) {
+	doc, ok := files[c.Doc]
+	if !ok {
+		return failf(c.Doc, "this document is missing but is the subject of a forbidden-phrase check"), false
+	}
+	for _, p := range c.Phrases {
+		if strings.Contains(doc.body, p) {
+			return failf(c.Doc, "%q is still stated here (%s)", p, c.Note), false
 		}
 	}
 	return failure{}, true

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -17,6 +18,57 @@ import (
 	"github.com/bhaskarjha-dev/tantu/internal/hub"
 	"github.com/bhaskarjha-dev/tantu/internal/pairing"
 )
+
+// identitySASNotice labels this machine's own identity SAS wherever it is
+// printed.
+//
+// The identity SAS is the first six hex characters of the certificate
+// fingerprint. pairing.SASCode's own doc says it "must never be used as a
+// security decision: it is 24 bits, static, and not bound to a session". It
+// exists to name a node in a list, and to let an operator recognise the
+// machine they are about to pair with.
+//
+// The CLI used to print it under the label "Pairing Code (SAS)" and ask the
+// user to confirm the codes matched. That is the exact mistake the dashboard
+// was already fixed for (CHANGELOG: "The identity SAS is no longer labeled as
+// the pairing code"), left standing in the surface that actually runs the
+// ceremony. The pairing code is a different value -- a session-bound word code
+// derived from the live transcript -- and the two must not be confused.
+const identitySASNotice = "This machine's identity SAS (shown on other devices after pairing; not the pairing code)"
+
+// printSASPrompt renders the pairing-code verification prompt.
+//
+// The code is printed ONCE. Both machines derive the same value from the same
+// transcript, so the CLI used to print it twice -- as "My Code" and "Peer
+// Code" -- and then ask "Do the codes match on both machines?". A user who
+// compared the two numbers in front of them got a match every time and had
+// still never looked at the other machine. The comparison the ceremony
+// depends on is between two screens, so the prompt says so and shows one code.
+//
+// The dashboard words it the same way, and this is the surface that runs the
+// ceremony, so the two are kept deliberately identical.
+func printSASPrompt(w io.Writer, code string) {
+	fmt.Fprintln(w, "\n=== Pairing Code Verification ===")
+	fmt.Fprintf(w, "Compare this code with the code shown on the remote screen:\n\n  %s\n\n", code)
+	fmt.Fprint(w, "Do the codes match on both machines? [y/N]: ")
+}
+
+// confirmSAS asks the operator to compare the pairing code with the code
+// shown on the remote screen, and reads the answer.
+//
+// This is a named function rather than a closure so that the gate can drive
+// the thing the user actually sees. A gate over printSASPrompt alone would
+// pass while the caller printed a second copy of the code on top of it --
+// which is the defect this pair of functions was written to remove, and which
+// the first version of that gate did exactly: it tested the prompt and not
+// the prompt plus what follows it.
+func confirmSAS(w io.Writer, r io.Reader, code string) bool {
+	printSASPrompt(w, code)
+	var resp string
+	_, _ = fmt.Fscanln(r, &resp)
+	resp = strings.ToLower(strings.TrimSpace(resp))
+	return resp == "y" || resp == "yes"
+}
 
 func runPair(args []string) {
 	fs := flag.NewFlagSet("pair", flag.ExitOnError)
@@ -42,14 +94,9 @@ func runPair(args []string) {
 	}
 
 	promptConfirm := func(peerSAS, localSAS string) bool {
-		fmt.Println("\n=== Pairing Code Verification ===")
-		fmt.Printf("My Code:   %s\n", localSAS)
-		fmt.Printf("Peer Code: %s\n", peerSAS)
-		fmt.Print("\nDo the codes match on both machines? [y/N]: ")
-		var resp string
-		_, _ = fmt.Scanln(&resp)
-		resp = strings.ToLower(strings.TrimSpace(resp))
-		return resp == "y" || resp == "yes"
+		// peerSAS and localSAS are the same value by construction: both
+		// machines derive one code from the shared transcript. Print it once.
+		return confirmSAS(os.Stdout, os.Stdin, localSAS)
 	}
 
 	if *peerAddr == "" {
@@ -129,7 +176,7 @@ func runPair(args []string) {
 				// exists only inside an active pairing handshake.
 				fmt.Printf("  [%d] %s (%s, not yet paired)\n", idx+1, d.Name, d.Address)
 			}
-			fmt.Printf("Select peer [1-%d] or enter custom IP (or press Enter to view my pairing code): ", len(discovered))
+			fmt.Printf("Select peer [1-%d] or enter custom IP (or press Enter to view my identity SAS): ", len(discovered))
 			var selection string
 			scanner := bufio.NewScanner(os.Stdin)
 			if scanner.Scan() {
@@ -167,10 +214,10 @@ func runPair(args []string) {
 	} else {
 		// Check if local Hub is already running to avoid port collision
 		if status, ok := hub.ProbeHubWithStoreDir("", sDir); ok {
-			sas := status.Identity.SAS
-			if sas == "" {
+			identitySAS := status.Identity.SAS
+			if identitySAS == "" {
 				if id, _ := store.LoadIdentity(); id != nil {
-					sas = pairing.SASCode(id.Fingerprint)
+					identitySAS = pairing.SASCode(id.Fingerprint)
 				}
 			}
 			pairingPort := *port
@@ -199,8 +246,8 @@ func runPair(args []string) {
 			}
 			listenAddr := net.JoinHostPort("0.0.0.0", strconv.Itoa(pairingPort))
 			fmt.Printf("🚀 Local tantu Hub is active. Starting dedicated pairing listener on port %d...\n", pairingPort)
-			if sas != "" {
-				fmt.Printf("Pairing Code (SAS): %s\n", sas)
+			if identitySAS != "" {
+				fmt.Printf("%s: %s\n", identitySASNotice, identitySAS)
 			}
 			fmt.Println("On your other machine, run:")
 			fmt.Printf("  tantu pair --peer=<THIS_MACHINE_IP>:%d\n\n", pairingPort)
@@ -229,9 +276,9 @@ func runPair(args []string) {
 			os.Exit(1)
 		}
 
-		localSAS := pairing.SASCode(id.Fingerprint)
+		identitySAS := pairing.SASCode(id.Fingerprint)
 		listenAddr := net.JoinHostPort("0.0.0.0", strconv.Itoa(*port))
-		fmt.Printf("Pairing code: %s\n", localSAS)
+		fmt.Printf("%s: %s\n", identitySASNotice, identitySAS)
 		fmt.Printf("Waiting for peer connection on %s...\n", listenAddr)
 
 		res, err := pairing.PairInitiator(store, listenAddr, promptConfirm)

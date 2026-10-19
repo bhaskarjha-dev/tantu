@@ -166,6 +166,41 @@ func TestCheckPhraseFailsInBothDirections(t *testing.T) {
 	}
 }
 
+// TestCheckForbiddenFailsOnAReintroducedInstruction is the gate on the thing
+// a document must stop saying.
+//
+// The pairing instructions once told a user to compare a 6-character hex
+// value -- the certificate fingerprint's first six digits, which
+// pairing.SASCode's own doc forbids as a security decision. No phrase check
+// could have caught that: the README did mention the SAS, correctly, in its
+// security section. The wrong sentence was a second sentence about the same
+// concept, and only a check on the forbidden sentence can see it.
+func TestCheckForbiddenFailsOnAReintroducedInstruction(t *testing.T) {
+	claim := forbiddenPhrase{
+		Doc:     "README.md",
+		Phrases: []string{"6-character Short Authentication String"},
+		Note:    "the hex SAS instruction",
+	}
+	good := fakeFiles(map[string]string{
+		"README.md": "Compare the code on this screen with the code on the other machine's screen.",
+	})
+	if _, ok := checkForbidden(claim, good); !ok {
+		t.Fatal("a document that no longer states the forbidden instruction was reported as drift")
+	}
+
+	bad := fakeFiles(map[string]string{
+		"README.md": "Both machines display a 6-character Short Authentication String (e.g. 0949b2).",
+	})
+	if _, ok := checkForbidden(claim, bad); ok {
+		t.Fatal("the document still states the forbidden instruction and the gate passed")
+	}
+
+	// A missing document must not pass silently.
+	if _, ok := checkForbidden(claim, fakeFiles(map[string]string{})); ok {
+		t.Fatal("a missing document passed silently")
+	}
+}
+
 // TestCheckDocumentedFlagsFailsBothWays is the gate on the thing users type.
 func TestCheckDocumentedFlagsFailsBothWays(t *testing.T) {
 	claim := documentedFlag{Flag: "--flatten", File: "cmd/send.go", Decl: `"flatten"`, Doc: "README.md"}
@@ -354,6 +389,14 @@ func TestClaimFilesExist(t *testing.T) {
 			if _, ok := files[path]; !ok {
 				t.Errorf("phrase claim %q names a file that does not exist: %s", p.Note, path)
 			}
+		}
+	}
+	for _, p := range forbiddenPhrases {
+		if _, ok := files[p.Doc]; !ok {
+			t.Errorf("forbidden-phrase claim %q names a document that does not exist: %s", p.Note, p.Doc)
+		}
+		if len(p.Phrases) == 0 {
+			t.Errorf("forbidden-phrase claim %q lists no phrase, so it can never fail", p.Note)
 		}
 	}
 	for _, f := range documentedFlags {
