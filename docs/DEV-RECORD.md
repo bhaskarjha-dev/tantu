@@ -8528,7 +8528,7 @@ green, so there is nothing to reproduce.
 > the exchange POSTs, strips the fragment and reloads, so "the fragment is gone"
 > means the page is done booting
 
-It does not. `bootstrapDashboard()` does this (dashboard.html:1686-1689):
+It does not. `bootstrapDashboard()` does this (dashboard.html:1746-1749):
 
 ```js
 history.replaceState(null, '', location.pathname + location.search);
@@ -8916,3 +8916,88 @@ rather than something the engine has to be trusted to do.
 Verified: webkit 109/109 and 108/108, and the other four runs green, all exit 0.
 As ever, that is Windows; whether it holds on the runner that produced the
 failure is what the next push will say.
+
+---
+
+## Batch Z111 — a behaviour gate that asserted a race (2026-10-19)
+
+Run #127 went red on `0984e98` in the dashboard-acceptance job, on the one check
+that exists to prove the harness reads the right document:
+
+```
+selfcheck-settle: 1 failure(s)
+  FAIL "the fragment is gone" settled on the post-bootstrap document, so the
+  pre-reload window this gate was written for no longer occurs; ...
+```
+
+`dashboard.html` had not changed. The defect was in the gate.
+
+### What the gate actually asserted
+
+It served a page running the product's two lines, drove WebKit, and waited for
+`location.hash === ''`. Then it asserted that the first state satisfying that
+predicate was the **pre-reload** document.
+
+That is a claim about a race between a poll and a reload, not about the product.
+The product's ordering is fixed and unconditional: strip, then reload. Whether
+*this* read lands on one side of the reload depends on how fast the browser got
+there, which depends on the machine. On mine the reload loses. On the runner the
+reload won — and the gate called that a product regression.
+
+This is the "guaranteed window" error, one level up. Z109 fixed the condition the
+harness *uses*; this gate was written to hold that fix to account, and it encoded
+the same misreading while doing it. Its own header said it would fail if the
+product's ordering changed. It did not have a way to fail if the product was fine.
+
+### Why reading it did not catch it
+
+It reads as a behaviour gate and it is one: real browser, synthetic page, no
+self-agreement. Everything about its shape says covered. The tell was in the
+failure text it wrote for this exact case — it told the reader to go re-read
+`dashboard.html`. A gate that points at the product when nothing in the product
+moved has the shape this repo has now collected three of, and it should have been
+recognised on sight rather than after a red runner.
+
+Six stale line references came with it. The cited `dashboard.html:1686-1689` is
+the toast region; the strip and reload are at 1746 and 1749. The same wrong
+number sat in `settle.cjs`, twice in `run.mjs`, in `README.md`'s wording, in this
+record, and inside the failure message itself — so the message sent the reader to
+the wrong lines to re-read.
+
+### The fix: produce the state, do not race for it
+
+The reload is now withheld until the gate has read the pre-reload document, so
+the intermediate state is something the page *cannot* leave until observed. The
+product's sequence is unchanged — strip, then reload; only the reload waits for
+the observer.
+
+That converts the racy assertion into the property that was actually true all
+along, and states it positively rather than as a race:
+
+```
+selfcheck-settle: the old condition is true on both documents (pre 7da02y8t hash "",
+post 0c1ccvws hash "") -- it cannot tell them apart, which is the defect
+```
+
+`hash === ''` holds on the pre-reload document *and* on the one after it. That is
+why it was the wrong condition, it is true of the product on every machine, and
+it is now checked directly. The gate asserts the ambiguity instead of the
+circumstance.
+
+### Red proofs
+
+Every break was applied and run, not reasoned about:
+
+| Break | Gate |
+|---|---|
+| `replaceState()` removed | `FAIL the page reported the strip was done but location.hash is still "#tantu_bootstrap=abc123", so the product sequence the harness has to tolerate no longer occurs` |
+| `bootSettled()` ignores `bootFragment` | `FAIL bootSettled() returned true on the pre-reload document (fragment gone, token abc123), which is the exact defect it exists to remove` |
+| pre-reload document renders data | `FAIL the pre-reload document rendered data ("loopback"); the premise that it cannot is what made the old condition harmless-but-unnoticed` |
+| `reload()` removed | `FAIL bootSettled() never became true after the reload was released: the fragment is gone but the live document is the pre-reload one ...` |
+
+The first of these is the one the old gate could not express: it needed the reload
+held still to be observable at all.
+
+Verified: green locally, and each of the four breaks red with the message above.
+That is Windows/WebKit. What made the old gate red was a runner, so whether this
+one holds there is still the push's answer and not mine to assert.

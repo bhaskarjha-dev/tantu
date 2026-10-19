@@ -6,25 +6,31 @@
 // above that loop claimed "the fragment is gone means the page is done booting".
 // That claim is false, and the product is why.
 //
-// dashboard.html:1683-1690 strips the fragment and only then reloads:
+// dashboard.html:1746 strips the fragment and only then reloads (:1749):
 //
 //     history.replaceState(null, '', location.pathname + location.search);
 //     window.location.reload();
 //
-// So there is a guaranteed window in which the fragment is gone and the boot is
-// not finished: the live document is still the pre-reload one, which has no
-// session cookie, which therefore correctly renders no data. The harness reads
-// its first-useful-render stamp from that document, finds nothing, and reports
+// So the hash is empty twice over: on the pre-reload document, which has no
+// session cookie and therefore correctly renders no data, and on the document
+// that survives the reload, which is the one with the session. "Is the hash
+// empty" is true of both and so names neither. A harness that settles on it
+// reads its first-useful-render stamp from whichever of the two it happened to
+// land on, and when that is the first it finds nothing and reports
 //
 //     FAIL the document stamps a first-useful-render instant
 //          nothing stamped __tantuFirstUsefulMs; ... so the Hub never gave the page one
 //
 // which blames the Hub for the harness having read the wrong document.
 //
-// A reload on a fast local machine closes that window before the next poll. A
-// reload on a loaded CI runner does not, which is why this appeared on webkit
-// only and on roughly one run in ten, and why it could never be reproduced
-// locally: 107/107 webkit checks pass on a developer machine.
+// Which of the two a poll lands on is a race between the poll and the reload,
+// and a race is not a property of the product. It went the harness's way on a
+// developer machine and the browser's way on a loaded CI runner, which is why
+// this appeared on webkit only, roughly one run in ten, and never locally:
+// 107/107 webkit checks pass on a developer machine. On 2026-10-19 the same race
+// took a self-check red on a runner while dashboard.html was unchanged. What is
+// testable is the property underneath it: the product produces both documents,
+// the old condition holds on both, and only the fragment tells them apart.
 //
 // "Is the hash empty" therefore cannot identify the settled document. The
 // fragment identifies it: only the pre-bootstrap document ever sees one. The

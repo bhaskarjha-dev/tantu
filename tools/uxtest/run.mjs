@@ -342,9 +342,9 @@ let hubs2 = null;
       // Which document is this? Only the pre-bootstrap document ever sees a
       // fragment token; the one that survives the reload never does. The settle
       // loop waits on this rather than on the hash, because the product strips
-      // the fragment and only then reloads (dashboard.html:1686-1689) -- so "the
-      // fragment is gone" is true one step before the boot has finished, and on
-      // a loaded runner the next read can still land in the old document.
+      // the fragment and only then reloads (dashboard.html:1746-1749) -- so "the
+      // fragment is gone" is true on the pre-reload document *and* on the one
+      // after it, and it tells the harness nothing about which one it is on.
       const m = /tantu_bootstrap=([^&]*)/.exec(location.hash || '');
       window.__tantuBootFragment = m ? m[1] : null;
       window.__tantuDocId = Math.random().toString(36).slice(2, 10);
@@ -440,14 +440,15 @@ let hubs2 = null;
     // fragment is gone means the page is done booting". That reasoning is wrong
     // and the product says why: bootstrapDashboard() calls
     // history.replaceState() and only then window.location.reload()
-    // (dashboard.html:1686-1689). There is therefore a guaranteed window in
-    // which the fragment is gone and the boot is not done, and the live document
-    // is the pre-reload one -- which has no session cookie and so correctly
-    // renders nothing. Reading the render stamp from it yields nothing, and the
-    // failure message then blames the Hub for the harness having read the wrong
-    // document. On a fast machine the reload lands before the next 250ms poll;
-    // on a loaded CI runner it does not. That is why this appeared on webkit
-    // only, roughly one run in ten, and never locally.
+    // (dashboard.html:1746-1749). The hash is therefore empty twice over: on the
+    // pre-reload document, which has no session cookie and so correctly renders
+    // nothing, and on the document that survives the reload, which has one.
+    // Reading the render stamp from the first yields nothing, and the failure
+    // message then blames the Hub for the harness having read the wrong
+    // document. Which document a poll lands on is a race between the poll and
+    // the reload, not a property of the product: it went the harness's way on a
+    // fast machine and the browser's way on a loaded CI runner. That is why
+    // this appeared on webkit only, roughly one run in ten, and never locally.
     //
     // The fragment identifies the document instead: only the pre-bootstrap
     // document ever sees one. See settle.cjs, and selfcheck-settle.cjs, which

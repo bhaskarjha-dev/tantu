@@ -100,9 +100,10 @@ there is no system Chrome to hunt for.
 - The one-time bootstrap token is exchanged and then stripped from the URL, and
   **the harness waits for the document that survives the reload**, not for the
   fragment to disappear. `dashboard.html` calls `history.replaceState()` and only
-  then `window.location.reload()`, so "the fragment is gone" is true one step
-  before the boot finishes; reading the render stamp in that window reads the
-  pre-reload document, which has no session and so correctly renders nothing.
+  then `window.location.reload()`, so "the fragment is gone" is true on the
+  pre-reload document *and* on the one that follows it -- it names neither.
+  Reading the render stamp from the pre-reload document reads one that has no
+  session and so correctly renders nothing.
   `settle.cjs` holds the condition, `selfcheck-settle.cjs` drives a browser to
   hold it to account.
 - **The staged send preview actually renders.** The clipboard-image confirmation
