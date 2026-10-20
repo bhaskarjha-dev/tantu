@@ -134,26 +134,84 @@ func summarize(samples []time.Duration) (p50, p95, max time.Duration, zeros int)
 	return p50, p95, max, zeros
 }
 
-// TestPerfBudget_CLIStatusResponse measures the whole plain `tantu status`
-// path against the plan's 500 ms local budget. No sample is discarded: the
-// budget names the *first* status response, so one-time lazy initialization
-// belongs to the measurement, not outside it.
+// budgetSampleCount is how many samples the CLI budget gates take.
 //
-// The sample count is THIRTY, not eight, and the reason is arithmetic rather
-// than taste. p95 at n=8 is sorted[7] -- the maximum -- so a single stalled
-// request on a shared runner failed the gate, and the CI run of 2026-10-20
-// failed it exactly that way: p50 107ms, p95 884ms, max 884ms, n=8. The
-// median says the path was fine; one request had stalled.
+// It is thirty, and the reason is arithmetic rather than taste. p95 at n=8 is
+// sorted[7] -- the MAXIMUM -- so a single stalled request on a shared runner
+// failed the gate, and the CI run of 2026-10-20 failed it exactly that way:
+// p50 107ms, p95 884ms, max 884ms, n=8. The median says the path was fine;
+// one request had stalled.
 //
 // At n=30 p95 is sorted[28] -- the twenty-ninth of thirty -- so one stall is
 // tolerated and a tail regression (two or more slow samples) is still caught.
 // The twin gate in internal/hub uses thirty for the same reason, and Batch Z83
 // of the DEV-RECORD is the record of that decision.
+//
+// The number is a named constant rather than a literal in two places because
+// the failure it causes is invisible until a runner is loaded, and a constant
+// can be checked.
+const budgetSampleCount = 30
+
+// budgetSamplesMinimum is the smallest count at which p95 is not the maximum.
+//
+// It is derived from the same arithmetic: p95 is sorted[(n*95)/100], which is
+// the maximum for every n below 20.
+const budgetSamplesMinimum = 20
+
+// TestTheBudgetSampleCountMakesP95Meaningful is a gate about a gate.
+//
+// It exists because the CLI budget gates failed on a shared runner in 2026-10
+// and the cause was their own sample count, not the product: with eight
+// samples the "95th percentile" WAS the worst sample, so one stalled request
+// failed the gate. Nothing about the product changed and nothing about the
+// gate announced that it was one request away from a false red.
+//
+// A gate whose failure means "the machine" rather than "the product" is a
+// gate that trains everyone to ignore it, and the fix is to make the
+// arithmetic say what it means. See Batch Z83 and Batch H of the DEV-RECORD.
+func TestTheBudgetSampleCountMakesP95Meaningful(t *testing.T) {
+	if budgetSampleCount < budgetSamplesMinimum {
+		t.Errorf("the budget gates take %d samples, and p95 over %d samples is the %d-th "+
+			"smallest -- which for fewer than %d samples is the MAXIMUM, so one stalled "+
+			"request fails the gate",
+			budgetSampleCount, budgetSampleCount, (budgetSampleCount*95)/100, budgetSamplesMinimum)
+	}
+	// And the arithmetic is the gate's own: p95 must not be the maximum.
+	samples := make([]time.Duration, budgetSampleCount)
+	for i := range samples {
+		samples[i] = time.Duration(i) * time.Millisecond
+	}
+	samples[budgetSampleCount-1] = 10 * time.Second // one stall
+	if p95Of(samples) == maxOf(samples) {
+		t.Errorf("p95 over %d samples is the maximum, so a single stall fails the budget",
+			budgetSampleCount)
+	}
+}
+
+// maxOf returns the largest sample, for the gate above.
+func maxOf(samples []time.Duration) time.Duration {
+	var max time.Duration
+	for _, s := range samples {
+		if s > max {
+			max = s
+		}
+	}
+	return max
+}
+
+// TestPerfBudget_CLIStatusResponse measures the whole plain `tantu status`
+// path against the plan's 500 ms local budget. No sample is discarded: the
+// budget names the *first* status response, so one-time lazy initialization
+// belongs to the measurement, not outside it.
+//
+// The sample count is budgetSampleCount, and the reason it is not eight is
+// written down at that constant: at n=8 the p95 IS the maximum, so one
+// stalled request on a shared runner failed this gate.
 func TestPerfBudget_CLIStatusResponse(t *testing.T) {
 	dir := seedPopulatedStore(t, 8)
 
-	samples := make([]time.Duration, 0, 30)
-	for i := 0; i < 30; i++ {
+	samples := make([]time.Duration, 0, budgetSampleCount)
+	for i := 0; i < budgetSampleCount; i++ {
 		start := time.Now()
 		withStdoutDiscarded(t, func() {
 			runStatus([]string{"--store-dir", dir})
@@ -183,8 +241,10 @@ func TestPerfBudget_CLIStatusResponse(t *testing.T) {
 func TestPerfBudget_CLIDoctorLocalWork(t *testing.T) {
 	dir := seedPopulatedStore(t, 8)
 
-	samples := make([]time.Duration, 0, 8)
-	for i := 0; i < 8; i++ {
+	// The same count as the status gate, for the same reason: at n=8 the p95
+	// is the maximum and one stalled request fails the budget.
+	samples := make([]time.Duration, 0, budgetSampleCount)
+	for i := 0; i < budgetSampleCount; i++ {
 		start := time.Now()
 		report := buildHealthReport(dir, "")
 		samples = append(samples, time.Since(start))

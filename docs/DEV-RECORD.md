@@ -10800,3 +10800,101 @@ said "a background goroutine can outlive Stop and write to the peer store",
 and the fix added the goroutine to the group Stop waits for -- from a place
 that can add to the group after Stop has stopped waiting. The row was closed
 and the defect was still there.
+
+## Batch I -- two gates about gates, and the question they answer (2026-10-20)
+
+> *"We are already in window then why our tests and such not revealed the fail
+> and we had to get window fail from CI?"*
+
+The honest answer has two halves, and the second is the one that matters.
+
+### Half one: some failures are irreducibly environmental
+
+A stall on a shared runner and Windows' file semantics are not reproducible
+on a developer machine. That is why CI exists, and this repository's history
+says so repeatedly -- "Found by CI, on Windows", "not reproducible locally on
+any of the three engines", "failed on macOS in CI". Nothing here changes that.
+
+### Half two: today's two failures were NOT irreducible
+
+**The causes were readable.** The p95 arithmetic was two lines: `p95Of`
+returns `sorted[(n*95)/100]`, and at n=8 that is `sorted[7]` -- the maximum.
+The WaitGroup misuse was the documented rule, quoted in the field's own
+comment.
+
+**And the record that described the first one was in this repository.** Batch
+Z83 is the same failure: Windows CI, p95 over budget, "one stalled request
+moves p95 alone", and the fix was to report the median so the message stopped
+guessing. I read that record *while diagnosing this very failure* -- and did
+not check the sample count of the gate I was looking at. Z83 says of the CLI
+twin: "had the same blind spot and now carries the median too". I read that
+sentence and did not act on it.
+
+**And a claim in the code was false.** `heartbeatWG`'s comment promised that
+"Stop returning while a background goroutine is still writing to the peer
+store is a lifecycle bug rather than a test inconvenience" -- and nothing
+checked it. The claim was the thing that was wrong, and the repository
+asserted it in prose.
+
+**So: the local suite could not produce the symptom, but it could have
+produced the diagnosis, and in one case the diagnosis was already written
+down in this file.**
+
+### The structural gap, named
+
+`docgate` checks the *documents* against the code: numbers, phrases, flags,
+the CLI surface. **Nothing checks the code's own comments against the code** --
+and the failing claim lived in a comment, so no gate could see it.
+
+The register holds *product* limitations. These were *gate* weaknesses, and
+gate weaknesses live only in the DEV-RECORD -- which is a log, read after the
+fact, not a checklist.
+
+### What this batch does about it
+
+Two gates about gates, both of which would have caught today's failures
+locally, and both of which are now permanent:
+
+**`TestTheBudgetSampleCountMakesP95Meaningful`** (cmd/tantu) -- asserts that
+the budget gates take enough samples for p95 not to BE the maximum, and
+proves the arithmetic with a constructed stall. The count is now a named
+constant, because a constant can be checked and a literal in two places
+cannot. The doctor gate had the same n=8 and the same latent flake; it now
+shares the constant.
+
+**`TestTheBackgroundGroupHasExactlyOneDoor`** (internal/hub) -- counts the
+`heartbeatWG.Add` calls in the package's own source and requires exactly one,
+in the helper that refuses once the Hub is stopping. It exists because a
+direct Add can land after `Stop()` has called `Wait()`, and a task counted
+too late is a task `Stop()` does not wait for.
+
+Red proofs, applied and run:
+
+    peer_health.go:380 adds to the background group directly:
+    h.heartbeatWG.Add(1)
+    the background group is added to in 2 place(s), want exactly 1: every
+    task must take its slot through beginBackgroundWork, which refuses once
+    the Hub is stopping, because a task counted after Stop begins waiting is
+    a task Stop does not wait for
+
+    the budget gates take 8 samples, and p95 over 8 samples is the 7-th
+    smallest -- which for fewer than 20 samples is the MAXIMUM, so one
+    stalled request fails the gate
+    p95 over 8 samples is the maximum, so a single stall fails the budget
+
+### The recurrence, which is the real finding
+
+The *same class* appeared three times in this batch and twice more in the two
+days before it:
+
+- **Background work that can outlive Stop** -- the heartbeat probes (found by
+  CI on Windows, long ago), the reconnection dial (row 3.30), and the probes
+  again (today). Three incidents, one class, and the class had no gate until
+  today.
+- **A gate that can fail for the wrong reason** -- docgate's removed
+  row-shape property, wfcheck's substring count, the register's own table, and
+  now the p95 arithmetic. Four, and each was handled as a fresh incident.
+
+**A class that recurs is not an incident. It is a missing gate.** The
+instinct -- and mine -- is to fix the instance that CI found and move on,
+because the instance is what is red. The class is what will be red next time.
