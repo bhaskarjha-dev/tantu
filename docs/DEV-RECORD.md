@@ -10898,3 +10898,89 @@ days before it:
 **A class that recurs is not an incident. It is a missing gate.** The
 instinct -- and mine -- is to fix the instance that CI found and move on,
 because the instance is what is red. The class is what will be red next time.
+
+## Batch J -- a green run, and the last path that had never run (2026-10-20)
+
+The CI run for `ff6e5a3` was green: twelve checks, every platform, the
+first green run of the session.
+
+### What the green run actually proves
+
+The interesting part is not that it is green. It is *which* checks ran, and
+the public API says:
+
+    Dashboard acceptance (browser)                      <- the aggregate
+    Dashboard acceptance (browser engine) (chromium)
+    Dashboard acceptance (browser engine) (firefox)
+    Dashboard acceptance (browser engine) (webkit)     <- the one that failed
+    Test (windows-latest) / (ubuntu-latest) / (macos-latest)
+    Fuzz (wire and validation parsers)
+    Quality gates
+    Release artifact (linux) / (darwin) / (windows)
+
+**The required check name survived the matrix.** `Dashboard acceptance
+(browser)` -- exactly the name Batch Z28 kept it for -- is carried by the
+aggregate job, which ran in four seconds after the three engine legs
+finished. The binding is intact without anyone touching branch protection.
+
+**And the WebKit leg passed on a runner that had never run another engine's
+browsers.** That is the first observation that the fault is a function of how
+much the runner has already done -- the closest thing to a diagnosis row 2.9
+has had. The honest status is still "worked around, not diagnosed", because one
+green run is one observation, but the workaround has now been *seen* to work,
+and that is recorded in the row rather than left to be remembered.
+
+### The last path that had never run
+
+The release workflow. It runs for the first time on a tag push, and nothing
+in CI inspected it -- which is how a broken step in the signing path would be
+found at the moment of the first release. And Batch G had just added NINE
+steps to it, none of which had ever executed.
+
+**So the release workflow can now be rehearsed on demand**, and a rehearsal
+cannot publish:
+
+- `workflow_dispatch` runs the whole job.
+- Goreleaser is given `--snapshot --clean --skip=sign` on a manual run, and
+  a snapshot build publishes nothing and signs nothing.
+- The publishing steps -- goreleaser's `release --clean` and the signature
+  count -- are conditioned on the tag push.
+
+The rehearsal exercises what the tag push cannot be asked to exercise until
+there is a tag: the syft and cosign installs (both download and checksum-
+verify code from outside `go.mod`'s pinned surface), goreleaser's archive and
+SBOM steps, and the nine quality gates in the release's own context.
+
+**And the gate that keeps a rehearsal from becoming a release** is a docgate
+claim, because the two things that could turn it into one are both textual:
+the `--snapshot` arguments, and the `if: github.event_name == 'push'` on the
+publishing steps.
+
+The condition is checked as TEXT, which is not the same as checking what
+GitHub would do with it. It is still the difference between a rehearsal that
+cannot publish and one that might, and a rehearsal that might publish is not
+a rehearsal.
+
+### What the register looks like
+
+Sixteen rows closed in two days, and the remainder is not a backlog of
+defects -- it is a list of things that need a human, a platform, or a
+publication:
+
+| row | what it needs |
+|---|---|
+| 1.2 | someone using the product on Linux and macOS |
+| 2.1 | a moderated user study |
+| 2.2 | a screen-reader session |
+| 2.9 | the WebKit fault diagnosed (worked around, now evidenced) |
+| 3.6 | a design decision about in-page session recovery |
+| 3.9 | the application's own OAuth flow to carry a binding |
+| 3.14 | IPv6 discovery, which is a feature rather than a fix |
+| 3.18 | publishing, which is the thing itself |
+| 4.99 | a person reading the twelve rejection pages |
+
+That is the honest shape of the remainder, and it is worth writing down
+rather than leaving to be inferred from a list of open rows: **the next
+defect will not come from the register.** It will come from a new area, and
+the register's job from here is to be a record of what was looked at and
+found, not a promise that nothing is left.

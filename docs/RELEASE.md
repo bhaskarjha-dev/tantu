@@ -108,6 +108,37 @@ What none of this exercises is the publishing half: creating the GitHub release
 and fetching the artifacts back from it, which only a tag push does. That is
 KNOWN-LIMITATIONS 1.5 and is unchanged.
 
+### Rehearsing the release without releasing
+
+The release workflow now has a `workflow_dispatch` trigger, and **a manual run
+cannot publish**. It is a rehearsal:
+
+| | a tag push | a manual run |
+|---|---|---|
+| the quality gates (gofmt, go vet, staticcheck, govulncheck, actionlint, encgate, docgate, wfcheck) | run | run |
+| `go mod verify`, `go test` | run | run |
+| the syft and cosign installs (downloaded, checksum-verified) | run | run |
+| goreleaser | `release --clean` — publishes | `release --snapshot --clean --skip=sign` — publishes nothing and signs nothing |
+| the signature count over the published artifacts | run | skipped: a rehearsal publishes nothing to count |
+
+The condition is structural rather than a check: a snapshot build creates no
+release and writes no signature, and the publishing steps are conditioned on
+the tag push. `docgate` requires the `--snapshot` arguments and the
+`if: github.event_name == 'push'` condition to be present, so a rehearsal
+that could publish fails the gate.
+
+**Why it exists.** The workflow had never executed -- it runs for the first
+time on a tag push -- which is exactly how a broken step in the signing path
+would be found at the moment of the first release. Batch G added nine steps
+to it, and until this change there was no way to run any of them. The
+rehearsal exercises the machinery around the publishing: the tool installs,
+goreleaser's archive and SBOM steps, and the gates in the release's own
+context.
+
+What it still does not exercise is the publishing itself, or the OIDC
+signing, which need a tag and an identity respectively. Those are
+KNOWN-LIMITATIONS 1.5 and 3.18.
+
 ## Supply chain
 
 The full dependency inventory, the reasoning behind the `CGO_ENABLED=0`

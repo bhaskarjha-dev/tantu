@@ -4,6 +4,20 @@ on:
   push:
     tags:
       - 'v*'
+  # A manual run is ALWAYS a rehearsal, and it can never publish.
+  #
+  # This workflow had never executed -- it runs for the first time on a tag
+  # push, and nothing in CI inspected it -- which is how a broken step in the
+  # signing path would be found at the moment of the first release. The
+  # rehearsal exists so that the machinery around the publishing can be
+  # exercised on demand: the tool installs (syft and cosign, both checksum
+  # verified), goreleaser's archive and SBOM steps, and the quality gates.
+  #
+  # It cannot publish, and the reason is structural rather than a check:
+  # goreleaser is given `--snapshot` on a manual run, and a snapshot build
+  # publishes nothing and creates no release. The publishing steps below are
+  # conditioned on the tag push, so a manual run does not reach them at all.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -159,7 +173,10 @@ jobs:
         with:
           distribution: goreleaser
           version: v2.18.2
-          args: release --clean
+          # A manual run is a rehearsal and publishes nothing: a snapshot build
+          # writes no release and signs nothing, and it needs no tag either.
+          # The tag push is the only path that publishes.
+          args: ${{ github.event_name == 'push' && 'release --clean' || 'release --snapshot --clean --skip=sign' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -169,6 +186,10 @@ jobs:
         # claim this step exists to make false when it is not true. It counts
         # rather than trusting the publisher: every archive, every SBOM and the
         # checksum file must have both a .sig and a .pem beside it.
+        #
+        # Only a tag push reaches it: a rehearsal publishes nothing, so there
+        # is nothing to be signed and the count would be zero.
+        if: github.event_name == 'push'
         run: |
           set -euo pipefail
           missing=0

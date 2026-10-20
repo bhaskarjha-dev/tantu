@@ -489,6 +489,34 @@ var phraseClaims = []phraseClaim{
 		Symbols: []string{`msgType != "drop_data" && msgType != TypeCallbackRelay`},
 		Note:    "the control-frame cap and the message types exempt from it",
 	},
+	{
+		// The rehearsal must never publish.
+		//
+		// The release workflow had never executed -- it runs for the first
+		// time on a tag push -- so the machinery around the publishing could
+		// not be exercised without publishing. A manual run is a rehearsal,
+		// and the two things that could turn it into a release are guarded
+		// here: a manual run is given goreleaser's --snapshot, which
+		// publishes nothing and signs nothing, and the publishing steps are
+		// conditioned on the tag push.
+		//
+		// The condition is checked as TEXT, which is not the same as checking
+		// what GitHub would do with it. It is still the difference between a
+		// rehearsal that cannot publish and one that might, and a rehearsal
+		// that might publish is not a rehearsal.
+		Doc: "docs/RELEASE.md",
+		Phrases: []string{
+			"Rehearsing the release without releasing",
+			"release --snapshot --clean --skip=sign",
+		},
+		File: ".github/workflows/release.yml",
+		Symbols: []string{
+			"workflow_dispatch:",
+			"release --snapshot --clean --skip=sign",
+			"if: github.event_name == 'push'",
+		},
+		Note: "the release rehearsal must be described, must exist, and must not publish",
+	},
 }
 
 func checkPhrase(c phraseClaim, files map[string]file) (failure, bool) {
