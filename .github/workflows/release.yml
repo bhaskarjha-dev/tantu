@@ -37,6 +37,67 @@ jobs:
       - name: Test release toolchain
         run: go test -count=1 ./...
 
+      # The quality gates, run here rather than trusted from another
+      # workflow.
+      #
+      # A tag push used to publish from a commit whose quality job was red --
+      # or which was never on a branch at all. ci.yml filters `push` by
+      # `branches` only, and a workflow defining only `branches` does not run
+      # for a tag push, so no CI run was created for the tag at all; and this
+      # workflow had no `needs:`, no `workflow_run:` and no
+      # `workflow_dispatch:`, and ran only `go mod verify` and `go test`. The
+      # `id-token: write` below is what makes that worth fixing rather than
+      # noting.
+      #
+      # The alternative -- making the release wait for another workflow's
+      # verdict -- is not used on purpose. `workflow_run` sees a workflow's
+      # CONCLUSION, not the jobs inside it, so "did the quality job pass"
+      # would have to be read back through the API, with the workflow's own
+      # permissions and the API's eventual consistency in the way. Running
+      # the same gates on the tag's own commit is the guarantee, and it is
+      # local to the release: nothing here depends on a second workflow
+      # behaving the way it is supposed to.
+      #
+      # The commands are the quality job's, verbatim, and tools/docgate
+      # requires this workflow to run every gate that job runs -- so a gate
+      # added to one and forgotten in the other turns the gate red.
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::These files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
+
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+      - name: actionlint
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -shellcheck= .github/workflows/ci.yml .github/workflows/release.yml
+
+      - name: encgate
+        run: go run ./tools/encgate
+
+      - name: docgate
+        run: go run ./tools/docgate
+
+      - name: wfcheck
+        run: go run ./tools/wfcheck
+
+      - name: Line endings
+        run: |
+          if git grep -Il $'\r' -- '*.go' '*.md' '*.yml' '*.yaml'; then
+            echo "::error::CRLF line endings committed; run 'git add --renormalize .'"
+            exit 1
+          fi
+
       - name: Install syft (pinned)
         # GoReleaser's `sboms` step shells out to syft; without it a tag push
         # builds and archives everything and then fails with

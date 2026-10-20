@@ -10635,3 +10635,75 @@ red with
     long-lived private key was under a name nothing could find
     the preserved copy is named "peers.json.bak-3486518609", want a
     deterministic name derived from the destination
+
+## Batch G -- the release published from a commit nothing had examined (2026-10-20)
+
+### 1.7: the release workflow published from a tag that never passed the quality job
+
+`ci.yml` filters `push` by `branches` only, and GitHub's rule is that a
+workflow defining only `branches` does not run for a tag push at all -- so no
+CI run was created for a tag. `release.yml` had one job with no `needs:`, no
+`workflow_run:` and no `workflow_dispatch:`, and its only pre-publish steps
+were `go mod verify` and `go test`.
+
+So `gofmt`, `go vet`, `staticcheck`, `govulncheck`, `encgate`, `docgate` and
+`wfcheck` were all absent from the release path, and a tag on a commit whose
+quality job was red -- or which was never on a branch -- built, signed and
+published it. The workflow holds `id-token: write`, which is what makes this
+worth fixing rather than noting.
+
+**The release workflow now runs the same gates the quality job runs**, on the
+tag's own commit, before it builds anything.
+
+**The alternative was rejected on purpose**, and the reasoning is worth
+recording because the obvious answer is the wrong one. Making the release
+wait for another workflow's verdict means a `workflow_run` trigger, which
+sees a workflow's *conclusion* and not the jobs inside it -- so "did the
+quality job pass" would have to be read back through the API, with the
+workflow's own permissions and the API's eventual consistency in the way. A
+release that depends on a second workflow behaving correctly is a release that
+can be misconfigured in a way nothing here would notice. Running the same
+gates on the tag's own commit is the guarantee, and it is local to the
+release.
+
+**The two lists are kept in step by a gate, not by a person remembering.**
+`docgate` now compares the set of gates the quality job runs with the set the
+release workflow runs, and a gate added to one and forgotten in the other
+turns it red. That is the difference between fixing this once and fixing it
+for good: the next gate someone adds to CI will not silently be missing from
+the release path.
+
+Red proof, applied and run: removing the encgate step from the release
+workflow turns the gate red with
+
+    the release workflow does not run the gate(s) go run ./tools/encgate that
+    the quality job runs, so a tag on a commit whose quality job was red
+    would build, sign and publish it
+
+**One thing deliberately not done.** No CI run is created for the tag, because
+the release job now *is* the quality job for that commit. A second full CI
+run per release -- the browser job and the archive build among them -- would
+cost minutes and add no guarantee, so the row says so explicitly rather than
+leaving it to be discovered as "the tag has no CI run" later.
+
+### What the register looks like now
+
+The rows that remain open are the ones that need something no code change can
+supply:
+
+| row | what it needs |
+|---|---|
+| 1.2 | someone using the product on Linux and macOS |
+| 2.1 | a moderated user study |
+| 2.2 | a screen-reader session |
+| 2.9 | the WebKit fault diagnosed, which is an engine bug on the runner |
+| 3.6 | a design decision about in-page session recovery |
+| 3.9 | the application's own OAuth flow to carry a binding |
+| 3.14 | IPv6 discovery, which is a feature rather than a fix |
+| 3.18 | publishing, which is the thing itself |
+| 4.99 | a person reading the twelve rejection pages |
+
+Every one of those is a limitation of the *world* or of a *decision*, not a
+defect in the code that a gate could catch. That is the honest shape of the
+register's remainder, and it is worth writing down rather than leaving to be
+inferred from a list of open rows.

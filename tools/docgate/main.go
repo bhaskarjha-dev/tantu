@@ -101,6 +101,9 @@ func run(args []string) error {
 	for _, f := range checkDocumentedGates(files) {
 		report(f)
 	}
+	for _, f := range checkReleaseRunsTheQualityGates(files) {
+		report(f)
+	}
 	for _, f := range checkDependencyImportSites(files) {
 		report(f)
 	}
@@ -108,7 +111,7 @@ func run(args []string) error {
 	if failures > 0 {
 		return fmt.Errorf("docgate: %d documented claim(s) no longer match the code", failures)
 	}
-	fmt.Printf("docgate: %d constant claim(s), %d documented phrase(s), %d forbidden phrase(s), the CLI command surface, the KNOWN-LIMITATIONS row shape, %d documented flag(s), %d environment variable(s) and every CI quality gate documented locally all match the code; %d tracked path(s) contain no generated artefacts\n",
+	fmt.Printf("docgate: %d constant claim(s), %d documented phrase(s), %d forbidden phrase(s), the CLI command surface, the KNOWN-LIMITATIONS row shape, %d documented flag(s), %d environment variable(s), every CI quality gate documented locally and run by the release workflow all match the code; %d tracked path(s) contain no generated artefacts\n",
 		len(constantClaims), len(phraseClaims), len(forbiddenPhrases), len(documentedFlags), len(documentedEnvVars), countTrackedFiles(root))
 	return nil
 }
@@ -1157,13 +1160,19 @@ func checkDocumentedGates(files map[string]file) []failure {
 // The quality job is located by its two-space indent, so a job of the same
 // name inside a comment or a string cannot be mistaken for it.
 func qualityGates(ci string) (map[string]bool, []string) {
+	job := qualityJobBody(ci)
+	if job == "" {
+		return map[string]bool{}, nil
+	}
+	return gatesInJobBody(job)
+}
+
+// gatesInJobBody returns the gates a job body runs, and the steps it could
+// not identify.
+func gatesInJobBody(job string) (map[string]bool, []string) {
 	gates := map[string]bool{}
 	var unseen []string
 
-	job := qualityJobBody(ci)
-	if job == "" {
-		return gates, unseen
-	}
 	for _, run := range qualityRunBlocks(job) {
 		id := ""
 		for _, ex := range qualityGateExtractors {
@@ -1184,19 +1193,82 @@ func qualityGates(ci string) (map[string]bool, []string) {
 	return gates, unseen
 }
 
-// qualityJobBody returns the body of the `quality:` job in a workflow.
-func qualityJobBody(ci string) string {
-	const marker = "\n  quality:\n"
-	i := strings.Index(ci, marker)
+// checkReleaseRunsTheQualityGates verifies that the release workflow runs
+// every gate the quality job runs.
+//
+// A tag push used to publish from a commit whose quality job was red -- or
+// which was never on a branch at all. ci.yml filters `push` by `branches`
+// only, and a workflow defining only `branches` does not run for a tag push,
+// so no CI run was created for the tag; and the release workflow had no
+// `needs:`, no `workflow_run:` and no `workflow_dispatch:`, and ran only
+// `go mod verify` and `go test`. The workflow holds `id-token: write`, so
+// "the release is signed" was a claim about an unexamined commit.
+//
+// The check is a set comparison, and it is deliberately not a cross-workflow
+// dependency. `workflow_run` sees a workflow's CONCLUSION, not the jobs
+// inside it, so "did the quality job pass" would have to be read back through
+// the API, with the workflow's own permissions and the API's eventual
+// consistency in the way. Running the same gates on the tag's own commit is
+// the guarantee, and it is local to the release.
+//
+// A gate added to the quality job and forgotten here turns this red, which is
+// the whole point: the two lists are kept in step by the check rather than by
+// a person remembering. See docs/KNOWN-LIMITATIONS.md row 1.7.
+func checkReleaseRunsTheQualityGates(files map[string]file) []failure {
+	ci, ok := files[".github/workflows/ci.yml"]
+	if !ok {
+		return []failure{failf(".github/workflows/ci.yml", "not found, so the release-gate check "+
+			"examined nothing. It must not pass without running")}
+	}
+	rel, ok := files[".github/workflows/release.yml"]
+	if !ok {
+		return []failure{failf(".github/workflows/release.yml", "not found, so the release-gate "+
+			"check examined nothing. It must not pass without running")}
+	}
+
+	quality, _ := qualityGates(ci.body)
+	if len(quality) == 0 {
+		return []failure{failf(".github/workflows/ci.yml", "no quality gates were found, so the "+
+			"release-gate check is measuring nothing")}
+	}
+	release, _ := gatesInJobBody(jobBody(rel.body, "goreleaser"))
+
+	var missing []string
+	for id := range quality {
+		if !release[id] {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	sort.Strings(missing)
+	return []failure{failf(".github/workflows/release.yml", "the release workflow does not run the "+
+		"gate(s) %s that the quality job runs, so a tag on a commit whose quality job was red "+
+		"would build, sign and publish it", strings.Join(missing, ", "))}
+}
+
+// jobBody returns the body of one job in a workflow.
+//
+// The job is located by its two-space indent, so a job of the same name
+// inside a comment or a string cannot be mistaken for it.
+func jobBody(wf, id string) string {
+	marker := "\n  " + id + ":\n"
+	i := strings.Index(wf, marker)
 	if i < 0 {
 		return ""
 	}
-	rest := ci[i+len(marker):]
+	rest := wf[i+len(marker):]
 	// The job ends at the next line that starts another job.
 	if m := regexp.MustCompile(`(?m)^  [A-Za-z0-9_-]+:\s*$`).FindStringIndex(rest); m != nil {
 		return rest[:m[0]]
 	}
 	return rest
+}
+
+// qualityJobBody returns the body of the `quality:` job in a workflow.
+func qualityJobBody(ci string) string {
+	return jobBody(ci, "quality")
 }
 
 // qualityRunBlocks returns the run commands of a job's steps.
