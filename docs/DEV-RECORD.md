@@ -9667,3 +9667,104 @@ now says the closure was not true, and points at row 4.9 for the measurement
 and the fix. The register's rule is that a row must not be deleted, because
 deleting it loses the reason a future change might reintroduce the defect --
 and the reason here is worth more than the fix.
+
+---
+
+## Batch Z118 -- two watchers and a store, all of them saying the wrong thing (2026-10-20)
+
+Batch C, items two and three.
+
+### 3.23: the discovery-health watcher, and the gate that asserted the wrong thing
+
+`discoveryHealthEvent` decides what the watcher logs. It had three rules, and the
+third was:
+
+```go
+case !prev.observed && cur.SendErrors > 0:
+```
+
+`prev.observed` is true after the first sample, so the branch was reachable
+**only on the very first sample**. A Hub whose beacons started failing while it
+ran -- a firewall rule changing, a laptop joining another network, a VPN
+starting to eat broadcast -- logged nothing, ever. The file's own description of
+the case was "the engine looks healthy while no peer can see this hub at all",
+and that was false for every Hub that was not already broken when it started.
+
+The sibling `Degraded` branch had been fixed for exactly this reason in an
+earlier batch, and its comment says so. The same class of bug survived in the
+branch beside it.
+
+**The gate asserted the wrong thing while appearing to assert the right thing.**
+Its case was named "repeated send failures do not repeat the warning" and its
+state was `observed: true` -- which meant "a previous sample was seen", and
+therefore, in the old code, "the beacons were already failing before the first
+sample". That is not a state a live Hub is usually in, and it is not what the
+name says. The state could not express what the case claimed, because the state
+did not record whether the *previous* sample's beacons were failing.
+
+**The fix** is a field:
+
+```go
+type discoveryHealthState struct {
+	degraded    bool
+	sendFailing bool
+}
+```
+
+and the branch becomes `!prev.sendFailing && cur.SendErrors > 0`. The engine's
+`SendErrors` counter is cumulative for the engine's lifetime, so it can never
+return to zero, and that is why the state has to remember the previous
+condition rather than reading the current one. The `observed` field went with
+it: with both conditions recorded, its zero value already means "the previous
+sample was fine", which is also the right reading of "there was no previous
+sample".
+
+**The gates, in both directions.** The pure-function gate now has a case for the
+transition the old state could not express -- "healthy then failing beacons
+warns" -- and the case that used to be misnamed now models what it says
+(`sendFailing: true`). A new loop gate drives the watcher itself: healthy for
+twenty samples, then the beacons start failing, and the line must appear; then
+twenty more samples of the same fault, and no second line.
+
+Red proof, applied and run: reverting the state and the branch to the old code
+gives "expected a log line, got none" and a loop gate that waits ten seconds
+for a line that never comes.
+
+### 3.22: a corrupt peer store said "no trusted peers"
+
+The store is the product's record of which machines it trusts. A store that
+fails to parse arrived at every caller that wanted a list as an *empty* one, so
+a user whose pairing record was lost was told they had never paired at all --
+and pairing could not be redone either, because the write path read the same
+broken file. The only way out was deleting `peers.json` by hand.
+
+`HasPeer` already had the right principle in its own doc: "distinguishes a
+readable store with no match from a transient read/parse failure". `ListPeers`
+did not, because its signature cannot carry an error to the eighty-odd callers
+that want a list and nothing else.
+
+**The fix** keeps the signature and remembers the fault instead of swallowing
+it. The store records it, names the file, and the two surfaces a user would
+look at say what happened: the dashboard's status response carries
+`peer_store_error` and the Peers tab renders "The peer store could not be
+read" rather than the empty state, and `tantu doctor` reports the fault and
+names the file instead of saying "No trusted peers".
+
+**The fault has to be in the render signature too**, or a fault that appears
+while the peer list is unchanged would never be painted -- the same class of
+bug the empty-state work found once already, in the same function.
+
+**The gates, in both directions.** An unreadable store reports the fault; a
+store that is merely empty reports none, because a gate that reported a fault
+unconditionally would pass. The fault survives the read that discovered it, and
+clears when the file becomes readable again.
+
+Red proof, applied and run: making the store stop recording the fault turns all
+three red at once -- the store's own, the dashboard's, and doctor's.
+
+**What is deliberately not fixed.** The write path still refuses to proceed
+against a corrupt store, so pairing cannot be redone until the file is moved
+aside by hand. The product does not do that itself, because silently forgetting
+a pairing is a trust decision the user should make, and the transfer ledger --
+which holds metadata, not trust -- is a different thing. `doctor` names the file
+and says so, and the remainder is registered as open.

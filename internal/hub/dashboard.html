@@ -2524,6 +2524,14 @@
         }
 
         const peers = data.peers || [];
+        // A store that could not be read is not a store with no peers.
+        //
+        // The difference is the user's trust decisions, so it is reported as
+        // what it is rather than as an empty list. Before this, a peer store
+        // that failed to parse arrived here as "no trusted peers", and the
+        // dashboard's first paint -- which says the same thing -- was
+        // indistinguishable from it.
+        const peerStoreFault = data.peer_store_error || '';
         lastPeers = peers;
         lastTransport = data.transport || 'loopback';
         renderDiscoveryHealth(data.discovery);
@@ -2569,7 +2577,8 @@
 // once per failed probe during backoff, which is the keyboard-juggling this
 // guard exists to prevent.
 const peerSig = JSON.stringify(peers.map(p => [p.fingerprint, p.name, p.alias, p.active, p.is_default, p.address,
-          p.health ? [p.health.reachable, p.health.last_ok] : null])) + '|' + (selectedPeerTarget || '');
+          p.health ? [p.health.reachable, p.health.last_ok] : null])) + '|' + (selectedPeerTarget || '') +
+          '|' + (peerStoreFault || '');
         const headerFocused = document.activeElement && document.activeElement.id === 'headerPeerSelect';
         // Skip re-render while the user interacts with the header select;
         // lastPeerSignature stays stale so the deferred update lands on a
@@ -2577,12 +2586,14 @@ const peerSig = JSON.stringify(peers.map(p => [p.fingerprint, p.name, p.alias, p
         if (peerSig !== lastPeerSignature && !headerFocused) {
           lastPeerSignature = peerSig;
         if (peers.length === 0) {
-          peerLabel.innerText = 'No trusted peers yet';
+          peerLabel.innerText = peerStoreFault ? 'Peer store unreadable' : 'No trusted peers yet';
           peerDot.className = 'status-dot offline';
-          peersList.innerHTML = emptyStateHTML(
-            'No paired peers yet',
-            'Pairing establishes mutual TLS trust between two machines. Do it once per machine pair; it needs a verification code that matches on both screens.',
-            [{ action: 'open-pair-modal', label: '+ Pair a device' }, { action: 'refresh-discovery', label: 'Look for nearby hubs' }]);
+          peersList.innerHTML = peerStoreFault
+            ? peerStoreFaultHTML(peerStoreFault)
+            : emptyStateHTML(
+                'No paired peers yet',
+                'Pairing establishes mutual TLS trust between two machines. Do it once per machine pair; it needs a verification code that matches on both screens.',
+                [{ action: 'open-pair-modal', label: '+ Pair a device' }, { action: 'refresh-discovery', label: 'Look for nearby hubs' }]);
           if (dropSelector) dropSelector.style.display = 'none';
         } else if (peers.length === 1) {
           const p = peers[0];
@@ -3789,6 +3800,22 @@ function renderPeersList(peers) {
       'Pairing establishes mutual TLS trust between two machines. Do it once per machine pair; it needs a verification code that matches on both screens.',
       [{ action: 'open-pair-modal', label: '+ Pair a device' },
        { action: 'refresh-discovery', label: 'Look for nearby hubs' }]);
+
+    // The peers list, when it could not be READ rather than when it is empty.
+    //
+    // "No trusted peers" and "the list of trusted peers could not be read" are
+    // different facts, and the second one is about the user's trust decisions:
+    // a user whose pairing record was lost would otherwise be told they had
+    // never paired at all, and would pair again with a machine they have
+    // already paired.
+    function peerStoreFaultHTML(detail) {
+      return emptyStateHTML(
+        'The peer store could not be read',
+        'Tantu cannot read its list of trusted peers, so it does not know who it trusts, and it will not send anything to a peer until this is fixed. ' +
+          (detail || ''),
+        [{ action: 'open-pair-modal', label: '+ Pair a device' },
+         { action: 'refresh-discovery', label: 'Look for nearby hubs' }]);
+    }
 
     function renderTransfers(items) {
       const list = document.getElementById('transfersList');

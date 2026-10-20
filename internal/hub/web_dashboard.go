@@ -326,8 +326,16 @@ type statusResponse struct {
 	DiscoveredCount int            `json:"discovered_count"`
 	DiscoveredPeers int            `json:"discovered_peers"`
 	Peers           []peerStatus   `json:"peers"`
-	PID             int            `json:"pid,omitempty"`
-	StartedAt       time.Time      `json:"started_at,omitempty"`
+	// PeerStoreError names the fault that made the peer list unreadable, if
+	// there is one.
+	//
+	// It is a separate field because "no trusted peers" and "the list of
+	// trusted peers could not be read" are different facts, and the dashboard
+	// must not report the first when the second is true: a user whose pairing
+	// record was lost would otherwise be told they had never paired at all.
+	PeerStoreError string    `json:"peer_store_error,omitempty"`
+	PID            int       `json:"pid,omitempty"`
+	StartedAt      time.Time `json:"started_at,omitempty"`
 	// Discovery explains what the discovery engine is doing and whether it can
 	// see anything at all. It rides on /api/status rather than its own endpoint
 	// because the dashboard already polls this one every three seconds: a
@@ -596,9 +604,15 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 		activeFP := h.GetActivePeer()
 
 		var peers []peerStatus
+		peerStoreFault := ""
 		if store != nil {
 			health := h.AllPeerHealth()
 			allPeers := store.ListPeers()
+			// Read the fault AFTER the list, so it reflects this read rather
+			// than a previous one.
+			if fault := store.LastLoadError(); fault != nil {
+				peerStoreFault = fault.Error()
+			}
 			for _, p := range allPeers {
 				isActive := false
 				if activeFP != "" && p.Fingerprint == activeFP {
@@ -639,6 +653,7 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 			DiscoveredCount: discCount,
 			DiscoveredPeers: discCount,
 			Peers:           peers,
+			PeerStoreError:  peerStoreFault,
 			PID:             os.Getpid(),
 			StartedAt:       startedAtSnapshot,
 		}

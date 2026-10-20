@@ -95,6 +95,40 @@ type PeerStore struct {
 
 	// peerReads counts full reads of peers.json. See loadPeersMap.
 	peerReads atomic.Int64
+
+	// lastLoadErr remembers the last failure to read or parse the peer store.
+	//
+	// ListPeers cannot return an error -- it is called from eighty-odd places
+	// that want a list and nothing else -- so a store that cannot be read used
+	// to arrive everywhere as "no trusted peers". That is a claim about the
+	// user's trust decisions rather than about a file, and it is the kind of
+	// claim that is most expensive to be wrong about: a user whose pairing
+	// record was lost would be told they had never paired at all.
+	//
+	// It has its own mutex rather than borrowing s.mu: loadPeersMap is called
+	// under s.mu.RLock, and a read lock allows several readers at once, so
+	// writing this field under s.mu would be a data race.
+	lastLoadErrMu sync.Mutex
+	lastLoadErr   error
+}
+
+// LastLoadError returns the error from the most recent failed read or parse of
+// the peer store, or nil if the last read succeeded.
+//
+// A corrupt store is a fault the user can act on, and this is where the
+// surfaces that can say something -- the dashboard, `tantu doctor` -- find it.
+// It is nil for a store that is merely empty, which is the distinction the
+// whole point of this accessor is about.
+func (s *PeerStore) LastLoadError() error {
+	s.lastLoadErrMu.Lock()
+	defer s.lastLoadErrMu.Unlock()
+	return s.lastLoadErr
+}
+
+func (s *PeerStore) setLastLoadErr(err error) {
+	s.lastLoadErrMu.Lock()
+	s.lastLoadErr = err
+	s.lastLoadErrMu.Unlock()
 }
 
 // PeerReadCount reports how many times the peer file has been read and parsed.
@@ -379,18 +413,25 @@ func (s *PeerStore) loadPeersMap() (map[string]Peer, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			s.setLastLoadErr(nil)
 			return make(map[string]Peer), nil
 		}
+		s.setLastLoadErr(fmt.Errorf("read peers file: %w", err))
 		return nil, fmt.Errorf("read peers file: %w", err)
 	}
 
 	peers := make(map[string]Peer)
 	if len(data) == 0 {
+		s.setLastLoadErr(nil)
 		return peers, nil
 	}
 	if err := json.Unmarshal(data, &peers); err != nil {
+		// The fault is recorded with the file it came from, because "unmarshal
+		// peers" does not tell a user which of their files is broken.
+		s.setLastLoadErr(fmt.Errorf("peer store %s is unreadable: %w", path, err))
 		return nil, fmt.Errorf("unmarshal peers: %w", err)
 	}
+	s.setLastLoadErr(nil)
 	ensurePrivateFile(path)
 	return peers, nil
 }
@@ -626,6 +667,12 @@ func (s *PeerStore) HasPeer(fingerprint string) (bool, error) {
 }
 
 // ListPeers returns all trusted peers.
+//
+// A store that cannot be read returns an empty list, because this signature
+// cannot carry the fault to the eighty-odd callers that want a list and
+// nothing else. The fault is not lost: LastLoadError holds it, and the
+// surfaces that can say something -- the dashboard, `tantu doctor` -- say it
+// rather than reporting that the user has no trusted peers.
 func (s *PeerStore) ListPeers() []Peer {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

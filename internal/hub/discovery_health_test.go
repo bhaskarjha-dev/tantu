@@ -118,7 +118,7 @@ func TestDiscoveryHealthEventNamesEveryTransition(t *testing.T) {
 			wantLog: true, contains: []string{"Discovery degraded", "tantu pair --peer"},
 		},
 		{
-			name: "healthy then degraded warns", prev: discoveryHealthState{degraded: false, observed: true}, cur: degraded,
+			name: "healthy then degraded warns", prev: discoveryHealthState{degraded: false}, cur: degraded,
 			wantLog: true, contains: []string{"Discovery degraded", "tantu pair --peer"},
 			// This is the case the feature exists for. The Hub starts healthy,
 			// then loses discovery while it runs: a firewall rule changes, a
@@ -128,17 +128,17 @@ func TestDiscoveryHealthEventNamesEveryTransition(t *testing.T) {
 			// that actually happens on a live Hub said nothing.
 		},
 		{
-			name: "degraded twice logs once", prev: discoveryHealthState{degraded: true, observed: true}, cur: degraded,
+			name: "degraded twice logs once", prev: discoveryHealthState{degraded: true}, cur: degraded,
 			wantLog: false,
 			// The rationale: a warning repeated every ten seconds is a log the
 			// user learns to scroll past.
 		},
 		{
-			name: "recovery is announced", prev: discoveryHealthState{degraded: true, observed: true}, cur: healthy,
+			name: "recovery is announced", prev: discoveryHealthState{degraded: true}, cur: healthy,
 			wantLog: true, contains: []string{"Discovery recovered"},
 		},
 		{
-			name: "healthy afterwards is silent", prev: discoveryHealthState{degraded: false, observed: true}, cur: healthy,
+			name: "healthy afterwards is silent", prev: discoveryHealthState{degraded: false}, cur: healthy,
 			wantLog: false,
 		},
 		{
@@ -146,9 +146,31 @@ func TestDiscoveryHealthEventNamesEveryTransition(t *testing.T) {
 			wantLog: true, contains: []string{"beacons are not reaching this network", "12 beacon send(s) failed", "permission denied"},
 		},
 		{
+			name: "healthy then failing beacons warns",
+			prev: discoveryHealthState{degraded: false, sendFailing: false}, cur: blocked,
+			wantLog: true, contains: []string{"beacons are not reaching this network", "12 beacon send(s) failed"},
+			// THE CASE THE FEATURE EXISTS FOR, and the one the old state could
+			// not express. A Hub starts healthy and its beacons start failing
+			// while it runs -- a firewall rule changes, a laptop joins another
+			// network, a VPN starts eating broadcast. The old guard was
+			// !prev.observed, so this transition said nothing at all, and the
+			// file's own description of the case -- "the engine looks healthy
+			// while no peer can see this hub at all" -- was false for every Hub
+			// that was not already broken when it started.
+		},
+		{
 			name: "repeated send failures do not repeat the warning",
-			prev: discoveryHealthState{degraded: false, observed: true}, cur: blocked,
+			prev: discoveryHealthState{degraded: false, sendFailing: true}, cur: blocked,
 			wantLog: false,
+			// The rationale: a warning repeated every ten seconds is a log the
+			// user learns to scroll past.
+			//
+			// This case used to read `observed: true`, which meant "a previous
+			// sample was seen" -- and therefore, in the old code, "the beacons
+			// were already failing before the first sample". That is not a state
+			// a live Hub is usually in, and it is not what the case's name
+			// says. The state now says what it means: the previous sample's
+			// beacons were failing.
 		},
 		{
 			name: "a stopped engine is not a fault", prev: discoveryHealthState{}, cur: stopped,
@@ -178,8 +200,9 @@ func TestDiscoveryHealthEventNamesEveryTransition(t *testing.T) {
 					t.Errorf("line %q must not contain %q", event.Message, unwanted)
 				}
 			}
-			if next.observed != true {
-				t.Error("the returned state does not record that a sample was observed")
+			if next.sendFailing != (tc.cur.SendErrors > 0) {
+				t.Errorf("the returned state records sendFailing=%v for a sample with %d send error(s)",
+					next.sendFailing, tc.cur.SendErrors)
 			}
 			if next.degraded != tc.cur.Degraded {
 				t.Errorf("the returned state records degraded=%v for a sample with degraded=%v", next.degraded, tc.cur.Degraded)
@@ -296,6 +319,72 @@ func TestWatchDiscoveryHealthLogsTransitionsOverTime(t *testing.T) {
 
 	// A watcher that outlived the Hub would keep sampling and could announce a
 	// recovery that never happened, so cancellation has to actually stop it.
+	cancel()
+	select {
+	case <-returned:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the watcher did not return after its context was cancelled")
+	}
+}
+
+// TestWatchDiscoveryHealthAnnouncesBeaconFailuresThatStartLater is the loop
+// gate for the transition the decision function alone could not express.
+//
+// The pure-function gate above says what a transition should say. This one
+// says the WATCHER threads the state between samples, so that a Hub whose
+// beacons start failing twenty seconds after it started -- a firewall rule
+// changing, a laptop joining another network, a VPN starting to eat broadcast
+// -- says so.
+//
+// The state that makes this expressible is the previous sample's own
+// condition. Before it existed the watcher could only report beacons that
+// were already failing before its first sample, so a live Hub never mentioned
+// it, and the register's row saying the discovery-health watcher reports
+// beacon failures was true only of a Hub that was already broken when it
+// started.
+func TestWatchDiscoveryHealthAnnouncesBeaconFailuresThatStartLater(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+
+	healthy := discovery.Health{Running: true, Broadcast: true, Multicast: true, Usable: true, Nodes: 1, Detail: "running"}
+	blocked := discovery.Health{Running: true, Broadcast: true, Multicast: true, Nodes: 0, SendErrors: 12, LastError: "beacon to 255.255.255.255:9879: permission denied", Detail: "running"}
+
+	src := &fakeHealthSource{h: healthy}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const interval = 5 * time.Millisecond
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		h.watchDiscoveryHealthEvery(ctx, src, interval)
+	}()
+
+	// A healthy engine is not news: the first samples must say nothing, or
+	// every Hub start would warn about nothing.
+	time.Sleep(20 * interval)
+	if got := messagesMatching(readActivityLog(t, h), "beacons are not reaching"); len(got) != 0 {
+		t.Fatalf("a healthy discovery engine produced %d beacon-failure line(s): %s", len(got), summarizeMessages(got))
+	}
+
+	// Now the beacons start failing, while the Hub is running. This is the
+	// transition that happens on a live machine.
+	src.set(blocked)
+	warns := waitForLogLines(t, h, "beacons are not reaching this network", 1)
+	if warns[0].Level != LevelWarn {
+		t.Errorf("the beacon-failure transition logged at %v, want %v", warns[0].Level, LevelWarn)
+	}
+	if !strings.Contains(warns[0].Message, "12 beacon send(s) failed") {
+		t.Errorf("the beacon-failure line does not say how many sends failed: %q", warns[0].Message)
+	}
+
+	// And it is announced once. Twenty further samples of a persistent fault
+	// must not produce twenty more lines.
+	time.Sleep(20 * interval)
+	if got := messagesMatching(readActivityLog(t, h), "beacons are not reaching this network"); len(got) != 1 {
+		t.Errorf("a persistent beacon failure logged %d times, want 1: %s", len(got), summarizeMessages(got))
+	}
+
 	cancel()
 	select {
 	case <-returned:

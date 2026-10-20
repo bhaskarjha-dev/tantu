@@ -270,7 +270,18 @@ func buildHealthReport(storeDir, bridgeAddr string) healthReport {
 			IsDefault:   p.IsDefault,
 		})
 	}
-	if len(peers) == 0 {
+	// A store that cannot be read is not a store with no peers, and doctor is
+	// the command whose whole job is to tell the two apart. Reporting "No
+	// trusted peers" for an unreadable store sends the user to pair again with
+	// a machine they have already paired, and hides the reason they cannot.
+	if fault := store.LastLoadError(); fault != nil {
+		report.Checks = append(report.Checks, healthCheck{
+			Name:       "peers",
+			OK:         false,
+			Message:    "The peer store could not be read: " + fault.Error(),
+			NextAction: "The file is named in the message. Moving it aside lets Tantu pair again; the unreadable file is not deleted by Tantu.",
+		})
+	} else if len(peers) == 0 {
 		report.Checks = append(report.Checks, healthCheck{
 			Name:       "peers",
 			OK:         false,

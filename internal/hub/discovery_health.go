@@ -29,9 +29,23 @@ import (
 
 // discoveryHealthState is the previous sample, kept so the watcher reports
 // transitions rather than repeating itself.
+//
+// Each field records one condition of the previous sample. The zero value
+// means "the previous sample was fine", which is also the right reading for
+// "there was no previous sample": a fault on the first sample is a transition
+// into the fault, and is reported.
 type discoveryHealthState struct {
+	// degraded records that the previous sample found discovery unusable.
 	degraded bool
-	observed bool
+	// sendFailing records that the previous sample found the engine's own
+	// beacon writes failing.
+	//
+	// It has to be its own field. The engine's SendErrors counter is
+	// cumulative for the engine's lifetime, so it cannot tell "the beacons
+	// were failing" from "the beacons have always been failing", and without
+	// that distinction the warning fires once -- on the first sample -- and
+	// never again, which is the case a live Hub actually hits.
+	sendFailing bool
 }
 
 // discoveryHealthSampleInterval is how often the watcher samples. Ten seconds
@@ -112,7 +126,7 @@ type discoveryLogEvent struct {
 //     was previously invisible and most confusing, because the engine looks
 //     healthy while no peer can see this hub at all.
 func discoveryHealthEvent(prev discoveryHealthState, cur discovery.Health) (*discoveryLogEvent, discoveryHealthState) {
-	next := discoveryHealthState{degraded: cur.Degraded, observed: true}
+	next := discoveryHealthState{degraded: cur.Degraded, sendFailing: cur.SendErrors > 0}
 	if !cur.Running {
 		// A stopped engine is not a fault. Several documented configurations
 		// (SSH-only transport, a loopback test rig) run the Hub with no
@@ -133,7 +147,23 @@ func discoveryHealthEvent(prev discoveryHealthState, cur discovery.Health) (*dis
 			" Pair by address with `tantu pair --peer <ip>:9877` if a hub is known to be running."}, next
 	case !cur.Degraded && prev.degraded:
 		return &discoveryLogEvent{Level: LevelInfo, Message: "Discovery recovered: " + cur.Detail}, next
-	case !prev.observed && cur.SendErrors > 0:
+	case !prev.sendFailing && cur.SendErrors > 0:
+		// The transition into beacon failures, whether or not a sample has been
+		// seen yet.
+		//
+		// The previous guard here was !prev.observed, which meant a Hub only
+		// ever reported beacons that were already failing before its very
+		// first sample. A firewall rule changing, a laptop joining a different
+		// network, a VPN starting to eat broadcast -- all of which happen while
+		// the Hub runs -- produced no line at all, which is the condition this
+		// whole file exists to make visible. This is the same defect the
+		// degraded branch above had, and it gets the same fix.
+		//
+		// SendErrors is cumulative for the engine's lifetime and never returns
+		// to zero, so the warning is on the transition into failure and is not
+		// repeated while the failures continue -- the same "a log the user
+		// learns to scroll past is worth less than no log" rule the rest of
+		// this file follows.
 		return &discoveryLogEvent{Level: LevelWarn, Message: "Discovery beacons are not reaching this network: " +
 			describeDiscoverySendFailure(cur) + " Pair by address instead."}, next
 	default:
