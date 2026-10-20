@@ -56,6 +56,49 @@ func startBlackholeListener(t *testing.T) (addr string, conns chan net.Conn) {
 	return ln.Addr().String(), conns
 }
 
+// TestStopRefusesToStartBackgroundWork is the gate for the WaitGroup contract
+// violation.
+//
+// A background task that STARTS after Stop has begun waiting is a task Stop
+// does not wait for, and a task that writes to the peer store is exactly what
+// Stop promises not to leave running.
+//
+// The reconnection dial is the goroutine that got it wrong the first time: it
+// ran on context.Background() and was on no WaitGroup at all, so it outlived
+// Stop and rewrote peers.json afterwards. Fixing that by adding it to the
+// WaitGroup was not enough on its own -- an Add that lands after the Wait has
+// begun is untracked by the WaitGroup's own rule -- so the reservation now
+// goes through beginBackgroundWork, which refuses once the Hub is stopping.
+//
+// The condition is produced: a stopped Hub, a discovered address, and a
+// listener that would count the connection if one were made.
+func TestStopRefusesToStartBackgroundWork(t *testing.T) {
+	a, _ := startPairedHubs(t, t.TempDir())
+	blackhole, conns := startBlackholeListener(t)
+
+	// The peer A knows is recorded at a stale address, so the reconciliation
+	// has a candidate to dial at the discovered one.
+	staleAddress(t, a, "127.0.0.1:1")
+
+	if err := a.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	// A beacon arriving after the Hub has stopped must not start a dial: the
+	// dial would be untracked, and it writes to the peer store.
+	a.reconcileDiscoveredAddress(blackhole, "somebody-else")
+
+	select {
+	case conn := <-conns:
+		_ = conn.Close()
+		t.Fatal("a stopped Hub dialled the discovered address: the dial was started after Stop " +
+			"began waiting, so nothing was waiting for it, and it is free to write to the peer " +
+			"store after the shutdown")
+	case <-time.After(1500 * time.Millisecond):
+		// No dial. That is the whole assertion.
+	}
+}
+
 // TestStopCancelsTheReconciliationDial is the gate.
 //
 // The condition is produced, not constructed: a real dial to a real listener

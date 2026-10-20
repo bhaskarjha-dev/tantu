@@ -261,7 +261,26 @@ type Hub struct {
 	//
 	// Found by CI, on Windows, as a "cannot access the file because it is being
 	// used by another process" while a test wiped a stopped Hub's store.
-	heartbeatWG      sync.WaitGroup
+	heartbeatWG sync.WaitGroup
+	// bgMu guards bgStopped and the decision to start background work.
+	//
+	// It exists because a WaitGroup has a rule that is easy to break by
+	// accident: "calls with a positive delta that occur when the counter is
+	// zero must happen before a Wait". The heartbeat's probes and the
+	// reconnection dials were both Add-ed from places that could run after
+	// Stop had already called Wait -- the scheduler mid-tick, and the
+	// discovery callback -- so the goroutine they started was untracked, and it
+	// could write to the peer store after Stop returned. That is the same
+	// lifecycle bug the field comment above describes, arriving through the
+	// door the WaitGroup's own rule leaves open.
+	//
+	// Every background task therefore starts through beginBackgroundWork,
+	// which refuses once the Hub is stopping, and the refusal and the Add
+	// happen under this lock together with Stop's own decision to stop. So
+	// either a task was counted before Stop began waiting -- and Stop waits for
+	// it -- or it was never started at all.
+	bgMu             sync.Mutex
+	bgStopped        bool
 	actualWeb        string
 	startTime        time.Time
 	logger           *EventLogger
@@ -1306,6 +1325,19 @@ func (h *Hub) Stop() error {
 	if heartbeatCancel != nil {
 		heartbeatCancel()
 	}
+	// Close the door behind the background tasks BEFORE waiting for them.
+	//
+	// Cancelling the contexts stops the schedulers, but a scheduler already
+	// inside a tick -- or a discovery callback already in flight -- can still
+	// reach its Add afterwards. A task counted after the Wait below has
+	// started is a task this Wait does not wait for, and a task that writes to
+	// the peer store is exactly what this function promises not to leave
+	// running.
+	//
+	// The order matters: the door is closed under the same lock the Add
+	// takes, so a task is either counted before this point -- and the Wait
+	// below covers it -- or it never starts.
+	h.stopBackgroundWork()
 	// Wait for probes already in flight, outside the lock, so Stop cannot return
 	// while a background goroutine is still writing to the peer store. See the
 	// field comment; this is not belt and braces, it is the whole reason the field
@@ -1340,6 +1372,40 @@ func (h *Hub) Stop() error {
 		}
 	}
 	return nil
+}
+
+// beginBackgroundWork reserves a slot in the group Stop waits for, and reports
+// whether the caller may start.
+//
+// It returns false once the Hub is stopping, and the caller must not start
+// anything then: a task started after Stop began waiting is a task Stop does
+// not wait for, and a task that writes to the peer store is exactly what Stop
+// promises not to leave running.
+//
+// The check and the Add happen under one lock, and Stop takes that same lock
+// before it starts waiting, so the two cannot interleave: either the task was
+// counted before Stop began waiting -- and Stop waits for it -- or it was
+// never started at all.
+func (h *Hub) beginBackgroundWork() bool {
+	h.bgMu.Lock()
+	defer h.bgMu.Unlock()
+	if h.bgStopped {
+		return false
+	}
+	h.heartbeatWG.Add(1)
+	return true
+}
+
+// endBackgroundWork releases a slot taken by beginBackgroundWork.
+func (h *Hub) endBackgroundWork() {
+	h.heartbeatWG.Done()
+}
+
+// stopBackgroundWork closes the door behind the background tasks.
+func (h *Hub) stopBackgroundWork() {
+	h.bgMu.Lock()
+	h.bgStopped = true
+	h.bgMu.Unlock()
 }
 
 // DiscoveryEngine returns the active LAN discovery engine or nil.
@@ -1419,6 +1485,12 @@ func (h *Hub) Start(parent context.Context) (err error) {
 		h.started = true
 		h.startErr = nil
 		h.readyCh = readyCh
+		// A restart re-opens the door behind the background tasks. Stop closed
+		// it, and a Hub that is running again must be able to start probes and
+		// dials.
+		h.bgMu.Lock()
+		h.bgStopped = false
+		h.bgMu.Unlock()
 		h.httpServer = nil
 		h.p2pLn = nil
 		h.tr = nil
@@ -2648,9 +2720,16 @@ func (h *Hub) reconcileDiscoveredAddress(addr, instanceName string) {
 	// "Stop returning while a background goroutine is still writing to the
 	// peer store is a lifecycle bug rather than a test inconvenience". See
 	// docs/KNOWN-LIMITATIONS.md row 3.30.
-	h.heartbeatWG.Add(1)
+	//
+	// The reservation is taken through beginBackgroundWork, which refuses once
+	// the Hub is stopping. A dial started after Stop began waiting would be a
+	// dial Stop does not wait for, and the reconnection dial is exactly the
+	// goroutine that outlived Stop the first time.
+	if !h.beginBackgroundWork() {
+		return
+	}
 	go func() {
-		defer h.heartbeatWG.Done()
+		defer h.endBackgroundWork()
 		for _, p := range candidates {
 			dialCtx, dialCancel := h.withRunContext(context.Background())
 			ctx, cancel := context.WithTimeout(dialCtx, reconcileDialTimeout)

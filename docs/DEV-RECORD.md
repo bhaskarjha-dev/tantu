@@ -10707,3 +10707,96 @@ Every one of those is a limitation of the *world* or of a *decision*, not a
 defect in the code that a gate could catch. That is the honest shape of the
 register's remainder, and it is worth writing down rather than leaving to be
 inferred from a list of open rows.
+
+## Batch H -- two CI failures, and a lifecycle bug my own fix had introduced (2026-10-20)
+
+The Windows CI run for `90af3d0` was red, with two failures that had nothing
+to do with each other.
+
+### The perf gate failed on ONE stalled sample
+
+    tantu status (local, populated store): p50=107.4108ms p95=884.3905ms
+    max=884.3905ms budget=500ms (n=8, 0 below clock resolution)
+
+The gate's own failure message says how to read it: "A regression moves the
+median; one stalled sample moves p95 alone." The median was 107ms, the p95 and
+the maximum were the same 884ms, and there were eight samples -- so one
+request had stalled and the path itself was fine.
+
+**And the arithmetic was the real defect.** p95 at n=8 is `sorted[7]` -- the
+maximum. So the gate's "95th percentile" was the worst sample, and a single
+stalled request on a shared runner failed it. The twin gate in `internal/hub`
+uses thirty samples, where p95 is `sorted[28]` -- the twenty-ninth of thirty --
+so one stall is tolerated and a tail regression (two or more slow samples) is
+still caught. The CLI gate now uses thirty too.
+
+Measured locally, five runs: p50 1.06ms, 1.19ms, 1.56ms, 2.28ms and p95
+21-45ms, against a 500ms budget. And `tantu status` only *probes* a running
+Hub -- it never starts one -- so neither the discovery change nor the store
+change is on that path. The CI runner's median was roughly fifty times the
+local one; that is the machine.
+
+**This is Batch Z83's shape again**, and the record of that batch says the
+sample count was left alone and the median was added "so a budget failure can
+be read rather than acted on". That was right for the hub gate at n=30. At
+n=8 the p95 IS the maximum, so the same reasoning does not apply, and the
+count was the thing that had to change.
+
+### The cleanup race, and the lifecycle bug underneath it
+
+    TempDir RemoveAll cleanup: unlinkat ...\004: The directory is not empty.
+
+Twelve local runs of that test did not reproduce it -- it is a loaded-runner
+race, and the same run showed the perf stall above.
+
+**But the cause was not a race at all.** It was a `sync.WaitGroup` contract
+violation, and the rule is easy to break by accident:
+
+> calls with a positive delta that occur when the counter is zero must happen
+> before a Wait
+
+`heartbeatWG.Add(1)` was called from two places that could run *after*
+`Stop()` had called `Wait()`: the heartbeat's scheduler, which is inside a tick
+when the cancellation arrives, and the discovery callback, which is where the
+reconnection dial starts. A probe counted too late is a probe `Stop()` does
+not wait for -- and a probe writes to the peer store, which is the one thing
+`Stop()` promises not to leave running. That is the Windows failure: a
+heartbeat probe writing to the store while the test wiped it.
+
+**And my own 3.30 fix had the same flaw.** Putting the reconnection dial on
+the WaitGroup was not enough on its own: the dial was Add-ed from the
+discovery callback, which can run after `Stop()` began waiting, so it was
+untracked and could still rewrite `peers.json` after the shutdown. I closed
+row 3.30 with a fix that had the defect it was fixing.
+
+**The fix:** every background task now reserves its slot through
+`beginBackgroundWork`, which refuses once the Hub is stopping, and the refusal
+and the `Add` happen under one lock -- together with `Stop()`'s own decision
+to stop. So a task is either counted before `Stop()` began waiting, and
+`Stop()` waits for it, or it is never started. There is no third case.
+
+**The gate** produces the condition: a stopped Hub, a discovered address, and
+a listener that would count the connection.
+
+Red proof, applied and run: with the plain `Add` restored, the gate is red
+with
+
+    a stopped Hub dialled the discovered address: the dial was started after
+    Stop began waiting, so nothing was waiting for it, and it is free to
+    write to the peer store after the shutdown
+
+### What this batch is really about
+
+Two of the three findings in this batch are the same finding, and it is the
+one this repository keeps meeting: **a gate that cannot distinguish a defect
+from a machine.** The perf gate reported a stall as a budget breach; the
+cleanup gate reported a lifecycle bug as a filesystem error. Both were
+pointing at something real -- the p95 arithmetic, and the WaitGroup rule --
+and neither of them said so.
+
+And the third finding is the sharpest version of it yet: **I closed a
+register row with a fix that had the defect the row was about.** Row 3.30
+said "a background goroutine can outlive Stop and write to the peer store",
+and the fix added the goroutine to the group Stop waits for -- from a place
+that can add to the group after Stop has stopped waiting. The row was closed
+and the defect was still there.

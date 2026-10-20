@@ -366,9 +366,23 @@ func (h *Hub) runPeerHeartbeat(ctx context.Context) {
 
 				for _, key := range due {
 					k := key
-					h.heartbeatWG.Add(1)
+					// The reservation is taken through beginBackgroundWork,
+					// which refuses once the Hub is stopping.
+					//
+					// A plain Add here was a WaitGroup contract violation: the
+					// counter can be zero when Stop calls Wait, and this line
+					// could run after that -- the scheduler is inside a tick
+					// when the cancellation arrives. A probe counted too late
+					// is a probe Stop does not wait for, and a probe writes to
+					// the peer store, which is the one thing Stop promises not
+					// to leave running. See docs/KNOWN-LIMITATIONS.md row
+					// 3.30.
+					if !h.beginBackgroundWork() {
+						<-sem
+						continue
+					}
 					go func() {
-						defer h.heartbeatWG.Done()
+						defer h.endBackgroundWork()
 						defer func() { <-sem }()
 						answered, health := h.probePeerOnce(ctx, k)
 						finished := time.Now()

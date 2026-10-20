@@ -138,11 +138,22 @@ func summarize(samples []time.Duration) (p50, p95, max time.Duration, zeros int)
 // path against the plan's 500 ms local budget. No sample is discarded: the
 // budget names the *first* status response, so one-time lazy initialization
 // belongs to the measurement, not outside it.
+//
+// The sample count is THIRTY, not eight, and the reason is arithmetic rather
+// than taste. p95 at n=8 is sorted[7] -- the maximum -- so a single stalled
+// request on a shared runner failed the gate, and the CI run of 2026-10-20
+// failed it exactly that way: p50 107ms, p95 884ms, max 884ms, n=8. The
+// median says the path was fine; one request had stalled.
+//
+// At n=30 p95 is sorted[28] -- the twenty-ninth of thirty -- so one stall is
+// tolerated and a tail regression (two or more slow samples) is still caught.
+// The twin gate in internal/hub uses thirty for the same reason, and Batch Z83
+// of the DEV-RECORD is the record of that decision.
 func TestPerfBudget_CLIStatusResponse(t *testing.T) {
 	dir := seedPopulatedStore(t, 8)
 
-	samples := make([]time.Duration, 0, 8)
-	for i := 0; i < 8; i++ {
+	samples := make([]time.Duration, 0, 30)
+	for i := 0; i < 30; i++ {
 		start := time.Now()
 		withStdoutDiscarded(t, func() {
 			runStatus([]string{"--store-dir", dir})
