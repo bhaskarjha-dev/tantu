@@ -417,10 +417,41 @@ jobs:
           # this gate reproduces the window deliberately.
           node tools/uxtest/selfcheck-settle.cjs
       - name: Run acceptance harness across engines
+        # One runner per engine, and the reason is a measurement rather than a
+        # preference.
+        #
+        # The job used to run all seven browser sessions -- three engines, two
+        # topologies, and the two-hub pass -- on one runner, in one job. The
+        # session that failed on 2026-10-20 was the sixth: the webkit peers
+        # run, which reported "WebKit encountered an internal error" against
+        # every endpoint it touched, including the page's own URL, and failed
+        # again when the job re-ran that case with a FRESH BROWSER on the SAME
+        # runner. A fresh browser not helping is the measurement that matters:
+        # the degradation is in the runner, not in the browser process, so the
+        # remedy is a fresh runner rather than a fresh browser.
+        #
+        # The local measurement agrees that the pressure is real. Seven
+        # consecutive sessions were run in CI's exact order on one machine, and
+        # all seven passed -- but the webkit ones took 153s and 156s against
+        # 86-95s for the others. WebKit is the heavy engine, and it was the
+        # heavy engine that failed.
+        #
+        # So each engine gets a runner that has never run a browser: three
+        # runners, two sessions each, instead of one runner with seven. The
+        # cost is runner minutes; the benefit is that the product's only
+        # browser evidence does not depend on how many browsers came before it.
+        #
+        # fail-fast is off on purpose. Every engine runs even when an earlier
+        # one fails, because "chromium failed, so firefox was never looked at"
+        # wastes the only run you get.
+        strategy:
+          fail-fast: false
+          matrix:
+            engine: [chromium, firefox, webkit]
         # Same reasoning as the test step: the harness's diagnostics are the
         # only diagnosis available for this job, and a log nobody can read
         # turns "exit 3" into a mystery. Every run executes even when an
-        # earlier one fails — one gate, six runs, one annotation each —
+        # earlier one fails -- one gate, two runs per leg, one annotation each --
         # because "chromium failed, so firefox was never looked at" wastes
         # the only run you get.
         #
@@ -453,90 +484,89 @@ jobs:
 
           status=0
           infra=0
+          engine="${{ matrix.engine }}"
           # Screenshots are written here rather than into the harness work
           # directory, which is deleted when a run passes. Uploaded below on
           # every run, green or red.
           SHOTDIR="$RUNNER_TEMP/uxtest-shots"
           mkdir -p "$SHOTDIR"
           for mode in "" "--peers"; do
-            for engine in chromium firefox webkit; do
-              label="$engine${mode:+ peers}"
-              slug="$engine${mode:+-peers}"
-              echo "::group::dashboard-acceptance $label"
-              # --- BEGIN dashboard-acceptance case ---
+            label="$engine${mode:+ peers}"
+            slug="$engine${mode:+-peers}"
+            echo "::group::dashboard-acceptance $label"
+            # --- BEGIN dashboard-acceptance case ---
+            run_status=0
+            TANTU_TEST_SHOTDIR="$SHOTDIR" node tools/uxtest/run.mjs --browser="$engine" $mode 2>&1 | tee "harness-$slug.log" || run_status=$?
+            if [ "$run_status" -eq 5 ]; then
+              # Exit 5 is the harness saying the BROWSER failed, not the
+              # product: the engine reported an internal error and the checks
+              # that failed are attributed to it. This is a known WebKit fault,
+              # not a Tantu defect -- see docs/KNOWN-LIMITATIONS.md row 2.9.
+              #
+              # Re-run this one case once. An engine fault does not reproduce;
+              # a product defect does, and the second attempt is what tells
+              # them apart. The first attempt's output is printed either way,
+              # so a product-shaped failure hiding behind an engine fault is
+              # visible rather than swallowed.
+              printf '::warning::dashboard-acceptance (%s) was NOT A PRODUCT RESULT: the browser engine failed a request. Re-running this case once.\n' "$label"
+              first_detail=$(tail -n 40 "harness-$slug.log")
+              printf '::warning::dashboard-acceptance (%s) first attempt: %s\n' "$label" "${first_detail//$'\n'/%0A}"
               run_status=0
-              TANTU_TEST_SHOTDIR="$SHOTDIR" node tools/uxtest/run.mjs --browser="$engine" $mode 2>&1 | tee "harness-$slug.log" || run_status=$?
-              if [ "$run_status" -eq 5 ]; then
-                # Exit 5 is the harness saying the BROWSER failed, not the
-                # product: the engine reported an internal error and the checks
-                # that failed are attributed to it. This is a known WebKit fault,
-                # not a Tantu defect -- see docs/KNOWN-LIMITATIONS.md row 2.9.
-                #
-                # Re-run this one case once. An engine fault does not reproduce;
-                # a product defect does, and the second attempt is what tells
-                # them apart. The first attempt's output is printed either way,
-                # so a product-shaped failure hiding behind an engine fault is
-                # visible rather than swallowed.
-                printf '::warning::dashboard-acceptance (%s) was NOT A PRODUCT RESULT: the browser engine failed a request. Re-running this case once.\n' "$label"
-                first_detail=$(tail -n 40 "harness-$slug.log")
-                printf '::warning::dashboard-acceptance (%s) first attempt: %s\n' "$label" "${first_detail//$'\n'/%0A}"
-                run_status=0
-                TANTU_TEST_SHOTDIR="$SHOTDIR" node tools/uxtest/run.mjs --browser="$engine" $mode 2>&1 | tee "harness-$slug-retry.log" || run_status=$?
-                if [ "$run_status" -eq 0 ]; then
-                  printf '::warning::dashboard-acceptance (%s) passed on the retry, so the first attempt was a browser engine fault rather than a Tantu defect.\n' "$label"
-                fi
+              TANTU_TEST_SHOTDIR="$SHOTDIR" node tools/uxtest/run.mjs --browser="$engine" $mode 2>&1 | tee "harness-$slug-retry.log" || run_status=$?
+              if [ "$run_status" -eq 0 ]; then
+                printf '::warning::dashboard-acceptance (%s) passed on the retry, so the first attempt was a browser engine fault rather than a Tantu defect.\n' "$label"
               fi
-              # Six runs share one directory, so a run that produced no images
-              # is worth saying out loud rather than passing as an empty folder.
-              #
-              # The test is the number of images, not the existence of the
-              # directory. The harness creates that directory before it runs a
-              # single check, so the old `[ ! -d ... ]` could never fire, and
-              # it would not have detected a run that rendered nothing either,
-              # since it tested existence rather than contents.
-              #
-              # After the retry, so it describes the attempt that counted.
-              shots=$(find "$SHOTDIR/$slug" -maxdepth 1 -name '*.png' 2>/dev/null | wc -l)
-              if [ "$shots" -eq 0 ]; then
-                printf '::warning::dashboard-acceptance (%s) produced no screenshots at %s\n' "$label" "$SHOTDIR/$slug"
-              fi
-              # Exit 4 is the harness telling us its Hub died mid-run, which is
-              # not a product result: every later check failed for want of a
-              # server. Reporting it in the same bucket as a real regression
-              # would train everyone to ignore the job, so it is surfaced as a
-              # distinct warning while still failing the run.
-              case "$run_status" in
-                4)
-                  infra=1
-                  # status is set too, deliberately. An earlier version only set
-                  # `infra`, and `exit "$status"` then reported success for a
-                  # run in which the Hub under test died -- a false green, which
-                  # is the exact failure this classification exists to prevent.
-                  # Verified by simulating exit 0, 1 and 4 through the same
-                  # case statement: 4 must not exit 0.
-                  [ "$status" -eq 0 ] && status=4
-                  detail=$(tail -n 40 "harness-$slug.log")
-                  printf '::warning::dashboard-acceptance (%s) was NOT A PRODUCT RESULT: %s\n' "$label" "${detail//$'\n'/%0A}"
-                  printf '::error::dashboard-acceptance (%s): the Hub under test exited mid-run (exit 4). This run proves nothing either way - re-run.\n' "$label"
-                  ;;
-                5)
-                  # Still the engine after the retry. That is no longer an
-                  # intermittent browser fault, so it is a failure -- and it
-                  # names the cause rather than leaving it to be guessed.
-                  status=5
-                  detail=$(tail -n 40 "harness-$slug-retry.log" 2>/dev/null || tail -n 40 "harness-$slug.log")
-                  printf '::error::dashboard-acceptance (%s) failed again with the browser engine at fault: %s\n' "$label" "${detail//$'\n'/%0A}"
-                  ;;
-                0) ;;
-                *)
-                  status="$run_status"
-                  detail=$(tail -n 60 "harness-$slug.log")
-                  printf '::error::dashboard-acceptance (%s) failed: %s\n' "$label" "${detail//$'\n'/%0A}"
-                  ;;
-              esac
-              # --- END dashboard-acceptance case ---
-              echo "::endgroup::"
-            done
+            fi
+            # The runs on this leg share one directory, so a run that produced no images
+            # is worth saying out loud rather than passing as an empty folder.
+            #
+            # The test is the number of images, not the existence of the
+            # directory. The harness creates that directory before it runs a
+            # single check, so the old `[ ! -d ... ]` could never fire, and
+            # it would not have detected a run that rendered nothing either,
+            # since it tested existence rather than contents.
+            #
+            # After the retry, so it describes the attempt that counted.
+            shots=$(find "$SHOTDIR/$slug" -maxdepth 1 -name '*.png' 2>/dev/null | wc -l)
+            if [ "$shots" -eq 0 ]; then
+              printf '::warning::dashboard-acceptance (%s) produced no screenshots at %s\n' "$label" "$SHOTDIR/$slug"
+            fi
+            # Exit 4 is the harness telling us its Hub died mid-run, which is
+            # not a product result: every later check failed for want of a
+            # server. Reporting it in the same bucket as a real regression
+            # would train everyone to ignore the job, so it is surfaced as a
+            # distinct warning while still failing the run.
+            case "$run_status" in
+              4)
+                infra=1
+                # status is set too, deliberately. An earlier version only set
+                # `infra`, and `exit "$status"` then reported success for a
+                # run in which the Hub under test died -- a false green, which
+                # is the exact failure this classification exists to prevent.
+                # Verified by simulating exit 0, 1 and 4 through the same
+                # case statement: 4 must not exit 0.
+                [ "$status" -eq 0 ] && status=4
+                detail=$(tail -n 40 "harness-$slug.log")
+                printf '::warning::dashboard-acceptance (%s) was NOT A PRODUCT RESULT: %s\n' "$label" "${detail//$'\n'/%0A}"
+                printf '::error::dashboard-acceptance (%s): the Hub under test exited mid-run (exit 4). This run proves nothing either way - re-run.\n' "$label"
+                ;;
+              5)
+                # Still the engine after the retry. That is no longer an
+                # intermittent browser fault, so it is a failure -- and it
+                # names the cause rather than leaving it to be guessed.
+                status=5
+                detail=$(tail -n 40 "harness-$slug-retry.log" 2>/dev/null || tail -n 40 "harness-$slug.log")
+                printf '::error::dashboard-acceptance (%s) failed again with the browser engine at fault: %s\n' "$label" "${detail//$'\n'/%0A}"
+                ;;
+              0) ;;
+              *)
+                status="$run_status"
+                detail=$(tail -n 60 "harness-$slug.log")
+                printf '::error::dashboard-acceptance (%s) failed: %s\n' "$label" "${detail//$'\n'/%0A}"
+                ;;
+            esac
+            # --- END dashboard-acceptance case ---
+            echo "::endgroup::"
           done
 
           # Did any run end as "not a product result" rather than as a product
@@ -564,14 +594,21 @@ jobs:
           # six times over would cost minutes per push to re-prove the same thing.
           # Rendering of the same screens on all three engines is still covered by
           # the ordinary pass above.
-          twohub_status=0
-          echo "::group::dashboard-acceptance two-hub"
-          TANTU_TEST_SHOTDIR="$SHOTDIR" node tools/uxtest/run.mjs --browser=chromium --peers --two-hub 2>&1 | tee harness-two-hub.log || twohub_status=$?
-          if [ "$twohub_status" -ne 0 ]; then
-            status="$twohub_status"
-            printf '::error::dashboard-acceptance (two-hub) failed: %s\n' "$(tail -n 40 harness-two-hub.log)"
+          #
+          # Once per JOB rather than once per engine now that each engine has a
+          # runner of its own: the chromium leg runs it, and the other two do
+          # not. It was the same single run before the split, and it is the same
+          # single run after.
+          if [ "$engine" = "chromium" ]; then
+            twohub_status=0
+            echo "::group::dashboard-acceptance two-hub"
+            TANTU_TEST_SHOTDIR="$SHOTDIR" node tools/uxtest/run.mjs --browser=chromium --peers --two-hub 2>&1 | tee harness-two-hub.log || twohub_status=$?
+            if [ "$twohub_status" -ne 0 ]; then
+              status="$twohub_status"
+              printf '::error::dashboard-acceptance (two-hub) failed: %s\n' "$(tail -n 40 harness-two-hub.log)"
+            fi
+            echo "::endgroup::"
           fi
-          echo "::endgroup::"
           exit "$status"
 
       - name: Upload rendered screenshots
@@ -584,12 +621,14 @@ jobs:
         #
         # `if: always()` because the failing run is the one whose pictures are
         # worth having, and the step above exits non-zero to report a failure.
-        # Seven days: six runs per push at four images each is neither large
+        # Seven days: seven runs per push at four images each is neither large
         # nor worth keeping forever.
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: dashboard-screenshots
+          # One artifact per engine, because the job now runs once per engine
+          # and two uploads with the same name fail the run.
+          name: dashboard-screenshots-${{ matrix.engine }}
           path: ${{ runner.temp }}/uxtest-shots
           if-no-files-found: warn
           retention-days: 7

@@ -9768,3 +9768,143 @@ aside by hand. The product does not do that itself, because silently forgetting
 a pairing is a trust decision the user should make, and the transfer ledger --
 which holds metadata, not trust -- is a different thing. `doctor` names the file
 and says so, and the remainder is registered as open.
+
+## Batch Z119 -- one runner per engine, and a gate that could not run accusing the product (2026-10-20)
+
+### The CI failure, and the two halves of it
+
+The Linux runner's webkit peers session failed: `WebKit encountered an
+internal error` against every endpoint the page touched, including the page's
+own URL, and the checks that followed failed with no session, no render stamp,
+and a `File` reporting `size: 0` for every construction. That is row 2.9.
+
+**The classification worked.** The harness reported "NOT A PRODUCT RESULT -- the
+browser engine failed a request", split its failures into tagged and untagged,
+and CI re-ran the case. The re-run failed again, with all ten of its failures
+tagged, so the job exited 5 with a message that names the browser instead of
+reading as a product regression. Batch Z116 added that behaviour; this is the
+first time a real failure has exercised it, and the job's final words are now
+"failed again with the browser engine at fault" rather than six unrelated
+check names.
+
+**And the fault reproduced, which falsified the classification's own premise.**
+The premise was "an engine fault does not reproduce, a product defect does".
+The run said otherwise: the job re-ran the case with a **fresh browser** on the
+**same runner**, and it failed the same way. A fresh browser not helping means
+the degradation is in the *runner*, not in the browser process -- so another
+browser was never going to be the answer, and the remedy is a fresh *runner*.
+
+### 4.10: a check that could not run, accusing the product
+
+The new "a tab hidden while a poll is in flight" check reported:
+
+    FAIL  a tab hidden while a poll is in flight does not resume polling
+          no poll was ever in flight, so the gate would test nothing
+
+as a *product* failure. It was not one. The environment had stopped the page
+from loading at all -- the reload never landed, there was no session, and the
+dashboard never started polling -- so the poll the check wanted to interrupt had
+never existed. The check reported the absence of its own precondition as a
+verdict on the product.
+
+That is this repository's recurring failure class wearing a different hat: a
+check that cannot run must say so rather than accuse. It now skips with the
+reason, and the checks that need a working page -- "session established",
+"the document stamps a first-useful-render instant" -- report the real fault.
+
+The born-hidden check had the same hole from the other side. With no request at
+all, "the count did not grow" is trivially true, so it would have passed
+*vacuously* against a product that had simply stopped polling entirely -- a
+pass for the wrong reason, which is worse than a failure because it is silent.
+It now skips when the page made no request at all. The visible-page control
+covers the other direction: if the dashboard has really stopped polling, the
+control fails, and if the browser engine failed a request the control skips,
+because it cannot tell "the product stopped polling" from "the browser stopped
+asking".
+
+### The measurement, and the change it implies
+
+Seven consecutive browser sessions were run on one machine in CI's exact order
+-- chromium, firefox and webkit peerless; the same three with peers; then the
+two-hub pass. **All seven passed.** So "the sixth session is always the broken
+one" is not a law, and the split below is a mitigation for a hypothesised
+cause rather than a proven fix. The timings are the interesting part:
+
+| session | time |
+| --- | --- |
+| chromium peerless | 95s |
+| firefox peerless | 86s |
+| **webkit peerless** | **153s** |
+| chromium peers | 95s |
+| firefox peers | 92s |
+| **webkit peers** | **156s** |
+| chromium two-hub | 130s |
+
+WebKit is roughly sixty per cent slower than the other engines, and the two
+WebKit sessions are the two slowest. The engine that failed on the runner is
+the heavy one. (The local runs were also *before* the checks were trimmed, so
+the WebKit figures are the ones that included the full cost of the new
+hidden-tab work -- see below.)
+
+So the dashboard-acceptance job now runs **once per engine**: a matrix over
+chromium, firefox and webkit, each on a runner that has never run a browser.
+The webkit peers session goes from sixth in a queue of seven to second in a
+queue of two. The cost is runner minutes; the benefit is that the product's
+only browser evidence no longer depends on how many browsers came before it.
+
+Two things had to be true for that to be an improvement rather than a
+reshuffle:
+
+- **The two-hub pass still runs exactly once.** It stands up two extra Hubs and
+  a real pairing, and it is the only place the browser ever drives a peer that
+  exists. Splitting the job across three legs would have run it three times,
+  which is minutes per push to re-prove the same thing, so it is now
+  conditioned on the chromium leg.
+- **The artifact names do not collide.** Two uploads with the same name fail
+  the run, so each leg uploads `dashboard-screenshots-<engine>`.
+
+### The gate, and the shape it can fail in
+
+`tools/wfcheck` only *parsed* the workflow's shell. Parsing is not running: the
+block that decides whether a red build means "the product broke" was never
+executed by anything, and the same was true of the new matrix. So
+`tools/wfcheck/browser_matrix_test.go` takes the step's own `run:` block out of
+`ci.yml` and executes it, one matrix leg at a time, with the harness replaced by
+a stub that records what it was asked to run. It asserts that each leg runs
+only its own engine, that every engine has a leg, and that the two-hub pass
+runs exactly once across the matrix.
+
+The gate is written to be able to fail, which is the part that matters. The
+checker is a function over data rather than a straight read of the workflow, so
+the negative cases can drive it with the shapes it must reject: the **old
+shape** (one leg running all three engines, twice each, plus the two-hub pass
+-- seven sessions on one runner) and a matrix **with no two-hub pass at all**.
+Both must be reported. A checker that accepted the old shape would let the
+seventh session back onto the first runner without saying anything, and the
+whole point of the change is that it does not.
+
+### What I cost the runner, and what it cost back
+
+The three hidden-tab checks cost about thirty-five seconds *per session* when
+they landed: they ran in sequence, each with a window of ten seconds or more,
+and the control waited out eight seconds of its own. Six sessions in a job,
+times thirty-five seconds, on a runner where the engine that fails is already
+the slowest -- that is a contribution to the condition being investigated, made
+by the change that was supposed to help.
+
+They now cost about fifteen. The two measurements run **concurrently** rather
+than in sequence, the windows are sized to the three-second polling cadence
+rather than to a round number, and the control no longer waits for a window of
+its own -- it counts the visible page's requests over the whole block, which
+costs no time at all. The webkit peers session went from 156s to 138s, and
+chromium peers from 95s to 75s.
+
+### What is not claimed
+
+The WebKit fault is not diagnosed. Row 2.9 stays open. The split is a
+mitigation for a cause that has been measured but not identified, and the
+measurement that supports it -- WebKit being the slow engine -- is a
+correlation on one machine, not a mechanism. If the next CI run still fails the
+webkit peers session, the split has not fixed it, and the next thing to look at
+is what a runner accumulates across browser sessions, which this repository has
+no way to measure from the inside.

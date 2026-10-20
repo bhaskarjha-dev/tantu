@@ -2208,74 +2208,142 @@ window.__setHidden = function (h) { window.__tantuHidden = !!h; document.dispatc
         return () => seen;
       };
 
-      // (1) A dashboard that is born in a background tab.
-      const bornHidden = await context.newPage();
-      await bornHidden.addInitScript(visibilityOverride(true));
-      const bornHiddenPolls = countHubPolls(bornHidden);
-      await bornHidden.goto('http://127.0.0.1:' + WEB_PORT + '/');
-      // Let the first paint and its one-shot fetches settle. The page issues
-      // three of them at load -- the status, the in-flight list, and the
-      // authorization history, which asks for the in-flight list again on its
-      // way out -- and those are not polling. What must not happen is a
-      // FOURTH request, and a sixth, and a twelfth: the cadence continuing.
-      await sleep(4000);
-      const settled = bornHiddenPolls().length;
-      await sleep(6000);
-      const later = bornHiddenPolls();
-      check('a dashboard opened in a background tab stops polling the Hub',
-        later.length === settled,
-        'hub poll requests: ' + settled + ' once the first paint settled, ' + later.length +
-        ' after 6 more seconds hidden ' + JSON.stringify(later.slice(settled)) +
-        ' (the live cadence is one every 3s)');
-      await bornHidden.close().catch(() => {});
-
-      // (2) A tab hidden while a poll is already in flight.
-      const midPoll = await context.newPage();
-      await midPoll.addInitScript(visibilityOverride(false));
-      // Every status response is delayed, so a poll is guaranteed to be in
-      // flight when the tab is hidden rather than merely likely to be. The
-      // delay applies to the FIRST status request too, which is what makes
-      // the second one a poll rather than the first paint.
-      let statusRequests = 0;
-      await midPoll.route(/\/api\/status(\?|$)/, async (route) => {
-        statusRequests++;
-        await sleep(2500);
-        await route.continue().catch(() => {});
-      });
-      const midPollPolls = countHubPolls(midPoll);
-      await midPoll.goto('http://127.0.0.1:' + WEB_PORT + '/');
-      // Wait for a POLL -- the second status request -- rather than guessing
-      // when it will happen. A guess that hides the tab a second too late
-      // tests nothing, and the first paint takes a variable time.
-      const pollDeadline = Date.now() + 25000;
-      while (statusRequests < 2 && Date.now() < pollDeadline) await sleep(50);
-      if (statusRequests < 2) {
-        check('a tab hidden while a poll is in flight does not resume polling', false,
-          'no poll was ever in flight, so the gate would test nothing');
-      } else {
-        const atHide = midPollPolls().length;
-        await midPoll.evaluate('window.__setHidden(true)').catch(() => {});
-        const hiddenAt = midPollPolls().length;
-        await sleep(10000);
-        const afterHideSeen = midPollPolls();
-        check('a tab hidden while a poll is in flight does not resume polling',
-          afterHideSeen.length === hiddenAt,
-          'hub poll requests: ' + atHide + ' before hiding, ' + hiddenAt + ' at the hide, ' +
-          afterHideSeen.length + ' after 10s hidden ' + JSON.stringify(afterHideSeen.slice(hiddenAt)) +
-          ' (a poll that re-arms after the tab is hidden shows up here)');
-      }
-      await midPoll.close().catch(() => {});
-
-      // The control: the main page, which is visible, over the same window.
+      // The control: the main page, which is visible, has been polling all
+      // along. Counting its requests over the whole block costs no time of its
+      // own, and it is the difference between "the background tab stopped
+      // polling" and "nothing was polling".
       let mainPolls = 0;
       page.on('request', (r) => {
         if (r.url().indexOf('/api/status') >= 0) mainPolls++;
       });
-      const mainBefore = mainPolls;
-      await sleep(8000);
-      const mainSeen = mainPolls - mainBefore;
-      check('a visible dashboard keeps polling, so the hidden case is not passing because nothing polls',
-        mainSeen >= 2, '/api/status requests on the visible page in 8s: ' + mainSeen);
+
+      // (1) A dashboard that is born in a background tab, and (2) a tab hidden
+      // while a poll is in flight.
+      //
+      // The two measurements run CONCURRENTLY. The first needs a few seconds of
+      // observation; the second has to catch a poll in flight and then watch
+      // for a re-arm. In sequence they cost twice as long, and the runner that
+      // produces this job is already the slowest place this repository's
+      // browser evidence comes from: the WebKit runs take 153s and 156s there
+      // against 86-95s for the others, and a job that is slower is a job where
+      // the next thing to go wrong is the engine.
+      const bornHiddenResult = (async () => {
+        const bornHidden = await context.newPage();
+        await bornHidden.addInitScript(visibilityOverride(true));
+        const bornHiddenPolls = countHubPolls(bornHidden);
+        await bornHidden.goto('http://127.0.0.1:' + WEB_PORT + '/');
+        // Let the first paint and its one-shot fetches settle. The page issues
+        // three of them at load -- the status, the in-flight list, and the
+        // authorization history, which asks for the in-flight list again on
+        // its way out -- and those are not polling. What must not happen is a
+        // FOURTH request, and a sixth, and a twelfth: the cadence continuing.
+        await sleep(2000);
+        const settled = bornHiddenPolls().length;
+        await sleep(5000);
+        const later = bornHiddenPolls();
+        await bornHidden.close().catch(() => {});
+        if (settled === 0) {
+          // The page made no request at all, so the dashboard never loaded and
+          // there was nothing that could have polled. Reporting "the background
+          // tab stopped polling" here would be a vacuous pass: it would also
+          // pass if the product had simply stopped polling entirely.
+          return {
+            skipped: 'the page made no request at all, so the dashboard never loaded and the ' +
+              'suspend path could not be exercised. The checks that need a working page report why.',
+            detail: 'hub poll requests: 0',
+          };
+        }
+        return {
+          ok: later.length === settled,
+          detail: 'hub poll requests: ' + settled + ' once the first paint settled, ' + later.length +
+            ' after 5 more seconds hidden ' + JSON.stringify(later.slice(settled)) +
+            ' (the live cadence is one every 3s)',
+        };
+      })();
+
+      // (2) A tab hidden while a poll is already in flight.
+      const midPollResult = (async () => {
+        const midPoll = await context.newPage();
+        await midPoll.addInitScript(visibilityOverride(false));
+        // Every status response is delayed, so a poll is guaranteed to be in
+        // flight when the tab is hidden rather than merely likely to be. The
+        // delay applies to the FIRST status request too, which is what makes
+        // the second one a poll rather than the first paint.
+        let statusRequests = 0;
+        await midPoll.route(/\/api\/status(\?|$)/, async (route) => {
+          statusRequests++;
+          await sleep(2500);
+          await route.continue().catch(() => {});
+        });
+        const midPollPolls = countHubPolls(midPoll);
+        await midPoll.goto('http://127.0.0.1:' + WEB_PORT + '/');
+        // Wait for a POLL -- the second status request -- rather than guessing
+        // when it will happen. A guess that hides the tab a second too late
+        // tests nothing, and the first paint takes a variable time.
+        const pollDeadline = Date.now() + 25000;
+        while (statusRequests < 2 && Date.now() < pollDeadline) await sleep(50);
+        if (statusRequests < 2) {
+          // The precondition could not be produced, so this check has nothing
+          // to say about the product -- and saying "failed" would blame the
+          // product for an environment that stopped the page from loading at
+          // all. On 2026-10-20 the Linux runner's WebKit failed every request
+          // including the page's own URL, and this check reported a product
+          // failure because the poll it wanted to interrupt had never started.
+          //
+          // The checks that need a working page report that; this one says it
+          // could not run.
+          await midPoll.close().catch(() => {});
+          return {
+            skipped: 'no poll was ever in flight, so the suspend path could not be exercised. ' +
+              'The checks that need a working page report why.',
+          };
+        }
+        const atHide = midPollPolls().length;
+        await midPoll.evaluate('window.__setHidden(true)').catch(() => {});
+        const hiddenAt = midPollPolls().length;
+        // Two cadence periods. A poll that re-arms after the tab is hidden
+        // shows up inside this window; a window shorter than the cadence could
+        // miss it.
+        await sleep(7000);
+        const afterHideSeen = midPollPolls();
+        await midPoll.close().catch(() => {});
+        return {
+          ok: afterHideSeen.length === hiddenAt,
+          detail: 'hub poll requests: ' + atHide + ' before hiding, ' + hiddenAt + ' at the hide, ' +
+            afterHideSeen.length + ' after 7s hidden ' + JSON.stringify(afterHideSeen.slice(hiddenAt)) +
+            ' (a poll that re-arms after the tab is hidden shows up here)',
+        };
+      })();
+
+      const [born, mid] = await Promise.all([bornHiddenResult, midPollResult]);
+
+      if (born.skipped) {
+        skip('a dashboard opened in a background tab stops polling the Hub', born.skipped);
+      } else {
+        check('a dashboard opened in a background tab stops polling the Hub', born.ok, born.detail);
+      }
+      if (mid.skipped) {
+        skip('a tab hidden while a poll is in flight does not resume polling', mid.skipped);
+      } else {
+        check('a tab hidden while a poll is in flight does not resume polling', mid.ok, mid.detail);
+      }
+
+      // The control, now the block is over. Without it the two checks above
+      // could pass because nothing polls at all -- a product that had simply
+      // stopped polling would satisfy them.
+      //
+      // If the browser engine failed a request, the main page is not polling
+      // for a reason that is not the product's, and this control cannot tell
+      // the two apart. It skips, and the checks that need a working page say
+      // why.
+      if (mainPolls < 2 && noteEngineFailure.last) {
+        skip('a visible dashboard keeps polling, so the hidden case is not passing because nothing polls',
+          'the browser engine failed a request, so the page was not polling for a reason that ' +
+          'is not the product\'s');
+      } else {
+        check('a visible dashboard keeps polling, so the hidden case is not passing because nothing polls',
+          mainPolls >= 2, '/api/status requests on the visible page during this block: ' + mainPolls);
+      }
     }
 
     if (TWO_HUB) {
