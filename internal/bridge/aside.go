@@ -595,7 +595,26 @@ func (a *ASide) Run(parent context.Context) (runErr error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if err := validateCallbackRequest(r, callbackExpectationSpec{}); err != nil {
+		// The first pass is the cheap one, before the body is read: the method,
+		// the loopback host, the browser-CSRF headers and the path.
+		//
+		// It uses the real expectation, so that a browser-supplied Origin can be
+		// compared against the authorization server's origin. It used to be
+		// handed an EMPTY expectation, which has no origin at all, so every
+		// callback that carried one was refused as "the authorization origin is
+		// unknown" -- and a form_post response, a cross-origin top-level POST
+		// that browsers always stamp with the provider's Origin, always carries
+		// one. The refusal also told the user that Tantu could not verify where
+		// the sign-in came from, which was false: Tantu knew the origin and had
+		// compared against the wrong expectation. The second pass below, which
+		// has the real expectation, would have accepted the same request.
+		//
+		// It must NOT check the state. A form_post response carries the state in
+		// the body, which has not been read yet, so the state belongs to the
+		// second pass, which is given the form state.
+		preBody := expected
+		preBody.state = ""
+		if err := validateCallbackRequest(r, preBody); err != nil {
 			advice := renderCallbackRejection(w, rejectionKindOf(err))
 			a.logf("⚠️ Rejected callback request (%s): %v", advice.Title, err)
 			return

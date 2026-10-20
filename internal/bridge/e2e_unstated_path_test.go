@@ -38,12 +38,20 @@ import (
 
 // anyPathClient is an OAuth client that, like Kiro, accepts a callback on any
 // path. It records the path it was called on so the gate can assert it arrived.
+//
+// It also records the method and the body, because a provider that uses the
+// form_post response mode delivers the authorization code in the body of a
+// POST rather than in the query of a GET. A client that only read the query
+// would see an empty callback and could not tell a form_post that arrived
+// from one that did not.
 type anyPathClient struct {
-	srv      *http.Server
-	addr     string
-	gotPath  string
-	gotQuery string
-	got      chan struct{}
+	srv       *http.Server
+	addr      string
+	gotPath   string
+	gotQuery  string
+	gotMethod string
+	gotBody   string
+	got       chan struct{}
 }
 
 func newAnyPathClient(t *testing.T) *anyPathClient {
@@ -58,6 +66,11 @@ func newAnyPathClient(t *testing.T) *anyPathClient {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		c.gotPath = r.URL.Path
 		c.gotQuery = r.URL.RawQuery
+		c.gotMethod = r.Method
+		if r.Body != nil {
+			body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+			c.gotBody = string(body)
+		}
 		select {
 		case c.got <- struct{}{}:
 		default:

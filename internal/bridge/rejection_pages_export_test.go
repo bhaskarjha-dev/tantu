@@ -60,7 +60,7 @@ func TestExportRejectionPages(t *testing.T) {
 		rejectNotLoopback:    {"The sign-in redirects to a host that is not this machine. Needs a misconfigured application.", false},
 		rejectNotNavigation:  {"The sign-in page fetches the callback address instead of the browser following a redirect to it. Needs an application that redirects in script.", false},
 		rejectSubresource:    {"The callback address is requested as an image, script or stylesheet. Needs an application that does this.", false},
-		rejectOriginUnknown:  {"The callback carries an Origin and the sign-in's origin is unknown to Tantu. Needs an unusual redirect_uri.", false},
+		rejectOriginUnknown:  {"The callback carries an Origin and the sign-in's origin is unknown to Tantu. **Unreachable since 2026-10-20**: the A-side validates the authorization URL to have a scheme and a host before it computes the expectation, so the origin is always known and an unknown origin can no longer reach this page. The check is kept as a defence in depth, and is still gated by a unit test.", false},
 		rejectOriginMismatch: {"The callback comes from a different site than the sign-in started on. Needs a cross-site redirect chain.", false},
 		rejectPath:           {"The callback arrives on a path the sign-in did not register. Needs an application whose listener and registration disagree.", false},
 		rejectState:          {"A sign-in is cancelled or superseded, then completed. **A person can do this**: start a sign-in, cancel it, then finish it in the browser.", true},

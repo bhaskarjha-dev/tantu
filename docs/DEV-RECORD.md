@@ -9146,3 +9146,98 @@ the handshake deadline is cleared once the first envelope is read.
 Verified: `go build`, `go vet`, `go test` (15 packages), `gofmt -l`, `encgate`,
 `docgate` and the four uxtest selfchecks exit 0. The audit itself was read-only
 and left the tree clean.
+
+---
+
+## Batch Z113 — a sign-in shape the register said worked, and did not (2026-10-20)
+
+Batch Z112's audit found a register row that was false, and this is the batch
+that fixed it.
+
+### The defect
+
+The OAuth 2.0 response mode `form_post` delivers the authorization code in the
+body of a POST rather than in the query of a GET. It is a cross-origin top-level
+navigation, so the browser stamps it with the provider's `Origin` header — and
+the A-side's own comment says exactly that:
+
+> ... either no Origin is sent (a GET redirect) or the Origin is the provider's
+> own (a form_post response)
+
+The A-side validated the callback **twice**. The first pass — the one before the
+body is read — was handed an **empty** `callbackExpectationSpec{}`. An empty
+expectation has no authorization origin, so `validateCallbackFetchMetadata` took
+this branch:
+
+```go
+if expected.authOrigin == "" {
+    // No authorization origin is known, so a browser-supplied Origin
+    // cannot be checked against anything. Refuse rather than guess.
+    return reject(rejectOriginUnknown, "callback carried Origin %s but the authorization origin is unknown", origin)
+}
+```
+
+Every `form_post` callback carries an `Origin`. So every one of them was
+refused, with a page titled **"Tantu could not verify where this sign-in came
+from"** — which was false. Tantu knew the origin; it had compared against the
+wrong expectation. The second pass, which has the correct spec, would have
+accepted the same request, and was never reached.
+
+`rejectOriginMismatch` — the refusal that names the *actual* cause — was
+unreachable from the A-side handler entirely.
+
+### Why nothing caught it
+
+Three layers, each individually reasonable:
+
+1. **The pure-function gate tested the wrong function.** `callback_csrf_test.go`
+   has a case named "legitimate form_post from the provider". It calls
+   `validateCallbackRequestState` with the *correct* spec — the second pass — so
+   it could never see the handler's first. A behaviour claim covered only by a
+   pure function is a defect, and this was the textbook case.
+2. **No harness could produce the shape.** `internal/testutil/oauthserver`
+   implements `GET /authorize` only, so no test could generate a `form_post`
+   response.
+3. **The register said it worked.** Row 3.19 has said "a `form_post` redirect is
+   accepted" since 2026-10-13. It was not. This is the direction that matters:
+   the register claimed *more* compatibility than existed, so nobody went
+   looking.
+
+### The fix
+
+The first pass now uses the real expectation, so a browser `Origin` is compared
+against the authorization server's origin rather than refused for having no
+comparison target. The state check stays out of the first pass — a `form_post`
+carries the state in the body, which has not been read yet — and belongs to the
+second pass, which has the form state.
+
+The refusal for a callback from a *different* site is now the precise one:
+"This sign-in came from a different website".
+
+### The gate, and its two red proofs
+
+`internal/bridge/e2e_form_post_test.go` is a **behaviour** gate: a real bridge
+pair over a real transport, a real loopback listener, and a real HTTP POST
+carrying the headers a browser sends. Only the browser is simulated.
+
+Two red proofs, each applied and run:
+
+- **Restoring the empty expectation** fails the relay with the old false
+  refusal — "Tantu could not verify where this sign-in came from" — and the
+  application is never called.
+- **Dropping the deferred state check** fails it with a state mismatch, because
+  a `form_post` carries the state in the body. So both halves of the fix are
+  load-bearing and both are gated.
+
+The second test is the half that matters: a `form_post` from
+`https://attacker.example` must still be refused, and the refusal must name
+the actual cause. A fix that accepted every form_post would have passed the
+first test and failed the second.
+
+### The register
+
+Row 3.20 is Closed. Row 3.19's claim is now true for the first time, and says
+so, with the date it became true and a pointer to the row that was false.
+
+Verified: `go build`, `go vet`, `go test` (15 packages), `gofmt -l`, `encgate`,
+`docgate`, `wfcheck` and the four uxtest selfchecks exit 0.
