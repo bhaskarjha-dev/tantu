@@ -279,6 +279,7 @@ rather than on every change:
 ```bash
 go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...   # staticcheck
 go run golang.org/x/vuln/cmd/govulncheck@latest ./...     # govulncheck
+go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -shellcheck= .github/workflows/ci.yml .github/workflows/release.yml   # actionlint
 ```
 
 `docgate` fails if this list stops matching the gates the CI quality job runs,

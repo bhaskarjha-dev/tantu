@@ -16,7 +16,9 @@
 - **Run the gates CI runs, not a subset you remember.** The quality job is
   `gofmt -l .`, `go vet ./...`,
   `go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...`, `go test`, `encgate`,
-  `docgate`. On 2026-10-06 six commits were pushed on a report that every gate
+  `docgate`, `wfcheck`, and `actionlint` (which reads the workflows as YAML --
+  `wfcheck` only reads them as text, and a malformed workflow was reported as
+  clean). On 2026-10-06 six commits were pushed on a report that every gate
   was green, and CI was red on the one gate that had never been run locally:
   staticcheck found a watcher function that nothing called, while both documents
   describing it claimed it ran. Read `.github/workflows/ci.yml` for the list

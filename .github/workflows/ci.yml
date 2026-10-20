@@ -119,6 +119,33 @@ jobs:
         # it did not earn.
         run: go run ./tools/wfcheck
 
+      - name: Workflows parse as YAML
+        # wfcheck reads the workflow as TEXT: it scans for `run: |` blocks and
+        # feeds them to bash -n, and it checks job shape with an indentation
+        # heuristic. Neither reads YAML. A malformed workflow -- an unclosed
+        # flow mapping, a bad indent anywhere -- was reported as clean, and
+        # GitHub refuses to load the file, so the whole workflow including the
+        # signing step fails at tag time. See docs/KNOWN-LIMITATIONS.md row 1.8.
+        #
+        # actionlint reads the workflow as YAML and checks the expressions in
+        # it, so it catches the malformed-file class AND the wrong-expression
+        # class, which no gate here could see.
+        #
+        # It is run the way staticcheck and govulncheck are -- `go run
+        # <module>@<version>` -- so it adds nothing to go.mod and nothing to
+        # the shipped binary, and the version is pinned because an unpinned
+        # linter silently rots.
+        #
+        # `-shellcheck=` disables actionlint's own shellcheck integration on
+        # purpose. The integration HANGS on Windows: actionlint feeds the
+        # script to shellcheck on stdin and reads JSON back, and that pipe
+        # never completes there. Leaving it on would mean the gate could not
+        # be run identically everywhere the repository is developed on, and
+        # "run the gates CI runs" is the rule. The shell blocks are parsed
+        # separately by the step above.
+        run: |
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -shellcheck= .github/workflows/ci.yml .github/workflows/release.yml
+
       - name: UTF-8 encoding
         # A CP1252 round trip once re-encoded source and documentation into
         # still-valid UTF-8 that compiled, tested green, and read as plausible

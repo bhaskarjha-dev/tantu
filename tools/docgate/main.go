@@ -1052,6 +1052,7 @@ var qualityGateExtractors = []struct {
 	{`go run \./tools/[a-z]+`, ""}, // the identifier is the matched text
 	{`staticcheck@`, "staticcheck"},
 	{`govulncheck@`, "govulncheck"},
+	{`actionlint@`, "actionlint"},
 	{`go vet \./\.\.\.`, "go vet"},
 	{`gofmt -l \.`, "gofmt"},
 	{`git grep -Il`, "git grep -Il"},

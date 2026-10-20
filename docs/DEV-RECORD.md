@@ -10328,3 +10328,125 @@ both are red.
     cancellation: it was deleted before the ownership check and put back
     afterwards, so for the length of that window its own owner could not see
     it
+
+## Batch E -- the workflows are read as YAML at last (2026-10-20)
+
+### Row 1.8, and the decision it needed
+
+`wfcheck` scans the workflows for `run: |` blocks, feeds them to `bash -n`,
+and checks job shape with an indentation heuristic. **Neither reads YAML.** A
+malformed workflow -- an unclosed flow mapping, a bad indent anywhere -- was
+reported as clean, and GitHub refuses to load the file, so the whole workflow
+including the signing step fails at tag time.
+
+Two changes to `ci.yml` on the same day would have passed every gate in this
+repository: one was a malformed workflow that no local tool here could read,
+and the other was the matrix that renamed the check the branch requires --
+which was caught by *reading* Batch Z28's note in the DEV-RECORD, a sentence in
+a log rather than a rule in a gate.
+
+**actionlint reads the workflow as YAML** and checks the expressions in it, so
+it catches the malformed-file class and the wrong-expression class, and no
+gate here could see either. It is run the way staticcheck and govulncheck are
+-- `go run <module>@<version>` -- so it adds nothing to `go.mod` and nothing
+to the shipped binary, and the version is pinned, because an unpinned linter
+silently rots.
+
+**The one decision worth recording** is that actionlint's own shellcheck
+integration is disabled with `-shellcheck=`. The integration HANGS on Windows:
+actionlint feeds the script to shellcheck on stdin and reads JSON back, and
+that pipe never completes there. Leaving it on would mean the gate could not
+be run identically everywhere the repository is developed on -- and "run the
+gates CI runs" is the rule this repository keeps. The shell blocks are parsed
+separately, by `wfcheck`.
+
+**What was verified, and what was not.** actionlint v1.7.7 reports no problem
+with `ci.yml` or `release.yml`:
+
+- on Windows, with `-shellcheck=` -- exit 0, no output ✓
+- on Linux, under WSL -- it parsed both workflows and reached the
+  shellcheck stage, which is where the Windows pipe fails ✓
+
+The Linux run is the CI environment, and it is the one that matters ✓. What
+was NOT verified is the shellcheck integration on Linux, because this machine
+has no Linux shellcheck (only a Windows one, and a WSL that cannot spawn it).
+That is why the integration is off: an unverifiable gate is not a gate.
+
+**The gate found its own gap in the documentation.** `docgate` requires every
+gate in the CI quality job to be listed in the README's "Quality gates you
+can run locally" section, and it derives that list from `ci.yml` rather than
+from a second literal list -- because a second literal list is exactly what
+drifted before. Adding the step to `ci.yml` turned it red with
+
+    the CI quality job runs a gate identified by `actionlint` but the
+    "Quality gates you can run locally" section does not list it
+
+and the extractor in `tools/docgate` had to learn the new gate as well, so a
+future step that matches nothing is reported rather than ignored ✓.
+
+### Row 1.7: the release is still not gated on CI
+
+This one is left open deliberately, and the reason is worth stating rather
+than leaving to be discovered later.
+
+The release workflow runs on a tag push. The natural gate -- "do not release
+until CI is green" -- is a cross-workflow dependency, and GitHub expresses it
+as a `workflow_run` trigger rather than a `needs`, which changes what the
+release workflow can see: it sees the *conclusion* of a workflow run, not the
+jobs inside it, so a "did the test job pass" question needs the run's check
+list read back through the API, with the workflow's own permissions and the
+API's eventual consistency both in the way.
+
+The alternative -- and the one this repository's shape actually supports -- is
+to make the release job require the *same* gates rather than the *result* of
+the gate run: the release job could run the quality gates itself, so "the
+release is gated on the gates being green" holds without a cross-workflow
+dependency at all.
+
+That is a real change to the release pipeline, and the user asked for
+release-workflow changes to be theirs (the project is in development and
+version tagging is explicitly out of scope for now). So the row stays open
+with the choice written down, rather than being closed with a decision
+nobody made.
+
+### The gate that checks the gate found a bug in itself
+
+Adding the actionlint step made `wfcheck` fail:
+
+    wfcheck: .github/workflows/ci.yml has 18 `run: |` keys but 17 were
+    parsed; the checker is broken, not the workflow
+
+The cross-check that produces that message counted `strings.Count(src,
+"run: |")` -- the raw SUBSTRING -- while the parser counted keys. So a
+comment that mentions `` `run: |` `` was counted as a key, and the new
+step's comment did exactly that. The gate was failing for the wrong reason,
+on a file that was perfectly well formed.
+
+**The obvious fix is the wrong one.** Rewording the comment would silence
+the gate and hide the class: the next workflow with a `run: |` in a comment
+would fail again, and the next person would reword that one too. The
+interesting part is that `wfcheck` is the gate that exists precisely because
+it reads the workflow as TEXT -- which is row 1.8's complaint about it -- and
+here that text-scanning produced a false positive on a file it was supposed
+to be examining.
+
+So the count was fixed instead: it now counts KEYS, measured INDEPENDENTLY
+of the pattern the parser uses. The independence matters, because a count
+taken from the same regex would make both sides zero when the regex broke,
+and the cross-check would pass having inspected nothing -- which is the
+failure the line was written to catch.
+
+Red proof, applied and run: breaking the parser's pattern still turns the
+gate red with
+
+    wfcheck: .github/workflows/ci.yml has 17 `run: |` keys but 0 were
+    parsed; the checker is broken, not the workflow
+
+and the well-formed file passes.
+
+### What is left in the register
+
+Row 2.9 (the WebKit engine fault: diagnosed nowhere, worked around, and now
+mitigated by one runner per engine) is the only row that is still open on the
+CI side. The rest of the register's rows are closed, and the closed ones now
+carry the gate that keeps them closed.

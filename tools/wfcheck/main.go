@@ -306,7 +306,25 @@ func main() {
 		// Cross-check the parse against the file. Without it, a regex change
 		// turns this into a no-op that reports success having inspected nothing,
 		// which is exactly how an earlier version of a similar check failed.
-		want := strings.Count(src, "run: |")
+		//
+		// The count is of KEYS, and it is measured INDEPENDENTLY of the
+		// pattern the parser uses -- otherwise a regex that matches nothing
+		// would make both sides zero and the cross-check would pass having
+		// inspected nothing, which is the failure this line exists to
+		// catch.
+		//
+		// A key is a line whose whole text is "run: |". A comment that
+		// mentions `run: |` -- which this repository's own comments do, and
+		// which a workflow's comments may -- is not a key, and counting the
+		// raw substring made the gate fail on one. The obvious way to silence
+		// that is to reword the comment, which hides the problem instead of
+		// fixing it: the same lesson the gate about this gate teaches.
+		want := 0
+		for _, line := range strings.Split(src, "\n") {
+			if strings.TrimSpace(line) == "run: |" {
+				want++
+			}
+		}
 		if len(bs) != want {
 			fmt.Fprintf(os.Stderr, "wfcheck: %s has %d `run: |` keys but %d were parsed; "+
 				"the checker is broken, not the workflow\n", wf, want, len(bs))
