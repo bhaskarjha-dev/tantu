@@ -9863,6 +9863,48 @@ reshuffle:
 - **The artifact names do not collide.** Two uploads with the same name fail
   the run, so each leg uploads `dashboard-screenshots-<engine>`.
 
+### The change nearly renamed the check the branch requires
+
+A matrix appends its value to a job's check name. The browser job's check was
+"Dashboard acceptance (browser)", and Batch Z28 says exactly why that name was
+chosen:
+
+    CI's `dashboard-acceptance` keeps its name (any required-check binding
+    survives)
+
+A matrix on THAT job would have renamed the check to "Dashboard acceptance
+(browser) (chromium)" -- and a branch protection requiring "Dashboard
+acceptance (browser)" would never be satisfied again. The build would go
+green and the branch would stay locked: a red that no push can clear, and one
+that looks like the product's fault.
+
+So the evidence job is named "Dashboard acceptance (browser engine)" and a
+second job carries the name the branch requires:
+
+    dashboard-acceptance:
+      name: Dashboard acceptance (browser)
+      needs: dashboard-acceptance-engines
+      if: always()
+
+`if: always()` because a job that needs a failed job is SKIPPED by default,
+and a skipped required check is not a red one. The aggregate has to run after
+a failed leg and decide for itself, so its step reads the legs' result and
+fails unless it is "success".
+
+**The gate covers that too, and it covers it by EXECUTING the aggregate's
+shell.** With the legs reporting "success" the aggregate exits 0; with
+"failure", "cancelled" or "skipped" it exits non-zero. A gate that only read
+the aggregate's NAME would pass against an aggregate that ignored the legs'
+verdict entirely -- and an aggregate that ignores the verdict is a green
+light over a browser that failed.
+
+There was a second defect in the gate itself, and it is worth recording. The
+first version took the job's FIRST `run: |` block, which was the Playwright
+install -- so the test ran `npm ci` and installed a browser into a temporary
+directory, in the middle of a unit test. The step is now found BY NAME. A
+gate that reaches for the wrong block is worse than no gate, because it still
+passes.
+
 ### The gate, and the shape it can fail in
 
 `tools/wfcheck` only *parsed* the workflow's shell. Parsing is not running: the

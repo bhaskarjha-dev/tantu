@@ -347,11 +347,50 @@ jobs:
             exit 1
           fi
 
-  dashboard-acceptance:
-    name: Dashboard acceptance (browser)
+  dashboard-acceptance-engines:
+    name: Dashboard acceptance (browser engine)
+    # One runner per engine, and the reason is a measurement rather than a
+    # preference.
+    #
+    # The job used to run all seven browser sessions -- three engines, two
+    # topologies, and the two-hub pass -- on one runner, in one job. The
+    # session that failed on 2026-10-20 was the sixth: the webkit peers run,
+    # which reported "WebKit encountered an internal error" against every
+    # endpoint it touched, including the page's own URL, and failed again when
+    # the job re-ran that case with a FRESH BROWSER on the SAME runner. A fresh
+    # browser not helping is the measurement that matters: the degradation is
+    # in the runner, not in the browser process, so the remedy is a fresh
+    # runner rather than a fresh browser.
+    #
+    # The local measurement agrees that the pressure is real. Seven consecutive
+    # sessions were run in CI's exact order on one machine, and all seven
+    # passed -- but the webkit ones took 153s and 156s against 86-95s for the
+    # others. WebKit is the heavy engine, and it was the heavy engine that
+    # failed.
+    #
+    # So each engine gets a runner that has never run a browser: three
+    # runners, two sessions each, instead of one runner with seven. The cost
+    # is runner minutes; the benefit is that the product's only browser
+    # evidence does not depend on how many browsers came before it.
+    #
+    # fail-fast is off on purpose. Every engine runs even when an earlier one
+    # fails, because "chromium failed, so firefox was never looked at" wastes
+    # the only run you get.
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, firefox, webkit]
     # The Go suite cannot catch a blocked image, a focus-destroying poll, or
     # sub-AA contrast; tools/uxtest drives a real browser for those, and this
     # job is what makes that evidence mandatory rather than a local ritual.
+    #
+    # This job is the EVIDENCE. The check that the branch requires is the
+    # aggregate below, named "Dashboard acceptance (browser)" -- because a
+    # matrix appends its value to the check name, so a matrix here would
+    # rename the required check to "Dashboard acceptance (browser engine)
+    # (chromium)" and the binding would never be satisfied again. The DEV-RECORD
+    # records that the name was kept for exactly that reason (Batch Z28), and
+    # Batch Z119 is where a matrix nearly undid it.
     #
     # It is blocking as of 2026-09-30, when it had three consecutive green
     # runs (#22, #23, #24) on this runner. Until then it carried
@@ -441,13 +480,11 @@ jobs:
         # cost is runner minutes; the benefit is that the product's only
         # browser evidence does not depend on how many browsers came before it.
         #
-        # fail-fast is off on purpose. Every engine runs even when an earlier
-        # one fails, because "chromium failed, so firefox was never looked at"
-        # wastes the only run you get.
-        strategy:
-          fail-fast: false
-          matrix:
-            engine: [chromium, firefox, webkit]
+        # The matrix itself is on the JOB, not on this step, and the job is
+        # the one named "Dashboard acceptance (browser engine)" -- the required
+        # check keeps the name without a matrix suffix because the aggregate
+        # job below carries it.
+        #
         # Same reasoning as the test step: the harness's diagnostics are the
         # only diagnosis available for this job, and a log nobody can read
         # turns "exit 3" into a mystery. Every run executes even when an
@@ -632,6 +669,42 @@ jobs:
           path: ${{ runner.temp }}/uxtest-shots
           if-no-files-found: warn
           retention-days: 7
+
+  dashboard-acceptance:
+    name: Dashboard acceptance (browser)
+    # The check the branch requires, and the only one with this name.
+    #
+    # The browser evidence is produced by the three engine legs above. A
+    # matrix appends its value to a job's check name, so putting the matrix on
+    # this job would have renamed the required check to "Dashboard acceptance
+    # (browser engine) (chromium)" and the branch's binding -- which names
+    # "Dashboard acceptance (browser)" -- would never be satisfied again. The
+    # DEV-RECORD records that the name was preserved for exactly that reason
+    # in Batch Z28; this job is what preserves it now that the matrix exists.
+    #
+    # So the aggregate carries the name and the legs carry the work.
+    #
+    # `if: always()` because the aggregate must RUN after a failed leg, not be
+    # skipped by it: a skipped required check is not a red one, and the whole
+    # point of this job is to turn a failed leg into a failed check. The step
+    # below therefore reads the legs' result and decides for itself.
+    needs: dashboard-acceptance-engines
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: The browser evidence
+        run: |
+          # The legs' result is the input, and the only input. A job that
+          # needs a failed job is skipped by default, and a skipped required
+          # check is not a failure -- so the decision is made here, explicitly,
+          # rather than left to the scheduler.
+          result="${{ needs.dashboard-acceptance-engines.result }}"
+          echo "dashboard-acceptance (browser engine) result: $result"
+          if [ "$result" != "success" ]; then
+            printf '::error::the browser evidence did not pass: the engine legs reported %s\n' "$result"
+            exit 1
+          fi
+          echo "all three engine legs passed"
 
   release-artifact:
     name: Release artifact (${{ matrix.goos }})

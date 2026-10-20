@@ -8,20 +8,30 @@ package main
 // reported "WebKit encountered an internal error" against every endpoint it
 // touched, including the page's own URL. The job re-ran that case with a
 // FRESH BROWSER on the SAME runner and it failed again, and that is the
-// measurement that matters: a fresh browser not helping means the
-// degradation is in the runner, not in the browser process, so the remedy is
-// a fresh runner rather than a fresh browser.
+// measurement that matters: a fresh browser not helping means the degradation
+// is in the runner, not in the browser process, so the remedy is a fresh
+// runner rather than a fresh browser.
 //
-// So the job now runs once per engine, on a runner that has never run a
-// browser. This gate is what keeps that true. It takes the step's own shell
+// So the evidence now runs once per engine, on a runner that has never run a
+// browser. This gate is what keeps that true. It takes the job's own shell
 // out of ci.yml and runs it, one matrix leg at a time, with the harness
 // replaced by a stub that records what it was asked to run.
 //
-// The gate is written to be able to fail. The negative case at the end runs
-// the checker against the OLD shape -- one leg running all three engines --
-// and requires the checker to report it. A checker that accepts the old
-// shape would let the seventh session back onto the first runner without
-// saying anything.
+// It also guards the second thing the split could have broken: the NAME of the
+// check the branch requires. A matrix appends its value to a job's check
+// name, so a matrix on the required job would have renamed it from
+// "Dashboard acceptance (browser)" to "Dashboard acceptance (browser engine)
+// (chromium)" and the branch's binding -- which names the old one -- would
+// never be satisfied again. The aggregate job carries the name instead, and
+// this gate executes that aggregate's shell to prove it fails when a leg
+// fails.
+//
+// The gate is written to be able to fail. The negative cases run the checker
+// against the shapes it must reject: the OLD shape -- one leg running all
+// three engines -- a matrix with NO two-hub pass, and an aggregate that
+// reports success whatever the legs said. A checker that accepted them would
+// let the seventh session back onto the first runner without a word, or let
+// the branch go green over a browser that failed.
 
 import (
 	"fmt"
@@ -33,7 +43,13 @@ import (
 	"testing"
 )
 
-const browserStepName = "      - name: Run acceptance harness across engines"
+const (
+	engineJobID   = "dashboard-acceptance-engines"
+	aggregateJob  = "dashboard-acceptance"
+	protectedName = "Dashboard acceptance (browser)"
+	harnessStep   = "Run acceptance harness across engines"
+	aggregateStep = "The browser evidence"
+)
 
 // browserStub is the harness, replaced. It records the arguments it was
 // invoked with and exits 0.
@@ -48,34 +64,74 @@ fs.appendFileSync('stub-invocations', process.argv.slice(2).join(' ') + '\n');
 process.exit(0);
 `
 
-// extractBrowserStep returns the step's own text and the shell under it.
-func extractBrowserStep(t *testing.T) (step, block string) {
+// extractJob returns the text of one job in the workflow.
+func extractJob(t *testing.T, src, id string) string {
 	t.Helper()
-	workflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
-	if err != nil {
-		t.Fatalf("read ci.yml: %v", err)
+	lines := strings.Split(src, "\n")
+	start := -1
+	for i, l := range lines {
+		if l == "  "+id+":" {
+			start = i
+			break
+		}
 	}
-	src := string(workflow)
-	i := strings.Index(src, browserStepName)
-	if i < 0 {
-		t.Fatalf("ci.yml has no step named %q, so the matrix under test cannot be found "+
-			"and this test would pass having checked nothing", strings.TrimSpace(browserStepName))
+	if start < 0 {
+		t.Fatalf("ci.yml has no job %q, so the shape under test cannot be found and this test "+
+			"would pass having checked nothing", id)
 	}
-	runMark := "\n        run: |\n"
-	j := strings.Index(src[i:], runMark)
-	if j < 0 {
-		t.Fatalf("the dashboard-acceptance step has no `run: |` block, so the shell under test " +
-			"cannot be found and this test would pass having checked nothing")
+	end := len(lines)
+	for i := start + 1; i < len(lines); i++ {
+		l := lines[i]
+		// The next job key: exactly two spaces, then a name and a colon.
+		if len(l) > 2 && l[:2] == "  " && l[2] != ' ' && strings.HasSuffix(strings.TrimSpace(l), ":") {
+			end = i
+			break
+		}
 	}
-	bodyStart := i + j + len(runMark)
-	k := strings.Index(src[bodyStart:], "\n      - name:")
-	end := len(src)
-	if k >= 0 {
-		end = bodyStart + k
+	return strings.Join(lines[start:end], "\n")
+}
+
+// extractRunBlock returns the shell of the named step of a job.
+//
+// The step is found BY NAME. Picking the job's first `run: |` instead would
+// have taken the Playwright install -- and the first version of this gate did
+// exactly that, which is how the test came to run `npm ci` and install a
+// browser in a temporary directory. A gate that reaches for the wrong block
+// is worse than no gate, because it still passes.
+func extractRunBlock(t *testing.T, job, stepName string) string {
+	t.Helper()
+	lines := strings.Split(job, "\n")
+	step := -1
+	for i, l := range lines {
+		if strings.TrimSpace(l) == "- name: "+stepName {
+			step = i
+			break
+		}
 	}
-	step = src[i:end]
-	block = dedentBlock(src[bodyStart:end])
-	return step, block
+	if step < 0 {
+		t.Fatalf("the job has no step named %q, so the shell under test cannot be found and this "+
+			"test would pass having checked nothing", stepName)
+	}
+	start := -1
+	for i := step; i < len(lines); i++ {
+		if lines[i] == "        run: |" {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("the step %q has no `run: |` block, so the shell under test cannot be found and "+
+			"this test would pass having checked nothing", stepName)
+	}
+	// The step's content is at ten spaces; the next step is at six.
+	end := len(lines)
+	for i := start + 1; i < len(lines); i++ {
+		if strings.HasPrefix(lines[i], "      - name:") {
+			end = i
+			break
+		}
+	}
+	return dedentBlock(strings.Join(lines[start+1:end], "\n"))
 }
 
 // dedentBlock removes the common leading indentation from a YAML literal block.
@@ -104,13 +160,13 @@ func dedentBlock(src string) string {
 	return strings.Join(lines, "\n")
 }
 
-// extractEngineMatrix returns the engines the step's matrix names.
-func extractEngineMatrix(step string) []string {
-	i := strings.Index(step, "matrix:")
+// extractEngineMatrix returns the engines the job's matrix names.
+func extractEngineMatrix(job string) []string {
+	i := strings.Index(job, "matrix:")
 	if i < 0 {
 		return nil
 	}
-	rest := step[i:]
+	rest := job[i:]
 	j := strings.Index(rest, "engine:")
 	if j < 0 {
 		return nil
@@ -130,7 +186,27 @@ func extractEngineMatrix(step string) []string {
 	return out
 }
 
-// runBrowserLeg runs the step's shell as one matrix leg and reports the
+// jobName returns the name a job's check run carries.
+func jobName(job string) string {
+	for _, l := range strings.Split(job, "\n") {
+		if strings.HasPrefix(l, "    name: ") {
+			return strings.TrimSpace(strings.TrimPrefix(l, "    name: "))
+		}
+	}
+	return ""
+}
+
+// jobNeeds returns the ids a job needs.
+func jobNeeds(job string) string {
+	for _, l := range strings.Split(job, "\n") {
+		if strings.HasPrefix(l, "    needs: ") {
+			return strings.TrimSpace(strings.TrimPrefix(l, "    needs: "))
+		}
+	}
+	return ""
+}
+
+// runBrowserLeg runs the engine job's shell as one matrix leg and reports the
 // harness invocations it made.
 func runBrowserLeg(t *testing.T, engine, block string) (invocations []string, status int, output string) {
 	t.Helper()
@@ -179,6 +255,24 @@ func runBrowserLeg(t *testing.T, engine, block string) (invocations []string, st
 	return invocations, status, output
 }
 
+// runAggregate runs the aggregate job's shell with the legs' result substituted
+// and reports the status it would have ended with.
+func runAggregate(t *testing.T, block, legsResult string) (int, string) {
+	t.Helper()
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skipf("bash is not on PATH, so the workflow's shell cannot be run: %v", err)
+	}
+	dir := t.TempDir()
+	script := strings.ReplaceAll(block,
+		"${{ needs.dashboard-acceptance-engines.result }}", legsResult) + "\n"
+	cmd := exec.Command(bash, "-s")
+	cmd.Dir = dir
+	cmd.Stdin = strings.NewReader(script)
+	out, _ := cmd.CombinedOutput()
+	return cmd.ProcessState.ExitCode(), string(out)
+}
+
 // browserOf returns the engine an invocation names, and whether it was the
 // two-hub pass.
 func browserOf(invocation string) (engine string, twoHub bool) {
@@ -193,12 +287,12 @@ func browserOf(invocation string) (engine string, twoHub bool) {
 // matrixViolations reports everything wrong with a set of legs.
 //
 // It takes the legs as data rather than reading the workflow, so the negative
-// case below can drive it with the OLD shape and require it to be reported.
+// cases below can drive it with the OLD shape and require it to be reported.
 func matrixViolations(matrix []string, legs map[string][]string) []string {
 	var v []string
 
 	if len(matrix) == 0 {
-		return []string{"the step declares no matrix, so every browser session runs on one runner"}
+		return []string{"the job declares no matrix, so every browser session runs on one runner"}
 	}
 	for _, want := range []string{"chromium", "firefox", "webkit"} {
 		found := false
@@ -245,18 +339,23 @@ func matrixViolations(matrix []string, legs map[string][]string) []string {
 // browser evidence is produced on a runner that has not already run another
 // engine's browsers, and the two-hub pass still runs exactly once.
 func TestDashboardAcceptanceRunsOneEnginePerRunner(t *testing.T) {
-	step, block := extractBrowserStep(t)
-	matrix := extractEngineMatrix(step)
-	if len(matrix) == 0 {
-		t.Fatalf("the dashboard-acceptance step declares no matrix, so every browser session " +
-			"runs on one runner -- which is the shape that failed on 2026-10-20")
+	workflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("read ci.yml: %v", err)
 	}
+	job := extractJob(t, string(workflow), engineJobID)
+	matrix := extractEngineMatrix(job)
+	if len(matrix) == 0 {
+		t.Fatalf("the browser job declares no matrix, so every browser session runs on one " +
+			"runner -- which is the shape that failed on 2026-10-20")
+	}
+	block := extractRunBlock(t, job, harnessStep)
 
 	legs := map[string][]string{}
 	for _, engine := range matrix {
 		invocations, status, out := runBrowserLeg(t, engine, block)
 		if status != 0 {
-			t.Errorf("the %s leg of the dashboard-acceptance step ended with status %d, want 0:\n%s",
+			t.Errorf("the %s leg of the dashboard-acceptance job ended with status %d, want 0:\n%s",
 				engine, status, out)
 		}
 		legs[engine] = invocations
@@ -264,6 +363,69 @@ func TestDashboardAcceptanceRunsOneEnginePerRunner(t *testing.T) {
 
 	for _, v := range matrixViolations(matrix, legs) {
 		t.Errorf("%s", v)
+	}
+}
+
+// TestTheRequiredCheckNameSurvivesTheMatrix is the second claim, and it is
+// the one a matrix could have broken silently.
+//
+// A matrix appends its value to a job's check name. The branch's required
+// check names "Dashboard acceptance (browser)", and the DEV-RECORD records
+// that the job was named that way in Batch Z28 for precisely this reason. If
+// the matrix had been put on THAT job, the required check would have become
+// "Dashboard acceptance (browser engine) (chromium)" and the branch would
+// have been unsatisfiable -- a red that no push can clear.
+func TestTheRequiredCheckNameSurvivesTheMatrix(t *testing.T) {
+	workflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("read ci.yml: %v", err)
+	}
+	src := string(workflow)
+
+	aggregate := extractJob(t, src, aggregateJob)
+	if got := jobName(aggregate); got != protectedName {
+		t.Errorf("the aggregate job is named %q, want %q -- that is the name the branch requires, "+
+			"and a matrix appends its value to a job's check name, so this name has to be carried "+
+			"by a job that has no matrix", got, protectedName)
+	}
+	if needs := jobNeeds(aggregate); !strings.Contains(needs, engineJobID) {
+		t.Errorf("the aggregate job needs %q, want it to need %q -- an aggregate that depends on "+
+			"nothing aggregates nothing", needs, engineJobID)
+	}
+	if !strings.Contains(aggregate, "if: always()") {
+		t.Errorf("the aggregate job does not run with `if: always()`, so a failed leg SKIPS it -- " +
+			"and a skipped required check is not a red one, which is the failure this job exists " +
+			"to prevent")
+	}
+
+	engine := extractJob(t, src, engineJobID)
+	if got := jobName(engine); got == protectedName {
+		t.Errorf("the job that carries the matrix is also named %q, so its check run would be "+
+			"%q and the required check would be renamed out from under the branch's binding",
+			got, protectedName+" (chromium)")
+	}
+}
+
+// TestDashboardAcceptanceAggregateFailsWhenALegFails executes the aggregate's
+// own shell. The aggregate is the check the branch requires, so what it does
+// with the legs' verdict is the whole point of it.
+func TestDashboardAcceptanceAggregateFailsWhenALegFails(t *testing.T) {
+	workflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("read ci.yml: %v", err)
+	}
+	job := extractJob(t, string(workflow), aggregateJob)
+	block := extractRunBlock(t, job, aggregateStep)
+
+	if status, out := runAggregate(t, block, "success"); status != 0 {
+		t.Errorf("the aggregate ended with status %d when every leg passed, want 0:\n%s", status, out)
+	}
+	for _, result := range []string{"failure", "cancelled", "skipped"} {
+		status, out := runAggregate(t, block, result)
+		if status == 0 {
+			t.Errorf("the aggregate ended with status 0 when a leg reported %q, so the branch "+
+				"would go green over a browser that did not pass:\n%s", result, out)
+		}
 	}
 }
 
@@ -326,8 +488,11 @@ func TestBrowserMatrixCheckerRejectsAMissingTwoHubPass(t *testing.T) {
 // itself: the matrix list must be read, not guessed, and a missing name must
 // be reported rather than silently producing an empty matrix.
 func TestBrowserMatrixNamesEveryEngineSorted(t *testing.T) {
-	step, _ := extractBrowserStep(t)
-	matrix := extractEngineMatrix(step)
+	workflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("read ci.yml: %v", err)
+	}
+	matrix := extractEngineMatrix(extractJob(t, string(workflow), engineJobID))
 	got := append([]string(nil), matrix...)
 	sort.Strings(got)
 	want := []string{"chromium", "firefox", "webkit"}
