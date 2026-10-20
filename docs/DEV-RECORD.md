@@ -9373,3 +9373,91 @@ Verified: `go build`, `go vet`, `go test` (15 packages), `gofmt -l`,
 `staticcheck v0.8.1`, `encgate`, `docgate`, `wfcheck` and the four uxtest
 selfchecks exit 0; chromium --peers 109/109, webkit --peers 109/109, firefox
 peerless 106/106. All Windows.
+
+---
+
+## Batch Z115 — a gate that measured the operating system's port allocator (2026-10-20)
+
+The macOS job failed on `724a486`:
+
+```
+--- FAIL: TestPresentStartedHubAnnouncesThePortActuallyInUse (0.01s)
+    present_started_hub_test.go:97: Hub failed to start: start p2p listener on
+    127.0.0.1:49936: listen tcp 127.0.0.1:49936: bind: address already in use;
+    3 lower port(s) were also unavailable, the last of which failed with:
+    listen tcp 127.0.0.1:49933: bind: address already in use
+```
+
+### What happened
+
+The fixture took a port from the operating system's **ephemeral range** — the
+range the OS allocates outbound connections from — and then relied on the ports
+*below* it being free, because the Hub's fallback scan walks **down** from the
+configured port.
+
+macOS allocates that range **sequentially**. So 49935, 49934 and 49933 were
+outbound connections belonging to other tests, in other packages, on the same
+host, at that moment; 49936 was the tip of that run, and the fixture took it.
+The scan then walked straight into the three ports below it.
+
+The Hub behaved correctly. It tried, found them taken, and refused to start —
+because a Hub listening somewhere nobody can reach is worse than a Hub that
+says so. The gate was measuring the OS's port allocator.
+
+### The fix
+
+One shared helper, `internal/testutil.PortRun`, finds a run of consecutive free
+loopback ports in a **low range that no platform hands out ephemeral ports
+from** — below Linux's 32768-60999, macOS's 49152-65535 and Windows's
+49152-65535 — and holds the **whole run** while it chooses it, so two packages
+running at the same time choose different runs. Every port in the run is
+verified by binding it.
+
+Four call sites had the same exposure, in two directions:
+
+- `cmd/tantu`'s fixture took one ephemeral port and hoped the three below it
+  were free. This is the one that failed.
+- `internal/hub`'s port-fallback gates had the hole **the other way**: their
+  verified run was *above* the ports the fallback scan walked into, so the
+  ports the scan depended on were never checked.
+- `internal/hub`'s re-keying test took an ephemeral port, released it, and
+  required a Hub to bind it a moment later — a race with the allocator that
+  gives the port back most eagerly to the process that just asked for it.
+- `internal/hub`'s heartbeat test took an ephemeral port, released it, and
+  required it to keep *refusing* connections — a port that the OS could hand
+  to an outbound connection in between.
+
+### A gate that caught my own mistake
+
+The rewrite replaced "occupy this port" with "release everything except the
+one I want held", and the first version wrote it as *release 0, 2, 3 and 4* in
+one gate and *release 0, 3 and 4* in another — leaving the **web port held by
+accident** in the second. The gate that noticed was
+`TestWireFallbackLeavesTheWebPortWhereTheUserConfiguredIt`, asserting the web
+port stayed put:
+
+```
+the web port moved from the free configured 19998 to 19996
+```
+
+which is the gate doing exactly its job. The fix was not to loosen the gate
+but to make the intent readable: `releaseExcept(run, 1)` says "keep index 1
+held" in one token, where "release 0, 2, 3 and 4" had room to be wrong.
+
+### Why this only showed on macOS
+
+Linux randomises its ephemeral allocation, so consecutive ports are rarely
+consecutive there, and the collision is improbable. macOS allocates them
+sequentially, which makes the collision *likely* — and it is only likely when
+something else on the host is connecting, which is what a CI runner with six
+packages running at once is doing.
+
+This is register row 1.2 from the other end: the platform nobody uses by hand
+is the one that found the defect, because the platform everybody uses by hand
+is the one whose allocator hides it.
+
+Verified: `go build`, `go vet`, `go test` (15 packages), `gofmt -l`,
+`staticcheck v0.8.1`, `encgate`, `docgate` and `wfcheck` exit 0; the port
+fallback gates, the heartbeat gates, the re-keying gate and the
+`presentStartedHub` gates all pass. All Windows — and the failure was macOS
+only, so the runner is still the authority on whether it is fixed there.

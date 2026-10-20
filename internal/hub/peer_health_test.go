@@ -24,6 +24,7 @@ import (
 
 	"github.com/bhaskarjha-dev/tantu/internal/bridge"
 	"github.com/bhaskarjha-dev/tantu/internal/pairing"
+	"github.com/bhaskarjha-dev/tantu/internal/testutil"
 )
 
 // startHeartbeatHubs brings up two paired Hubs whose heartbeat runs fast enough
@@ -487,12 +488,18 @@ func TestHeartbeatDoesNotProbeEveryPeerInEveryInterval(t *testing.T) {
 	// A refused port on loopback: fast, and unambiguously a failure, so a whole
 	// round of twenty costs a connect attempt each rather than a five-second
 	// timeout.
-	blocker, err := net.Listen("tcp", "127.0.0.1:0")
+	//
+	// From a range the OS does not allocate outbound connections from, so the
+	// port cannot be handed to another connection between the probe and the
+	// attempts: a port that started refusing must keep refusing. The first
+	// version took it from the ephemeral range, which is precisely the range
+	// the OS hands out for exactly that.
+	run, err := testutil.PortRun(1)
 	if err != nil {
 		t.Fatalf("probe for a refused port: %v", err)
 	}
-	refusedAddr := blocker.Addr().String()
-	_ = blocker.Close()
+	refusedAddr := fmt.Sprintf("127.0.0.1:%d", testutil.PortOf(run[0]))
+	testutil.CloseListeners(run...)
 
 	var watched pairing.Peer
 	for i := 0; i < peers; i++ {

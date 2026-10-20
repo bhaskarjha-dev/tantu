@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bhaskarjha-dev/tantu/internal/hub"
+	"github.com/bhaskarjha-dev/tantu/internal/testutil"
 )
 
 // A Hub whose startup failed must be presented as nothing at all.
@@ -122,20 +123,38 @@ func TestPresentStartedHubAnnouncesThePortActuallyInUse(t *testing.T) {
 // hubOnOccupiedPort starts a real Hub whose configured wire port is already
 // taken, so it comes up on a fallback port the user never configured. It returns
 // the Hub and the port that was configured and taken.
+//
+// The ports below the configured one have to be free, because that is where
+// the Hub's fallback scan looks: it walks down from the configured port. The
+// first version of this fixture took a single port from the operating
+// system's ephemeral range and hoped the ports below it were free. They are
+// not: the ephemeral range is where the OS allocates outbound connections
+// from, and on macOS it allocates them sequentially, so the ports below the
+// one the OS handed out are exactly the ones it had just given to other
+// tests, in other packages, on the same host. On 2026-10-20 the macOS runner
+// failed with
+//
+//	start p2p listener on 127.0.0.1:49936: bind: address already in use;
+//	3 lower port(s) were also unavailable
+//
+// The Hub behaved correctly there -- it tried the ports, found them taken, and
+// refused to start rather than listen somewhere nobody could reach -- but the
+// gate was measuring the operating system's port allocator, not the product.
 func hubOnOccupiedPort(t *testing.T) (*hub.Hub, int) {
 	t.Helper()
 
-	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	// Four: the configured port, which the blocker holds, and the three the
+	// fallback scan tries below it.
+	run, err := testutil.PortRun(4)
 	if err != nil {
-		t.Fatalf("probe for a free port: %v", err)
+		t.Skipf("could not find a run of free loopback ports, so this gate would test nothing: %v", err)
 	}
-	taken := probe.Addr().(*net.TCPAddr).Port
-	_ = probe.Close()
-	blocker, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", taken))
-	if err != nil {
-		t.Skipf("could not occupy port %d, so this gate would test nothing: %v", taken, err)
-	}
-	t.Cleanup(func() { _ = blocker.Close() })
+	t.Cleanup(func() { testutil.CloseListeners(run...) })
+	taken := testutil.PortOf(run[0])
+	// The blocker keeps the configured port: run[0] is never closed. The three
+	// below it are released, so the fallback finds them free and lands on the
+	// first.
+	testutil.CloseListeners(run[1:]...)
 
 	dir := t.TempDir()
 	h, err := hub.NewHub(hub.HubConfig{

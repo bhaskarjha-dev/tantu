@@ -27,24 +27,35 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bhaskarjha-dev/tantu/internal/testutil"
 )
 
-// occupyPort holds a real listener on 127.0.0.1:port for the life of the test.
-// Binding fails the test loudly: if the port could not be taken, the gates below
-// would be exercising a fallback that never had to happen.
-func occupyPort(t *testing.T, port int) net.Listener {
-	t.Helper()
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-	if err != nil {
-		t.Fatalf("could not occupy 127.0.0.1:%d, so this gate would test a fallback that "+
-			"never happens: %v", port, err)
+// releaseExcept closes every listener in the run except the ones at the given
+// indices.
+//
+// The run is held as a whole so that the ports the fallback scan walks into
+// are known to have been free when it was chosen. Each gate then releases the
+// ones it wants free and keeps the ones it wants taken -- and spelling that
+// as "keep index 1" rather than "release 0, 2, 3 and 4" is the difference
+// between a gate that means what it says and one that leaves a port held by
+// accident. An earlier version of this file did the latter, and the gate that
+// noticed was the one asserting the web port stayed put.
+func releaseExcept(run []net.Listener, keep ...int) {
+	held := make(map[int]bool, len(keep))
+	for _, i := range keep {
+		held[i] = true
 	}
-	t.Cleanup(func() { _ = ln.Close() })
-	return ln
+	for i, ln := range run {
+		if !held[i] {
+			_ = ln.Close()
+		}
+	}
 }
 
 // freeQuad returns the first port of a run of five consecutive free loopback
-// ports, found by actually binding them.
+// ports, found by actually binding them, together with the listeners holding
+// them.
 //
 // Five, not four, and the extra one is not slack. The fallback scans down from
 // the configured port, so the gate that exhausts the scan has to occupy a run
@@ -57,40 +68,25 @@ func occupyPort(t *testing.T, port int) net.Listener {
 //
 // Finding them by binding is the only trustworthy method: assuming a port is
 // free is how a test passes locally and fails in CI.
-func freeQuad(t *testing.T) int {
+//
+// The ports come from testutil.PortRun, which keeps the whole run out of the
+// operating system's ephemeral range. That matters for the direction this
+// helper had wrong: the ports *below* the run, which the fallback scan walks
+// into, are the ones the OS allocates outbound connections from, and on macOS
+// it allocates them sequentially. Asking the OS for a port and walking down
+// from it therefore walked straight into ports another test was holding.
+//
+// The listeners are returned so the caller can decide which of them to keep
+// holding and which to release; the fallback ports must be free when the Hub
+// starts, and the occupied port must not be.
+func freeQuad(t *testing.T) []net.Listener {
 	t.Helper()
-	const run = 5
-	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	run, err := testutil.PortRun(5)
 	if err != nil {
-		t.Fatalf("probe for a free port: %v", err)
+		t.Fatalf("no run of 5 consecutive free loopback ports: %v", err)
 	}
-	start := probe.Addr().(*net.TCPAddr).Port
-	_ = probe.Close()
-
-	for attempt := 0; attempt < 500; attempt++ {
-		base := start - attempt
-		if base < 1024 {
-			break
-		}
-		held := make([]net.Listener, 0, run)
-		ok := true
-		for i := 0; i < run; i++ {
-			ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", base+i))
-			if err != nil {
-				ok = false
-				break
-			}
-			held = append(held, ln)
-		}
-		for _, ln := range held {
-			_ = ln.Close()
-		}
-		if ok {
-			return base
-		}
-	}
-	t.Fatalf("no run of %d consecutive free loopback ports below %d", run, start)
-	return 0
+	t.Cleanup(func() { releaseExcept(run) })
+	return run
 }
 
 // startHubOnPorts builds and starts a Hub on explicit wire and web ports,
@@ -166,9 +162,13 @@ func assertPortAnswersTantu(t *testing.T, addr string) {
 // was refused a start, with no route forward that did not involve finding and
 // killing the other process by hand.
 func TestWirePortFallbackMovesWhenThePortIsReallyTaken(t *testing.T) {
-	base := freeQuad(t)
-	wire, web := base, base+1
-	occupyPort(t, wire)
+	run := freeQuad(t)
+	// The configured wire port is held by the run itself; the web port above
+	// it and the three below it are released, so the fallback finds a free one
+	// immediately. The three below are the ones the scan walks into, and they
+	// were verified free when the run was chosen.
+	wire, web := testutil.PortOf(run[1]), testutil.PortOf(run[0])
+	releaseExcept(run, 1)
 
 	h := startHubOnPorts(t, wire, web)
 
@@ -209,9 +209,12 @@ func TestWirePortFallbackMovesWhenThePortIsReallyTaken(t *testing.T) {
 // silently, in order to serve a dashboard that had somewhere perfectly good to
 // be.
 func TestWireFallbackLeavesTheWebPortWhereTheUserConfiguredIt(t *testing.T) {
-	base := freeQuad(t)
-	web, wire := base, base+1 // wire above web, as 9877 is above 9876
-	occupyPort(t, wire)
+	run := freeQuad(t)
+	// wire above web, as 9877 is above 9876. The web port is the one the
+	// downward scan would reach first, so it has to be a verified free port
+	// and not merely an unchecked one.
+	wire, web := testutil.PortOf(run[1]), testutil.PortOf(run[2])
+	releaseExcept(run, 1)
 
 	h := startHubOnPorts(t, wire, web)
 
@@ -236,10 +239,11 @@ func TestWireFallbackLeavesTheWebPortWhereTheUserConfiguredIt(t *testing.T) {
 // collide with it regardless. It is kept because "cannot collide" is a claim
 // about ordering that nothing else checks.
 func TestWireAndWebFallbackNeverChooseTheSamePort(t *testing.T) {
-	base := freeQuad(t)
-	web, wire := base, base+1
-	occupyPort(t, wire)
-	occupyPort(t, web)
+	run := freeQuad(t)
+	web, wire := testutil.PortOf(run[0]), testutil.PortOf(run[1])
+	// Both configured ports are held by the run; the ports below them are
+	// released so both scanners have somewhere to go.
+	releaseExcept(run, 0, 1)
 
 	h := startHubOnPorts(t, wire, web)
 
@@ -266,9 +270,9 @@ func TestWireAndWebFallbackNeverChooseTheSamePort(t *testing.T) {
 // both port numbers -- rather than for wording, because the wording will change
 // and the facts will not.
 func TestFallbackSaysWhichPortItMovedTo(t *testing.T) {
-	base := freeQuad(t)
-	wire, web := base, base+1
-	occupyPort(t, wire)
+	run := freeQuad(t)
+	wire, web := testutil.PortOf(run[1]), testutil.PortOf(run[0])
+	releaseExcept(run, 1)
 
 	h := startHubOnPorts(t, wire, web)
 	got := portOf(t, h.P2PAddr().String())
@@ -297,8 +301,10 @@ func TestFallbackSaysWhichPortItMovedTo(t *testing.T) {
 // fallback that fires when nothing is wrong would rewrite every peer's address
 // for no reason on every restart.
 func TestFallbackIsSkippedWhenTheConfiguredPortIsFree(t *testing.T) {
-	base := freeQuad(t)
-	wire, web := base, base+1
+	run := freeQuad(t)
+	// Both configured ports are free, so the whole run is released.
+	wire, web := testutil.PortOf(run[0]), testutil.PortOf(run[1])
+	releaseExcept(run)
 
 	h := startHubOnPorts(t, wire, web)
 	if got := portOf(t, h.P2PAddr().String()); got != wire {
@@ -318,14 +324,13 @@ func TestFallbackIsSkippedWhenTheConfiguredPortIsFree(t *testing.T) {
 // must still refuse to start: a Hub with no wire port cannot pair, and a silent
 // partial start would be worse than a clear refusal.
 func TestFallbackGivesUpLoudlyWhenEveryPortIsTaken(t *testing.T) {
-	base := freeQuad(t)
-	// The scan walks *down* from the configured port, so the port under test is
-	// the top of the verified run and the occupied set is everything beneath it.
-	// Occupying ports below the run would be occupying ports nothing verified.
-	wire, web := base+4, base
-	for i := 0; i < 5; i++ {
-		occupyPort(t, base+i)
-	}
+	run := freeQuad(t)
+	// The scan walks *down* from the configured port, so the configured port
+	// and the three below it are all held: the scan finds nothing and the Hub
+	// says so. The port above is released, because the web port is not what
+	// this gate is about.
+	wire, web := testutil.PortOf(run[1]), testutil.PortOf(run[0])
+	releaseExcept(run, 1, 2, 3, 4)
 
 	h, err := NewHub(HubConfig{
 		TransportType: "lan",

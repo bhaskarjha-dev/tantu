@@ -55,8 +55,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"mime/multipart"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -65,6 +65,7 @@ import (
 	"time"
 
 	"github.com/bhaskarjha-dev/tantu/internal/pairing"
+	"github.com/bhaskarjha-dev/tantu/internal/testutil"
 )
 
 func sha256Hex(b []byte) string {
@@ -544,14 +545,21 @@ func mustPeerStore(t *testing.T, dir string) *pairing.PeerStore {
 // port: the skip is asserted with Fatalf. A gate that can quietly stop covering
 // its case is the failure mode this repository keeps meeting.
 func TestPeerReKeyingAtTheSameAddressIsRejected(t *testing.T) {
-	// A fixed port, chosen by binding and releasing so the OS picks something
-	// genuinely free, then held constant across B's restart.
-	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	// A fixed port, held constant across B's restart.
+	//
+	// It is taken from a range the operating system does not allocate outbound
+	// connections from. The first version asked the OS for a free port with
+	// net.Listen(":0"), which returns one from the *ephemeral* range -- the
+	// range the OS allocates outbound connections from, and the range it hands
+	// out most eagerly to the process that just asked. Releasing it and
+	// binding it a moment later is a race with the OS's own allocator, and on
+	// macOS, which allocates that range sequentially, the OS wins.
+	run, err := testutil.PortRun(1)
 	if err != nil {
 		t.Skipf("cannot reserve a port on this host: %v", err)
 	}
-	fixedAddr := probe.Addr().String()
-	_ = probe.Close()
+	fixedAddr := fmt.Sprintf("127.0.0.1:%d", testutil.PortOf(run[0]))
+	testutil.CloseListeners(run...)
 
 	outB := t.TempDir()
 	storeB := t.TempDir()
