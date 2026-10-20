@@ -345,8 +345,8 @@ func TestDropSHA256Integrity(t *testing.T) {
 	if recvErr != nil {
 		t.Fatalf("ReceiveDrop failed: %v", recvErr)
 	}
-	if res.SHA256 != expectedSHA {
-		t.Errorf("expected SHA256 %s, got %s", expectedSHA, res.SHA256)
+	if res.PayloadSHA256 != expectedSHA {
+		t.Errorf("expected SHA256 %s, got %s", expectedSHA, res.PayloadSHA256)
 	}
 	if !bytes.Equal(buf.Bytes(), payload) {
 		t.Error("payload content mismatch")
@@ -401,8 +401,8 @@ func TestDropResumption(t *testing.T) {
 	if res.BytesWritten != totalSize {
 		t.Errorf("expected BytesWritten=%d, got %d", totalSize, res.BytesWritten)
 	}
-	if res.SHA256 != expectedSHA {
-		t.Errorf("expected SHA256=%s, got %s", expectedSHA, res.SHA256)
+	if res.PayloadSHA256 != expectedSHA {
+		t.Errorf("expected SHA256=%s, got %s", expectedSHA, res.PayloadSHA256)
 	}
 
 	// Verify entire file on disk

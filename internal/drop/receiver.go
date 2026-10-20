@@ -98,12 +98,28 @@ func receiveDropEnvelope(ctx context.Context, conn transport.Conn) (*protocol.En
 
 // ReceiveDropResult contains the result of a successful drop receive.
 type ReceiveDropResult struct {
-	Meta            DropSend // The metadata from the sender
-	BytesWritten    int64    // Total bytes written to the output
-	SHA256          string   // Verified SHA-256 hex digest
-	Duplicate       bool     // True when the bytes matched a completion tombstone: nothing was staged or published
-	PeerFingerprint string   // Verified cryptographic fingerprint of peer (if mTLS)
-	PeerAddress     string   // Remote network address of the sender
+	Meta         DropSend // The metadata from the sender
+	BytesWritten int64    // Total bytes written to the output
+	// PayloadSHA256 is the SHA-256 of the PAYLOAD bytes received -- the
+	// sender's digest, recomputed here over what actually arrived, and
+	// compared against every chunk's own digest on the way.
+	//
+	// It is NOT a digest of the destination file. A destination that carries
+	// a stale tail beyond the payload hashes differently from this value, and
+	// the receiver cannot see that from a plain writer. The product's
+	// publication paths re-read the staged file and compare it against this
+	// digest, which is what makes a stale tail refuse to publish; a caller
+	// that does not do that is trusting a claim about the bytes, not about
+	// the file.
+	//
+	// The name says so because the old one did not: a field called SHA256
+	// with the comment "Verified SHA-256 hex digest" is read as a statement
+	// about the file, and it is not one. See
+	// docs/KNOWN-LIMITATIONS.md row 3.28.
+	PayloadSHA256   string // SHA-256 hex digest of the payload bytes received
+	Duplicate       bool   // True when the bytes matched a completion tombstone: nothing was staged or published
+	PeerFingerprint string // Verified cryptographic fingerprint of peer (if mTLS)
+	PeerAddress     string // Remote network address of the sender
 }
 
 func validateDropMetadata(meta DropSend) error {
@@ -374,6 +390,45 @@ func ReceiveDrop(ctx context.Context, conn transport.Conn, w io.Writer, cfg Rece
 		} else if seeker, ok := dest.(io.Seeker); ok {
 			if offset, err := seeker.Seek(0, io.SeekCurrent); err == nil && offset > 0 {
 				cfg.ReceivedBytes = offset
+			}
+		}
+	}
+	// A destination LONGER than the payload cannot receive it. The bytes would
+	// land over the prefix and the stale tail would survive, so the file would
+	// hash differently from the digest reported below -- and the receiver
+	// cannot see that from the bytes it writes.
+	//
+	// The receiver can see the destination's LENGTH only when it is seekable,
+	// which is the case for every real destination (a staging file) and not
+	// for a plain writer, so the check is made where it can be made.
+	//
+	// The product never hands over such a destination: the Hub truncates a
+	// resumed partial to the valid prefix, and the standalone truncates to
+	// zero. So refusing here costs the product nothing and turns a silent
+	// corruption into a refusal. See docs/KNOWN-LIMITATIONS.md row 3.28.
+	if meta.Size > 0 {
+		if rs, ok := dest.(io.ReadSeeker); ok {
+			cur, curErr := rs.Seek(0, io.SeekCurrent)
+			end, endErr := rs.Seek(0, io.SeekEnd)
+			if curErr == nil && endErr == nil {
+				if _, restoreErr := rs.Seek(cur, io.SeekStart); restoreErr != nil {
+					errMsg := "could not restore the destination position"
+					_ = conn.Send(TypeDropAck, DropAck{
+						DropID:   meta.DropID,
+						Accepted: false,
+						Error:    errMsg,
+					})
+					return nil, errors.New(errMsg)
+				}
+				if end > meta.Size {
+					errMsg := fmt.Sprintf("destination is longer than the payload: %d bytes for a %d-byte transfer", end, meta.Size)
+					_ = conn.Send(TypeDropAck, DropAck{
+						DropID:   meta.DropID,
+						Accepted: false,
+						Error:    errMsg,
+					})
+					return nil, errors.New(errMsg)
+				}
 			}
 		}
 	}
@@ -654,7 +709,7 @@ func ReceiveDrop(ctx context.Context, conn transport.Conn, w io.Writer, cfg Rece
 	result := &ReceiveDropResult{
 		Meta:            meta,
 		BytesWritten:    totalBytes,
-		SHA256:          computedSHA,
+		PayloadSHA256:   computedSHA,
 		Duplicate:       duplicate,
 		PeerFingerprint: peerFP,
 		PeerAddress:     peerAddr,

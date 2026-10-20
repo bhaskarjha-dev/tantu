@@ -1771,7 +1771,7 @@ func (h *Hub) Start(parent context.Context) (err error) {
 				if partPath == "" || desiredPath == "" {
 					return errors.New("completed file has no staging path")
 				}
-				published, err := finalizePartFile(f, partPath, desiredPath, outRoot, res.SHA256, res.Meta.Size, releaseActivity)
+				published, err := finalizePartFile(f, partPath, desiredPath, outRoot, res.PayloadSHA256, res.Meta.Size, releaseActivity)
 				if err != nil {
 					// The bytes are on disk and verified; only the staging
 					// cleanup failed. Treat it as a completed transfer with a
@@ -2036,8 +2036,8 @@ func (h *Hub) Start(parent context.Context) (err error) {
 				releaseActivity()
 			}
 
-			if res.Meta.Kind == drop.DropKindFile && res.SHA256 != "" {
-				shaShort := res.SHA256
+			if res.Meta.Kind == drop.DropKindFile && res.PayloadSHA256 != "" {
+				shaShort := res.PayloadSHA256
 				if len(shaShort) > 12 {
 					shaShort = shaShort[:12] + "..."
 				}

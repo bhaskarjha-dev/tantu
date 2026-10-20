@@ -10083,3 +10083,89 @@ passes with its own package, and it passed on a second full-suite run. It is
 a load flake, not this change -- and it is recorded here rather than
 forgotten, because the failure mode this repository keeps meeting is a
 failure that is dismissed without evidence.
+
+## Batch D -- the drop package: an error that never cleared, and a digest that described the wrong file (2026-10-20)
+
+Batch D, part two: rows 3.27 and 3.28, both in `internal/drop`.
+
+### 3.27: the maintenance error was sticky, and the contract said it was not
+
+`LastMaintenanceError`'s own doc says it returns "nil if it ran or never
+attempted". It was neither: `SweepStalePartials` recorded a failure and never
+cleared it. Only `EnforcePartialBudget` cleared -- and the two entry points
+share one slot, so the two disagreed about what "the most recent pass" meant.
+
+The product does not read the error after a sweep (it reads it after the
+budget pass, which clears it), so no user ever saw it. It is an *exported*
+contract, and an exported contract that is wrong is a trap for the next
+caller rather than a cosmetic wart.
+
+**The fix** is one line in the right place, and the place is the whole point:
+the error now describes the most recent attempt, so a sweep that runs clears
+the previous sweep's failure. A sweep against a directory that is not a
+staging directory clears it too -- that pass did not *fail*, it had nothing
+to do, and the contract's "never attempted" covers it.
+
+**The gate** is the other half of the existing one.
+`TestMaintenanceFailureIsObservable` asserted that a failed sweep reports
+why, and stopped there. It could not see this: the error was never cleared,
+so nothing about the *next* sweep was asserted. The new gate blocks the
+lock, watches the failure appear, releases the lock, and requires the next
+sweep to clear it.
+
+Red proof, applied and run: with the clearing removed, the gate is red with
+
+    a sweep that ran left the previous sweep's failure behind: staging
+    process lock timeout
+
+### 3.28: a digest called "verified" that described the bytes and not the file
+
+`ReceiveDrop` hashes the chunks it writes and never re-reads the
+destination. A destination longer than the payload -- a stale tail, a
+pre-existing file -- therefore yields a digest that matches the sender's
+while the file on disk hashes differently. The product is protected: both
+publication paths re-read the staged bytes and compare against the whole-file
+digest, so a stale tail is refused and nothing is published.
+
+The hazard was at the library boundary, and it was two things.
+
+**The behaviour.** The receiver now refuses a destination it can see is
+longer than the payload. It can see it only when the destination is
+seekable -- which is the case for every real destination, a staging file, and
+not for a plain writer -- so the check is made where it can be made. The
+product never hands over such a destination: the Hub truncates a resumed
+partial to the valid prefix, and the standalone truncates to zero. So
+refusing costs the product nothing, and it turns a silent corruption into a
+refusal.
+
+**The claim.** The result's field was called `SHA256` with the comment
+"Verified SHA-256 hex digest". That reads as a statement about the
+destination *file*, and it is not one: it is the sender's digest, recomputed
+here over the bytes that arrived and compared against every chunk's own digest
+on the way. It is now `PayloadSHA256`, and its documentation says plainly
+that it is not a digest of the file.
+
+The Hub's own log line was left alone, because it is true: `finalizePartFile`
+re-reads the staged bytes and compares them against this digest *before* the
+line is written, so "V SHA-256 verified" is a claim about the file the Hub has
+actually verified. The register had grouped it with the hazard; it is not the
+same thing, and saying so is part of fixing the row honestly.
+
+**The gate**: a destination pre-loaded with a hundred stale bytes, receiving
+a five-byte payload, must be refused and left untouched.
+
+Red proof, applied and run: with the length check removed, the gate is red
+with
+
+    the receive reported success (&{... PayloadSHA256:f9b0078b...}) into a
+    destination that is longer than the payload: the digest it returns is the
+    sender's, and the file on disk hashes differently
+
+### A note on the rename
+
+`ReceiveDropResult.SHA256` became `PayloadSHA256`, and six call sites moved
+with it: the Hub's two, the CLI's three, and the drop package's own tests.
+The wire type `DropComplete.SHA256` and the tombstone's `SHA256` did NOT
+move -- they are the same digest under different names for different
+reasons, and a blanket rename would have blurred that. The first attempt at
+the rename was exactly that blanket rename, and the compiler caught it.

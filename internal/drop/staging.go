@@ -80,11 +80,16 @@ func isRealStagingOutputDir(outDir string) bool {
 // cannot be inspected or removed are skipped so one odd entry cannot abort the
 // sweep.
 func SweepStalePartials(outDir string, maxAge time.Duration) (removed int, freed int64) {
-	if !isRealStagingOutputDir(outDir) {
-		return 0, 0
-	}
 	stagingMaintenanceMu.Lock()
 	defer stagingMaintenanceMu.Unlock()
+	if !isRealStagingOutputDir(outDir) {
+		// There is nothing to sweep: the output directory is not a staging
+		// directory. The pass did not FAIL, so it must not leave an earlier
+		// failure behind -- LastMaintenanceError describes the most recent
+		// attempt, and this was one.
+		recordMaintenanceError(nil)
+		return 0, 0
+	}
 	unlockProcess, err := acquireStagingProcessLock(stagingProcessLockPathForOutput(outDir))
 	if err != nil {
 		// Reclamation exists to bound disk, so failing to take the maintenance
@@ -96,6 +101,13 @@ func SweepStalePartials(outDir string, maxAge time.Duration) (removed int, freed
 		return 0, 0
 	}
 	defer unlockProcess()
+	// The pass is running, so any earlier failure is over. This is what makes
+	// LastMaintenanceError's contract true -- "nil if it ran or never
+	// attempted" -- and it was not true before: a sweep that succeeded left
+	// the previous sweep's failure in place, so a caller that swept without
+	// budgeting inherited a failure that had already been dealt with, for
+	// ever. See docs/KNOWN-LIMITATIONS.md row 3.27.
+	recordMaintenanceError(nil)
 	return sweepStalePartials(outDir, maxAge)
 }
 
@@ -114,6 +126,12 @@ func recordMaintenanceError(err error) {
 // could not run, or nil if it ran or never attempted. Callers that log only
 // when files were removed must consult this: a silent (0, 0) result is
 // ambiguous between "nothing to do" and "reclamation is switched off".
+//
+// It describes the MOST RECENT attempt, so a pass that succeeds clears the
+// previous pass's failure. Both maintenance entry points clear it on success
+// and record it on failure; before that, a sweep that succeeded left the
+// previous sweep's failure in place for ever. See
+// docs/KNOWN-LIMITATIONS.md row 3.27.
 func LastMaintenanceError() error {
 	stagingMaintenanceMu.Lock()
 	defer stagingMaintenanceMu.Unlock()

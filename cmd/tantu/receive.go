@@ -228,7 +228,7 @@ func runReceive(args []string) {
 					if partPath == "" || targetPath == "" {
 						return errors.New("completed file has no staging path")
 					}
-					published, err := finalizeIncomingPart(openedFile, partPath, targetPath, res.SHA256, res.Meta.Size, releaseActivity)
+					published, err := finalizeIncomingPart(openedFile, partPath, targetPath, res.PayloadSHA256, res.Meta.Size, releaseActivity)
 					if err != nil {
 						return fmt.Errorf("publish received file: %w", err)
 					}

@@ -283,7 +283,7 @@ func runNode(args []string) {
 				if partPath == "" || desiredPath == "" {
 					return errors.New("completed file has no staging path")
 				}
-				published, err := finalizeIncomingPart(f, partPath, desiredPath, res.SHA256, res.Meta.Size, releaseActivity)
+				published, err := finalizeIncomingPart(f, partPath, desiredPath, res.PayloadSHA256, res.Meta.Size, releaseActivity)
 				if err != nil {
 					return fmt.Errorf("publish received file: %w", err)
 				}

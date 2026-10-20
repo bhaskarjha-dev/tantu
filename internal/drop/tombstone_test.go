@@ -68,8 +68,8 @@ func TestE2E_TombstoneSuppressesRepublish(t *testing.T) {
 	if !second.Duplicate {
 		t.Fatal("redelivery with the same key must report Duplicate")
 	}
-	if second.SHA256 != first.SHA256 {
-		t.Fatalf("redelivery digest %q != original %q", second.SHA256, first.SHA256)
+	if second.PayloadSHA256 != first.PayloadSHA256 {
+		t.Fatalf("redelivery digest %q != original %q", second.PayloadSHA256, first.PayloadSHA256)
 	}
 	if beforeCompleteCalls != 1 {
 		t.Fatalf("BeforeComplete ran %d times, want exactly 1 (no second publication)", beforeCompleteCalls)
