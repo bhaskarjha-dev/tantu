@@ -9568,3 +9568,102 @@ Verified: `go build`, `go vet`, `go test` (15 packages), `gofmt -l`,
 `staticcheck v0.8.1`, `encgate`, `docgate`, `wfcheck` and the four uxtest
 selfchecks exit 0; the browser harness is 108/108, 109/109, 125/125 and 106/106
 across the four topologies. All Windows.
+
+---
+
+## Batch Z117 -- a closed row that was not closed (2026-10-20)
+
+Batch C, and the first item in it: **the hidden-tab poll suspension.**
+
+### The row that was wrong
+
+KNOWN-LIMITATIONS §6 carries a row, written as closed, that says:
+
+> A hidden dashboard tab kept polling at ~1.2 requests a second, forever. ...
+> Both cadences are suspended on `visibilitychange` and resumed with an immediate
+> refresh. ...
+
+and its Evidence cell says:
+
+> The harness drives the page in the foreground throughout, so the resume path is
+> exercised on every run.
+
+That last sentence is the whole finding. The **suspend** path was exercised by
+nothing -- in any Go gate, in any browser gate, on any platform. A row that
+records a fix and its evidence, where the evidence covers the other half of the
+behaviour, is a row that can stay closed forever without anyone noticing.
+
+### The two holes
+
+1. **A page born in a background tab never receives a `visibilitychange` event.**
+   Those fire on a *transition*, and a page whose document is hidden from the
+   start never transitions. The poll timers were armed unconditionally at load,
+   so the handler never ran and the page polled for as long as it was open.
+2. **A poll already in flight when the tab was hidden re-armed itself.** The
+   handler cleared a timer that had *already fired*, which does nothing, and the
+   promise's continuation then armed a new one that no event would ever come to
+   stop.
+
+### The fix
+
+The check belongs in the **schedulers**, not only in the event handler:
+
+```js
+function scheduleStatusPoll() {
+  clearTimeout(statusPollTimer);
+  statusPollTimer = null;
+  if (document.hidden) return;
+  statusPollTimer = setTimeout(() => { ... }, ...);
+}
+```
+
+One line closes both holes: a hidden document never arms a cadence, and a
+cadence that finishes after the tab was hidden re-enters the same function and
+finds the document hidden.
+
+### The gate, and what it cost to get right
+
+Three browser checks, and the third is the one that matters most:
+
+- a dashboard **opened** in a background tab makes no further requests once its
+  first paint has settled;
+- a tab hidden while a **poll is in flight** does not resume polling;
+- **a visible dashboard keeps polling**, so the two above cannot pass because
+  nothing polls at all.
+
+A headless browser has no window to background, so the product's own condition
+-- `document.hidden` -- cannot be produced the way a user produces it. The
+condition is made instead, and the trade is the one
+`selfcheck-narrow-viewport-button.cjs` already makes for the same reason: the
+flag and the event are what the dashboard asks about, and everything downstream
+of them is the real product code.
+
+Two things went wrong while building it, and both are worth recording.
+
+**The first red proof was a no-op.** The break was applied by adding a comment
+beside the guard and not removing the guard, so the gate passed against the
+broken code and I nearly believed it. The difference was visible only by
+running the gate -- and the reason the mistake was *possible* is that the
+gate's own red message is a count, and a count that never changes looks like a
+pass.
+
+**The first timing was a guess, and a wrong one.** The mid-poll check hid the
+tab 7 s in, on the reasoning that a poll delayed by 2.5 s would still be in
+flight. The fetch log showed otherwise: the poll started at 3076 ms and
+*completed* at 5576 ms, so the tab was hidden 1.5 s after the poll had already
+landed, and the check passed because it was measuring nothing. It now waits for
+the second status request to *start* before hiding, so the condition is produced
+rather than predicted.
+
+Both errors were the same error the register keeps describing: **something that
+was not actually running was taken to be running.** The difference this time
+was that the gate was run against the broken code, so the mistake surfaced as a
+red run rather than as a false green.
+
+### The register
+
+Row 4.9 is closed, and the §6 row is corrected rather than left standing: it
+now says the closure was not true, and points at row 4.9 for the measurement
+and the fix. The register's rule is that a row must not be deleted, because
+deleting it loses the reason a future change might reintroduce the defect --
+and the reason here is worth more than the fix.

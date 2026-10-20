@@ -4787,6 +4787,23 @@ function renderPeersList(peers) {
       let statusPollTimer = null;
       function scheduleStatusPoll() {
         clearTimeout(statusPollTimer);
+        statusPollTimer = null;
+        // A hidden document does not poll, and the check belongs HERE rather
+        // than only in the visibilitychange handler below.
+        //
+        // Two holes, closed by one line. A page that LOADS in a background tab
+        // never receives a visibilitychange event -- those fire on a
+        // transition, and a page that was born hidden never transitions -- so
+        // the handler alone never ran for it, and it polled for as long as it
+        // was open. And a poll that was already IN FLIGHT when the tab was
+        // hidden re-armed itself when it finished: the handler had cleared a
+        // timer that had already fired, which does nothing, and the promise's
+        // continuation then armed a new one that no event would ever come to
+        // stop.
+        //
+        // One tab at rest issued roughly 1.2 requests a second forever, and the
+        // register's row saying that was fixed was not true.
+        if (document.hidden) return;
         statusPollTimer = setTimeout(() => {
           Promise.resolve(updateStatus()).catch(() => {}).then(scheduleStatusPoll);
         }, dashboardStale ? STATUS_POLL_STALE_MS : STATUS_POLL_LIVE_MS);
@@ -4797,6 +4814,11 @@ function renderPeersList(peers) {
       let activeRelayTimer = null;
       function scheduleActiveRelayPoll() {
         clearInterval(activeRelayTimer);
+        activeRelayTimer = null;
+        // Same rule as the status cadence, and for the same reason: a page
+        // born in a background tab never gets a visibilitychange event, and an
+        // interval armed before the tab was hidden kept running.
+        if (document.hidden) return;
         activeRelayTimer = setInterval(loadActiveRelays, 5000);
       }
 

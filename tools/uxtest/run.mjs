@@ -2165,6 +2165,119 @@ const OVERFLOW_PROBE = `(function(){
     // unconditionally true, so a pairing between two loopback Hubs would prove
     // nothing -- and switching that Hub to lan would change the conditions under
     // which the other 104 checks run.
+    // A background tab must stop polling.
+    //
+    // The register's §6 row says this was fixed: "The two cadences are
+    // suspended, not stopped". They were not, and the row's own evidence
+    // admitted the gap -- "The harness drives the page in the foreground
+    // throughout, so the resume path is exercised on every run" -- because the
+    // SUSPEND path was exercised by nothing at all.
+    //
+    // A headless browser has no window to background, so the product's own
+    // condition (document.hidden) cannot be produced the way a user produces
+    // it. The condition is made here instead, and the trade is the same one
+    // selfcheck-narrow-viewport-button.cjs makes: the flag and the event are
+    // what the dashboard asks about, and everything downstream of them is the
+    // real product code.
+    //
+    // Two holes, and the gate needs both, because a handler-only fix closes
+    // neither:
+    //   - a page that LOADS hidden never receives a visibilitychange event
+    //     (those fire on a transition, and a page born hidden never
+    //     transitions), so it polls for as long as it is open;
+    //   - a poll already IN FLIGHT when the tab is hidden re-armed itself when
+    //     it finished, because clearing a timer that has already fired does
+    //     nothing.
+    {
+      const visibilityOverride = (bornHidden) => `window.__tantuHidden = ${bornHidden ? 'true' : 'false'};
+Object.defineProperty(document, 'hidden', { configurable: true, get: function () { return window.__tantuHidden === true; } });
+Object.defineProperty(document, 'visibilityState', { configurable: true, get: function () { return window.__tantuHidden ? 'hidden' : 'visible'; } });
+window.__setHidden = function (h) { window.__tantuHidden = !!h; document.dispatchEvent(new Event('visibilitychange')); };`;
+
+      // The pages share the main page's context on purpose: the dashboard only
+      // polls with a session, and the bootstrap token is single-use, so a second
+      // page gets its session from the cookie the first one set.
+      const countHubPolls = (p) => {
+        const seen = [];
+        p.on('request', (r) => {
+          const u = r.url();
+          if (u.indexOf('/api/status') >= 0 || u.indexOf('/api/relay/active') >= 0) {
+            seen.push(u.replace(/^https?:\/\/[^/]+/, ''));
+          }
+        });
+        return () => seen;
+      };
+
+      // (1) A dashboard that is born in a background tab.
+      const bornHidden = await context.newPage();
+      await bornHidden.addInitScript(visibilityOverride(true));
+      const bornHiddenPolls = countHubPolls(bornHidden);
+      await bornHidden.goto('http://127.0.0.1:' + WEB_PORT + '/');
+      // Let the first paint and its one-shot fetches settle. The page issues
+      // three of them at load -- the status, the in-flight list, and the
+      // authorization history, which asks for the in-flight list again on its
+      // way out -- and those are not polling. What must not happen is a
+      // FOURTH request, and a sixth, and a twelfth: the cadence continuing.
+      await sleep(4000);
+      const settled = bornHiddenPolls().length;
+      await sleep(6000);
+      const later = bornHiddenPolls();
+      check('a dashboard opened in a background tab stops polling the Hub',
+        later.length === settled,
+        'hub poll requests: ' + settled + ' once the first paint settled, ' + later.length +
+        ' after 6 more seconds hidden ' + JSON.stringify(later.slice(settled)) +
+        ' (the live cadence is one every 3s)');
+      await bornHidden.close().catch(() => {});
+
+      // (2) A tab hidden while a poll is already in flight.
+      const midPoll = await context.newPage();
+      await midPoll.addInitScript(visibilityOverride(false));
+      // Every status response is delayed, so a poll is guaranteed to be in
+      // flight when the tab is hidden rather than merely likely to be. The
+      // delay applies to the FIRST status request too, which is what makes
+      // the second one a poll rather than the first paint.
+      let statusRequests = 0;
+      await midPoll.route(/\/api\/status(\?|$)/, async (route) => {
+        statusRequests++;
+        await sleep(2500);
+        await route.continue().catch(() => {});
+      });
+      const midPollPolls = countHubPolls(midPoll);
+      await midPoll.goto('http://127.0.0.1:' + WEB_PORT + '/');
+      // Wait for a POLL -- the second status request -- rather than guessing
+      // when it will happen. A guess that hides the tab a second too late
+      // tests nothing, and the first paint takes a variable time.
+      const pollDeadline = Date.now() + 25000;
+      while (statusRequests < 2 && Date.now() < pollDeadline) await sleep(50);
+      if (statusRequests < 2) {
+        check('a tab hidden while a poll is in flight does not resume polling', false,
+          'no poll was ever in flight, so the gate would test nothing');
+      } else {
+        const atHide = midPollPolls().length;
+        await midPoll.evaluate('window.__setHidden(true)').catch(() => {});
+        const hiddenAt = midPollPolls().length;
+        await sleep(10000);
+        const afterHideSeen = midPollPolls();
+        check('a tab hidden while a poll is in flight does not resume polling',
+          afterHideSeen.length === hiddenAt,
+          'hub poll requests: ' + atHide + ' before hiding, ' + hiddenAt + ' at the hide, ' +
+          afterHideSeen.length + ' after 10s hidden ' + JSON.stringify(afterHideSeen.slice(hiddenAt)) +
+          ' (a poll that re-arms after the tab is hidden shows up here)');
+      }
+      await midPoll.close().catch(() => {});
+
+      // The control: the main page, which is visible, over the same window.
+      let mainPolls = 0;
+      page.on('request', (r) => {
+        if (r.url().indexOf('/api/status') >= 0) mainPolls++;
+      });
+      const mainBefore = mainPolls;
+      await sleep(8000);
+      const mainSeen = mainPolls - mainBefore;
+      check('a visible dashboard keeps polling, so the hidden case is not passing because nothing polls',
+        mainSeen >= 2, '/api/status requests on the visible page in 8s: ' + mainSeen);
+    }
+
     if (TWO_HUB) {
       const storeA2 = path.join(WORK, 'store2hub-a');
       const storeB = path.join(WORK, 'store2hub-b');
