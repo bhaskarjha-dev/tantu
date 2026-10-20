@@ -686,6 +686,19 @@ func TestWebDashboard_BootstrapSessionAndNoEmbeddedTokens(t *testing.T) {
 	if len(cookies) != 1 || cookies[0].Name != dashboardSessionCookieName(h.WebAddr()) || !cookies[0].HttpOnly {
 		t.Fatalf("bootstrap response did not set an HttpOnly session cookie scoped to the Hub's port: %+v", cookies)
 	}
+	// The cookie's Max-Age is ABSOLUTE from the moment it is set, so the
+	// browser stops presenting it twenty-four hours after the bootstrap
+	// whatever the server thinks -- and the server-side expiry slides on
+	// every use. The cookie is re-issued on every cookie-authenticated
+	// request, which is what makes the expiry slide on the browser side too,
+	// and that is what "24 hours sliding from last use" means.
+	//
+	// The assertion could not be made before: this test checked the cookie's
+	// name and HttpOnly and not its lifetime, so a cookie with no sliding
+	// behaviour at all passed it. See docs/KNOWN-LIMITATIONS.md row 3.31.
+	if got := cookies[0].MaxAge; got != int(dashboardSessionTTL.Seconds()) {
+		t.Errorf("bootstrap cookie Max-Age = %d, want %d", got, int(dashboardSessionTTL.Seconds()))
+	}
 
 	second, err := http.NewRequest(http.MethodPost, "http://"+h.WebAddr()+"/api/session", nil)
 	if err != nil {

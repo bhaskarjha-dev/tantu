@@ -140,6 +140,52 @@ func (h *Hub) requestHasDashboardCapability(r *http.Request) bool {
 	return false
 }
 
+// dashboardSessionFromCookie returns the session id when the request carries
+// a valid dashboard session cookie.
+//
+// The cookie's Max-Age is ABSOLUTE from the moment it is set, while the
+// server-side expiry slides on every use. A browser therefore stops
+// presenting the cookie twenty-four hours after the BOOTSTRAP, whatever the
+// server thinks -- so the session the server is still keeping alive is one
+// the browser has already forgotten. The stated intent -- "the previous
+// 30-minute absolute expiry logged out even actively used dashboards" --
+// was only half delivered: the expiry was absolute, and forty-eight times
+// longer.
+//
+// Re-issuing the cookie on every cookie-authenticated request is what makes
+// the expiry slide on the browser side too. See
+// docs/KNOWN-LIMITATIONS.md row 3.31.
+func (h *Hub) dashboardSessionFromCookie(r *http.Request) (string, bool) {
+	if r == nil {
+		return "", false
+	}
+	cookie, err := r.Cookie(dashboardSessionCookieName(h.WebAddr()))
+	if err != nil {
+		return "", false
+	}
+	if !h.dashboardSessionValid(cookie.Value) {
+		return "", false
+	}
+	return cookie.Value, true
+}
+
+// setDashboardSessionCookie writes the session cookie with a fresh Max-Age.
+//
+// It is called at the bootstrap exchange and again on every
+// cookie-authenticated request, and the second call is the one that makes the
+// expiry slide: the browser replaces the cookie it holds with this one, and
+// the new one's Max-Age starts from now.
+func setDashboardSessionCookie(w http.ResponseWriter, name, sessionID string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     name,
+		Value:    sessionID,
+		Path:     "/",
+		MaxAge:   int(dashboardSessionTTL.Seconds()),
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
 // dashboardSessionCookieName scopes the session cookie to the Hub's web port.
 // Browsers key cookies by name, domain and path - never by port - so two
 // Hubs sharing a loopback host would otherwise fight over one cookie slot:
@@ -230,14 +276,7 @@ func (h *Hub) securityMiddleware(next http.Handler) http.Handler {
 					writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "error", "message": "dashboard session unavailable"})
 					return
 				}
-				http.SetCookie(w, &http.Cookie{
-					Name:     dashboardSessionCookieName(h.WebAddr()),
-					Value:    sessionID,
-					Path:     "/",
-					MaxAge:   int(dashboardSessionTTL.Seconds()),
-					HttpOnly: true,
-					SameSite: http.SameSiteStrictMode,
-				})
+				setDashboardSessionCookie(w, dashboardSessionCookieName(h.WebAddr()), sessionID)
 				writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 				return
 			}
@@ -248,6 +287,19 @@ func (h *Hub) securityMiddleware(next http.Handler) http.Handler {
 					"message": "dashboard session or local IPC capability required",
 				})
 				return
+			}
+			// Slide the cookie's expiry on the browser side.
+			//
+			// The server-side expiry already slides on every use; the cookie's
+			// Max-Age did not, so the browser stopped presenting the cookie
+			// twenty-four hours after the bootstrap however active the
+			// dashboard was. Re-issuing it here is what makes the stated
+			// "24 hours sliding from last use" true of both sides. See
+			// docs/KNOWN-LIMITATIONS.md row 3.31.
+			if r.Method != http.MethodOptions {
+				if sessionID, ok := h.dashboardSessionFromCookie(r); ok {
+					setDashboardSessionCookie(w, dashboardSessionCookieName(h.WebAddr()), sessionID)
+				}
 			}
 			// CLI/Hub version skew is otherwise invisible: delegation sends
 			// X-CLI-Version on every IPC call but nothing reads it. Log the

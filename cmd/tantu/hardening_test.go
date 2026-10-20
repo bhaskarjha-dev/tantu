@@ -461,6 +461,56 @@ func TestCreateIncomingPartResumesMatchingManifest(t *testing.T) {
 	}
 }
 
+// The standalone receiver used to require a 64 KiB partial before it would
+// resume anything, so a smaller one restarted from zero -- while the Hub
+// resumed it. The peer saw two different answers to the same transfer, in the
+// acknowledgement's offset, and one of them was the answer the protocol
+// documents.
+//
+// The rule is now the shared one, and this is the standalone's half of it.
+func TestCreateIncomingPartResumesBelowTheHeadCheckWindow(t *testing.T) {
+	outDir := t.TempDir()
+	payload := bytes.Repeat([]byte("0123456789abcdef"), 8192) // 128 KiB
+	head := sha256.Sum256(payload[:64*1024])
+	meta := drop.DropSend{
+		DropID:    "standalone-resume-small",
+		Kind:      drop.DropKindFile,
+		Name:      "payload.bin",
+		Size:      int64(len(payload)),
+		ChunkSize: 32 * 1024,
+		HeadHash:  hex.EncodeToString(head[:]),
+	}
+
+	f, part, _, err := createIncomingPart(outDir, meta.Name, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialBytes := int64(32 * 1024)
+	if _, err := f.Write(payload[:initialBytes]); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_ = drop.ReleaseStagingActivity(part)
+
+	resumed, _, _, err := createIncomingPart(outDir, meta.Name, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resumed.Close()
+	offset, err := resumed.Seek(0, io.SeekCurrent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offset != initialBytes {
+		t.Fatalf("resume offset = %d, want %d: the standalone receiver restarted below the "+
+			"64 KiB head-check window while the Hub resumed, and the peer saw both answers",
+			offset, initialBytes)
+	}
+}
+
 func TestCreateIncomingPartRejectsHardlinkedResume(t *testing.T) {
 	outDir := t.TempDir()
 	payload := bytes.Repeat([]byte("hardlink-safe"), 8192)

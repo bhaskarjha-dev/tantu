@@ -790,7 +790,24 @@ func (c *sshConn) startIOTimeout(timeout time.Duration) func() bool {
 	}
 }
 
-func (c *sshConn) DeadlineSupported() bool { return c != nil && c.channel != nil }
+// DeadlineSupported reports whether the connection can still apply a network
+// deadline.
+//
+// The closed check is the same two-part check the three deadline setters use,
+// and it was left out of this one method when they were fixed: Close sets
+// `closed` but never nils `channel`, so `channel != nil` stayed true for a
+// closed connection and this method kept reporting "deadlines supported" for
+// one.
+//
+// That is not cosmetic. Two call sites -- internal/drop/receiver.go and
+// internal/bridge/session.go -- use this method to choose between the native
+// deadline path and the goroutine fallback, so a closed SSH connection took
+// the native path, discarded the "connection is closed" error the setter
+// returned, and reported the SETTER's error instead of the context's. See
+// docs/KNOWN-LIMITATIONS.md row 3.32.
+func (c *sshConn) DeadlineSupported() bool {
+	return c != nil && c.channel != nil && !c.isClosed()
+}
 
 func (c *sshConn) setDeadlineTimer(timer **time.Timer, t time.Time) {
 	c.deadlineMu.Lock()

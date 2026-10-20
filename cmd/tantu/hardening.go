@@ -258,27 +258,13 @@ func openStandaloneStagingPart(partPath string, meta drop.DropSend) (*os.File, e
 		return nil, fmt.Errorf("partial file has multiple links: %s", partPath)
 	}
 
-	resumeBytes := int64(0)
-	chunkSize := int64(meta.ChunkSize)
-	if chunkSize <= 0 {
-		chunkSize = drop.DefaultChunkSize
-	}
-	validBytes := (info.Size() / chunkSize) * chunkSize
-	if meta.Size > 0 && meta.HeadHash != "" && validBytes > 0 && validBytes < meta.Size && meta.Size >= 64*1024 && validBytes >= 64*1024 {
-		if _, err := f.Seek(0, io.SeekStart); err != nil {
-			_ = f.Close()
-			return nil, fmt.Errorf("seek partial file: %w", err)
-		}
-		head := make([]byte, 64*1024)
-		if _, err := io.ReadFull(f, head); err != nil {
-			_ = f.Close()
-			return nil, fmt.Errorf("read partial head: %w", err)
-		}
-		sum := sha256.Sum256(head)
-		if strings.EqualFold(hex.EncodeToString(sum[:]), meta.HeadHash) {
-			resumeBytes = validBytes
-		}
-	}
+	// The resume rule is the protocol's, and it is the shared one: this
+	// receiver used to answer it differently from the Hub's -- it required a
+	// 64 KiB partial before it would resume anything, where the Hub resumed
+	// whatever was there -- and the peer saw two different answers to the
+	// same transfer, because the resume offset travels in the
+	// acknowledgement. See docs/KNOWN-LIMITATIONS.md row 3.29.
+	resumeBytes := drop.ResumePrefix(f, info.Size(), meta)
 	if resumeBytes < info.Size() {
 		if err := f.Truncate(resumeBytes); err != nil {
 			_ = f.Close()

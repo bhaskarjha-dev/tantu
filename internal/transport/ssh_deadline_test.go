@@ -38,4 +38,17 @@ func TestSSHConn_SetDeadlineAfterCloseIsRejected(t *testing.T) {
 	if err := conn.SetWriteDeadline(deadline); err == nil {
 		t.Error("SetWriteDeadline on a closed SSH connection returned nil, want an error")
 	}
+	// The same closed check, on the fourth method that consults it.
+	//
+	// This assertion could not be made before: the test checked the method
+	// only BEFORE Close, and checked only the setters after it, so a
+	// DeadlineSupported that kept reporting "deadlines supported" for a
+	// closed connection passed. Two call sites use it to choose between the
+	// native deadline path and the goroutine fallback, so a closed SSH
+	// connection took the native path and reported the setter's error instead
+	// of the context's. See docs/KNOWN-LIMITATIONS.md row 3.32.
+	if conn.DeadlineSupported() {
+		t.Error("DeadlineSupported on a closed SSH connection returned true, want false: the " +
+			"callers use it to choose between the native deadline path and the goroutine fallback")
+	}
 }

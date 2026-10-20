@@ -199,23 +199,33 @@ func (r *SessionRegistry) Cancel(requestID, peerFingerprint string) (SessionInfo
 		return SessionInfo{}, false
 	}
 	id := strings.TrimSpace(requestID)
+	// The whole decision is made under one lock acquisition.
+	//
+	// It used to remove the entry, release the lock, decide, and put the
+	// entry back -- and the window between the removal and the re-insertion
+	// hid a live session from its own owner, which is the very thing the
+	// removal was supposed to avoid. A concurrent Register with the same
+	// request id was silently overwritten by the re-insertion, and a second
+	// concurrent Cancel reported "no matching sign-in was open" for a session
+	// that was still running.
+	//
+	// Deciding first and removing only when the cancellation is authorized
+	// closes the window, and the answer the peer sees is the same whichever
+	// way it arrives. See docs/KNOWN-LIMITATIONS.md row 3.33.
 	r.mu.Lock()
 	s, ok := r.sessions[id]
-	if ok {
-		delete(r.sessions, id)
-	}
-	r.mu.Unlock()
 	if !ok {
-		return SessionInfo{}, false
-	}
-	if !sessionBelongsToPeer(s.info, peerFingerprint) {
-		// Put it back: the cancellation was not authorized, and removing the
-		// entry would have hidden a live session from its own owner.
-		r.mu.Lock()
-		r.sessions[id] = s
 		r.mu.Unlock()
 		return SessionInfo{}, false
 	}
+	if !sessionBelongsToPeer(s.info, peerFingerprint) {
+		// The cancellation is not authorized, so the session stays exactly
+		// where it is: present, live, and owned by the peer that started it.
+		r.mu.Unlock()
+		return SessionInfo{}, false
+	}
+	delete(r.sessions, id)
+	r.mu.Unlock()
 	if s.cancel != nil {
 		s.cancel(ErrSessionCancelled)
 	}

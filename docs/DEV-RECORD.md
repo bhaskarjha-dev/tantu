@@ -10169,3 +10169,162 @@ The wire type `DropComplete.SHA256` and the tombstone's `SHA256` did NOT
 move -- they are the same digest under different names for different
 reasons, and a blanket rename would have blurred that. The first attempt at
 the rename was exactly that blanket rename, and the compiler caught it.
+
+## Batch D -- the last five: a rule in two places, a dial that outlived its Hub, and a window between two locks (2026-10-20)
+
+Batch D, part three: rows 3.29 to 3.33.
+
+### 3.29: the resume rule, which was in two places and answered differently
+
+The Hub resumed when `validBytes < meta.Size`. The standalone receiver
+additionally required a 64 KiB partial, so below that it restarted from zero.
+Two implementations of one protocol, two answers to the same question, and the
+peer saw both -- because the resume offset travels in the acknowledgement.
+
+**The fix is structural, not a second rule that happens to match.** The rule
+now lives in `internal/drop` as `drop.ResumePrefix`, and BOTH receivers call
+it, so the standalone no longer has a rule of its own to disagree with. The
+rule is the one `internal/drop/types.go` already documented -- "Resume is
+impossible without it (the Hub restarts the transfer instead) and it is
+verified when the partial is at least 64KB" -- and the 64 KiB figure is now
+`drop.HeadHashSize` instead of a literal repeated in three places.
+
+The standalone's extra clauses were also redundant: a head hash only exists on
+the wire for a payload of at least 64 KiB, so `meta.Size >= 64 KiB` restated
+what `meta.HeadHash != ""` already implied.
+
+**The Hub's own tamper gate was not changed and still passes**, which is the
+point: the shared rule is the Hub's rule, so the Hub's behaviour is untouched
+and the gate that protects it still protects it.
+
+Red proof, applied and run: restoring the standalone's private rule turns the
+gate red with
+
+    resume offset = 0, want 32768: the standalone receiver restarted below
+    the 64 KiB head-check window while the Hub resumed, and the peer saw
+    both answers
+
+### 3.30: a dial that outlived the Hub it belonged to
+
+The reconnection engine dials a discovered address to find out whether one of
+its peers has moved. That dial ran on `context.Background()` -- not the Hub's
+run context -- and it was on no WaitGroup at all. So `Stop()` could not
+cancel it and could not wait for it, and it was free to write to the peer
+store after the shutdown it belonged to.
+
+The `heartbeatWG` field's own comment is the rule it broke, verbatim:
+
+    Stop returning while a background goroutine is still writing to the peer
+    store is a lifecycle bug rather than a test inconvenience
+
+**The fix** is the dial's context (derived from the Hub's run context, so
+`Stop()` cancels it) and the WaitGroup (so `Stop()` waits for it). The field
+comment now says what the group counts, because it no longer counts only
+heartbeat probes.
+
+**The gate produces the condition** rather than hoping to catch it: a real
+dial to a real listener that accepts the connection and never speaks, so the
+dial is genuinely in flight when `Stop()` is called, and after `Stop()`
+returns the connection must be closed.
+
+Red proof, applied and run: with the run context and the WaitGroup reverted,
+the gate is red with
+
+    the reconciliation dial was still in flight after Stop returned: it ran
+    on context.Background() rather than the Hub's run context, and it was on
+    no WaitGroup, so Stop could neither cancel it nor wait for it, and it
+    could still write to the peer store after the shutdown it belonged to
+
+### 3.31: a cookie that expired 24 hours after the bootstrap, however active the dashboard was
+
+`dashboardSessionTTL` is documented as "24 hours sliding from last use", and
+the SERVER side slides: `touchDashboardSession` renews the expiry on every
+use. The COOKIE did not. `http.Cookie.MaxAge` is absolute from the moment the
+cookie is set, and the cookie was set once -- at the bootstrap exchange --
+and never re-set. So the browser stopped presenting the cookie twenty-four
+hours after the bootstrap whatever the server thought, and the stated intent
+("the previous 30-minute absolute expiry logged out even actively used
+dashboards") was only half delivered: the expiry was absolute, and
+forty-eight times longer.
+
+**Only re-issuing can fix it.** `MaxAge` and `Expires` are both absolute, so
+a cookie set once is a cookie that expires 24 hours after the bootstrap no
+matter how active the dashboard is. The cookie is now re-issued on every
+cookie-authenticated request, with a fresh `Max-Age`, so the browser's expiry
+slides with the server's and the claim is true of BOTH sides.
+
+**The gates.** The bootstrap cookie's `Max-Age` is asserted for the first
+time -- the existing test checked the cookie's name and `HttpOnly` and not
+its lifetime -- and a new test requires an authenticated request to re-issue
+the cookie with the same session and a fresh `Max-Age`.
+
+Red proof, applied and run: with the re-issue removed, the gate is red with
+
+    an authenticated request re-issued 0 cookies, want 1: the cookie's
+    Max-Age is absolute, so it has to be re-set for the expiry to slide
+
+### 3.32: the fourth method that forgot the closed check
+
+`DeadlineSupported` reported "deadlines supported" on a closed SSH
+connection, because the check was `c != nil && c.channel != nil` and `Close`
+sets `closed` but never nils `channel`. The three deadline SETTERS had
+already been fixed for exactly this in an earlier batch -- the same fix, one
+method short.
+
+That is not cosmetic: two call sites use the method to choose between the
+native deadline path and the goroutine fallback, so a closed SSH connection
+took the native path, discarded the "connection is closed" error the setter
+returned, and reported the setter's error instead of the context's.
+
+**The gate** is the existing one, extended. It still asserts the method is
+true for a LIVE connection -- that assertion is correct and stayed -- and now
+asserts it is false after `Close()`. The old test could not fail for this
+defect: it checked the method only BEFORE `Close`, and only the setters
+after it.
+
+Red proof, applied and run: with the closed check removed, the gate is red
+with "DeadlineSupported on a closed SSH connection returned true, want
+false".
+
+### 3.33: a window between two locks, and how to observe one
+
+`SessionRegistry.Cancel` removed the session from the map, RELEASED the lock,
+decided whether the cancellation was authorized, and put the session back.
+The window between the removal and the re-insertion hid a live session from
+its own owner -- which is the very thing the removal was written to avoid --
+and a concurrent `Register` with the same request id was silently
+overwritten by the re-insertion.
+
+**The fix** is one lock acquisition: look the session up, check the
+ownership, and remove the entry only if the cancellation is authorized. An
+unauthorized cancellation leaves the map exactly as it found it, so the
+window does not exist.
+
+**The gate took the most care of the batch**, because a window is not
+something a test can assert about by looking afterwards. The window is
+observed by making it WIDE: the ownership check is a comparison of two
+strings, so the test gives the session and the requester fingerprints that
+agree for 64 MiB and differ only in the last byte. The comparison then takes
+long enough for the test to act inside it.
+
+**And the first version of that fixture was wrong in a way that made the
+gate pass against the broken code.** The two fingerprints differed in their
+first byte, so the comparison returned at once, the window was too short to
+observe, and both gates were green against the defect they were written for.
+The same mistake, in a different place, as the protocol batch's failing reader
+that delivered more than it was supposed to.
+
+Two gates: a registration that arrives while an unauthorized cancellation is
+deciding must be the one in the registry afterwards, and the session must
+stay visible to `Get` and `Count` throughout.
+
+Red proof, applied and run: with the removal-then-re-insertion restored,
+both are red.
+
+    the registry holds the 67108865-byte original session, want the
+    replacement: the cancellation put the original session back over the
+    registration that arrived while it was deciding
+    the session was removed from the registry by an unauthorized
+    cancellation: it was deleted before the ownership check and put back
+    afterwards, so for the length of that window its own owner could not see
+    it

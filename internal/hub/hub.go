@@ -250,7 +250,8 @@ type Hub struct {
 	peerHealth   map[string]PeerHealth
 	// heartbeatCancel stops the proactive heartbeat, mirroring discoveryCancel.
 	heartbeatCancel context.CancelFunc
-	// heartbeatWG counts in-flight heartbeat probes.
+	// heartbeatWG counts in-flight background probes that may write to the
+	// peer store -- the heartbeat probes and the reconnection dials.
 	//
 	// Cancelling the context stops the scheduler but does not wait for a probe
 	// already inside a dial or a store write, and Stop returning while a
@@ -1908,28 +1909,15 @@ func (h *Hub) Start(parent context.Context) (err error) {
 							return nil, fmt.Errorf("partial path is not a regular file: %s", partPath)
 						}
 						existingBytes := info.Size()
-						chunkSize := int64(meta.ChunkSize)
-						if chunkSize <= 0 {
-							chunkSize = 1 << 20
-						}
-						validBytes = (existingBytes / chunkSize) * chunkSize
-						if manifestReady && meta.Size > 0 && validBytes > 0 && validBytes < meta.Size && meta.HeadHash != "" {
-							resumed, openErr := openResumePart(partPath, info)
-							var retry *retryStagingOpen
-							switch {
-							case openErr == nil:
+						// The resume rule belongs to the protocol, so it is the
+						// shared one: the standalone receiver used to answer
+						// this question differently, and the peer saw two
+						// different answers to the same transfer. See
+						// docs/KNOWN-LIMITATIONS.md row 3.29.
+						if manifestReady {
+							if resumed, openErr := openResumePart(partPath, info); openErr == nil {
 								f = resumed
-								if meta.HeadHash != "" && validBytes >= 64*1024 {
-									headBuf := make([]byte, 64*1024)
-									if n, rErr := io.ReadFull(f, headBuf); rErr != nil {
-										validBytes = 0
-									} else {
-										hsum := sha256.Sum256(headBuf[:n])
-										if !strings.EqualFold(hex.EncodeToString(hsum[:]), meta.HeadHash) {
-											validBytes = 0
-										}
-									}
-								}
+								validBytes = drop.ResumePrefix(f, existingBytes, meta)
 								if validBytes > 0 {
 									if truncateErr := f.Truncate(validBytes); truncateErr != nil {
 										_ = f.Close()
@@ -1948,10 +1936,13 @@ func (h *Hub) Start(parent context.Context) (err error) {
 									_ = f.Close()
 									f = nil
 								}
-							case errors.As(openErr, &retry):
-								validBytes = 0
-							default:
-								return nil, openErr
+							} else {
+								var retry *retryStagingOpen
+								if errors.As(openErr, &retry) {
+									validBytes = 0
+								} else {
+									return nil, openErr
+								}
 							}
 						} else {
 							validBytes = 0
@@ -2648,11 +2639,24 @@ func (h *Hub) reconcileDiscoveredAddress(addr, instanceName string) {
 		candidates = candidates[:reconcileMaxPeers]
 	}
 
+	// The dial is bounded by the run context AND by the timeout, and the
+	// goroutine is tracked, so Stop cannot return while it is still writing
+	// to the peer store. It used to be context.Background() -- not the Hub's
+	// run context -- and it was on no WaitGroup at all, so it outlived Stop()
+	// and rewrote peers.json after the shutdown it was supposed to belong
+	// to. The heartbeatWG field comment states the rule this broke verbatim:
+	// "Stop returning while a background goroutine is still writing to the
+	// peer store is a lifecycle bug rather than a test inconvenience". See
+	// docs/KNOWN-LIMITATIONS.md row 3.30.
+	h.heartbeatWG.Add(1)
 	go func() {
+		defer h.heartbeatWG.Done()
 		for _, p := range candidates {
-			ctx, cancel := context.WithTimeout(context.Background(), reconcileDialTimeout)
+			dialCtx, dialCancel := h.withRunContext(context.Background())
+			ctx, cancel := context.WithTimeout(dialCtx, reconcileDialTimeout)
 			conn, err := transport.DialPinnedContext(ctx, tr, EnsurePeerLANPort(addr), p.Fingerprint)
 			cancel()
+			dialCancel()
 			if err != nil {
 				// Not this peer at this address. Expected for every impostor,
 				// and for every peer that simply lives somewhere else.
