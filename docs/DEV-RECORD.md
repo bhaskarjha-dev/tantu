@@ -10444,6 +10444,56 @@ gate red with
 
 and the well-formed file passes.
 
+### The register's own table was malformed, and the gate that checks it could not see it
+
+Row 1.8's prose quotes the gate's behaviour: "The gate scans `run: |`
+blocks". That literal pipe is inside a markdown table cell, and
+GitHub-flavored Markdown splits a row on every UNESCAPED pipe -- so the row
+had SEVEN separators where the table's header has six. The register's "Where
+it is visible" column was no longer the last column; the row rendered with an
+extra cell ✓ and nothing said so.
+
+It is invisible in the source: the text reads correctly, and only the
+rendering is wrong. And the row had said so since it was written.
+
+**`docgate` checks the register's row shape, and it could not see this.** It
+checks that no line carries two row ids and that the ids are unique ✓. A
+third property -- "a row carries at least three separators" -- was written
+and then REMOVED, with the reasoning recorded in the file:
+
+    It could not be made to fail: a truncated final cell is not detectable by
+    counting separators, and the break written for it was a no-op. A check
+    that cannot fail is decorative, so it is not here.
+
+That reasoning is right about a MINIMUM and wrong about an EXACT count. A
+minimum cannot distinguish a truncated final cell from a short row; an exact
+count can, because the table's header says how many cells a row has. So the
+property is back, counting EXACTLY, and it counts only the pipes that are
+not escaped.
+
+Red proof, applied and run: un-escaping the one pipe in row 1.8 turns the
+gate red with
+
+    docs/KNOWN-LIMITATIONS.md:29: row 1.8 has 7 cell separators, want 6; a
+    literal pipe in the prose splits the row into an extra column, and the
+    register's last column stops being the last column. Escape it as \|
+
+and the escaped row passes.
+
+The property has a permanent test of its own, in
+`tools/docgate/limitations_test.go`: a well-formed register is accepted, an
+unescaped pipe is refused, an escaped one is accepted, and the two
+neighbouring properties -- a merged row, a duplicated id -- still fail, so
+the new check cannot have displaced them. A gate whose neighbours stop
+failing is a gate that has been narrowed by accident.
+
+The lesson is the one this repository keeps learning in a new place: a
+property that was removed as "could not be made to fail" was the same
+property that could have been made to fail, a little differently. And a
+document that is *read* is not the same as a document that is *rendered* --
+the register's whole purpose is to be read as a table, and one row of it
+was not.
+
 ### What is left in the register
 
 Row 2.9 (the WebKit engine fault: diagnosed nowhere, worked around, and now

@@ -20,11 +20,18 @@ import (
 //  1. no line carries two row ids  -- the bug that actually happened
 //  2. row ids are unique across the document, so a closure cannot be confused
 //     with a reopening
+//  3. a row carries the same number of cell separators as the table's header
+//     -- a row whose prose contains an UNESCAPED pipe becomes a row with an
+//     extra column, and the register's last column stops being the last
+//     column. That is invisible in the source: the text reads correctly, and
+//     the table does not.
 //
-// A third property -- "a row carries at least three separators" -- was written and
+// A fourth property -- "a row carries at least three separators" -- was written and
 // then removed. It could not be made to fail: a truncated final cell is not
 // detectable by counting separators, and the break written for it was a no-op.
-// A check that cannot fail is decorative, so it is not here.
+// A check that cannot fail is decorative, so it is not here. Property 3 counts
+// EXACTLY, which is detectable: a row with one pipe too many is a row the
+// renderer will split.
 //
 // Structural, and structural on purpose. This is a shape property of a markdown
 // table: the input is the file's own text, so reading it is the complete check
@@ -41,15 +48,24 @@ func checkLimitationsRegister(files map[string]file) (failure, bool) {
 
 	leadingRow := regexp.MustCompile(`^\|\s*(\d+\.\d+)\s*\|`)
 	anyRowID := regexp.MustCompile(`\|\s*(\d+\.\d+)\s*\|`)
+	tableHeader := regexp.MustCompile(`^\|\s*#\s*\|`)
 
 	seen := map[string]string{}
 	bad := 0
 	rows := 0
+	separators := 0
 
 	for i, line := range strings.Split(src.body, "\n") {
 		lineNo := i + 1
 		trimmed := strings.TrimSpace(line)
 		if !strings.HasPrefix(trimmed, "|") {
+			continue
+		}
+
+		// The table's header sets how many cells a row has. Every table in the
+		// register has the same header, and the first one is read.
+		if separators == 0 && tableHeader.MatchString(trimmed) {
+			separators = countUnescapedPipes(trimmed)
 			continue
 		}
 
@@ -85,6 +101,19 @@ func checkLimitationsRegister(files map[string]file) (failure, bool) {
 		}
 		seen[id] = fmt.Sprintf("line %d", lineNo)
 
+		// Property 3.
+		if separators > 0 {
+			got := countUnescapedPipes(trimmed)
+			if got != separators {
+				bad++
+				if bad <= 5 {
+					fmt.Printf("%s:%d: row %s has %d cell separators, want %d; a literal pipe in "+
+						"the prose splits the row into an extra column, and the register's last "+
+						"column stops being the last column. Escape it as \\|\n",
+						path, lineNo, id, got, separators)
+				}
+			}
+		}
 	}
 
 	if rows == 0 {
@@ -102,6 +131,30 @@ func checkLimitationsRegister(files map[string]file) (failure, bool) {
 		return failf(path, "%d row-shape problems across %d numbered rows", bad, rows), false
 	}
 	return failure{}, true
+}
+
+// countUnescapedPipes counts the cell separators in a table row.
+//
+// GitHub-flavored Markdown splits a table row on every pipe that is not
+// escaped, so a pipe inside a code span still splits the row unless it is
+// written `\|`. Counting the raw characters would count an escaped pipe as a
+// separator and the check would be wrong in the other direction.
+func countUnescapedPipes(line string) int {
+	n := 0
+	for i := 0; i < len(line); i++ {
+		if line[i] != '|' {
+			continue
+		}
+		backslashes := 0
+		for j := i - 1; j >= 0 && line[j] == '\\'; j-- {
+			backslashes++
+		}
+		if backslashes%2 == 1 {
+			continue // escaped
+		}
+		n++
+	}
+	return n
 }
 
 func joinRowIDs(matches [][]string) string {
