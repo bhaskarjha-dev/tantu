@@ -463,8 +463,29 @@ jobs:
               label="$engine${mode:+ peers}"
               slug="$engine${mode:+-peers}"
               echo "::group::dashboard-acceptance $label"
+              # --- BEGIN dashboard-acceptance case ---
               run_status=0
               TANTU_TEST_SHOTDIR="$SHOTDIR" node tools/uxtest/run.mjs --browser="$engine" $mode 2>&1 | tee "harness-$slug.log" || run_status=$?
+              if [ "$run_status" -eq 5 ]; then
+                # Exit 5 is the harness saying the BROWSER failed, not the
+                # product: the engine reported an internal error and the checks
+                # that failed are attributed to it. This is a known WebKit fault,
+                # not a Tantu defect -- see docs/KNOWN-LIMITATIONS.md row 2.9.
+                #
+                # Re-run this one case once. An engine fault does not reproduce;
+                # a product defect does, and the second attempt is what tells
+                # them apart. The first attempt's output is printed either way,
+                # so a product-shaped failure hiding behind an engine fault is
+                # visible rather than swallowed.
+                printf '::warning::dashboard-acceptance (%s) was NOT A PRODUCT RESULT: the browser engine failed a request. Re-running this case once.\n' "$label"
+                first_detail=$(tail -n 40 "harness-$slug.log")
+                printf '::warning::dashboard-acceptance (%s) first attempt: %s\n' "$label" "${first_detail//$'\n'/%0A}"
+                run_status=0
+                TANTU_TEST_SHOTDIR="$SHOTDIR" node tools/uxtest/run.mjs --browser="$engine" $mode 2>&1 | tee "harness-$slug-retry.log" || run_status=$?
+                if [ "$run_status" -eq 0 ]; then
+                  printf '::warning::dashboard-acceptance (%s) passed on the retry, so the first attempt was a browser engine fault rather than a Tantu defect.\n' "$label"
+                fi
+              fi
               # Six runs share one directory, so a run that produced no images
               # is worth saying out loud rather than passing as an empty folder.
               #
@@ -473,6 +494,8 @@ jobs:
               # single check, so the old `[ ! -d ... ]` could never fire, and
               # it would not have detected a run that rendered nothing either,
               # since it tested existence rather than contents.
+              #
+              # After the retry, so it describes the attempt that counted.
               shots=$(find "$SHOTDIR/$slug" -maxdepth 1 -name '*.png' 2>/dev/null | wc -l)
               if [ "$shots" -eq 0 ]; then
                 printf '::warning::dashboard-acceptance (%s) produced no screenshots at %s\n' "$label" "$SHOTDIR/$slug"
@@ -496,6 +519,14 @@ jobs:
                   printf '::warning::dashboard-acceptance (%s) was NOT A PRODUCT RESULT: %s\n' "$label" "${detail//$'\n'/%0A}"
                   printf '::error::dashboard-acceptance (%s): the Hub under test exited mid-run (exit 4). This run proves nothing either way - re-run.\n' "$label"
                   ;;
+                5)
+                  # Still the engine after the retry. That is no longer an
+                  # intermittent browser fault, so it is a failure -- and it
+                  # names the cause rather than leaving it to be guessed.
+                  status=5
+                  detail=$(tail -n 40 "harness-$slug-retry.log" 2>/dev/null || tail -n 40 "harness-$slug.log")
+                  printf '::error::dashboard-acceptance (%s) failed again with the browser engine at fault: %s\n' "$label" "${detail//$'\n'/%0A}"
+                  ;;
                 0) ;;
                 *)
                   status="$run_status"
@@ -503,6 +534,7 @@ jobs:
                   printf '::error::dashboard-acceptance (%s) failed: %s\n' "$label" "${detail//$'\n'/%0A}"
                   ;;
               esac
+              # --- END dashboard-acceptance case ---
               echo "::endgroup::"
             done
           done

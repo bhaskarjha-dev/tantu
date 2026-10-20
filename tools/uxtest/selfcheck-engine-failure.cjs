@@ -10,7 +10,7 @@
 // detector agreeing with itself.
 'use strict';
 
-const { isEngineFailure, createEngineFailureNote } = require('./engine-failure.cjs');
+const { isEngineFailure, createEngineFailureNote, classifyOutcome } = require('./engine-failure.cjs');
 
 const failures = [];
 
@@ -74,6 +74,72 @@ if (second !== first) {
     'several unrelated causes for what is one');
 }
 
+// The classification: what a finished run should be called.
+//
+// The detector labels a failure; the classification decides what the *run* is.
+// Without it the run exits 1 and the job reads as "the product broke" even when
+// the browser is the thing that broke -- which is what happened on 2026-10-20.
+const CLASSIFICATIONS = [
+  {
+    name: 'every check passed',
+    outcome: { failures: 0 },
+    want: 0,
+    why: 'a green run is a green run, whatever the engine did',
+  },
+  {
+    name: 'a product failure with no engine fault',
+    outcome: { failures: 3 },
+    want: 1,
+    why: 'the engine note must never become a way to explain away a product defect',
+  },
+  {
+    name: 'a product failure alongside an engine fault',
+    outcome: { failures: 3, engineFailureObserved: true },
+    want: 5,
+    why: 'this is the case the run could not previously state: the browser failed, ' +
+      'so the run measured the browser and not the product',
+  },
+  {
+    name: 'an engine fault with no failures',
+    outcome: { failures: 0, engineFailureObserved: true },
+    want: 0,
+    why: 'the engine recovered, and the run still measured the product',
+  },
+  {
+    name: 'the Hub exited mid-run',
+    outcome: { failures: 3, hubDeath: true },
+    want: 4,
+    why: 'a Hub that exited is either a product defect or a broken environment, and both are worth a red build',
+  },
+  {
+    name: 'the Hub exited mid-run alongside an engine fault',
+    outcome: { failures: 3, hubDeath: true, engineFailureObserved: true },
+    want: 4,
+    why: 'the Hub exiting is the more specific cause, and it is checked first',
+  },
+  {
+    name: 'too few checks to mean anything',
+    outcome: { failures: 0, tooFewChecks: true },
+    want: 4,
+    why: 'a run that checked almost nothing is not a result, whatever the checks said',
+  },
+  {
+    name: 'no outcome at all',
+    outcome: undefined,
+    want: 0,
+    why: 'a missing outcome must not be read as a failure',
+  },
+];
+
+for (const c of CLASSIFICATIONS) {
+  const got = classifyOutcome(c.outcome);
+  if (got !== c.want) {
+    failures.push(
+      'the run would be classified as exit ' + got + ' where it should be exit ' + c.want +
+      ' (' + c.name + '): ' + c.why);
+  }
+}
+
 if (failures.length) {
   for (const f of failures) console.log('  FAIL  ' + f);
   console.log('\nuxtest selfcheck: engine-failure detection is not trustworthy');
@@ -82,5 +148,6 @@ if (failures.length) {
 
 console.log(
   'uxtest selfcheck: the engine-failure detector matches the entry observed on the ' +
-  'runner, does not match a server error, a blocked poll, or a page error, and keeps ' +
-  'one cause as one cause');
+  'runner, does not match a server error, a blocked poll, or a page error, keeps ' +
+  'one cause as one cause, and classifies a finished run so that a browser fault is ' +
+  'never reported as a product defect');

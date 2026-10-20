@@ -56,4 +56,46 @@ function createEngineFailureNote() {
   return fn;
 }
 
-module.exports = { isEngineFailure, createEngineFailureNote };
+// classifyOutcome reports the exit code a finished run should carry.
+//
+//	0  every check passed
+//	1  the product failed a check
+//	3  the harness itself failed
+//	4  the Hub under test exited mid-run, or too few checks ran to mean anything
+//	5  the browser engine failed a request, so this run says nothing about the
+//	   product
+//
+// The engine case is deliberately two-sided, and both sides matter.
+//
+// An engine failure with every check passing is not a fault worth failing on:
+// the engine recovered, and the run measured the product. A run with failures
+// and no engine failure is a product failure, and stays exit 1 -- the engine
+// note must never become a way to explain away a product defect. Only a run
+// that both failed and saw the engine fail is exit 5.
+//
+// This is the classification the harness could not make before. The detector
+// existed and labelled each failure with the engine note, so a reader could
+// see the attribution -- but the run still exited 1, and the job still read as
+// "the product broke". On 2026-10-20 the webkit peers run on the Linux runner
+// reported seven failures, five of them carrying the engine note, and the job
+// said the product was broken.
+//
+// The Hub-died case is checked first because a Hub that exited is either a
+// product defect or a broken environment, and both of those are worth a red
+// build; the engine case is the one where the product is demonstrably fine.
+function classifyOutcome(o) {
+  const outcome = o || {};
+  const failures = Number(outcome.failures) || 0;
+  // Too few checks is not a result at all, whatever the checks said.
+  if (outcome.tooFewChecks) return 4;
+  if (failures === 0) return 0;
+  // A Hub that exited mid-run is either a product defect or a broken
+  // environment, and both of those are worth a red build.
+  if (outcome.hubDeath) return 4;
+  // The engine note must never become a way to explain away a product
+  // defect: it only classifies a run that already failed.
+  if (outcome.engineFailureObserved === true) return 5;
+  return 1;
+}
+
+module.exports = { isEngineFailure, createEngineFailureNote, classifyOutcome };

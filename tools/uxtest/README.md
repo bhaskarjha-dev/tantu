@@ -70,11 +70,40 @@ was killed". A distinct process name means that command cannot reach it.
 | `1` | A check genuinely failed. **This is a product result.** |
 | `3` | The harness itself failed — build, browser launch, or a Hub that never became ready. |
 | `4` | **Not a product result.** The Hub under test exited mid-run, so every later check failed for want of a server. Re-run on a quiet machine. |
+| `5` | **Not a product result.** The browser engine failed a request, so the run measured the browser and not the product. See below. |
 
 Code `4` exists because a red run caused by a dead Hub is otherwise
 indistinguishable from a real regression, and the pass count printed alongside it
 (`47/51`) invites exactly that misreading. Every check that failed after the Hub
 died is tagged `[HUB DIED: …]`, and the last Hub output is printed.
+
+Code `5` exists for the same reason about a different cause. The harness
+already detected a browser engine failure and tagged every check it could
+attribute to it — but the run still exited `1`, and the job still read as "the
+product broke". On 2026-10-20 the webkit peers run on the Linux runner reported
+seven failed checks, five of them carrying the engine tag, and the job said the
+product was at fault. The engine fault is a known WebKit bug, recorded in
+`docs/KNOWN-LIMITATIONS.md` row 2.9, and it is not Tantu's.
+
+The classification is deliberately two-sided, and both sides matter:
+
+- an engine failure with **every check passing** is not a fault worth failing
+  on — the engine recovered and the run measured the product, so the run is `0`;
+- a run with failures and **no** engine failure is a product failure and stays
+  `1` — the engine note must never become a way to explain away a defect;
+- only a run that **both** failed and saw the engine fail is `5`.
+
+The run prints how the failures split — how many carry the engine tag and how
+many do not — because "seven checks failed" and "five of the seven carry the
+engine tag" are different claims, and only the second one says the browser is
+the likely cause. The checks that failed *before* the engine failure was
+observed cannot carry the tag at all, which is why the split is reported
+rather than summarised.
+
+CI re-runs a case that exits `5`, once. An engine fault does not reproduce; a
+product defect does, and the second attempt is what tells them apart. The
+first attempt's output is printed either way, so a product-shaped failure
+hiding behind an engine fault is visible rather than swallowed.
 
 | Variable | Purpose |
 |---|---|

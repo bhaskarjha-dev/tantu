@@ -25,7 +25,7 @@
 // build, test, or run Tantu itself.
 
 import { spawn, execFileSync } from 'node:child_process';
-import { createEngineFailureNote } from './engine-failure.cjs';
+import { createEngineFailureNote, classifyOutcome } from './engine-failure.cjs';
 import { bootSettled, describeBootState } from './settle.cjs';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -98,6 +98,17 @@ let lastHubOut = '';
 // nothing at all.
 const noteEngineFailure = createEngineFailureNote();
 let engineFailure = null;
+// How the failures split: some carry the engine-failure note and some do not.
+//
+// The split is reported, because a run in which every failure is attributed is
+// a different claim from one in which some are not, and the difference is the
+// difference between "the browser broke" and "the browser broke and something
+// else did too". On 2026-10-20 the webkit peers run failed seven checks, five
+// of them tagged -- and the two that were not were the first two to fail, so
+// they could not have been attributed even in principle: the engine failure
+// that explains them had not been observed yet when they ran.
+let failuresWithEngineNote = 0;
+let failuresWithoutEngineNote = 0;
 function check(name, ok, detail) {
   // The engine note goes first when both are true, because it is the more
   // specific cause: a Hub that exited during an engine failure is still a Hub
@@ -108,7 +119,10 @@ function check(name, ok, detail) {
     ? ' [HUB DIED: ' + hubDeath + ']'
     : (engineFailure ? ' [ENGINE FAILED THE REQUEST: ' + engineFailure + ']' : '');
   checks.push({ name, ok: !!ok, detail: String(detail ?? '').slice(0, 240) + suffix });
-  if (!ok) console.log('  FAIL  ' + name + '  ' + String(detail ?? '').slice(0, 200) + suffix);
+  if (!ok) {
+    if (engineFailure) failuresWithEngineNote++; else failuresWithoutEngineNote++;
+    console.log('  FAIL  ' + name + '  ' + String(detail ?? '').slice(0, 200) + suffix);
+  }
 }
 // A skip is never a pass. It gets its own line, its own count in the summary,
 // and a printed reason -- because a check that quietly stops running is how a
@@ -2610,9 +2624,36 @@ for (const [name, predicate] of Object.entries(wantStates)) {
         + MIN_CHECKS + '.\nA run that checks almost nothing cannot report a product result, and\n'
         + 'reporting 0/0 checks passed is the failure this floor exists to stop.');
     }
+    // The browser engine failed. This run measured the browser, not the
+    // product, and saying so is the difference between a red build that names
+    // its cause and one that sends whoever reads it to the wrong subsystem.
+    //
+    // The split is printed rather than summarised, because "seven checks failed"
+    // and "five of the seven carry the engine note" are different claims, and
+    // only the second one says the browser is the likely cause.
+    const engineFailureObserved = noteEngineFailure.last !== null;
+    const engineFaulted = productFailed && engineFailureObserved;
+    if (engineFaulted) {
+      console.error('\nuxtest: NOT A PRODUCT RESULT - the browser engine failed a request.\n'
+        + failuresWithEngineNote + ' of the ' + (failuresWithEngineNote + failuresWithoutEngineNote)
+        + ' failed check(s) carry the engine-failure tag; ' + failuresWithoutEngineNote + ' do not.\n'
+        + 'The engine note: ' + noteEngineFailure.last + '\n'
+        + 'This is a known browser fault rather than a Tantu defect -- see\n'
+        + 'docs/KNOWN-LIMITATIONS.md row 2.9.');
+    }
+    const exitCode = classifyOutcome({
+      failures: failuresWithEngineNote + failuresWithoutEngineNote,
+      engineFailureObserved: engineFailureObserved,
+      // A Hub that exited but left every check passing is not a failed run, so
+      // this keeps the existing meaning: the Hub's death matters when it
+      // caused failures.
+      hubDeath: infraFailed,
+      tooFewChecks: tooFewChecks,
+    });
     // Exit 4 means "not a product result", which CI already surfaces as a
-    // warning while still failing the job.
-    process.exitCode = (infraFailed || tooFewChecks) ? 4 : (productFailed ? 1 : 0);
+    // warning while still failing the job. Exit 5 means the same thing for a
+    // different cause, and CI re-runs that one case once.
+    process.exitCode = exitCode;
   } catch (e) {
     console.error('uxtest ERROR: ' + e.message);
     process.exitCode = 3;

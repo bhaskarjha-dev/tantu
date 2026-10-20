@@ -9461,3 +9461,110 @@ Verified: `go build`, `go vet`, `go test` (15 packages), `gofmt -l`,
 fallback gates, the heartbeat gates, the re-keying gate and the
 `presentStartedHub` gates all pass. All Windows — and the failure was macOS
 only, so the runner is still the authority on whether it is fixed there.
+
+---
+
+## Batch Z116 -- a browser fault the harness could label but not name (2026-10-20)
+
+The dashboard-acceptance job went red on the webkit peers run, at 98/105. Five
+of the seven failures carried a tag the harness had added for exactly this
+case:
+
+```
+FAIL  reconnect snapshot reconciliation under 2s  banner cleared in -1ms
+      [ENGINE FAILED THE REQUEST: console: Failed to load resource: WebKit
+       encountered an internal error @ http://127.0.0.1:18976/api/transfers/recent]
+```
+
+### What it was not
+
+Not my changes. The only thing this session touched in the browser path was
+`tools/uxtest/run.mjs`, and the diff against the last green commit is comments,
+a byte-order mark, the `MIN_CHECKS` floor, and one user-facing message string.
+No logic changed.
+
+Not a Tantu defect. The bytes were right -- `bytes: 70`, a correct PNG
+signature -- and only the engine's view of the `File` was wrong.
+
+### What it was
+
+The known WebKit fault. Batch Z110 recorded it, and recorded that it is "not
+ours and is not diagnosed here". It has now reproduced in CI three times and
+never on a developer machine.
+
+### The gap that made it a mystery
+
+**The register had no row for it.** Z110 put it in the DEV-RECORD, and the
+DEV-RECORD is a record of what was done -- not a register of what is still
+true. The register's own rule is that "a limitation tracked only in a commit
+message, a chat, or an agent's memory is not visible", and this limitation was
+invisible: a reader of the register would not learn that a browser fault
+sometimes fails the product's only browser evidence.
+
+And the harness could *label* the failure but not *name* it. The
+engine-failure detector had been there since 2026-10-16 and worked perfectly:
+five failures with one cause read as one cause. But the run still exited 1, so
+the job still read as "the product broke". The detector answered "why did these
+fail"; nothing answered "so what is this run".
+
+### The fix
+
+**A classification, and a retry that uses it to tell two things apart.**
+
+`classifyOutcome` in `tools/uxtest/engine-failure.cjs` decides what a finished
+run *is*, not just why its checks failed. It is deliberately two-sided:
+
+- an engine failure with every check passing is exit 0 -- the engine recovered
+  and the run measured the product;
+- a run with failures and no engine failure is exit 1 -- the engine note must
+  never become a way to explain away a defect;
+- a run that both failed and saw the engine fail is the new exit 5, "not a
+  product result".
+
+The run also reports how its failures split between tagged and untagged,
+because "seven checks failed" and "five of the seven carry the engine tag" are
+different claims. The two that were untagged were the first two to fail, and
+they could not have been tagged even in principle: the engine failure that
+explains them had not been observed yet when they ran.
+
+CI re-runs a case that exits 5, once. An engine fault does not reproduce; a
+product defect does, and the second attempt is what tells them apart. The
+first attempt's output is printed either way, so a product-shaped failure
+hiding behind an engine fault is visible rather than swallowed.
+
+### The gates, and one that had to be built three times
+
+`tools/wfcheck/dashboard_case_test.go` extracts the workflow's own
+exit-code block by markers and **runs it**, with the harness replaced by a stub
+that exits with whatever the test chooses. Six cases, and the one that matters
+most is the sixth: an engine fault on the first attempt and a **product**
+failure on the retry must still fail the job. If the retry could turn that
+green, the retry would be a way to explain away a defect.
+
+That gate took three attempts to work, and the reasons are the same ones this
+repository keeps meeting:
+
+1. The stub was a `node` on `PATH`, and `bash` here is the WSL launcher, which
+   reads a Windows directory in `PATH` as escapes. The real `node` ran instead.
+   The repository has been bitten by this twice already -- see
+   `pipefail_test.go` -- and the fix is the one that file documents: put the
+   stub at the **relative path the block already invokes**, so nothing crosses
+   the process boundary.
+2. The stub read its codes from an environment variable, and the environment
+   does not survive the crossing intact. A stub that silently read nothing
+   exits 1, which makes every case look like a product failure -- so the codes
+   come from a file now.
+3. The stub used `require` in a `.mjs` file, which is an ES module, so
+   `require` is not defined. Every case failed with exactly that message,
+   which is at least a failure that said what was wrong.
+
+### The register
+
+Row 2.9 is new, and its absence is half the finding: this limitation had been
+admitted in the DEV-RECORD since 2026-10-16 and had no row, so every
+occurrence was a fresh mystery for whoever read the red build.
+
+Verified: `go build`, `go vet`, `go test` (15 packages), `gofmt -l`,
+`staticcheck v0.8.1`, `encgate`, `docgate`, `wfcheck` and the four uxtest
+selfchecks exit 0; the browser harness is 108/108, 109/109, 125/125 and 106/106
+across the four topologies. All Windows.
