@@ -2097,6 +2097,128 @@ const OVERFLOW_PROBE = `(function(){
       tabReach && (tabReach.overflowing === false || tabReach.hasScrollAffordance === true),
       JSON.stringify(tabReach));
 
+    // --- the icons are drawn, not just declared ---
+    // Every glyph in the page is a CSS mask over a data-URI SVG, painted by
+    // a pseudo-element. A mask that fails to resolve is INVISIBLE and
+    // SILENT: the layout does not change, the text does not change, and
+    // every other check in this suite still passes. Nothing else in the
+    // acceptance run would notice a page whose icons had all vanished --
+    // which is why this check exists rather than a screenshot nobody
+    // diffs.
+    //
+    // Three failures are worth separating, because they have different
+    // causes and different fixes:
+    //   1. the mask never applies -- a typo in the property, or an engine
+    //      without mask support. Read from the computed style.
+    //   2. the pseudo-element has no box to draw in. Also computed style.
+    //   3. the SVG inside the mask does not parse -- a data URI with a
+    //      mangled escape. Settled by rasterising the SVG and asking
+    //      whether any of it is opaque, because a glyph that parses but
+    //      draws nothing is just as missing.
+    //
+    // The classes are probed on a scratch element rather than read off the
+    // page's own icons, so that an icon in a pane which is not open is
+    // still checked: a closed pane's pseudo-element is not generated, and
+    // its computed style would report "no mask" for a mask that is
+    // perfectly fine.
+    {
+      const icons = await js(`(function(){
+        var out = { classes: 0, unmasked: [], sizeless: [] };
+        var seen = {};
+        var els = document.querySelectorAll('[class*="ico--"]');
+        for (var i = 0; i < els.length; i++) {
+          var el = els[i];
+          // Only the modifier matters: the mask rides on the class, so
+          // one probe per class covers every element that uses it.
+          var m = /(^|\\s)(ico--[\\w-]+)/.exec(el.className || '');
+          if (m) seen[m[2]] = true;
+        }
+        out.classes = Object.keys(seen).length;
+        // The runtime-rendered lists -- peers, received items, discovered
+        // hubs -- name their icons in the page's own script. On a peerless
+        // run those lists are empty, so those classes never reach the DOM
+        // and a typo in one of them would never be probed. The script's
+        // own text is where they live, so it is read too.
+        var scripts = document.querySelectorAll('script');
+        for (var s = 0; s < scripts.length; s++) {
+          // The character class has to be the whole of a CSS identifier's
+          // tail, upper case included: a narrower one stopped at the
+          // first non-lower-case character and so matched the *intended*
+          // class rather than the mistyped one, which is the case this
+          // scan exists to catch.
+          var re = /ico--[A-Za-z0-9_-]+/g, m;
+          while ((m = re.exec(scripts[s].textContent || '')) !== null) seen[m[0]] = true;
+        }
+        out.classes = Object.keys(seen).length;
+        if (out.classes === 0) return out;
+        var probe = document.createElement('span');
+        probe.setAttribute('aria-hidden', 'true');
+        probe.style.cssText = 'position:absolute;left:0;top:0;visibility:hidden;';
+        document.body.appendChild(probe);
+        for (var cls in seen) {
+          // The base class carries the pseudo-element; the modifier only
+          // supplies the mask. Both are needed for the glyph to exist.
+          probe.className = 'ico ' + cls;
+          var cs = getComputedStyle(probe, '::before');
+          var mask = cs.maskImage || cs.webkitMaskImage || 'none';
+          if (!mask || mask === 'none' || mask.indexOf('url(') !== 0) out.unmasked.push(cls);
+          if (!(parseFloat(cs.width) > 0) || !(parseFloat(cs.height) > 0)) out.sizeless.push(cls);
+        }
+        probe.remove();
+        return out;
+      })()`);
+      check('every icon in the page has a mask that applies', icons && icons.classes > 0 && icons.unmasked.length === 0,
+        'icons: ' + JSON.stringify(icons));
+      check('every icon in the page has a box to draw in', icons && icons.sizeless.length === 0,
+        'icons: ' + JSON.stringify(icons));
+      // The SVG inside each mask has to be a drawing, not just a string.
+      const drawn = await page.evaluate(async () => {
+        const out = { glyphs: 0, blank: [] };
+        try {
+          const seen = new Set();
+          const add = (mask) => {
+            const u = /url\(["']?(.*?)["']?\)/.exec(mask || '');
+            if (u) seen.add(u[1]);
+          };
+          for (const el of document.querySelectorAll('[class*="ico--"]')) {
+            const cs = getComputedStyle(el, '::before');
+            add(cs.maskImage || cs.webkitMaskImage);
+          }
+          // The two glyphs that are masked on the element rather than on
+          // a pseudo-element: the wordmark's mark and the drop zone's.
+          for (const el of document.querySelectorAll('.logo-mark, .drop-zone-icon')) {
+            const cs = getComputedStyle(el);
+            add(cs.maskImage || cs.webkitMaskImage);
+          }
+          out.glyphs = seen.size;
+          for (const src of seen) {
+            const drew = await new Promise((res) => {
+              const img = new Image();
+              img.onload = () => {
+                try {
+                  const c = document.createElement('canvas');
+                  c.width = 48; c.height = 48;
+                  const g = c.getContext('2d');
+                  g.drawImage(img, 0, 0, 48, 48);
+                  const d = g.getImageData(0, 0, 48, 48).data;
+                  for (let i = 3; i < d.length; i += 4) { if (d[i] > 0) { res(true); return; } }
+                  res(false);
+                } catch (e) { res(false); }
+              };
+              img.onerror = () => res(false);
+              img.src = src;
+            });
+            if (!drew) out.blank.push(String(src).slice(0, 48));
+          }
+        } catch (e) {
+          out.error = String((e && e.message) || e);
+        }
+        return out;
+      });
+      check('every icon mask resolves to a drawing that paints', drawn && drawn.error === undefined && drawn.glyphs > 0 && drawn.blank.length === 0,
+        'glyphs: ' + JSON.stringify(drawn));
+    }
+
     if (tabWrapViewport) { await metrics(tabWrapViewport.width, tabWrapViewport.height); await sleep(200); }
 
     // --- console hygiene ---

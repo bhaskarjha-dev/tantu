@@ -464,7 +464,14 @@ func TestWebDashboard_AccessibilityMechanicsMarkers(t *testing.T) {
 		`<nav class="tabs-nav" aria-label="Dashboard sections">`,
 		// Exactly one page-level heading, and real headings for the cards.
 		`<h1 class="sr-only">Tantu Hub dashboard</h1>`,
-		`<h2 class="card-title">`,
+		// A prefix, not the whole attribute. The card titles carry their
+		// icon's classes as well, and a marker naming the exact class
+		// list would break every time a card grew a glyph -- which is a
+		// gate that reports a design change as a defect. What this
+		// asserts is that a card title is an <h2>; the check further down
+		// this file, which rejects a card title that is a <div>, is what
+		// makes the pair able to fail.
+		`<h2 class="card-title`,
 		`<h3 class="card-title" id="filePreviewTitle">`,
 		// Tablist: one tab stop, arrow-key navigation.
 		`data-tab="tab-drop" tabindex="0"`,
@@ -527,7 +534,16 @@ func TestWebDashboard_AccessibilityMechanicsMarkers(t *testing.T) {
 		t.Error("progress percentage is a live region again; it duplicates role=progressbar")
 	}
 	// Card titles must not regress to divs.
-	if strings.Contains(content, `<div class="card-title"`) {
+	//
+	// A prefix, for the same reason the marker above is a prefix: the
+	// exact form `<div class="card-title"` only caught a div whose class
+	// attribute was exactly "card-title". A div that also carried a style
+	// or an icon's class -- which is what a card title looks like once it
+	// has a glyph -- sailed past it. The check was a prefix in everything
+	// but name, and the red proof that changed it is a card title
+	// rewritten as `<div class="card-title ico ico--send">`: with the
+	// exact form, that document passed.
+	if strings.Contains(content, `<div class="card-title`) {
 		t.Error("a card title regressed to a div and left the page without headings")
 	}
 	// Exactly one h1: a second would restart the outline.

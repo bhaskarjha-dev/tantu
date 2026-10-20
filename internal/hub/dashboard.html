@@ -1154,6 +1154,457 @@
     border-color: var(--error);
     color: var(--error-text);
   }
+  /* ==================================================================
+     VISUAL SYSTEM
+
+     An additive layer over the layout that is already here. It is
+     additive on purpose: that layout is what the acceptance harness
+     measures -- the tab bar's scroll affordance, the logo's height, the
+     24x24 targets, the 320px overflow probe -- so it is dressed here
+     rather than replaced.
+
+     THE ICONS
+
+     The icons are CSS masks over data-URI SVG, painted by a
+     pseudo-element. That is a decision with consequences, not a
+     preference:
+
+       - A pseudo-element is not in the DOM. An <svg> inside a tab
+         button adds a box to the text range the harness measures the
+         label with, and the label's line count is precisely what the
+         "no tab label wraps" gate asserts. Measured in Chromium, an
+         <svg> as a direct child of the flex button reports TWO lines
+         and the gate fails; the same glyph inside an inline-flex
+         wrapper reports one. A mask has no such edge, because it adds
+         no node at all.
+       - currentColor means a glyph is the colour of the text it sits
+         beside, in both themes, with no second palette to keep true.
+       - The CSP already permits data: images, so this opens nothing.
+
+     The drawings are 24x24 strokes, so they stay even at any size and
+     take the weight of the type around them.
+     ================================================================== */
+  :root {
+    /* A type scale, in rem. The dashboard had seven ad-hoc sizes between
+       0.7rem and 1.25rem and no scale to hang them on, which is why the
+       hierarchy read as flat: almost every level looked like every
+       other one. */
+    --fs-2xs: 0.6875rem;   /* 11px  badges, meta */
+    --fs-xs: 0.75rem;      /* 12px  chips, labels */
+    --fs-sm: 0.8125rem;    /* 13px  secondary */
+    --fs-base: 0.875rem;   /* 14px  body */
+    --fs-md: 0.9375rem;    /* 15px  emphasis */
+    --fs-lg: 1rem;         /* 16px  section */
+    --fs-xl: 1.125rem;     /* 18px  card titles */
+    --fs-2xl: 1.375rem;    /* 22px  headings */
+
+    /* The frame. One gutter and one content width, shared by the
+       header, the tab bar and the page, so the three line up instead of
+       each choosing its own. */
+    --gutter: clamp(1rem, 4vw, 2rem);
+    --shell-max: 1180px;
+    --pad-y: 2rem;
+
+    /* The tab bar is a dark chrome band in BOTH themes (see --nav-bg),
+       so its own surfaces are chrome surfaces: a lighter track, a
+       hairline, and a raised active tab. */
+    --tab-track: #151a26;
+    --tab-track-edge: rgba(255, 255, 255, 0.09);
+    --tab-active-bg: rgba(255, 255, 255, 0.10);
+    --tab-active-edge: rgba(255, 255, 255, 0.14);
+
+    /* A hairline along the top edge of a card. Light in the dark theme,
+       dark in the light one: the same idea, drawn in the ink that is
+       missing from that theme's background. */
+    --card-hairline: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.16), transparent);
+    --card-edge: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --tab-track: #262d41;
+      --tab-track-edge: rgba(255, 255, 255, 0.10);
+      --card-hairline: linear-gradient(90deg, transparent, rgba(22, 33, 58, 0.10), transparent);
+      --card-edge: inset 0 1px 0 rgba(22, 33, 58, 0.04);
+    }
+  }
+  @media (max-width: 640px) {
+    :root { --pad-y: 1rem; }
+  }
+
+  /* ---- The icon set ---- */
+  :root {
+    --icon-drop: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3v10'/%3E%3Cpath d='M8.5 9.5 12 13l3.5-3.5'/%3E%3Cpath d='M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4'/%3E%3C/svg%3E");
+    --icon-bolt: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M13.2 2.6 4.9 13.1h5.5L10 21.4l9.1-11.2h-5.9z'/%3E%3C/svg%3E");
+    --icon-link: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10.6 13.4a4.2 4.2 0 0 0 6 0l2.2-2.2a4.2 4.2 0 0 0-6-6l-1.2 1.2'/%3E%3Cpath d='M13.4 10.6a4.2 4.2 0 0 0-6 0l-2.2 2.2a4.2 4.2 0 0 0 6 6l1.2-1.2'/%3E%3C/svg%3E");
+    --icon-transfer: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 8.5h12.5'/%3E%3Cpath d='M13.5 5 17 8.5l-3.5 3.5'/%3E%3Cpath d='M20 15.5H7.5'/%3E%3Cpath d='M10.5 12 7 15.5l3.5 3.5'/%3E%3C/svg%3E");
+    --icon-logs: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3.5' y='4.5' width='17' height='15' rx='2.5'/%3E%3Cpath d='M7.5 10.5 10 13l-2.5 2.5'/%3E%3Cpath d='M13 15h4'/%3E%3C/svg%3E");
+    --icon-logo: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='3.5' y='3.5' width='17' height='17' rx='5.5' fill='none' stroke='%23000' stroke-width='1.8'/%3E%3Cpath d='M9 8.2h6v2.3h-1.9V16h-2.2v-5.5H9z' fill='%23000' stroke='none'/%3E%3C/svg%3E");
+    --icon-folder: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 7.5a2 2 0 0 1 2-2h4.2l2 2.5h7.8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-14a2 2 0 0 1-2-2z'/%3E%3C/svg%3E");
+    --icon-folder-open: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 18.5V7a2 2 0 0 1 2-2h4l2 2.5h6.9a2 2 0 0 1 2 2v1.2'/%3E%3Cpath d='M3.6 18.6 6.1 10.8a1.5 1.5 0 0 1 1.4-1h13a1 1 0 0 1 .95 1.32L19.1 19.4a1.5 1.5 0 0 1-1.42 1.02H5.2a1.5 1.5 0 0 1-1.6-1.82z'/%3E%3C/svg%3E");
+    --icon-pencil: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 20h4.2L20 8.2 15.8 4 4 15.8z'/%3E%3Cpath d='M14.6 5.2 18.8 9.4'/%3E%3C/svg%3E");
+    --icon-send: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.2 11.3 21 3.5l-7.7 17-2.2-7.5z'/%3E%3Cpath d='M11.1 13 21 3.5'/%3E%3C/svg%3E");
+    --icon-text: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6.2 3.5h7.6l4.4 4.4v12.6H6.2z'/%3E%3Cpath d='M13.6 3.6V8h4.4'/%3E%3Cpath d='M9.2 12.5h5.6'/%3E%3Cpath d='M9.2 16h3.6'/%3E%3C/svg%3E");
+    --icon-inbox: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 13.5h4.6l1.5 2.5h4.8l1.5-2.5h4.6'/%3E%3Cpath d='M5.6 5.5h12.8l2.1 8v4.9a1.6 1.6 0 0 1-1.6 1.6H5.1a1.6 1.6 0 0 1-1.6-1.6v-4.9z'/%3E%3C/svg%3E");
+    --icon-refresh: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 12a8 8 0 1 1-2.34-5.66'/%3E%3Cpath d='M20.2 4.2v5.2H15'/%3E%3C/svg%3E");
+    --icon-trash: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6.5h16'/%3E%3Cpath d='M9.5 6.5V4.4h5v2.1'/%3E%3Cpath d='M6.4 6.5 7.5 20h9l1.1-13.5'/%3E%3Cpath d='M10.5 10.2v6'/%3E%3Cpath d='M13.5 10.2v6'/%3E%3C/svg%3E");
+    --icon-copy: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='8.5' y='8.5' width='12' height='12' rx='2.2'/%3E%3Cpath d='M15.5 5.6V4.6a2 2 0 0 0-2-2h-9a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h1'/%3E%3C/svg%3E");
+    --icon-download: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3.5v11'/%3E%3Cpath d='M8.4 11 12 14.6 15.6 11'/%3E%3Cpath d='M4 19.5h16'/%3E%3C/svg%3E");
+    --icon-alert: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10.3 4.3 2.9 17.4a2 2 0 0 0 1.7 3h14.8a2 2 0 0 0 1.7-3L13.7 4.3a2 2 0 0 0-3.4 0z'/%3E%3Cpath d='M12 9.5v4.2'/%3E%3Cpath d='M12 17h.01'/%3E%3C/svg%3E");
+    --icon-lock: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4.5' y='10.5' width='15' height='10' rx='2.2'/%3E%3Cpath d='M8 10.5V8a4 4 0 0 1 8 0v2.5'/%3E%3C/svg%3E");
+    --icon-radio: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='2.2'/%3E%3Cpath d='M8.4 15.6a5.2 5.2 0 0 1 0-7.2'/%3E%3Cpath d='M15.6 8.4a5.2 5.2 0 0 1 0 7.2'/%3E%3Cpath d='M5.6 18.4a9 9 0 0 1 0-12.8'/%3E%3Cpath d='M18.4 5.6a9 9 0 0 1 0 12.8'/%3E%3C/svg%3E");
+    --icon-monitor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2.6' y='4.2' width='18.8' height='12.6' rx='2.2'/%3E%3Cpath d='M8.4 20.6h7.2'/%3E%3Cpath d='M12 16.8v3.8'/%3E%3C/svg%3E");
+    --icon-users: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='9.2' cy='8' r='3.3'/%3E%3Cpath d='M3.4 19.6a5.8 5.8 0 0 1 11.6 0'/%3E%3Cpath d='M16.2 5.2a3.3 3.3 0 0 1 0 6'/%3E%3Cpath d='M17.6 14.4a5.8 5.8 0 0 1 3 5.2'/%3E%3C/svg%3E");
+    --icon-search: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='10.8' cy='10.8' r='6.6'/%3E%3Cpath d='M15.6 15.6 20.5 20.5'/%3E%3C/svg%3E");
+    --icon-plus: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 5.2v13.6'/%3E%3Cpath d='M5.2 12h13.6'/%3E%3C/svg%3E");
+    --icon-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4.8 12.4 9.6 17.2 19.2 6.8'/%3E%3C/svg%3E");
+    --icon-clock: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='8.4'/%3E%3Cpath d='M12 7.2v5.2l3.4 2'/%3E%3C/svg%3E");
+    --icon-globe: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='8.4'/%3E%3Cpath d='M3.6 12h16.8'/%3E%3Cpath d='M12 3.6c2.4 2.3 3.6 5.1 3.6 8.4S14.4 18.1 12 20.4c-2.4-2.3-3.6-5.1-3.6-8.4S9.6 5.9 12 3.6z'/%3E%3C/svg%3E");
+    --icon-star: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3.6 14.5 9l5.9.8-4.3 4.1 1 5.9-5.1-2.8-5.1 2.8 1-5.9L3.6 9.8 9.5 9z'/%3E%3C/svg%3E");
+  }
+  /* The icon primitive. The glyph is the element's own colour, and it is
+     sized in em so it tracks the type it sits in. */
+  .ico::before {
+    content: "";
+    display: inline-block;
+    width: 1.05em;
+    height: 1.05em;
+    margin-right: 0.45em;
+    background-color: currentColor;
+    -webkit-mask-image: var(--m);
+    mask-image: var(--m);
+    -webkit-mask-size: contain;
+    mask-size: contain;
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+    -webkit-mask-position: center;
+    mask-position: center;
+    vertical-align: -0.17em;
+    flex: none;
+  }
+  /* In a flex parent the gap already separates the glyph from the text,
+     so the margin would double it. */
+  .tab-btn.ico::before,
+  .card-title.ico::before,
+  .btn-sm.ico::before,
+  .btn-primary.ico::before {
+    margin-right: 0;
+  }
+  .ico--drop { --m: var(--icon-drop); }
+  .ico--bolt { --m: var(--icon-bolt); }
+  .ico--link { --m: var(--icon-link); }
+  .ico--transfer { --m: var(--icon-transfer); }
+  .ico--logs { --m: var(--icon-logs); }
+  .ico--folder { --m: var(--icon-folder); }
+  .ico--folder-open { --m: var(--icon-folder-open); }
+  .ico--pencil { --m: var(--icon-pencil); }
+  .ico--send { --m: var(--icon-send); }
+  .ico--text { --m: var(--icon-text); }
+  .ico--inbox { --m: var(--icon-inbox); }
+  .ico--refresh { --m: var(--icon-refresh); }
+  .ico--trash { --m: var(--icon-trash); }
+  .ico--copy { --m: var(--icon-copy); }
+  .ico--download { --m: var(--icon-download); }
+  .ico--alert { --m: var(--icon-alert); }
+  .ico--lock { --m: var(--icon-lock); }
+  .ico--radio { --m: var(--icon-radio); }
+  .ico--monitor { --m: var(--icon-monitor); }
+  .ico--users { --m: var(--icon-users); }
+  .ico--search { --m: var(--icon-search); }
+  .ico--plus { --m: var(--icon-plus); }
+  .ico--check { --m: var(--icon-check); }
+  .ico--clock { --m: var(--icon-clock); }
+  .ico--globe { --m: var(--icon-globe); }
+  .ico--star { --m: var(--icon-star); }
+  /* The bookmarklet is a pill you drag, so its glyph belongs beside the
+     word rather than replacing it. */
+  .bookmarklet-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .bookmarklet-btn.ico::before {
+    margin-right: 0;
+  }
+
+  /* ---- The page itself: a pool of light at the top, so the chrome has
+         something to sit against ---- */
+  body {
+    background:
+      radial-gradient(1100px 520px at 50% -8%, rgba(59, 130, 246, 0.13), transparent 62%),
+      var(--bg);
+  }
+  /* ---- The frame: header, tab bar and page share one measure ---- */
+  .shell {
+    width: 100%;
+    max-width: var(--shell-max);
+    margin-inline: auto;
+  }
+  header {
+    padding: 0.875rem var(--gutter);
+  }
+  .header-inner {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    min-width: 0;
+  }
+  main.tab-content {
+    max-width: calc(var(--shell-max) + 2 * var(--gutter));
+    padding: var(--pad-y) var(--gutter) calc(var(--pad-y) * 1.5);
+  }
+  nav.tabs-nav {
+    padding: 0.75rem var(--gutter);
+  }
+  /* ---- The wordmark ---- */
+  .logo-mark {
+    width: 26px;
+    height: 26px;
+    flex: none;
+    background-color: var(--accent-on-chrome);
+    -webkit-mask-image: var(--icon-logo);
+    mask-image: var(--icon-logo);
+    -webkit-mask-size: contain;
+    mask-size: contain;
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+  }
+  .logo-title {
+    font-size: 1.25rem;
+  }
+  /* The grid's columns are two independent stacks, not two halves of one
+     box. Left to stretch, a short card in one column grew to match the
+     tall one beside it and the empty half read as a rendering fault. */
+  .grid-2 {
+    align-items: start;
+  }
+  /* ---- The tab bar: a segmented control on a dark track ---- */
+  .tabs-list {
+    /* As wide as the tabs, not as wide as the page. A rail that ran the
+       full measure with five tabs at one end read as a control with
+       something missing in it; capped at 100% it still scrolls when the
+       labels no longer fit. */
+    width: fit-content;
+    max-width: 100%;
+    gap: 0.25rem;
+    padding: 0.25rem;
+    background:
+      linear-gradient(to right, var(--tab-track) 40%, transparent) left / 36px 100% no-repeat local,
+      linear-gradient(to left, var(--tab-track) 40%, transparent) right / 36px 100% no-repeat local,
+      radial-gradient(farthest-side at 0 50%, rgba(0, 0, 0, 0.45), transparent) left / 14px 100% no-repeat scroll,
+      radial-gradient(farthest-side at 100% 50%, rgba(0, 0, 0, 0.45), transparent) right / 14px 100% no-repeat scroll,
+      var(--tab-track);
+    border: 1px solid var(--tab-track-edge);
+    border-radius: var(--radius-pill);
+    box-shadow: var(--shadow-sm);
+  }
+  .tab-btn {
+    padding: 0.5rem 0.9rem;
+    border: 1px solid transparent;
+    border-radius: var(--radius-pill);
+    font-size: var(--fs-md);
+    gap: 0.45rem;
+  }
+  /* The active tab is a raised surface rather than an underline. The
+     underline pseudo-element is kept in the stylesheet above because it
+     is what the accent used to be; here the accent is the glyph. */
+  .tab-btn::after {
+    display: none;
+  }
+  .tab-btn.active {
+    color: var(--chrome-text-strong);
+    background: var(--tab-active-bg);
+    border-color: var(--tab-active-edge);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  }
+  .tab-btn.active .ico::before {
+    background-color: var(--accent-on-chrome);
+  }
+  .tab-btn:focus-visible {
+    outline: 2px solid var(--accent-on-chrome);
+    outline-offset: 2px;
+  }
+  /* ---- Cards: depth, a hairline, and a title that reads as a title ---- */
+  .card {
+    position: relative;
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md), var(--card-edge);
+    transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+  }
+  .card::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    height: 1px;
+    background: var(--card-hairline);
+    pointer-events: none;
+  }
+  .card-title {
+    font-size: var(--fs-xl);
+    font-weight: 600;
+    letter-spacing: -0.012em;
+    color: var(--text);
+  }
+  .card-title .ico::before {
+    color: var(--accent);
+  }
+  /* ---- The drop zone: the page's one true call to action ---- */
+  .drop-zone {
+    position: relative;
+    overflow: hidden;
+    border: 1.5px dashed var(--border-light);
+    border-radius: var(--radius-lg);
+    padding: 2.75rem 1.25rem;
+    background: var(--surface);
+  }
+  .drop-zone::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(120% 90% at 50% 0%, rgba(59, 130, 246, 0.16), transparent 62%);
+    pointer-events: none;
+  }
+  /* No positioning is needed for the zone's own content: a ::before is the
+     first box in the tree and paints before the element's children, so the
+     sheen is already behind the text. */
+  .drop-zone-icon {
+    width: 3rem;
+    height: 3rem;
+    margin: 0 auto 0.85rem;
+    background-color: var(--accent);
+    -webkit-mask-image: var(--icon-drop);
+    mask-image: var(--icon-drop);
+    -webkit-mask-size: contain;
+    mask-size: contain;
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+  }
+  .drop-zone-text {
+    font-size: var(--fs-lg);
+    font-weight: 600;
+    color: var(--text);
+  }
+  .drop-zone-subtext {
+    font-size: var(--fs-sm);
+    color: var(--text-muted);
+  }
+  /* ---- The bookmarklet is the primary path on the relay tab, so it is
+         dressed as the page's one call to action rather than as a note ---- */
+  .bookmarklet-box {
+    position: relative;
+    overflow: hidden;
+    border: 1px solid rgba(59, 130, 246, 0.35);
+    border-radius: var(--radius-lg);
+    background:
+      radial-gradient(120% 100% at 50% 0%, rgba(59, 130, 246, 0.16), transparent 60%),
+      var(--card-bg);
+    box-shadow: var(--shadow-md), var(--card-edge);
+    padding: 2rem 1.5rem;
+  }
+  /* ---- Small controls ---- */
+  .btn-sm {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    border-radius: var(--radius-md);
+    font-weight: 600;
+    transition: all 0.2s;
+  }
+  .btn-primary {
+    border-radius: var(--radius-md);
+    font-weight: 600;
+  }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-weight: 600;
+    transition: all 0.2s;
+  }
+  /* The log filters carried coloured emoji dots. They are domain marks,
+     and the domains already have a palette in .tag-*, so the dots are
+     drawn from that palette instead of being pasted in from a font. */
+  .pill[data-filter]::before {
+    content: "";
+    width: 0.45rem;
+    height: 0.45rem;
+    border-radius: 50%;
+    background: currentColor;
+    flex: none;
+  }
+  .pill--oauth::before { background: #60a5fa; }
+  .pill--drop::before { background: #34d399; }
+  .pill--peer::before { background: #c084fc; }
+  .pill--net::before { background: #fbbf24; }
+  .pill--debug::before { background: #94a3b8; }
+  .pill--error::before { background: #f87171; }
+  /* "All" is not a domain, so it has no domain dot. */
+  .pill[data-filter="ALL"]::before { display: none; }
+  /* ---- The search field: the glyph sits in the field, not in the text ---- */
+  .log-search {
+    position: relative;
+  }
+  .log-search::before {
+    content: "";
+    position: absolute;
+    left: 0.85rem;
+    top: 50%;
+    width: 1rem;
+    height: 1rem;
+    margin-top: -0.5rem;
+    background-color: var(--text-muted);
+    -webkit-mask-image: var(--icon-search);
+    mask-image: var(--icon-search);
+    -webkit-mask-size: contain;
+    mask-size: contain;
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+    pointer-events: none;
+  }
+  .log-search input {
+    padding-left: 2.4rem;
+  }
+  /* ---- Empty states: a card of their own, not a paragraph ---- */
+  .empty-state {
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+    padding: 1.75rem 1.25rem;
+    color: var(--text-muted);
+    font-size: var(--fs-base);
+    line-height: 1.6;
+  }
+  .empty-state strong {
+    display: block;
+    color: var(--text);
+    font-size: var(--fs-lg);
+    margin-bottom: 0.35rem;
+  }
+  /* ---- Scrollbars: the page scrolls, so the scrollbar is part of the
+         design rather than an operating-system artefact ---- */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-light) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-light);
+    border-radius: var(--radius-pill);
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--text-muted);
+    background-clip: content-box;
+  }
   /* ---- Notifications ----
      Every outcome the product cannot put next to its own control arrives here
      instead of in a native alert(). alert() is modal, unstyled, ignores the
@@ -1272,29 +1723,34 @@
   <a class="skip-link" href="#main">Skip to main content</a>
   <h1 class="sr-only">Tantu Hub dashboard</h1>
   <header>
-    <div class="logo-group">
-      <div class="logo-title">🔐 tantu</div>
-      <span class="version-tag">v{{VERSION}}</span>
-    </div>
-    <div class="peer-status-pill">
-      <div class="status-dot" id="peerDot"></div>
-      <span id="peerLabel">Auto-detecting peer...</span>
+    <div class="shell header-inner">
+      <div class="logo-group">
+        <span class="logo-mark" aria-hidden="true"></span>
+        <div class="logo-title">tantu</div>
+        <span class="version-tag">v{{VERSION}}</span>
+      </div>
+      <div class="peer-status-pill">
+        <div class="status-dot" id="peerDot"></div>
+        <span id="peerLabel">Auto-detecting peer...</span>
+      </div>
     </div>
   </header>
 
   <nav class="tabs-nav" aria-label="Dashboard sections">
-    <div class="tabs-list" role="tablist" aria-label="Dashboard sections">
-      <button id="tab-btn-drop" class="tab-btn active" role="tab" aria-selected="true" aria-controls="tab-drop" data-tab="tab-drop" tabindex="0">📦 QuickDrop</button>
-      <button id="tab-btn-relay" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-relay" data-tab="tab-relay" tabindex="-1">⚡ OAuth Relay</button>
-      <button id="tab-btn-peers" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-peers" data-tab="tab-peers" tabindex="-1">🔗 Peers & Network</button>
-      <button id="tab-btn-transfers" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-transfers" data-tab="tab-transfers" tabindex="-1">🔄 Transfers</button>
-      <button id="tab-btn-logs" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-logs" data-tab="tab-logs" tabindex="-1">📋 Live Logs</button>
+    <div class="shell">
+      <div class="tabs-list" role="tablist" aria-label="Dashboard sections">
+        <button id="tab-btn-drop" class="tab-btn active ico ico--drop" role="tab" aria-selected="true" aria-controls="tab-drop" data-tab="tab-drop" tabindex="0">QuickDrop</button>
+        <button id="tab-btn-relay" class="tab-btn ico ico--bolt" role="tab" aria-selected="false" aria-controls="tab-relay" data-tab="tab-relay" tabindex="-1">OAuth Relay</button>
+        <button id="tab-btn-peers" class="tab-btn ico ico--link" role="tab" aria-selected="false" aria-controls="tab-peers" data-tab="tab-peers" tabindex="-1">Peers & Network</button>
+        <button id="tab-btn-transfers" class="tab-btn ico ico--transfer" role="tab" aria-selected="false" aria-controls="tab-transfers" data-tab="tab-transfers" tabindex="-1">Transfers</button>
+        <button id="tab-btn-logs" class="tab-btn ico ico--logs" role="tab" aria-selected="false" aria-controls="tab-logs" data-tab="tab-logs" tabindex="-1">Live Logs</button>
+      </div>
     </div>
   </nav>
 
   <main class="tab-content" id="main" tabindex="-1">
-    <div id="sessionBanner" role="alert" style="display: none; background: var(--warning-bg); border: 1px solid var(--warning); color: var(--warning-text); border-radius: 12px; padding: 0.85rem 1.25rem; margin-bottom: 1.25rem; font-size: 0.9rem;">
-      ⚠️ <strong>Dashboard session not established.</strong>
+    <div id="sessionBanner" role="alert" class="ico ico--alert" style="display: none; background: var(--warning-bg); border: 1px solid var(--warning); color: var(--warning-text); border-radius: 12px; padding: 0.85rem 1.25rem; margin-bottom: 1.25rem; font-size: 0.9rem;">
+      <strong>Dashboard session not established.</strong>
       <span id="sessionBannerDetail">Actions on this page will fail until you reconnect. Run <code>tantu dashboard</code> in a terminal for a fresh link &mdash; that works whether or not the Hub opened this page. If the Hub <em>did</em> open this tab, reloading it is enough. Pressing <kbd>o</kbd> in the Hub terminal does the same thing.</span>
     </div>
     <!-- INBOUND PAIRING APPROVAL BANNER: the only action in the product that
@@ -1302,7 +1758,7 @@
          with theme-aware classes and full-size targets. -->
     <div id="pendingPairingsBanner" class="pairing-banner" role="status" aria-live="polite" style="display: none;">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; flex-wrap: wrap; gap: 0.5rem;">
-        <h2 class="pairing-banner-title"><span aria-hidden="true">🔐</span> Incoming pairing request</h2>
+        <h2 class="pairing-banner-title ico ico--lock">Incoming pairing request</h2>
         <span class="pairing-banner-badge">Action required</span>
       </div>
       <div id="pendingPairingsList" style="display: flex; flex-direction: column; gap: 0.75rem;"></div>
@@ -1325,12 +1781,12 @@
       <div class="card" style="margin-bottom: 1.25rem; padding: 0.75rem 1.25rem;">
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem;">
           <div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem;">
-            <span style="color: var(--text-muted);">📁 Downloads location:</span>
+            <span class="ico ico--folder" style="color: var(--text-muted);">Downloads location:</span>
             <code id="downloadDirPath" class="mono-chip">...</code>
           </div>
           <div style="display: flex; gap: 0.5rem;">
-            <button class="btn-sm" data-action="change-download-dir">✏️ Change</button>
-            <button class="btn-sm" data-action="open-folder">📂 Open Folder</button>
+            <button class="btn-sm ico ico--pencil" data-action="change-download-dir">Change</button>
+            <button class="btn-sm ico ico--folder-open" data-action="open-folder">Open Folder</button>
           </div>
         </div>
       </div>
@@ -1350,9 +1806,9 @@
         <!-- Left Pane: Outbound Sending -->
         <div style="display: flex; flex-direction: column; gap: 1.25rem;">
           <div class="card">
-            <h2 class="card-title">📤 Send File or Image (up to 5GB)</h2>
+            <h2 class="card-title ico ico--send">Send File or Image (up to 5GB)</h2>
             <div class="drop-zone" id="dropZone" data-action="choose-file" tabindex="0" role="button" aria-label="Drag and drop files here, or click to browse - choose a file to send to your peer">
-              <div class="drop-zone-icon">📁</div>
+              <div class="drop-zone-icon" aria-hidden="true"></div>
               <div class="drop-zone-text">Drag & drop files here, or click to browse</div>
               <div class="drop-zone-subtext" id="dropZoneTransportNote">Direct encrypted peer-to-peer streaming • no intermediate server</div>
             </div>
@@ -1389,7 +1845,7 @@
           </div>
 
           <div class="card">
-            <h2 class="card-title">📝 Quick Text & Snippet Sharing</h2>
+            <h2 class="card-title ico ico--text">Quick Text &amp; Snippet Sharing</h2>
             <label class="sr-only" for="textPayload">Text snippet to send</label>
             <textarea id="textPayload" placeholder="Paste code snippet, auth tokens, commands, or notes to send immediately to the peer..."></textarea>
             <div style="display: flex; justify-content: flex-end; margin-top: 0.75rem;">
@@ -1401,8 +1857,8 @@
         <!-- Right Pane: Received Items & History -->
         <div class="card" style="display: flex; flex-direction: column;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
-            <h2 class="card-title" style="margin-bottom: 0;">📥 Received Items</h2>
-            <button class="btn-sm" data-action="load-recent">🔄 Refresh</button>
+            <h2 class="card-title ico ico--inbox" style="margin-bottom: 0;">Received Items</h2>
+            <button class="btn-sm ico ico--refresh" data-action="load-recent">Refresh</button>
           </div>
           <div id="receivedDropsList" style="flex: 1; overflow-y: auto; max-height: 580px; display: flex; flex-direction: column; gap: 0.75rem;">
             <div class="empty-state">
@@ -1427,8 +1883,8 @@
     <div id="tab-relay" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-relay">
       <div class="bookmarklet-box {{BOOKMARKLET_STATE}}">
         <span class="path-label path-label--primary">One click &mdash; recommended</span>
-        <a class="bookmarklet-btn" href="{{BOOKMARKLET_HREF}}">⚡ Tantu</a>
-        <div class="hint-text" style="margin-top: 0.75rem;">Drag <strong>⚡ Tantu</strong> to your Bookmarks Bar once. Then, on any login page, click it and confirm &mdash; that page&rsquo;s URL is relayed to your peer, with nothing to copy or paste. The saved bookmark never expires, and carries no ticket or secret.</div>
+        <a class="bookmarklet-btn ico ico--bolt" href="{{BOOKMARKLET_HREF}}">Tantu</a>
+        <div class="hint-text" style="margin-top: 0.75rem;">Drag <strong>Tantu</strong> to your Bookmarks Bar once. Then, on any login page, click it and confirm &mdash; that page&rsquo;s URL is relayed to your peer, with nothing to copy or paste. The saved bookmark never expires, and carries no ticket or secret.</div>
         <p class="hint-text bookmarklet-unavailable-note" style="margin-top: 0.75rem;">The bookmark is unavailable because this page has no Hub session. Run <code>tantu dashboard</code> in a terminal for a fresh link, then drag this button. The forwarder below works either way.</p>
         <!-- The fallback belongs next to the primary path, not on another tab:
              a user who cannot install a bookmark should not have to go looking
@@ -1438,7 +1894,7 @@
 
       <div class="card">
         <span class="path-label path-label--fallback">Fallback</span>
-        <h2 class="card-title">⚡ Manual OAuth URL Forwarder</h2>
+        <h2 class="card-title ico ico--bolt">Manual OAuth URL Forwarder</h2>
         <form data-action="relay-oauth" class="form-group">
           <input type="text" id="oauthUrlInput" aria-label="OAuth authorization URL" placeholder="Paste OAuth URL (https://accounts.google.com/o/oauth2/...)" required>
           <button type="submit" class="btn-primary" id="btnRelay">Relay to Peer</button>
@@ -1467,10 +1923,10 @@
 
       <div class="card">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
-          <h2 class="card-title" style="margin-bottom: 0;">🔐 Recent Authorizations</h2>
+          <h2 class="card-title ico ico--lock" style="margin-bottom: 0;">Recent Authorizations</h2>
           <div style="display: flex; gap: 0.5rem;">
-            <button class="btn-sm" data-action="load-authorizations">🔄 Refresh</button>
-            <button class="btn-sm btn-destructive" data-action="clear-authorizations">🗑️ Clear</button>
+            <button class="btn-sm ico ico--refresh" data-action="load-authorizations">Refresh</button>
+            <button class="btn-sm btn-destructive ico ico--trash" data-action="clear-authorizations">Clear</button>
           </div>
         </div>
         <p class="hint-text" style="margin-top: 0; margin-bottom: 0.75rem;">Origin hosts only — URLs, codes, and tokens are never stored. Kept 30 days (last 50).</p>
@@ -1491,7 +1947,7 @@
       <!-- Discovered Nearby Hubs (Auto-detected via mDNS/LAN Beacon) -->
       <div id="discoveredHubsCard" class="card" style="display: none; margin-bottom: 1.5rem; border: 1px solid var(--accent); background: rgba(59, 130, 246, 0.05);">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
-          <h2 class="card-title" style="margin-bottom: 0; color: var(--accent);">⚡ Discovered Nearby Hubs</h2>
+          <h2 class="card-title ico ico--radio" style="margin-bottom: 0; color: var(--accent);">Discovered Nearby Hubs</h2>
           <span style="font-size: 0.75rem; color: var(--text-muted); background: var(--surface-hover); padding: 0.2rem 0.5rem; border-radius: 4px;">Zero-Typing Discovery</span>
         </div>
         <div id="discoveredHubsList" style="display: flex; flex-direction: column; gap: 0.5rem;"></div>
@@ -1513,7 +1969,7 @@
 
       <div class="grid-2">
         <div class="card">
-          <h2 class="card-title">💻 Local Hub Identity</h2>
+          <h2 class="card-title ico ico--monitor">Local Hub Identity</h2>
           <div class="stat-row">
             <span class="stat-label">Transport</span>
             <span class="stat-val" id="idTransport">-</span>
@@ -1538,8 +1994,8 @@
 
         <div class="card">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
-            <h2 class="card-title" style="margin-bottom: 0;">👥 Trusted Peers</h2>
-            <button class="btn-sm" data-action="open-pair-modal">+ Pair New Device</button>
+            <h2 class="card-title ico ico--users" style="margin-bottom: 0;">Trusted Peers</h2>
+            <button class="btn-sm ico ico--plus" data-action="open-pair-modal">Pair New Device</button>
           </div>
           <div id="peersList">
             <!-- First paint mirrors the rendered empty state rather than a bare
@@ -1550,7 +2006,7 @@
               <strong>No paired peers yet</strong>
               Pairing establishes mutual TLS trust between two machines. Do it once per machine pair; it needs a verification code that matches on both screens.
               <div style="margin-top:0.9rem; display:flex; gap:0.5rem; justify-content:center; flex-wrap:wrap;">
-                <button type="button" class="btn-sm" data-action="open-pair-modal">+ Pair a device</button>
+                <button type="button" class="btn-sm ico ico--plus" data-action="open-pair-modal">Pair a device</button>
                 <button type="button" class="btn-sm" data-action="refresh-discovery">Look for nearby hubs</button>
               </div>
             </div>
@@ -1562,7 +2018,7 @@
       <div id="pairModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="pairModalTitle" style="display:none; position:fixed; inset:0; backdrop-filter:blur(4px); z-index:9999; align-items:center; justify-content:center;">
         <div class="modal-box" style="width:90%; max-width:500px; padding:1.5rem; box-shadow:var(--shadow-lg); border-radius:16px;">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
-            <h3 id="pairModalTitle" class="pair-title">🔗 Pair New Device</h3>
+            <h3 id="pairModalTitle" class="pair-title ico ico--link">Pair New Device</h3>
             <button data-action="close-pair-modal" aria-label="Close pairing dialog" class="pair-close">&times;</button>
           </div>
           
@@ -1597,7 +2053,7 @@
             <label class="pair-opt-label">Option 1: Discover and pair from the remote device</label>
             <div style="display:flex; gap:0.5rem; align-items:center;">
               <code id="pairCmdText" class="pair-cmd">tantu pair --peer=&lt;THIS_IP&gt;:9877</code>
-              <button class="btn-sm" id="btnCopyPairCmd" data-action="copy-pair-command">📋 Copy</button>
+              <button class="btn-sm ico ico--copy" id="btnCopyPairCmd" data-action="copy-pair-command">Copy</button>
             </div>
           </div>
 
@@ -1621,10 +2077,10 @@
     <div id="tab-transfers" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-transfers">
       <div class="card">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
-          <h2 class="card-title" style="margin-bottom: 0;">🔄 Transfers</h2>
+          <h2 class="card-title ico ico--transfer" style="margin-bottom: 0;">Transfers</h2>
           <div style="display: flex; gap: 0.5rem;">
-            <button class="btn-sm" data-action="load-transfers">🔄 Refresh</button>
-            <button class="btn-sm btn-destructive" data-action="clear-transfers">🗑️ Clear</button>
+            <button class="btn-sm ico ico--refresh" data-action="load-transfers">Refresh</button>
+            <button class="btn-sm btn-destructive ico ico--trash" data-action="clear-transfers">Clear</button>
           </div>
         </div>
         <p class="hint-text" style="margin-top: 0; margin-bottom: 0.75rem;">Sender-side truth, kept 30 days (last 50). Received items stay under QuickDrop.</p>
@@ -1644,10 +2100,10 @@
     <div id="tab-logs" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-logs">
       <div class="card">
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1rem;">
-          <h2 class="card-title" style="margin-bottom: 0;">📋 Live Diagnostics & Activity Feed</h2>
+          <h2 class="card-title ico ico--logs" style="margin-bottom: 0;">Live Diagnostics & Activity Feed</h2>
           <div style="display: flex; gap: 0.5rem;">
-            <button class="btn-sm" data-action="export-logs">📥 Export Logs</button>
-            <button class="btn-sm btn-destructive" data-action="clear-logs">🗑️ Clear feed</button>
+            <button class="btn-sm ico ico--download" data-action="export-logs">Export Logs</button>
+            <button class="btn-sm btn-destructive ico ico--trash" data-action="clear-logs">Clear feed</button>
           </div>
         </div>
 
@@ -1656,16 +2112,16 @@
           <div style="display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center;" class="log-filters">
             <span style="font-size: 0.8rem; color: var(--text-muted); margin-right: 0.25rem;">Filter:</span>
             <button class="pill active" data-filter="ALL" aria-pressed="true">All</button>
-            <button class="pill" data-filter="OAUTH" aria-pressed="false">🔵 OAuth</button>
-            <button class="pill" data-filter="DROP" aria-pressed="false">🟢 QuickDrop</button>
-            <button class="pill" data-filter="PEER" aria-pressed="false">🟣 Peer</button>
-            <button class="pill" data-filter="NET" aria-pressed="false">🟡 Network</button>
-            <button class="pill" data-filter="DEBUG" aria-pressed="false">🐛 Debug / Verbose</button>
-            <button class="pill" data-filter="ERROR" aria-pressed="false">🔴 Errors</button>
+            <button class="pill pill--oauth" data-filter="OAUTH" aria-pressed="false">OAuth</button>
+            <button class="pill pill--drop" data-filter="DROP" aria-pressed="false">QuickDrop</button>
+            <button class="pill pill--peer" data-filter="PEER" aria-pressed="false">Peer</button>
+            <button class="pill pill--net" data-filter="NET" aria-pressed="false">Network</button>
+            <button class="pill pill--debug" data-filter="DEBUG" aria-pressed="false">Debug / Verbose</button>
+            <button class="pill pill--error" data-filter="ERROR" aria-pressed="false">Errors</button>
           </div>
 
-          <div style="position: relative;">
-            <input type="text" id="logSearchInput" data-action="filter-logs" aria-label="Search live logs" placeholder="🔍 Search live logs by text, URL, host, or request ID..." style="padding-left: 1rem; font-size: 0.85rem;">
+          <div class="log-search">
+            <input type="text" id="logSearchInput" data-action="filter-logs" aria-label="Search live logs" placeholder="Search live logs by text, URL, host, or request ID..." style="padding-left: 2.4rem; font-size: 0.85rem;">
           </div>
         </div>
 
@@ -2878,14 +3334,14 @@ const peerSig = JSON.stringify(peers.map(p => [p.fingerprint, p.name, p.alias, p
       list.innerHTML = unpaired.map(function(d) {
         return '<div style="display: flex; justify-content: space-between; align-items: center; background: var(--surface); padding: 0.6rem 0.85rem; border-radius: 6px; border: 1px solid var(--border);">' +
           '<div>' +
-            '<div style="font-weight: 600; font-size: 0.9rem; color: var(--text);">💻 ' + escapeHTML(d.name) + '</div>' +
+            '<div class="ico ico--monitor" style="font-weight: 600; font-size: 0.9rem; color: var(--text);">' + escapeHTML(d.name) + '</div>' +
             // Discovery carries no identity: the beacon is an unauthenticated
             // hint, so there is nothing to show and nothing that could be
             // mistaken for a verified code. The real code appears in the
             // approval prompt once the handshake transcript exists.
             '<div style="font-size: 0.75rem; color: var(--text-muted); font-family: monospace;">' + escapeHTML(d.address) + ' · <span style="opacity: 0.75;">not yet verified — pair to compare a code</span></div>' +
           '</div>' +
-          '<button class="btn btn-primary" style="padding: 0.3rem 0.75rem; font-size: 0.8rem;" data-action="prefill-pair" data-address="' + escapeHTML(d.address) + '">⚡ Pair</button>' +
+          '<button class="btn btn-primary ico ico--bolt" style="padding: 0.3rem 0.75rem; font-size: 0.8rem;" data-action="prefill-pair" data-address="' + escapeHTML(d.address) + '">Pair</button>' +
         '</div>';
       }).join('');
     }
@@ -3025,7 +3481,7 @@ function renderPeersList(peers) {
       peersList.innerHTML = peers.map(function(pr) {
         const defaultBadge = pr.is_default ? '<span class="tag tag-oauth">Default</span>' : '';
         const activeBadge = pr.active ? '<span class="tag tag-drop">Active</span>' : '';
-        const defaultBtn = !pr.is_default ? '<button class="btn-sm" data-action="set-default-peer" data-value="' + escapeHTML(pr.fingerprint) + '">⭐️ Set Default</button>' : '';
+        const defaultBtn = !pr.is_default ? '<button class="btn-sm ico ico--star" data-action="set-default-peer" data-value="' + escapeHTML(pr.fingerprint) + '">Set Default</button>' : '';
         const fpShort = pr.fingerprint ? (pr.fingerprint.slice(0, 16) + '...') : '-';
 
         return '<div style="background: rgba(255,255,255,0.02); border:1px solid var(--border); border-radius:8px; padding:0.85rem 1rem; margin-bottom:0.75rem;">' +
@@ -3036,9 +3492,9 @@ function renderPeersList(peers) {
               defaultBadge + activeBadge +
             '</div>' +
             '<div style="display:flex; gap:0.35rem;">' +
-              '<button class="btn-sm" data-action="edit-alias" data-value="' + escapeHTML(pr.fingerprint) + '" data-alias="' + escapeHTML(pr.alias || pr.name || '') + '">✏️ Alias</button>' +
+              '<button class="btn-sm ico ico--pencil" data-action="edit-alias" data-value="' + escapeHTML(pr.fingerprint) + '" data-alias="' + escapeHTML(pr.alias || pr.name || '') + '">Alias</button>' +
               defaultBtn +
-              '<button class="btn-sm" style="color:var(--error-text); border-color:var(--error);" data-action="unpair-peer" data-value="' + escapeHTML(pr.fingerprint) + '" data-name="' + escapeHTML(pr.name || '') + '">🗑️ Unpair</button>' +
+              '<button class="btn-sm ico ico--trash" style="color:var(--error-text); border-color:var(--error);" data-action="unpair-peer" data-value="' + escapeHTML(pr.fingerprint) + '" data-name="' + escapeHTML(pr.name || '') + '">Unpair</button>' +
             '</div>' +
           '</div>' +
           '<div style="font-size:0.8rem; color:var(--text-muted); margin-top:0.5rem; display:flex; gap:1rem; flex-wrap:wrap;">' +
@@ -3873,7 +4329,7 @@ function renderPeersList(peers) {
         }
         const timePart = timeStr ? ' &bull; ' + escapeHTML(timeStr) : '';
         return '<div class="received-item">' +
-          '<div class="received-item-header"><span><strong>🔐 ' + escapeHTML(origin) + '</strong> via ' + escapeHTML(dest) + '</span>' +
+          '<div class="received-item-header"><span><strong class="ico ico--lock">' + escapeHTML(origin) + '</strong> via ' + escapeHTML(dest) + '</span>' +
           '<span>' + escapeHTML(timePart.replace(/^ &bull; /, '')) + '</span></div>' +
           '<div class="record-state"><span class="status-chip ' + transferChipClass(state) + '">' + escapeHTML(label) + '</span></div>' +
           recovery +
@@ -4668,7 +5124,11 @@ function renderPeersList(peers) {
         const timeStr = formatRecordTime(item.timestamp);
         const isFile = item.kind === 'file';
         const isURL = item.is_url;
-        const icon = isFile ? '📁' : (isURL ? '🌐' : '📝');
+        // The item's kind is a glyph from the page's own icon set, so the
+        // received list matches the rest of the chrome instead of importing
+        // a font's colour emoji. The class is the icon; the pseudo-element
+        // paints it.
+        const icon = isFile ? 'ico--folder' : (isURL ? 'ico--globe' : 'ico--text');
         const title = isFile ? (item.name || 'Received File') : (isURL ? 'Web URL' : 'Text Snippet');
         const safeTitle = escapeHTML(title);
         const sizeStr = formatBytes(item.size);
@@ -4697,22 +5157,22 @@ function renderPeersList(peers) {
 
         let actionsHTML = '<div class="received-item-actions">';
         if (!isFile && item.content) {
-          actionsHTML += '<button class="btn-sm" data-action="copy-snippet" data-value="' + escapeHTML(copyID) + '">📋 Copy</button>';
+          actionsHTML += '<button class="btn-sm ico ico--copy" data-action="copy-snippet" data-value="' + escapeHTML(copyID) + '">Copy</button>';
           if (isURL || item.content.startsWith('http://') || item.content.startsWith('https://')) {
             const cleanURL = item.content.trim();
-            actionsHTML += '<button class="btn-sm" data-action="open-url" data-value="' + escapeHTML(urlID) + '">🌐 Open in Browser</button>';
+            actionsHTML += '<button class="btn-sm ico ico--globe" data-action="open-url" data-value="' + escapeHTML(urlID) + '">Open in Browser</button>';
           }
         } else if (isFile && item.saved_path) {
           if (item.id) {
-            actionsHTML += '<a class="btn-sm" href="/api/drop/file?id=' + encodeURIComponent(item.id) + '&mode=download">⬇️ Download</a>';
+            actionsHTML += '<a class="btn-sm ico ico--download" href="/api/drop/file?id=' + encodeURIComponent(item.id) + '&mode=download">Download</a>';
           }
-          actionsHTML += '<button class="btn-sm" data-action="open-folder">📂 Open in Folder</button>';
+          actionsHTML += '<button class="btn-sm ico ico--folder-open" data-action="open-folder">Open in Folder</button>';
         }
         actionsHTML += '</div>';
 
         return '<div class="received-item">' +
           '<div class="received-item-header">' +
-            '<span><strong>' + icon + ' ' + safeTitle + '</strong> from ' + escapeHTML(fromPeer) + '</span>' +
+            '<span><strong class="ico ' + icon + '">' + safeTitle + '</strong> from ' + escapeHTML(fromPeer) + '</span>' +
             '<span>' + timeStr + ' &bull; ' + sizeStr + '</span>' +
           '</div>' +
           contentHTML +

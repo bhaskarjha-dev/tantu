@@ -10984,3 +10984,180 @@ rather than leaving to be inferred from a list of open rows: **the next
 defect will not come from the register.** It will come from a new area, and
 the register's job from here is to be a record of what was looked at and
 found, not a promise that nothing is left.
+
+## Batch K -- the visual system: what the page looked like, and what it now looks like (2026-10-21)
+
+The request was a large upgrade to the dashboard's appearance. The work
+below is a re-skin of `internal/hub/dashboard.html` -- the whole UI is one
+embedded file, 224 KiB, no external assets, fonts or scripts of any kind --
+and it is the largest surface in the repository.
+
+### Reading it is not the same as looking at it
+
+The first thing done was to look at the page, in a browser, at 1920 px and
+at 360 px. The measurements that came back were not what reading the CSS
+suggested:
+
+| what reading suggested | what the browser showed |
+|---|---|
+| the tab bar scrolls, and the harness has a gate for that | the last tab was clipped at 1920 px, on a viewport wide enough for it to fit |
+| the tab bar's five labels carry emoji | five colour emoji, which render as clip-art against a monochrome dark UI, and whose glyphs differ per platform and per OS theme |
+| the wordmark is "🔐 tantu" | a colour emoji as the product's mark |
+| the content has a max-width | it did, at 1000 px, with the header and the tab bar running the full width beside it, so nothing lined up |
+| the type is styled | seven ad-hoc sizes between 0.7rem and 1.25rem, with no scale, which is why the hierarchy read as flat |
+| the grid is two columns | the columns stretched to match each other, so a short card grew to the height of the tall one beside it and the empty half read as a rendering fault |
+
+### The icons are masks, and the reason is a measurement
+
+Every glyph is now a CSS mask over a data-URI SVG, painted by a
+pseudo-element. That is not a preference for masks over `<svg>`; it is
+what the harness's own measurement forced.
+
+The acceptance suite counts the rendered lines of a tab label by taking
+`Range.getClientRects()` over the button's contents, and it fails the run
+if a label occupies more than one line. An `<svg>` inside that button adds
+a box to the range. Measured in Chromium:
+
+    text only                      -> 1 line
+    <svg> as a direct flex child   -> 2 lines   (the gate fails)
+    <svg> inside an inline-flex span -> 1 line
+
+So an `<svg>` in the tab bar is a gate failure unless it is wrapped in a
+span, and the wrapping is invisible in the markup and easy to undo by
+accident. A pseudo-element is not in the DOM at all: there is no node, no
+box and no range entry, on any engine. It also means a glyph takes
+`currentColor`, so it is the colour of the text beside it in both themes,
+with no second palette to keep true. The CSP already permitted `data:`
+images, so nothing new became reachable.
+
+### One measure, and the arithmetic that makes it line up
+
+The header, the tab bar and the page now share `--gutter` and
+`--shell-max`. They line up because the page's max-width is
+`--shell-max` plus twice the gutter: the header and the tab bar put the
+gutter *outside* the shell, the page puts it *inside*, and the two
+arrangements put their content at the same x. Before this the three
+surfaces each chose their own width, which is why the wordmark, the tab
+rail and the first card did not share an edge.
+
+### What changed, in one list
+
+- **The tab bar** is a segmented control on a dark track, sized to its
+  tabs rather than to the page, with the active tab a raised surface
+  instead of an underline and the accent carried by its glyph. It still
+  scrolls when the labels no longer fit, and still carries the scroll
+  shadow, because the harness gates both.
+- **The wordmark** is a drawn mark beside the gradient wordmark. The
+  gradient stays on the wordmark itself, because the contrast sweep
+  measures gradient-filled text specially and a second painted element
+  would be measured as a 1.03:1 failure.
+- **A type scale** replaces the ad-hoc sizes, and card titles, stat
+  values, chips and body copy are assigned to it.
+- **Cards** gained a hairline along the top edge, a layered shadow, and a
+  title that is a title rather than a bold run of text.
+- **The drop zone** is a surface with a sheen and a drawn glyph, instead
+  of a dashed box with an emoji in it.
+- **Empty states** are cards of their own with a heading, a line of
+  explanation and a button, instead of a centred paragraph.
+- **The page** has a pool of light at the top, and the grid's columns no
+  longer stretch to match each other.
+- **The log filters' coloured emoji dots** are drawn from the same
+  palette the `.tag-*` chips already use, so the domains look the same
+  everywhere.
+
+### The gate, and the three ways it fails
+
+A mask that does not resolve is invisible and silent. The layout does not
+change, the text does not change, and every other check in the suite
+still passes -- nothing in the acceptance run would have noticed a page
+whose icons had all vanished. So three checks were added:
+
+1. every icon class in the page has a mask that applies;
+2. every icon's pseudo-element has a box to draw in;
+3. every mask resolves to a drawing that actually paints.
+
+The third one exists because "the URL resolved" is not "the glyph is
+there": a path that parses and draws nothing is just as missing, so each
+distinct mask is rasterised into a canvas and asked whether any of it is
+opaque.
+
+All three were red-proven, and applied and run:
+
+    removing one icon's mask          -> "every icon in the page has a mask
+                                         that applies"  FAIL, unmasked: ["ico--drop"]
+    zeroing the pseudo-element's box  -> "every icon in the page has a box
+                                         to draw in"     FAIL, sizeless: all 21 classes
+    a glyph's path changed to "M0 0"   -> "every icon mask resolves to a
+                                         drawing that paints" FAIL, blank: [that mask]
+
+The first of those also caught a real defect in an existing gate, which
+is the part worth recording. The suite asserted that a card title is not
+a `<div>`, with the marker `<div class="card-title"`. A card title that
+carries an icon's class is `<div class="card-title ico ico--send">` --
+which does not contain the marker, and passed. The check was a prefix in
+everything but name. It is now a prefix in name as well, and the red
+proof is that same rewritten card title, which now fails the gate with
+"a card title regressed to a div and left the page without headings".
+
+The matching marker for the `<h2>` was made a prefix for the same
+reason, with the reasoning written down: a marker that named the exact
+class list would report every future design change as a defect, and the
+pair of checks -- "a card title is an `<h2>`" and "no card title is a
+`<div>`" -- still catches the regression they exist for.
+
+### The icons the page draws at runtime, and a hole in the gate above
+
+The static markup was not the whole of the emoji: the peer list, the
+received-items list, the discovered-hub list and the transfer records are
+rendered by the page's own JavaScript, and they carried colour emoji of
+their own -- a laptop before a peer name, a pencil on the alias button, a
+bin on the unpair button, a clipboard on Copy, a globe on Open in
+Browser. Left alone, the static buttons would have been drawn icons and
+the runtime ones would have been clip-art, in the same list, next to each
+other. Those moved onto the same icon set.
+
+The status messages kept their glyphs. A tick, a cross and a warning sign
+in a sentence are status, not chrome, they are read correctly, and the
+DEV-RECORD quotes them verbatim from earlier batches -- changing them
+would make this file's own history untrue for no visual gain.
+
+Which left a hole in the gate, and the hole was found by using it. The
+first version of the icon check collected its classes from the DOM, which
+on a peerless run contains none of the runtime ones: the lists are empty,
+so `ico--globe` and `ico--star` were never probed at all. The check now
+also reads the page's own script text, where those classes are named.
+
+The red proof for that is a typo in a runtime class -- `ico--globe`
+becoming `ico--globeX` -- which on a peerless run produces no DOM change
+whatsoever. The first attempt at the proof **passed**, and the reason was
+worth more than the proof: the scan's character class was
+`ico--[a-z-]+`, which stopped at the first upper-case character and so
+matched the *intended* class rather than the mistyped one. The class is
+now the whole of a CSS identifier's tail, upper case included, and the
+proof fails as it should:
+
+    every icon in the page has a mask that applies
+      icons: {"classes":24,"unmasked":["ico--globeX"],"sizeless":[]}
+
+Twenty-four classes, of which several exist only in the script.
+
+### Evidence
+
+- The acceptance suite, all three engines: **chromium 114/114, webkit
+  114/114, firefox 112/112**. The contrast sweep measured 158 rendered
+  text nodes per theme with no failure, in both themes, on every engine.
+- `go test ./...` green, `gofmt -l .` clean, `go vet` clean, staticcheck
+  v0.8.1 clean, encgate, docgate and wfcheck green.
+- The page was looked at, in both themes, at 1600 px, at 360 px and on
+  every tab. `tools/uxtest/shot.mjs` was added for that: a thirty-line
+  Playwright script that captures the running dashboard, because a change
+  to how the page looks cannot be reviewed from a diff.
+
+### What this is not
+
+The visual result was reviewed by one pair of eyes, in one environment,
+at three widths. It is not E4 or E5 evidence, and the UX status file
+says so in the same terms it uses for everything else. The contrast
+gate, the overflow gates, the target-size gates and the tab-label gates
+are machine-checked and are green; whether the result is *good* is a
+judgement, and a judgement is what a user study is for.

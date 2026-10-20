@@ -1,7 +1,7 @@
 # Tantu UX Status — v6.0 Plan Tracking
 
 > **Status:** Living implementation record (agent-maintained)
-> **Last Updated:** 2026-10-05
+> **Last Updated:** 2026-10-21
 > **Plan:** v6.0. Decision IDs resolve in [`docs/DECISIONS.md`](DECISIONS.md);
 > the original plan document is under `temp/` and is gitignored.
 >
@@ -186,6 +186,40 @@ header peer select. Details in `docs/DEV-RECORD.md` (Batch Z16).
 renders and behaves; it does not prove a pairing handshake, a cross-machine
 transfer, or reachable/unreachable transitions, because no second machine was
 ever dialed. Claiming more would repeat exactly the error this batch corrected.
+
+## Batch K — the dashboard's visual system
+
+The page was re-skinned. One measure shared by the header, the tab bar
+and the content, so their edges line up; a segmented tab bar on a dark
+track, sized to its tabs rather than to the page; a drawn icon set in
+place of the colour emoji, which rendered as clip-art against a
+monochrome UI and differed per platform; a type scale in place of seven
+ad-hoc sizes, which is why the hierarchy had read as flat; cards with a
+hairline, a layered shadow and titles that read as titles; empty states
+that are cards with a heading and a button rather than centred
+paragraphs; a drop zone that is a surface rather than a dashed box; and
+a page with a pool of light at the top.
+
+Two things in it matter beyond the appearance. The icons are CSS masks
+painted by a pseudo-element rather than `<svg>` elements, because the
+acceptance suite measures a tab label's rendered line count over the
+button's contents, and an `<svg>` as a direct child of the tab button
+reports two lines and fails that gate. And a broken mask is invisible
+and silent — nothing else in the suite would notice a page whose icons
+had all vanished — so three checks were added: every icon class has a
+mask that applies, every icon has a box to draw in, and every mask
+resolves to a drawing that paints. All three are red-proven.
+
+The same work turned up a hole in an existing gate: the check that a
+card title is not a `<div>` matched only the exact class list, so a card
+title carrying an icon's class passed it. It is now a prefix, and the
+red proof is that same rewritten card title.
+
+Evidence: the acceptance suite green on all three engines, and the page
+looked at in both themes, at 1600 px and 360 px, on every tab.
+**This is not E4 or E5 evidence.** The contrast, overflow, target-size
+and tab-label gates are machine-checked; whether the result reads as good
+is a judgement, and the ladder above is unchanged on that axis.
 
 ## Explicit "not now" adherence
 
