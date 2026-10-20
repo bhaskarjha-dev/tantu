@@ -313,6 +313,71 @@ func TestWebDashboard_MultiPeerSurfaceMarkers(t *testing.T) {
 	}
 }
 
+// The surfaces that carry information -- a peer row, a transfer record, a
+// failed send, a log line -- are the ones a user actually reads, and each
+// of them used to lose something it should not have.
+//
+// This gate is the record of what they carry now. Each marker below is a
+// proxy for a behaviour a reader depends on, and each has a red proof:
+// putting the old code back makes it fail.
+func TestWebDashboard_InformationalSurfacesCarryTheirInformation(t *testing.T) {
+	h, _, cleanup := startTestHub(t)
+	defer cleanup()
+
+	resp, err := http.Get("http://" + h.WebAddr() + "/")
+	if err != nil {
+		t.Fatalf("GET / failed: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read body: %v", err)
+	}
+	content := string(body)
+
+	for _, s := range []string{
+		// The fingerprint is how a person checks that two machines are the
+		// same machine. It used to be cut to 24 characters with no way to
+		// see the rest of it.
+		`fpEl.innerText = data.identity.fingerprint || '-'`,
+		`fpEl.title = data.identity.fingerprint || ''`,
+		// The log's level used to REPLACE the log's domain, so an error in
+		// the drop path was shown as "ERROR" and a reader could not tell
+		// which part of the product had failed.
+		`if (level === 'ERROR') levelHTML = '<span class="tag tag-error">ERROR</span> '`,
+		`<span class="tag ' + tagClass + '">' + escapeHTML(domain) + '</span> ' + levelHTML`,
+		// A message is three parts, not one sentence: what happened, what
+		// to do next, and the id that finds it in the log.
+		`'<div class="msg__title">'`,
+		`'<div class="msg__next"><span class="msg__next-label">Next:</span>'`,
+		`'<code class="msg__id">'`,
+		// A peer name is the one string here the product does not control
+		// the length of, so it truncates rather than reflowing the row.
+		`class="peer__name" title="`,
+		// The destination is stated once. The page used to say
+		// "Destination:" twice, a few pixels apart, in the same card.
+		`el.textContent = destinationDisplayName();`,
+	} {
+		if !strings.Contains(content, s) {
+			t.Errorf("an informational surface lost what it carries: %q", s)
+		}
+	}
+
+	// The destination is stated once, so the summary must not carry the
+	// label as well as the value.
+	if strings.Contains(content, "el.textContent = 'Destination: ' + destinationDisplayName()") {
+		t.Error("the destination summary repeats the label the markup already carries")
+	}
+	// The fingerprint must not be cut again.
+	if strings.Contains(content, "data.identity.fingerprint.slice(") {
+		t.Error("the TLS fingerprint is truncated again; it is how two machines are compared")
+	}
+	// The level must not take the domain's place.
+	if strings.Contains(content, "if (level === 'ERROR') tagClass = 'tag-error'") {
+		t.Error("the log's level replaces the log's domain again; a reader cannot tell which part failed")
+	}
+}
+
 // The text composer is a primary journey and used to report nothing at all on
 // the tab the user clicked from: a successful send and an over-limit rejection
 // were both visible only in the Live Logs tab. It now uses the same inline
@@ -335,10 +400,17 @@ func TestWebDashboard_TextComposerReportsOutcomeInline(t *testing.T) {
 
 	for _, s := range []string{
 		// In-flight state, success, and failure all land in #dropStatus.
-		`banner.textContent = 'Sending ' + formatBytes(textBytes) + ' to ' + destinationDisplayName()`,
-		`banner.textContent = 'Text sent to ' + dest + (data.verified ? ' · verified' : '')`,
-		`banner.textContent = 'Not sent: ' + msg`,
-		`banner.textContent = 'Not sent: ' + err.message + ' Your text is still here.'`,
+		//
+		// The mechanism changed: the banner is now the shared message
+		// component, which takes the failure, the detail, the next action
+		// and the diagnostic id as separate parts instead of one flat
+		// sentence in one colour. The copy the user reads is unchanged,
+		// so the markers below are the copy -- and the calls that carry
+		// it.
+		`setMessage(banner, 'warning', 'Sending ' + formatBytes(textBytes) + ' to ' + destinationDisplayName()`,
+		`setMessage(banner, 'success', 'Text sent to ' + dest + (data.verified ? ' · verified' : '')`,
+		`setMessage(banner, 'error', 'Not sent', msg`,
+		`setMessage(banner, 'error', 'Not sent', err.message + ' Your text is still here.')`,
 		// Over-limit rejection is visible and says nothing was sent.
 		`over the 10.0 MB limit`,
 		`Nothing was sent.`,

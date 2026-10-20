@@ -569,9 +569,17 @@ let hubs2 = null;
     }
 
     // --- session and the send preview (the CSP regression) ---
-    const sess = await js('(function(){return {banner:getComputedStyle(document.getElementById("sessionBanner")).display, dest:document.getElementById("destinationSummary").textContent, url:location.href};})()');
+    const sess = await js('(function(){return {banner:getComputedStyle(document.getElementById("sessionBanner")).display, dest:document.getElementById("destinationSummary").textContent, label:(document.querySelector(".dest__label")||{}).textContent||"", url:location.href};})()');
     check('session established', sess && sess.banner === 'none', JSON.stringify(sess));
-    check('destination always visible', sess && /Destination: .+/.test(sess.dest || ''), sess && sess.dest);
+    // The destination is stated ONCE now: the label is in the markup and
+    // the value is in the summary, because the page used to say
+    // "Destination:" twice a few pixels apart -- once over the row of
+    // peer pills and once in a line under it. The check follows the
+    // design: a label that names the field, and a value that names
+    // somewhere.
+    check('destination always visible',
+      sess && /.+/.test((sess.dest || '').trim()) && /destination/i.test(sess.label || ''),
+      sess && (sess.dest + ' [' + sess.label + ']'));
     check('one-time token stripped from the URL', sess && !/tantu_bootstrap/.test(sess.url), sess && sess.url);
 
     // The staging file, built through a Blob and checked before use.

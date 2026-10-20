@@ -221,6 +221,47 @@ looked at in both themes, at 1600 px and 360 px, on every tab.
 and tab-label gates are machine-checked; whether the result reads as good
 is a judgement, and the ladder above is unchanged on that axis.
 
+## Batch L — the surfaces a user actually meets
+
+Batch K dressed the page. Batch L dresses the parts of it that carry
+information, and it exists because Batch K was not enough: it was
+designed against empty states, which are the easiest thing in the
+world to make look good and the least of what a user sees.
+
+`tools/uxtest/populated.mjs` now starts a Hub with a seeded peer
+store, drives real traffic through the real controls, and captures
+every tab in both themes at 1600 px and 360 px. The first pictures of
+this product that are not mostly empty were not good: a failed send
+was one wall of red text with the next action in the same red at the
+same weight, the diagnostic id read like part of the complaint, the
+page said "Destination:" twice in the same card, a page with four
+peers had four identically loud red Unpair buttons on it, the peer
+rows had four different shapes, the fingerprint was cut to a column of
+dots, and the log's level replaced the log's domain so a reader could
+not tell which part of the product had failed.
+
+All of that is now one component and one set of surfaces: a message
+with a title, a detail, a next action on its own line and a
+monospaced chip for the id; peer rows that keep their shape whatever
+the name; a quiet destructive action, because every destructive action
+in the product confirms first; a destination stated once; an identity
+panel that shows the fingerprint in full; records that carry their
+state on an edge; and a log that shows domain and level and wraps
+with a hanging indent.
+
+Two checks changed and are not weaker: the destination check asserts a
+label and a value instead of a duplicated prefix, and a Go gate's
+markers follow the copy rather than the mechanism. One check did not
+change: the toast's next action is still "Next: ", because the
+product's language is "Next: <step>" everywhere and a label is not a
+place to be quietly different.
+
+Evidence: the acceptance suite green on all three engines, the
+contrast sweep now measuring 161 rendered text nodes per theme with no
+failure, and the page looked at populated in both themes at 1600 px
+and 360 px. **This is not E4 or E5 evidence.** The ladder above is
+unchanged on that axis.
+
 ## Explicit "not now" adherence
 
 Cloud telemetry, hosted accounts, auto-send, silent retry, hidden default

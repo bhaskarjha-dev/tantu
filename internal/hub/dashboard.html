@@ -549,8 +549,13 @@
     gap: 0.35rem;
   }
   .log-entry {
-    line-height: 1.4;
-    word-break: break-all;
+    line-height: 1.45;
+    /* `word-break: break-all` broke every word in the line, including
+       the ordinary ones, which is what a reader sees when a URL
+       appears. `overflow-wrap: anywhere` breaks only the words that
+       cannot fit, and still refuses to let a long one push the line
+       past the edge of the console. */
+    overflow-wrap: anywhere;
   }
   .tag {
     display: inline-block;
@@ -607,16 +612,11 @@
   /* White on --accent measured 3.68:1 at 12px, under AA for small text.
      Deepening the active fill clears 4.5:1 without changing the hue. */
   .pill.active { background: var(--accent-hover); }
-  .status-banner {
-    display: none;
-    border-radius: 8px;
-    padding: 0.85rem 1rem;
-    margin-top: 1rem;
-    font-size: 0.9rem;
-  }
-  .status-banner.success { display: block; background: var(--success-bg); border: 1px solid var(--success); color: #34d399; }
-  .status-banner.error { display: block; background: var(--error-bg); border: 1px solid var(--error); color: #f87171; }
-  .status-banner.relaying { display: block; background: var(--warning-bg); border: 1px solid var(--warning); color: #fbbf24; }
+  /* The status message is now the .msg component, further down this
+     file. The rules that used to live here set the whole message in one
+     colour -- failure, next action and diagnostic id in the same red,
+     at the same weight -- which made the one part a reader needed most
+     the hardest to find. */
   [id] { scroll-margin-top: calc(var(--chrome-h, 129px) + 12px); }
   #nextActionBanner {
     display: none;
@@ -637,14 +637,16 @@
       border-color: rgba(37, 99, 235, 0.45);
     }
   }
+  /* The destination itself. It used to be a tinted box of its own,
+     which made it look like a second control next to the peer pills
+     that switch it -- and the page said "Destination:" twice. It is
+     now a value on the chrome of the card, and the pills below it are
+     the switcher. */
   #destinationSummary {
-    font-size: 0.85rem;
+    font-size: var(--fs-md);
+    font-weight: 600;
     color: var(--text);
-    background: rgba(59,130,246,0.08);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 0.5rem 0.75rem;
-    margin-bottom: 0.75rem;
+    overflow-wrap: anywhere;
   }
   #filePreviewCard {
     border: 1px solid var(--accent);
@@ -805,7 +807,7 @@
     border-radius: var(--radius-sm);
     transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
   }
-  .status-banner {
+  .msg {
     border-radius: var(--radius-md);
     animation: bannerIn var(--dur-med) var(--ease-out);
   }
@@ -813,9 +815,6 @@
     from { opacity: 0; transform: translateY(-4px); }
     to { opacity: 1; transform: translateY(0); }
   }
-  .status-banner.success { color: var(--success-text); }
-  .status-banner.error { color: var(--error-text); }
-  .status-banner.relaying { color: var(--warning-text); }
   .status-chip {
     display: inline-block;
     padding: 0.15rem 0.6rem;
@@ -873,6 +872,12 @@
   .log-console {
     border-radius: var(--radius-md);
     font-variant-numeric: tabular-nums;
+    /* The console had a fixed height, so a page with three log lines
+       had a black box three lines deep and the rest of it empty. It now
+       takes the height of what it has, up to a ceiling. */
+    height: auto;
+    min-height: 12rem;
+    max-height: 30rem;
   }
   .empty-state {
     color: var(--text-muted);
@@ -1525,13 +1530,18 @@
   }
   /* The log filters carried coloured emoji dots. They are domain marks,
      and the domains already have a palette in .tag-*, so the dots are
-     drawn from that palette instead of being pasted in from a font. */
+     drawn from that palette instead of being pasted in from a font.
+
+     The base rule deliberately sets no colour of its own. It used to
+     set `background: currentColor`, which outranked the per-domain
+     rules -- an attribute selector beats a class selector -- and the
+     result was that every dot on the page was the same grey, which is
+     the one thing a domain mark must not be. */
   .pill[data-filter]::before {
     content: "";
     width: 0.45rem;
     height: 0.45rem;
     border-radius: 50%;
-    background: currentColor;
     flex: none;
   }
   .pill--oauth::before { background: #60a5fa; }
@@ -1604,6 +1614,617 @@
   ::-webkit-scrollbar-thumb:hover {
     background: var(--text-muted);
     background-clip: content-box;
+  }
+  /* ==================================================================
+     THE SURFACES A USER ACTUALLY MEETS
+
+     Everything above dresses the page. This dresses the parts that
+     carry information: the messages a failed send produces, the rows
+     that list peers, transfers, authorisations and received items, the
+     identity panel, the destination bar, and the diagnostic console.
+
+     They were designed as paragraphs in boxes, and the result read as
+     a wall of coloured text with a row of identical buttons: a failure
+     and the action that follows it were the same red, at the same
+     size, in the same voice, and a page with four peers had four
+     identically loud red Unpair buttons on it. What follows gives each
+     of those surfaces a shape of its own.
+     ================================================================== */
+
+  /* ---- The message ----
+     A message in this product always has the same three parts: what
+     happened, what to do next, and the diagnostic id that identifies it
+     in the log. The old banner put all three in one coloured run, so
+     the one part a reader needs most -- the next action -- was the
+     hardest to find. */
+  .msg {
+    display: none;
+    align-items: flex-start;
+    gap: 0.7rem;
+    padding: 0.85rem 1rem;
+    margin-top: 1rem;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    background: var(--surface);
+    font-size: var(--fs-base);
+    line-height: 1.5;
+  }
+  .msg--error, .msg--success, .msg--warning, .msg--info {
+    display: flex;
+  }
+  .msg__icon {
+    flex: none;
+    margin-top: 0.1rem;
+    color: var(--accent);
+  }
+  .msg__body {
+    flex: 1;
+    min-width: 0;
+  }
+  .msg__title {
+    font-weight: 600;
+    color: var(--text);
+    overflow-wrap: anywhere;
+  }
+  .msg__detail {
+    color: var(--text-muted);
+    margin-top: 0.2rem;
+    overflow-wrap: anywhere;
+  }
+  .msg__next {
+    color: var(--text-muted);
+    margin-top: 0.45rem;
+    padding-top: 0.45rem;
+    border-top: 1px dashed var(--border);
+    overflow-wrap: anywhere;
+  }
+  .msg__next-label {
+    display: inline-block;
+    font-size: var(--fs-2xs);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text);
+    margin-right: 0.4rem;
+  }
+  .msg__id {
+    display: inline-block;
+    margin-top: 0.45rem;
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    color: var(--text-muted);
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.1rem 0.35rem;
+  }
+  .msg--error { border-left-color: var(--error); }
+  .msg--error .msg__icon { color: var(--error-text); }
+  .msg--success { border-left-color: var(--success); }
+  .msg--success .msg__icon { color: var(--success-text); }
+  .msg--warning { border-left-color: var(--warning); }
+  .msg--warning .msg__icon { color: var(--warning-text); }
+  .msg--info { border-left-color: var(--accent); }
+  .msg--info .msg__icon { color: var(--accent-text); }
+  /* Inline code in a message. The product's language quotes commands in
+     backticks -- "Use `tantu status` to verify trust" -- and those
+     backticks used to be shown to the reader as backticks. */
+  .msg code, .record code, .hint-text code, .peer__meta code {
+    font-family: var(--font-mono);
+    font-size: 0.92em;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.05rem 0.3rem;
+    color: var(--text);
+  }
+
+  /* ---- The record ----
+     A transfer, an authorisation, a received item. Each has a state,
+     and the state is the first thing a reader wants, so it gets an
+     edge rather than a chip in the middle of the row. */
+  .record {
+    position: relative;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    padding: 0.8rem 0.95rem;
+    overflow: hidden;
+  }
+  .record::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: var(--border-light);
+  }
+  .record--completed::before { background: var(--success); }
+  .record--failed::before { background: var(--error); }
+  .record--retryable::before { background: var(--warning); }
+  .record--pending::before { background: var(--accent); }
+  .record__head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+  }
+  .record__title {
+    font-weight: 600;
+    color: var(--text);
+    overflow-wrap: anywhere;
+  }
+  .record__to {
+    color: var(--text-muted);
+    font-weight: 400;
+  }
+  .record__time {
+    font-size: var(--fs-xs);
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .record__state {
+    margin-top: 0.45rem;
+  }
+  .record-next {
+    font-size: var(--fs-sm);
+    color: var(--text-muted);
+    margin-top: 0.45rem;
+    overflow-wrap: anywhere;
+  }
+  .record__note {
+    font-size: var(--fs-sm);
+    color: var(--text-muted);
+    margin-top: 0.35rem;
+  }
+  .record__next-label {
+    display: inline-block;
+    font-size: var(--fs-2xs);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text);
+    margin-right: 0.35rem;
+  }
+
+  /* ---- The peer row ----
+     A name that can be arbitrarily long, two badges, three actions and
+     three facts. Laid out as inline content it wrapped into three
+     different shapes; as a grid it is the same shape for every peer. */
+  .peer {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    padding: 0.85rem 1rem;
+  }
+  .peer__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+  }
+  .peer__id {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+    flex: 1 1 12rem;
+  }
+  .peer__name {
+    font-weight: 600;
+    color: var(--text);
+    /* A peer name is the one string on this page with no length limit
+       the product controls, so it is truncated rather than allowed to
+       reflow the row. The accessible name keeps the whole value. */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .peer__actions {
+    display: flex;
+    gap: 0.35rem;
+    flex: none;
+    flex-wrap: wrap;
+  }
+  .peer__meta {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-top: 0.5rem;
+    font-size: var(--fs-xs);
+    color: var(--text-muted);
+  }
+  .peer__meta strong {
+    color: var(--text);
+    font-weight: 600;
+  }
+  /* The destructive action. It used to be a red-outlined button, which
+     put four of them on a page with four peers and made the loudest
+     thing on the page the thing nobody meant to press. It is now a
+     quiet button whose label is the error colour, and the confirmation
+     dialog is still what stands between a click and an unpair. */
+  /* ---- The staged file ----
+     The file about to be sent, its facts, and where it is going. The
+     facts were three separate lines in three sizes, and the
+     destination -- the thing the product is most careful about -- was
+     the smallest of them. */
+  #filePreviewCard {
+    border: 1px solid var(--accent);
+    background: rgba(59, 130, 246, 0.06);
+    border-radius: var(--radius-lg);
+    padding: 1rem 1.25rem;
+    margin-top: 1rem;
+  }
+  .preview {
+    display: flex;
+    gap: 0.9rem;
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .preview__thumb {
+    flex: none;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    background: var(--card-bg);
+    padding: 0.25rem;
+    line-height: 0;
+    max-width: 7.5rem;
+  }
+  .preview__thumb img {
+    max-width: 100%;
+    max-height: 96px;
+    border-radius: var(--radius-sm);
+    object-fit: contain;
+    display: block;
+  }
+  .preview__facts {
+    flex: 1 1 12rem;
+    min-width: 0;
+  }
+  .preview__meta {
+    font-size: var(--fs-base);
+    color: var(--text);
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
+  .preview__dest {
+    font-size: var(--fs-sm);
+    color: var(--text-muted);
+    margin-top: 0.2rem;
+    overflow-wrap: anywhere;
+  }
+  .preview__dest strong { color: var(--text); }
+  .preview__actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-top: 0.85rem;
+  }
+
+  /* ---- The pairing dialog ----
+     The SAS word is the whole point of the dialog: it is what a person
+     compares, out loud, on two screens. It is therefore given a panel
+     of its own, in a monospaced face, at a size you can read across a
+     desk, and the labels around it are said once and quietly. */
+  .pair-sas-box {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 1.1rem 1rem;
+    margin-bottom: 1.25rem;
+    text-align: center;
+    box-shadow: var(--shadow-sm);
+  }
+  .pair-sas-label {
+    font-size: var(--fs-2xs);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    margin-bottom: 0.4rem;
+  }
+  .pair-sas-label span { text-transform: none; letter-spacing: 0; }
+  .pair-sas-code {
+    font-family: var(--font-mono);
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: var(--accent-text);
+    letter-spacing: 0.12em;
+    line-height: 1.2;
+    overflow-wrap: anywhere;
+  }
+  .pair-opt-label {
+    display: block;
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 0.45rem;
+  }
+  .pair-cmd {
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.5rem 0.75rem;
+    font-size: var(--fs-xs);
+    color: var(--accent-text);
+    overflow-x: auto;
+    white-space: nowrap;
+    font-family: var(--font-mono);
+  }
+  .pair-close {
+    background: none;
+    border: 1px solid transparent;
+    color: var(--text-muted);
+    font-size: 1.35rem;
+    cursor: pointer;
+    line-height: 1;
+    border-radius: var(--radius-sm);
+    width: 32px;
+    height: 32px;
+    flex: none;
+  }
+  .pair-close:hover {
+    color: var(--text);
+    background: var(--surface-hover);
+    border-color: var(--border);
+  }
+  .pair-close:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  /* ---- The identity panel ----
+     A label and a value, in two columns, with the value in a
+     monospaced cell. The values used to be pushed to the far right of
+     the card with the label stranded at the left, and the fingerprint
+     was cut to a column of dots with no way to see the rest of it. */
+  .stat-row {
+    display: grid;
+    grid-template-columns: minmax(7.5rem, auto) 1fr;
+    gap: 0.3rem 1rem;
+    align-items: baseline;
+    padding: 0.55rem 0;
+    border-bottom: 1px solid var(--border);
+    font-size: var(--fs-base);
+  }
+  .stat-row:last-child { border-bottom: none; }
+  .stat-label { color: var(--text-muted); }
+  .stat-val {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    color: var(--text);
+    overflow-wrap: anywhere;
+    min-width: 0;
+  }
+  @media (max-width: 420px) {
+    .stat-row { grid-template-columns: 1fr; }
+  }
+
+  /* ---- The destination bar ----
+     One statement of where a send will go, and the peers that can be
+     chosen instead. The old page said "Destination:" twice -- once as
+     a row of peer pills, and again in a line under it -- and the pills
+     had no length limit, so one long peer name pushed the whole row
+     off the page. */
+  .dest {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+  }
+  .dest__label {
+    font-size: var(--fs-xs);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    flex: none;
+  }
+  /* The resolved destination, in the weight it deserves: it is the one
+     thing a reader must be able to find at a glance. */
+  .dest__current {
+    font-weight: 600;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    flex: 1 1 10rem;
+  }
+  .dest__switcher {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+    flex: 1 1 100%;
+  }
+  .dest__switch-label {
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    color: var(--text-muted);
+    flex: none;
+  }
+  .dest__pills {
+    display: flex;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+  .dest-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    max-width: 15rem;
+    padding: 0.25rem 0.6rem;
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--border);
+    background: var(--card-bg);
+    color: var(--text-muted);
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .dest-pill:hover {
+    border-color: var(--border-light);
+    color: var(--text);
+  }
+  .dest-pill__name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .dest-pill.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  .dest-pill.active:hover { color: #fff; }
+  .dest-pill__star { flex: none; }
+
+  /* ---- The diagnostic console ----
+     A terminal surface, and the one place in the page where a line can
+     be long. Wrapped lines used to restart at the left margin, under
+     the timestamp, which is the one place they must not go. */
+  .log-entry {
+    padding-left: 1.75rem;
+    text-indent: -1.75rem;
+  }
+  .log-entry .log-time {
+    display: inline-block;
+    width: 4.6rem;
+    margin-right: 0.5rem;
+    text-indent: 0;
+  }
+  .log-entry .tag {
+    margin-right: 0.4rem;
+  }
+  .log-console {
+    border-radius: var(--radius-md);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  }
+
+  /* ---- The progress row ----
+     The bar, the file, the percentage, the bytes and the rate were five
+     separate things in three places. */
+  .progress-meta {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .progress-meta .progress-file {
+    font-weight: 600;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    flex: 1 1 8rem;
+  }
+  .progress-meta .progress-stats {
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+
+  /* ---- The standing banners ----
+     The next-action banner, the stale banner, the session banner and
+     the pairing banner are all one kind of thing: a piece of standing
+     advice about the state of the page. They were four different
+     shapes, and the session banner was a set of inline styles in the
+     markup. They share one shape now, with the accent edge that says
+     "this is about the page" and the warning edge that says "this is
+     about something you should act on". */
+  #nextActionBanner,
+  .stale-banner,
+  #sessionBanner,
+  .pairing-banner {
+    display: none;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    background: var(--surface);
+    padding: 0.9rem 1.25rem;
+    margin-bottom: 1.25rem;
+    font-size: var(--fs-base);
+    line-height: 1.55;
+    color: var(--text);
+  }
+  #nextActionBanner code,
+  .stale-banner code,
+  #sessionBanner code,
+  .pairing-banner code {
+    font-family: var(--font-mono);
+    font-size: 0.92em;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.05rem 0.3rem;
+  }
+  #sessionBanner,
+  .pairing-banner,
+  .stale-banner {
+    border-left-color: var(--warning);
+  }
+  #sessionBanner.ico::before {
+    color: var(--warning-text);
+  }
+  .pairing-banner {
+    padding: 1.25rem;
+    margin-bottom: 1.5rem;
+  }
+  .pairing-banner-title {
+    font-size: var(--fs-lg);
+  }
+
+  /* ---- The destructive action, everywhere ----
+     A red-outlined button on every row of a list makes the loudest
+     thing on the page the thing nobody meant to press. The label
+     carries the warning, the dialog carries the decision, and the
+     page stops shouting. */
+  .btn-destructive {
+    color: var(--error-text);
+    border-color: transparent;
+    background: transparent;
+  }
+  .btn-destructive:hover {
+    background: var(--error-bg);
+    border-color: var(--error);
+  }
+
+  /* ---- The toast ----
+     It already had the right behaviour -- a live region, a dismiss
+     control, a next action, and a timer that pauses when the reader
+     arrives. It had no shape of its own beyond a left border, and no
+     mark to tell you what kind of thing it is. */
+  .toast {
+    border-left-width: 3px;
+    border-radius: var(--radius-lg);
+  }
+  .toast-icon.ico::before {
+    margin-right: 0;
+  }
+  .toast-next {
+    display: block;
+    margin-top: 0.3rem;
+    font-size: var(--fs-sm);
+    color: var(--text-muted);
+  }
+  .toast-next-label {
+    font-size: var(--fs-2xs);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text);
+    margin-right: 0.35rem;
   }
   /* ---- Notifications ----
      Every outcome the product cannot put next to its own control arrives here
@@ -1749,7 +2370,7 @@
   </nav>
 
   <main class="tab-content" id="main" tabindex="-1">
-    <div id="sessionBanner" role="alert" class="ico ico--alert" style="display: none; background: var(--warning-bg); border: 1px solid var(--warning); color: var(--warning-text); border-radius: 12px; padding: 0.85rem 1.25rem; margin-bottom: 1.25rem; font-size: 0.9rem;">
+    <div id="sessionBanner" role="alert" class="ico ico--alert" style="display: none;">
       <strong>Dashboard session not established.</strong>
       <span id="sessionBannerDetail">Actions on this page will fail until you reconnect. Run <code>tantu dashboard</code> in a terminal for a fresh link &mdash; that works whether or not the Hub opened this page. If the Hub <em>did</em> open this tab, reloading it is enough. Pressing <kbd>o</kbd> in the Hub terminal does the same thing.</span>
     </div>
@@ -1793,12 +2414,20 @@
 
       <!-- Shared send destination: one visible control governing file,
            image, clipboard, and text sends alike. -->
-      <div class="card" style="margin-bottom: 1.25rem; padding: 0.75rem 1.25rem;">
-        <div id="dropPeerSelector" style="display:none; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.5rem;">
-          <span style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">Destination:</span>
-          <div id="dropPeerPills" style="display: flex; gap: 0.4rem; flex-wrap: wrap;"></div>
+      <!-- The destination. One statement of where a send will go, and the
+           peers that can be chosen instead. The page used to say
+           "Destination:" twice -- once over a row of peer pills, and again
+           in a line underneath -- and the pills had no length limit, so
+           one long peer name pushed the row past the edge of the card. -->
+      <div class="card" style="margin-bottom: 1.25rem; padding: 0.85rem 1.25rem;">
+        <div class="dest">
+          <span class="dest__label">Destination</span>
+          <div id="destinationSummary" role="status" aria-live="polite" class="dest__current">Checking…</div>
+          <div id="dropPeerSelector" class="dest__switcher" style="display: none;">
+            <span class="dest__switch-label">Switch to</span>
+            <div id="dropPeerPills" class="dest__pills"></div>
+          </div>
         </div>
-        <div id="destinationSummary" role="status" aria-live="polite">Destination: checking…</div>
       </div>
 
       <!-- Responsive Dual-Pane Layout -->
@@ -1815,10 +2444,16 @@
             <input type="file" id="fileInput" aria-label="File to send to your peer" style="display: none;">
             <div id="filePreviewCard" hidden>
               <h3 class="card-title" id="filePreviewTitle">Ready to send</h3>
-              <img id="filePreviewThumb" alt="">
-              <div id="filePreviewMeta" style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.75rem;"></div>
-              <div id="filePreviewDest" style="font-size: 0.85rem; margin-bottom: 0.75rem;"></div>
-              <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+              <div class="preview">
+                <div class="preview__thumb" id="filePreviewThumbWrap" hidden>
+                  <img id="filePreviewThumb" alt="">
+                </div>
+                <div class="preview__facts">
+                  <div id="filePreviewMeta" class="preview__meta"></div>
+                  <div id="filePreviewDest" class="preview__dest"></div>
+                </div>
+              </div>
+              <div class="preview__actions">
                 <button type="button" class="btn-primary" id="btnConfirmSend" data-action="confirm-send">Send</button>
                 <button type="button" class="btn-sm" id="btnCancelPreview" data-action="cancel-preview">Cancel</button>
               </div>
@@ -1832,16 +2467,16 @@
                 <div class="progress-fill" id="progressFill"></div>
               </div>
               <div class="progress-meta">
-                <span id="progressFile">Uploading...</span>
+                <span class="progress-file" id="progressFile">Uploading...</span>
                 <!-- Deliberately not a live region: role="progressbar" already
                      exposes the value programmatically, and mirroring it here
                      announced this span ~1.3x/second for the whole transfer.
                      The byte/ETA detail now rides on aria-valuetext instead. -->
-                <span id="progressPercent">0%</span>
+                <span class="progress-stats" id="progressPercent">0%</span>
                 <button type="button" class="btn-sm" id="btnCancelUpload" data-action="cancel-upload" style="display: none;">✕ Cancel</button>
               </div>
             </div>
-            <div class="status-banner" id="dropStatus" role="status" aria-live="polite"></div>
+            <div class="msg" id="dropStatus" role="status" aria-live="polite"></div>
           </div>
 
           <div class="card">
@@ -1903,7 +2538,7 @@
                holding its callback port until the timeout. -->
           <button type="button" class="btn-sm" id="btnCancelRelay" data-action="cancel-relay" style="display: none;">Cancel</button>
         </form>
-        <div class="status-banner" id="relayStatus" role="status" aria-live="polite"></div>
+        <div class="msg" id="relayStatus" role="status" aria-live="polite"></div>
         <!-- Not a live region, and the difference matters.
              A live region announces whatever replaces its content. This list is
              repainted by a five-second poll, and each row carries the sign-in's
@@ -1962,7 +2597,7 @@
         <div style="display: flex; align-items: flex-start; gap: 0.75rem; flex-wrap: wrap;">
           <span class="status-chip neutral" id="discoveryHealthChip" style="margin-top: 0.15rem;">Discovery</span>
           <span id="discoveryHealthText" style="flex: 1; min-width: 240px; font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;"></span>
-          <button type="button" class="btn-sm" data-action="refresh-discovery">Recheck</button>
+          <button type="button" class="btn-sm ico ico--refresh" data-action="refresh-discovery">Recheck</button>
         </div>
         <p class="hint-text" style="margin-top: 0.5rem; margin-bottom: 0;">Discovery finds hubs on this network automatically. Pairing by address always works, even when discovery cannot.</p>
       </div>
@@ -2130,7 +2765,7 @@
              not status messages and announcing each one would be unusable.
              tabindex=0 makes the scrolled region keyboard-reachable. -->
         <div class="log-console" id="logConsole" tabindex="0" role="log" aria-live="off" aria-label="Live diagnostic log">
-          <div class="log-entry" data-domain="NET" data-level="INFO"><span class="log-time" style="color:#8b98ad; margin-right:0.5rem;">--:--:--</span><span class="tag tag-net">NET</span> Hub initialized and listening.</div>
+          <div class="log-entry" data-domain="NET" data-level="INFO"><span class="log-time">--:--:--</span><span class="tag tag-net">NET</span> Hub initialized and listening.</div>
         </div>
       </div>
     </div>
@@ -2253,6 +2888,17 @@
 
       const body = document.createElement('div');
       body.className = 'toast-body';
+      // A mark for what kind of thing this is. The text is still
+      // textContent -- the message comes from the Hub and from
+      // peer-supplied failure text -- and the mark is a separate
+      // element with no text in it at all.
+      const icon = document.createElement('span');
+      icon.className = 'toast-icon ico ' + (kind === 'error' ? 'ico--alert'
+        : kind === 'success' ? 'ico--check'
+        : kind === 'warn' ? 'ico--alert'
+        : 'ico--bolt');
+      icon.setAttribute('aria-hidden', 'true');
+      body.appendChild(icon);
       const text = document.createElement('div');
       text.className = 'toast-text';
       // textContent, never innerHTML: message and next come from the Hub and
@@ -2261,7 +2907,15 @@
       if (options.next) {
         const nextLine = document.createElement('span');
         nextLine.className = 'toast-next';
-        nextLine.textContent = 'Next: ' + options.next;
+        const nextLabel = document.createElement('span');
+        nextLabel.className = 'toast-next-label';
+        // "Next:" and not "Next". The product's language is "Next: <step>"
+        // everywhere else -- the CLI prints it, the log lines carry it,
+        // and the acceptance suite looks for it in the toast's text. A
+        // label is not a place to be quietly different.
+        nextLabel.textContent = 'Next:';
+        nextLine.appendChild(nextLabel);
+        nextLine.appendChild(document.createTextNode(' ' + options.next));
         text.appendChild(nextLine);
       }
       body.appendChild(text);
@@ -2744,15 +3398,22 @@
       else if (domain === 'DROP') tagClass = 'tag-drop';
       else if (domain === 'PEER') tagClass = 'tag-peer';
       else if (domain === 'SYS') tagClass = 'tag-sys';
-      if (level === 'ERROR') tagClass = 'tag-error';
-      else if (level === 'DEBUG') tagClass = 'tag-debug';
+      // The level used to REPLACE the domain tag. An error in the drop
+      // path was therefore shown as "ERROR", and a reader could not tell
+      // which part of the product had failed -- which is the first thing
+      // a log is for. Both are shown now: the domain says where, the
+      // level says how badly.
+      let levelHTML = '';
+      if (level === 'ERROR') levelHTML = '<span class="tag tag-error">ERROR</span> ';
+      else if (level === 'WARN' || level === 'WARNING') levelHTML = '<span class="tag tag-net">WARN</span> ';
+      else if (level === 'DEBUG') levelHTML = '<span class="tag tag-debug">DEBUG</span> ';
 
       let metaHTML = '';
       if (meta && Object.keys(meta).length > 0) {
         metaHTML = '<details style="margin-top:0.25rem; font-size:0.75rem; color:var(--text-muted);"><summary style="cursor:pointer; color:var(--accent-text);">inspect metadata</summary><pre style="background:rgba(0,0,0,0.3); color:#d7dde8; padding:0.4rem; border-radius:4px; margin-top:0.25rem; overflow-x:auto;">' + escapeHTML(JSON.stringify(meta, null, 2)) + '</pre></details>';
       }
 
-      row.innerHTML = '<span class="log-time" style="margin-right:0.5rem;">' + timeStr + '</span><span class="tag ' + tagClass + '">' + escapeHTML(domain) + '</span> ' + escapeHTML(msg) + metaHTML;
+      row.innerHTML = '<span class="log-time">' + timeStr + '</span><span class="tag ' + tagClass + '">' + escapeHTML(domain) + '</span> ' + levelHTML + escapeHTML(msg) + metaHTML;
       console.appendChild(row);
 
       if (console.children.length > 500) {
@@ -2976,7 +3637,15 @@
         document.getElementById('idWeb').innerText = data.web_addr || '127.0.0.1:9876';
         if (data.identity) {
           document.getElementById('idSAS').innerText = data.identity.sas || '-';
-          document.getElementById('idFP').innerText = data.identity.fingerprint ? data.identity.fingerprint.slice(0, 24) + '...' : '-';
+          // The fingerprint in full. It is how a person checks that two
+      // machines are the same machine, and it used to be cut to 24
+      // characters with no way to see the rest of it. It wraps instead,
+      // and the title carries it whole.
+      const fpEl = document.getElementById('idFP');
+      if (fpEl) {
+        fpEl.innerText = data.identity.fingerprint || '-';
+        fpEl.title = data.identity.fingerprint || '';
+      }
         }
 
         const peers = data.peers || [];
@@ -3086,14 +3755,19 @@ const peerSig = JSON.stringify(peers.map(p => [p.fingerprint, p.name, p.alias, p
             '<select id="headerPeerSelect" class="header-peer-select" data-action="active-peer" aria-label="Active peer">' +
             optionsHTML + '</select>';
 
-          // Tab 1 destination pills
+          // Tab 1 destination pills. They are the switcher for the
+          // destination stated above them, so they carry the peer's name
+          // and nothing else -- and a name the product does not control
+          // the length of is truncated rather than allowed to push the
+          // row off the card.
           if (dropSelector && dropPills) {
             dropSelector.style.display = 'flex';
             dropPills.innerHTML = peers.map(p => {
               const isSelected = (p.fingerprint === selectedPeerTarget);
-              const pillClass = isSelected ? 'pill active' : 'pill';
-              const defTag = p.is_default ? ' ⭐️' : '';
-              return '<button type="button" class="' + pillClass + '" data-action="select-peer" data-value="' + escapeHTML(p.fingerprint) + '" aria-pressed="' + (isSelected ? 'true' : 'false') + '">' + escapeHTML(p.name) + defTag + '</button>';
+              const pillClass = isSelected ? 'dest-pill active' : 'dest-pill';
+              const defTag = p.is_default ? '<span class="ico ico--star dest-pill__star" aria-hidden="true"></span>' : '';
+              return '<button type="button" class="' + pillClass + '" data-action="select-peer" data-value="' + escapeHTML(p.fingerprint) + '" aria-pressed="' + (isSelected ? 'true' : 'false') + '" title="' + escapeHTML(p.name) + '">' +
+                '<span class="dest-pill__name">' + escapeHTML(p.name) + '</span>' + defTag + '</button>';
             }).join('');
           }
 
@@ -3482,25 +4156,38 @@ function renderPeersList(peers) {
         const defaultBadge = pr.is_default ? '<span class="tag tag-oauth">Default</span>' : '';
         const activeBadge = pr.active ? '<span class="tag tag-drop">Active</span>' : '';
         const defaultBtn = !pr.is_default ? '<button class="btn-sm ico ico--star" data-action="set-default-peer" data-value="' + escapeHTML(pr.fingerprint) + '">Set Default</button>' : '';
-        const fpShort = pr.fingerprint ? (pr.fingerprint.slice(0, 16) + '...') : '-';
+        const fpShort = pr.fingerprint ? (pr.fingerprint.slice(0, 16) + '…') : '-';
+        const peerName = pr.name || 'Unnamed Peer';
 
-        return '<div style="background: rgba(255,255,255,0.02); border:1px solid var(--border); border-radius:8px; padding:0.85rem 1rem; margin-bottom:0.75rem;">' +
+        // The row used to be inline content, so a peer with a long name
+        // wrapped onto two lines and pushed its buttons down with it, and
+        // the four rows on a four-peer page had four different shapes. A
+        // peer name is the one string here the product does not control
+        // the length of, so the name is truncated and the row keeps its
+        // shape; the full value stays in the title attribute and in the
+        // accessible name.
+        return '<div class="peer">' +
           peerHealthChip(pr) +
-          '<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">' +
-            '<div style="display:flex; align-items:center; gap:0.5rem;">' +
-              '<span style="font-weight:600; color:var(--text); font-size:1rem;">' + escapeHTML(pr.name || 'Unnamed Peer') + '</span>' +
+          '<div class="peer__head">' +
+            '<div class="peer__id">' +
+              '<span class="peer__name" title="' + escapeHTML(peerName) + '">' + escapeHTML(peerName) + '</span>' +
               defaultBadge + activeBadge +
             '</div>' +
-            '<div style="display:flex; gap:0.35rem;">' +
+            '<div class="peer__actions">' +
               '<button class="btn-sm ico ico--pencil" data-action="edit-alias" data-value="' + escapeHTML(pr.fingerprint) + '" data-alias="' + escapeHTML(pr.alias || pr.name || '') + '">Alias</button>' +
               defaultBtn +
-              '<button class="btn-sm ico ico--trash" style="color:var(--error-text); border-color:var(--error);" data-action="unpair-peer" data-value="' + escapeHTML(pr.fingerprint) + '" data-name="' + escapeHTML(pr.name || '') + '">Unpair</button>' +
+              // The destructive action is a quiet button with a red label
+              // rather than a red-outlined one. A red outline on every row
+              // made the loudest thing on the page the thing nobody meant
+              // to press; the confirmation dialog is still what stands
+              // between a click and an unpair.
+              '<button class="btn-sm btn-destructive ico ico--trash" data-action="unpair-peer" data-value="' + escapeHTML(pr.fingerprint) + '" data-name="' + escapeHTML(pr.name || '') + '">Unpair</button>' +
             '</div>' +
           '</div>' +
-          '<div style="font-size:0.8rem; color:var(--text-muted); margin-top:0.5rem; display:flex; gap:1rem; flex-wrap:wrap;">' +
-            '<span>Address: <strong style="color:var(--text);">' + escapeHTML(pr.address) + '</strong></span>' +
-            '<span>SAS: <strong style="color:var(--accent-text);">' + escapeHTML(pr.sas) + '</strong></span>' +
-            '<span>FP: <span style="font-family:monospace; font-size:0.75rem;">' + escapeHTML(fpShort) + '</span></span>' +
+          '<div class="peer__meta">' +
+            '<span>Address <strong>' + escapeHTML(pr.address) + '</strong></span>' +
+            '<span>SAS <strong style="color:var(--accent-text);">' + escapeHTML(pr.sas || '-') + '</strong></span>' +
+            '<span>FP <code title="' + escapeHTML(pr.fingerprint || '') + '">' + escapeHTML(fpShort) + '</code></span>' +
           '</div>' +
         '</div>';
       }).join('');
@@ -3987,11 +4674,14 @@ function renderPeersList(peers) {
     function updateDestinationSummary() {
       const el = document.getElementById('destinationSummary');
       if (!el) return;
-      el.textContent = 'Destination: ' + destinationDisplayName();
+      // The label lives in the markup, once. This line is the value, and
+      // it used to repeat the label -- so the page said "Destination:"
+      // twice, a few pixels apart, in the same card.
+      el.textContent = destinationDisplayName();
       updateComposerActionLabels();
       const previewDest = document.getElementById('filePreviewDest');
       if (previewDest && pendingFile) {
-        previewDest.textContent = 'Destination: ' + destinationDisplayName();
+        previewDest.innerHTML = 'Destination: <strong>' + escapeHTML(destinationDisplayName()) + '</strong>';
       }
     }
 
@@ -4054,10 +4744,8 @@ function renderPeersList(peers) {
     function stageFileForSend(file) {
       if (!file) return;
       if (uploadXhr) {
-        const status = document.getElementById('dropStatus');
-        status.style.display = 'block';
-        status.className = 'status-banner error';
-        status.textContent = 'An upload is already in progress — cancel it before starting another.';
+        setMessageText(document.getElementById('dropStatus'), 'error',
+          'An upload is already in progress — cancel it before starting another.');
         return;
       }
       if (expertImmediateSendEnabled()) {
@@ -4072,19 +4760,24 @@ function renderPeersList(peers) {
       const meta = document.getElementById('filePreviewMeta');
       const dest = document.getElementById('filePreviewDest');
       const thumb = document.getElementById('filePreviewThumb');
+      const thumbWrap = document.getElementById('filePreviewThumbWrap');
       const type = file.type || 'unknown type';
       title.textContent = 'Ready to send';
       meta.textContent = (file.name || 'pasted image') + ' (' + formatBytes(file.size) + ', ' + type + ')';
-      dest.textContent = 'Destination: ' + destinationDisplayName();
+      // The destination is the thing the product is most careful about,
+      // so it is set in the reading colour rather than the muted one.
+      dest.innerHTML = 'Destination: <strong>' + escapeHTML(destinationDisplayName()) + '</strong>';
       if (thumb) {
         thumb.style.display = 'none';
         thumb.removeAttribute('src');
+        if (thumbWrap) thumbWrap.hidden = true;
         if (file.type && file.type.indexOf('image/') === 0 && file.size > 0 && file.size <= 8 * 1024 * 1024) {
           try {
             pendingFileURL = URL.createObjectURL(file);
             thumb.src = pendingFileURL;
             thumb.alt = 'Preview of ' + (file.name || 'pasted image');
             thumb.style.display = 'block';
+            if (thumbWrap) thumbWrap.hidden = false;
           } catch (_) {}
         }
       }
@@ -4273,6 +4966,23 @@ function renderPeersList(peers) {
          { action: 'refresh-discovery', label: 'Look for nearby hubs' }]);
     }
 
+    // The state of a record, as an edge on the row.
+    //
+    // The state used to be a chip in the middle of the row, which a
+    // reader had to find before they knew whether the thing worked. An
+    // edge is read first, and the chip then says what the state is.
+    function recordStateClass(state) {
+      const s = String(state || '');
+      if (s === 'completed' || s === 'completed_with_warning' ||
+          s === 'duplicate_suppressed' || s === 'complete') return 'record--completed';
+      if (s === 'duplicate_risk' || s === 'retryable_failure') return 'record--retryable';
+      if (s === 'terminal_failure' || s === 'failed') return 'record--failed';
+      if (s === 'sending' || s === 'publishing' || s === 'submitted' ||
+          s === 'negotiating' || s === 'waiting_callback' || s === 'browser_opened' ||
+          s === 'callback_received' || s === 'verifying') return 'record--pending';
+      return '';
+    }
+
     function renderTransfers(items) {
       const list = document.getElementById('transfersList');
       if (!list) return;
@@ -4291,18 +5001,24 @@ function renderPeersList(peers) {
         const label = operationStateLabel(state, false);
         let extra = '';
         // verified is only claimed when the receiver acknowledged the digest.
-        if (op.verified && state === 'completed') extra += ' · digest verified';
-        if (op.duplicate_risk) extra += ' · check the receiving inbox before retrying';
-        else if (op.retry_safe && state !== 'completed') extra += ' · safe to retry';
+        if (op.verified && state === 'completed') extra = 'Digest verified';
+        if (op.duplicate_risk) extra = 'Check the receiving inbox before retrying';
+        else if (op.retry_safe && state !== 'completed') extra = 'Safe to retry';
         let recovery = '';
         if (op.next_action && state !== 'completed') {
-          recovery = '<div class="record-next">Next: ' + escapeHTML(op.next_action) + '</div>';
+          recovery = '<div class="record-next"><span class="record__next-label">Next:</span>' +
+            renderInline(op.next_action) + '</div>';
         }
-        const timePart = timeStr ? ' &bull; ' + escapeHTML(timeStr) : '';
-        return '<div class="received-item">' +
-          '<div class="received-item-header"><span><strong>' + escapeHTML(name) + '</strong> to ' + escapeHTML(dest) + '</span>' +
-          '<span>' + escapeHTML(sizeStr) + timePart + '</span></div>' +
-          '<div class="record-state"><span class="status-chip ' + transferChipClass(state) + '">' + escapeHTML(label) + escapeHTML(extra) + '</span></div>' +
+        return '<div class="record ' + recordStateClass(state) + '">' +
+          '<div class="record__head">' +
+            '<span class="record__title">' + escapeHTML(name) +
+              ' <span class="record__to">to ' + escapeHTML(dest) + '</span></span>' +
+            '<span class="record__time">' + escapeHTML(sizeStr) +
+              (timeStr ? ' · ' + escapeHTML(timeStr) : '') + '</span>' +
+          '</div>' +
+          '<div class="record__state"><span class="status-chip ' + transferChipClass(state) + '">' +
+            escapeHTML(label) + '</span></div>' +
+          (extra ? '<div class="record__note">' + escapeHTML(extra) + '</div>' : '') +
           recovery +
         '</div>';
       }).join('');
@@ -4325,13 +5041,17 @@ function renderPeersList(peers) {
         const label = operationStateLabel(state, true);
         let recovery = '';
         if (op.next_action && state !== 'complete') {
-          recovery = '<div class="record-next">Next: ' + escapeHTML(op.next_action) + '</div>';
+          recovery = '<div class="record-next"><span class="record__next-label">Next:</span>' +
+            renderInline(op.next_action) + '</div>';
         }
-        const timePart = timeStr ? ' &bull; ' + escapeHTML(timeStr) : '';
-        return '<div class="received-item">' +
-          '<div class="received-item-header"><span><strong class="ico ico--lock">' + escapeHTML(origin) + '</strong> via ' + escapeHTML(dest) + '</span>' +
-          '<span>' + escapeHTML(timePart.replace(/^ &bull; /, '')) + '</span></div>' +
-          '<div class="record-state"><span class="status-chip ' + transferChipClass(state) + '">' + escapeHTML(label) + '</span></div>' +
+        return '<div class="record ' + recordStateClass(state) + '">' +
+          '<div class="record__head">' +
+            '<span class="record__title ico ico--lock">' + escapeHTML(origin) +
+              ' <span class="record__to">via ' + escapeHTML(dest) + '</span></span>' +
+            '<span class="record__time">' + escapeHTML(timeStr) + '</span>' +
+          '</div>' +
+          '<div class="record__state"><span class="status-chip ' + transferChipClass(state) + '">' +
+            escapeHTML(label) + '</span></div>' +
           recovery +
         '</div>';
       }).join('');
@@ -4427,8 +5147,7 @@ function renderPeersList(peers) {
         const data = await res.json();
         const msg = (data && data.message) || 'Sign-in cancelled.';
         if (status) {
-          status.className = 'status-banner';
-          status.textContent = msg;
+          setMessageText(status, 'success', msg);
         }
         addLog('OAUTH', msg);
       } catch (err) {
@@ -4542,9 +5261,8 @@ function renderPeersList(peers) {
       const fileInput = document.getElementById('fileInput');
 
       if (uploadXhr) {
-        status.style.display = 'block';
-        status.className = 'status-banner error';
-        status.textContent = '⚠️ An upload is already in progress — cancel it before starting another.';
+        setMessageText(status, 'error',
+          'An upload is already in progress — cancel it before starting another.');
         return;
       }
       // apiFetch waits for the bootstrap exchange; XHR must do the same so
@@ -4552,9 +5270,8 @@ function renderPeersList(peers) {
       // doomed request when this page was opened without a Hub session.
       const ready = await dashboardReady;
       if (!ready) {
-        status.style.display = 'block';
-        status.className = 'status-banner error';
-        status.textContent = '⚠️ Not connected to the Hub. Run `tantu dashboard` in a terminal for a fresh link.';
+        setMessageText(status, 'error',
+          'Not connected to the Hub. Run `tantu dashboard` in a terminal for a fresh link.');
         return;
       }
 
@@ -4612,17 +5329,21 @@ function renderPeersList(peers) {
       // The suppressed-duplicate branch, which is neither the success case nor the
       // failure case. See suppressedDuplicateMessage above for what the Hub
       // returns and why neither of the other two branches may claim a delivery.
-      const finishUpload = (ok, message, server) => {
+      // The outcome of an upload, in the product's own shape: what
+      // happened, what to do next, and the id that finds the same event
+      // in the log. The message used to be one flat sentence in one
+      // colour, which put the diagnostic id in the same voice as the
+      // failure it was explaining.
+      const finishUpload = (ok, outcome, server) => {
         uploadXhr = null;
         cancelBtn.style.display = 'none';
         if (fileInput) fileInput.value = '';
-        status.style.display = 'block';
         if (ok && server && server.duplicate) {
           fill.style.width = '100%';
           bar.setAttribute('aria-valuenow', '100');
           pPercent.innerText = '100% · ' + formatBytes(file.size) + ' / ' + formatBytes(file.size);
-          status.className = 'status-banner';
-          status.textContent = suppressedDuplicateMessage(server);
+          setMessage(status, 'info', suppressedDuplicateMessage(server), '',
+            'The Transfers tab has this operation and its next step.', '');
           addLog('DROP', 'Duplicate suppressed on ' + (server.destination || destinationDisplayName()) +
             ' for ' + file.name + '; nothing new was written.');
           notify('info', suppressedDuplicateMessage(server),
@@ -4633,15 +5354,15 @@ function renderPeersList(peers) {
           fill.style.width = '100%';
           bar.setAttribute('aria-valuenow', '100');
           pPercent.innerText = '100% · ' + formatBytes(file.size) + ' / ' + formatBytes(file.size);
-          status.className = 'status-banner success';
           const dest = (server && server.destination) || destinationDisplayName();
-          const op = (server && server.operation_id) ? ' (ID ' + server.operation_id + ')' : '';
-          status.textContent = 'File sent to ' + dest + ' · verified' + op;
+          setMessage(status, 'success', 'File sent to ' + dest + ' · verified', '', '',
+            (server && server.operation_id) || '');
           addLog('DROP', 'Completed transfer of ' + file.name + ' to ' + dest);
           setTimeout(() => { progress.style.display = 'none'; fill.style.width = '0%'; }, 2500);
         } else {
-          status.className = 'status-banner error';
-          status.textContent = message;
+          const o = outcome || {};
+          setMessage(status, 'error', o.title || 'Transfer failed', o.detail || '',
+            o.next || '', o.id || '');
           // Keep the progress bar visible on failure so the final state is
           // inspectable; the next upload resets it.
         }
@@ -4651,33 +5372,40 @@ function renderPeersList(peers) {
       xhr.onload = () => {
         let message = 'Unknown error';
         let server = null;
+        let next = '';
+        let opId = '';
         try {
           const data = JSON.parse(xhr.responseText);
           if (xhr.status >= 200 && xhr.status < 300 && data.status === 'success') {
-            finishUpload(true, '', data);
+            finishUpload(true, null, data);
             return;
           }
           server = data;
           message = data.plain_message || data.message || ('HTTP ' + xhr.status);
-          if (data.next_action) message += ' Next: ' + data.next_action;
+          // The next action and the operation id are separate fields on
+          // the wire, and the log line wants them inline. The banner
+          // wants them apart: the next action is the part a reader
+          // needs, and the id is a value to copy, not a sentence.
+          next = data.next_action || '';
+          opId = data.operation_id || '';
           if (data.duplicate_risk) message = 'File may already be saved. ' + message;
-          if (data.operation_id) message += ' (ID ' + data.operation_id + ')';
         } catch (_) {
           message = 'HTTP ' + xhr.status;
         }
         if (xhr.status === 503) {
           message += ' (server busy — wait a moment and retry)';
         }
-        addLog('ERROR', 'Drop failed: ' + message);
-        finishUpload(false, 'Transfer failed: ' + message, server);
+        addLog('ERROR', 'Drop failed: ' + message +
+          (next ? ' Next: ' + next : '') + (opId ? ' (ID ' + opId + ')' : ''));
+        finishUpload(false, { title: 'Transfer failed', detail: message, next: next, id: opId }, server);
       };
       xhr.onerror = () => {
         addLog('ERROR', 'Upload error: connection failed');
-        finishUpload(false, '❌ Connection error during upload.');
+        finishUpload(false, { title: 'Connection error during upload.' });
       };
       xhr.onabort = () => {
         addLog('DROP', 'Upload cancelled: ' + file.name);
-        finishUpload(false, '⚠️ Upload cancelled.');
+        finishUpload(false, { title: 'Upload cancelled.' });
       };
       xhr.send(fd);
     }
@@ -4700,10 +5428,8 @@ function renderPeersList(peers) {
         // Report it on the tab the user clicked from. A silent rejection is
         // indistinguishable from a dead button, and the draft is kept so
         // nothing the user typed is lost to a limit they cannot see.
-        const banner = document.getElementById('dropStatus');
-        banner.style.display = 'block';
-        banner.className = 'status-banner error';
-        banner.textContent = 'This snippet is ' + formatBytes(textBytes) + ', over the 10.0 MB limit. Send it as a file instead, or trim it here first. Nothing was sent.';
+        setMessageText(document.getElementById('dropStatus'), 'error',
+          'This snippet is ' + formatBytes(textBytes) + ', over the 10.0 MB limit. Send it as a file instead, or trim it here first. Nothing was sent.');
         addLog('ERROR', 'Text snippet too large (' + formatBytes(textBytes) + ' exceeds the 10.0 MB limit). Send it as a file instead.');
         return;
       }
@@ -4711,9 +5437,7 @@ function renderPeersList(peers) {
       const btn = document.getElementById('btnSendText');
       btn.disabled = true;
       const banner = document.getElementById('dropStatus');
-      banner.style.display = 'block';
-      banner.className = 'status-banner relaying';
-      banner.textContent = 'Sending ' + formatBytes(textBytes) + ' to ' + destinationDisplayName() + '…';
+      setMessage(banner, 'warning', 'Sending ' + formatBytes(textBytes) + ' to ' + destinationDisplayName() + '…');
       addLog('DROP', 'Sending text snippet (' + text.length + ' chars, ' + formatBytes(textBytes) + ')...');
 
       const payload = { text: text };
@@ -4738,9 +5462,8 @@ function renderPeersList(peers) {
           // because the server's message is the same shape and the two used to
           // disagree about what to do with it.
           textarea.value = '';
-          banner.style.display = 'block';
-          banner.className = 'status-banner';
-          banner.textContent = suppressedDuplicateMessage(data);
+          setMessage(banner, 'info', suppressedDuplicateMessage(data), '',
+            'The Transfers tab has this operation and its next step.', '');
           addLog('DROP', 'Duplicate suppressed on ' + (data.destination || destinationDisplayName()) +
             '; nothing new was written.');
           notify('info', suppressedDuplicateMessage(data),
@@ -4750,28 +5473,23 @@ function renderPeersList(peers) {
           textarea.value = '';
           const dest = data.destination || destinationDisplayName();
           const op = data.operation_id ? ' (ID ' + data.operation_id + ')' : '';
-          banner.style.display = 'block';
-          banner.className = 'status-banner success';
-          banner.textContent = 'Text sent to ' + dest + (data.verified ? ' · verified' : '') + op;
+          setMessage(banner, 'success', 'Text sent to ' + dest + (data.verified ? ' · verified' : ''), '', '',
+            data.operation_id || '');
           addLog('DROP', 'Text snippet sent to ' + dest + op + '.');
         } else {
           let msg = data.plain_message || data.message || 'Unknown error';
-          if (data.next_action) msg += ' Next: ' + data.next_action;
           if (data.duplicate_risk) msg = 'Text may already be saved. ' + msg;
-          if (data.operation_id) msg += ' (ID ' + data.operation_id + ')';
-          banner.style.display = 'block';
-          banner.className = 'status-banner error';
           // The draft is intentionally kept so a recoverable failure does not
           // silently discard what the user wrote.
-          banner.textContent = 'Not sent: ' + msg;
-          addLog('ERROR', 'Failed to send text: ' + msg);
+          setMessage(banner, 'error', 'Not sent', msg, data.next_action || '', data.operation_id || '');
+          addLog('ERROR', 'Failed to send text: ' + msg +
+            (data.next_action ? ' Next: ' + data.next_action : '') +
+            (data.operation_id ? ' (ID ' + data.operation_id + ')' : ''));
         }
         loadTransfers();
         updateNextAction();
       } catch (err) {
-        banner.style.display = 'block';
-        banner.className = 'status-banner error';
-        banner.textContent = 'Not sent: ' + err.message + ' Your text is still here.';
+        setMessage(banner, 'error', 'Not sent', err.message + ' Your text is still here.');
         addLog('ERROR', 'Text send failed: ' + err.message);
       } finally {
         btn.disabled = false;
@@ -4847,8 +5565,7 @@ function renderPeersList(peers) {
       if (!url) return;
 
       btn.disabled = true;
-      status.className = 'status-banner relaying';
-      status.textContent = '⏳ Relaying OAuth callback through bridge...';
+      setMessage(status, 'warning', 'Relaying OAuth callback through bridge…');
       addLog('OAUTH', 'Forwarding URL: ' + redactForLog(url));
 
       const payload = { url: url };
@@ -4878,8 +5595,8 @@ function renderPeersList(peers) {
         });
         const data = await res.json();
         if (res.ok && data.status === 'success') {
-          status.className = 'status-banner success';
-          status.textContent = 'Authentication completed successfully' + (data.destination ? ' via ' + data.destination : '') + '.';
+          setMessage(status, 'success',
+            'Authentication completed successfully' + (data.destination ? ' via ' + data.destination : '') + '.');
           input.value = '';
           addLog('OAUTH', 'OAuth flow completed successfully' + (data.destination ? ' via ' + data.destination : '') + '.');
         } else {
@@ -4887,8 +5604,8 @@ function renderPeersList(peers) {
           if (data.next_action) msg += ' Next: ' + data.next_action;
           if (data.operation_id) msg += ' (ID ' + data.operation_id + ')';
           msg += ' See Recent Authorizations below for details.';
-          status.className = 'status-banner error';
-          status.textContent = 'Relay failed: ' + msg;
+          setMessage(status, 'error', 'Relay failed', data.message || 'Unknown error',
+            data.next_action || '', data.operation_id || '');
           addLog('ERROR', 'Relay failed: ' + msg);
         }
         loadAuthorizations();
@@ -4898,8 +5615,7 @@ function renderPeersList(peers) {
           // Saying "connection error" here would contradict the banner.
           return;
         }
-        status.className = 'status-banner error';
-        status.textContent = '❌ Connection error: ' + err.message;
+        setMessage(status, 'error', 'Connection error', err.message);
         addLog('ERROR', 'Relay error: ' + err.message);
         loadAuthorizations();
       } finally {
@@ -4929,8 +5645,7 @@ function renderPeersList(peers) {
               'Use the Cancel button on the sign-in you want, in Sign-ins in progress below.'
             : 'Could not read the list of open sign-ins, so this will not guess which one to release. ' +
               'Use the Cancel button on the sign-in you want, in Sign-ins in progress below.';
-        status.className = 'status-banner';
-        status.textContent = msg;
+        setMessageText(status, 'warning', msg);
         addLog('OAUTH', msg);
         btn.disabled = false;
         btn.style.display = 'none';
@@ -4947,13 +5662,12 @@ function renderPeersList(peers) {
         });
         const data = await res.json();
         const msg = (data && data.message) || 'Sign-in cancelled. You can start again.';
-        status.className = 'status-banner';
-        status.textContent = msg;
+        setMessageText(status, 'success', msg);
         addLog('OAUTH', msg);
         loadAuthorizations();
       } catch (err) {
-        status.className = 'status-banner error';
-        status.textContent = 'Could not reach the Hub to cancel. The sign-in will end on its own timeout; retry, or cancel from the other machine.';
+        setMessageText(status, 'error',
+          'Could not reach the Hub to cancel. The sign-in will end on its own timeout; retry, or cancel from the other machine.');
         addLog('ERROR', 'Cancel failed: ' + err.message);
       } finally {
         btn.disabled = false;
@@ -5238,6 +5952,62 @@ function renderPeersList(peers) {
         "'": '&#39;',
         '"': '&quot;'
       }[tag] || tag));
+    }
+
+    // Inline code.
+    //
+    // The product's language quotes a command in backticks -- "Use
+    // `tantu status` to verify trust" -- and those backticks were shown
+    // to the reader as backticks, in the middle of a sentence, in a
+    // message that was otherwise entirely red. The text is escaped
+    // first, so this can only ever add markup; it can never carry it.
+    function renderInline(text) {
+      if (text === undefined || text === null) return '';
+      return escapeHTML(text).replace(/`([^`]+)`/g, '<code>$1</code>');
+    }
+
+    // A status message, in the shape the product's language actually
+    // has: what happened, what to do next, and the id that finds the
+    // same event in the log.
+    //
+    // The old banner put all three into one coloured run, so the part
+    // a reader needs most -- the next action -- was the hardest to
+    // find, and the diagnostic id was set in the same voice as the
+    // failure. The parts are separate here, and the id is set in a
+    // monospaced chip, because it is a value to be copied rather than
+    // a sentence to be read.
+    function setMessage(el, kind, title, detail, next, id) {
+      if (!el) return;
+      var icon = kind === 'error' ? 'ico--alert'
+        : kind === 'success' ? 'ico--check'
+        : kind === 'warning' ? 'ico--alert'
+        : 'ico--bolt';
+      var html = '<span class="msg__icon ico ' + icon + '" aria-hidden="true"></span>' +
+        '<div class="msg__body">';
+      if (title) html += '<div class="msg__title">' + renderInline(title) + '</div>';
+      if (detail) html += '<div class="msg__detail">' + renderInline(detail) + '</div>';
+      if (next) html += '<div class="msg__next"><span class="msg__next-label">Next:</span>' + renderInline(next) + '</div>';
+      if (id) html += '<code class="msg__id">' + escapeHTML(id) + '</code>';
+      html += '</div>';
+      el.className = 'msg msg--' + kind;
+      el.innerHTML = html;
+    }
+
+    // The same component, for a message that is one sentence. The title
+    // carries it; there is no detail, no next action and no id.
+    function setMessageText(el, kind, text) {
+      setMessage(el, kind, text, '', '', '');
+    }
+
+    // A message whose next action and id are already separate fields.
+    // The server sends them separately (the same contract the CLI's
+    // --json output uses), and the dashboard used to flatten them into a
+    // sentence before showing them.
+    function setMessageFromResult(el, kind, title, result) {
+      result = result || {};
+      var detail = result.plain_message || result.message || '';
+      if (result.duplicate_risk) detail = 'File may already be saved. ' + detail;
+      setMessage(el, kind, title, detail, result.next_action || '', result.operation_id || '');
     }
 
     measureChrome();

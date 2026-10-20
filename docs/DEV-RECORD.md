@@ -11161,3 +11161,143 @@ says so in the same terms it uses for everything else. The contrast
 gate, the overflow gates, the target-size gates and the tab-label gates
 are machine-checked and are green; whether the result is *good* is a
 judgement, and a judgement is what a user study is for.
+
+## Batch L -- the surfaces a user actually meets (2026-10-21)
+
+Batch K dressed the page. Batch L dresses the parts of it that carry
+information, and it found the reason Batch K was not enough.
+
+### The gap: the product was designed against empty states
+
+Batch K looked at the dashboard and it was mostly empty states: no
+peers, nothing received, no transfers, no logs. Empty states are the
+easiest thing in the world to make look good, and they are the least
+of what a user sees. The product's real surfaces -- a peer row, a
+transfer record, a failed send, a log line -- had not been looked at
+by anybody, including me.
+
+So the first thing this batch did was build the thing that shows them.
+`tools/uxtest/populated.mjs` starts a Hub with a seeded peer store,
+drives real traffic through the real controls (a text send, a file
+send, a relay attempt, a copy), and captures every tab, in both themes,
+at 1600 px and 360 px. The screenshots it produces are the first
+pictures of this product that are not mostly empty.
+
+**And they were not good.** What the populated captures showed:
+
+- a failed send was one wall of red text, with the next action -- the
+  part a reader actually needs -- in the same red, at the same weight,
+  in the middle of the sentence;
+- the diagnostic id was set in the same voice as the failure, so the
+  value you copy to a bug report read like part of the complaint;
+- the page said "Destination:" twice, a few pixels apart, in the same
+  card, and the peer pills had no length limit, so one long peer name
+  pushed the row past the edge of the card;
+- a page with four peers had four identically loud red Unpair buttons
+  on it, which made the loudest thing on the page the thing nobody
+  meant to press;
+- the peer rows were inline content, so a peer with a long name
+  wrapped onto two lines and pushed its buttons down with it, and the
+  four rows on the page had four different shapes;
+- the identity panel stranded each label at the left of the card and
+  its value at the far right, and the TLS fingerprint was cut to a
+  column of dots with no way to see the rest of it;
+- the log's *level* replaced the log's *domain*, so an error in the
+  drop path was shown as "ERROR" and a reader could not tell which part
+  of the product had failed;
+- a wrapped log line restarted at the left margin, under the
+  timestamp, which is the one place it must not go;
+- the product's own language quotes a command in backticks -- "Use
+  `tantu status` to verify trust" -- and the backticks were shown to
+  the reader as backticks.
+
+### The message component
+
+Every outcome the product can report has the same three parts: what
+happened, what to do next, and the id that finds the same event in the
+log. They are now three parts on the page, not one sentence:
+
+    !  Relay failed
+       relay flow failed
+       ---------------------------------------
+       NEXT:  Check the peer is online and paired, then retry.
+
+       r1-3fd104d33942d985
+
+The title is what happened, the detail is why, the next action is on
+its own line behind a rule, and the id is a monospaced chip because it
+is a value to be copied rather than a sentence to be read. The server
+already sent the next action and the id as separate fields -- the same
+contract the CLI's `--json` output uses -- and the dashboard used to
+flatten them into a sentence before showing them.
+
+This is a component, not a restyle: the same shape now carries the
+send outcome, the relay outcome, the next-action banner, the stale
+banner, the session banner, the pairing banner and the toast.
+
+### The rest of the surfaces
+
+- **Peer rows** are a grid row now: the name truncates (it is the one
+  string here the product does not control the length of) and the row
+  keeps its shape, the badges sit beside the name, the actions sit at
+  the right, and the facts are on their own line.
+- **The destructive action** is a quiet button with a red label rather
+  than a red outline. Every destructive action in the product confirms
+  first -- the clears all go through the same dialog -- so the page
+  does not have to shout about them.
+- **The destination** is stated once: the label is in the markup, the
+  value is on the page, and the peer pills below are labelled as the
+  switcher they are.
+- **The identity panel** is a two-column definition list, and the
+  fingerprint is shown in full, because it is how a person checks that
+  two machines are the same machine.
+- **Records** carry their state on an edge, so the state is read before
+  anything else on the row, and the chip then says what the state is.
+- **The log** shows the domain and the level, wraps with a hanging
+  indent, and breaks only the words that cannot fit.
+
+### A defect in the work of the previous batch
+
+The log filter's coloured dots were a CSS specificity bug, and it was
+mine: the base rule set `background: currentColor` and an attribute
+selector beats a class selector, so the per-domain colours never
+applied and every dot on the page was the same grey. A domain mark
+that is grey is not a domain mark. The base rule now sets no colour
+of its own.
+
+### Two checks that had to change, and why they are not weaker
+
+- The acceptance suite asserted that the destination summary's *text*
+  began with "Destination: ". The label is now in the markup, because
+  the page said it twice. The check now asserts what it was for: a
+  label that names the field, and a value that names somewhere.
+- A Go gate asserted the exact source of four status writes. The
+  mechanism changed -- the banner is the component now -- but the copy
+  the user reads did not, so the markers are the copy and the calls
+  that carry it.
+
+And one that did not change: the toast's next action is still
+"Next: ". The first version of this batch made it a label reading
+"Next", and the acceptance suite failed on it -- which is the suite
+telling the truth, because the product's language is "Next: <step>"
+in the CLI, in the log lines and in the toast, and a label is not a
+place to be quietly different. The colon stayed.
+
+### Evidence
+
+- The acceptance suite: **chromium 114/114, webkit 114/114, firefox
+  112/112**. The contrast sweep measured 161 rendered text nodes per
+  theme, up from 158, with no failure in either theme on any engine.
+- `go test ./...` green across fifteen packages, `gofmt -l .` clean,
+  `go vet` clean, staticcheck clean, encgate, docgate and wfcheck
+  green.
+- The page was looked at, populated, in both themes, at 1600 px and at
+  360 px, on every tab, and in the pairing dialog.
+
+### What this is not
+
+Still not E4 or E5 evidence. The layout, the contrast, the overflow
+and the target sizes are machine-checked and green. Whether the
+result reads as good is a judgement, and this batch made more of those
+judgements than the last one did -- by looking at more of the product,
+rather than by looking harder at less of it.
