@@ -1,4 +1,4 @@
-﻿// Dashboard acceptance harness: a real browser driven through Playwright,
+// Dashboard acceptance harness: a real browser driven through Playwright,
 // across three engines (chromium, firefox, webkit).
 //
 // It builds and starts an isolated Hub, seeds a peer store, drives the real
@@ -54,6 +54,23 @@ const ENGINE = (() => {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const checks = [];
+// MIN_CHECKS is the smallest number of checks a run may execute and still
+// count as a result.
+//
+// A run that checked nothing reports 0/0, and `pass !== checks.length` is
+// false for 0 == 0, so the harness exits 0 -- and CI's `0) ;;` arm accepts
+// that, so the dashboard-acceptance job could go green having run nothing,
+// with a summary line reading "0/0 checks passed". The fuzz job already
+// refuses to pass with no targets, for exactly this reason, and says so in
+// the same shape.
+//
+// The floor sits well below the smallest real run -- Firefox peerless runs
+// the fewest, at 106, because two clipboard checks need a capability it does
+// not expose -- so it fires on catastrophe rather than on an engine
+// difference. It is a number in the repository on purpose: a harness that
+// quietly stops checking things then shows up as a diff, not as a green
+// build.
+const MIN_CHECKS = 100;
 // Set when the Hub under test exits. Every check afterwards would otherwise fail
 // for one reason -- there is no server -- and each would report it in its own
 // vocabulary, which is how a killed Hub previously presented as four unrelated
@@ -271,7 +288,7 @@ let hubs2 = null;
     // The Hub prints its banner only after its listeners are bound, which on a
     // cold machine takes several seconds. A fixed sleep raced it, and because
     // stdout/stderr were discarded a failed start surfaced as a bare
-    // "fetch failed" â€” indistinguishable from a slow machine, a crashed Hub,
+    // "fetch failed" — indistinguishable from a slow machine, a crashed Hub,
     // or another Tantu already holding one of these ports. Probe until it
     // answers, and if it never does, say exactly what happened.
     let hubOut = '';
@@ -298,7 +315,7 @@ let hubs2 = null;
     if (hub.exitCode !== null) {
       throw new Error('Hub exited with code ' + hub.exitCode + ' before answering on ' + WEB_PORT + '.\n'
         + (hubOut.trim() || '(no output)')
-        + '\nAnother Tantu holding ' + WEB_PORT + ' or ' + P2P_PORT + ' is the usual cause â€” this harness needs both ports free.');
+        + '\nAnother Tantu holding ' + WEB_PORT + ' or ' + P2P_PORT + ' is the usual cause — this harness needs both ports free.');
     }
     if (!probe) {
       throw new Error('Hub did not answer on ' + WEB_PORT + ' within 30s (' + lastProbeError + ').\n'
@@ -335,7 +352,7 @@ let hubs2 = null;
     // First-useful-render timestamp. Runs in every document this page loads,
     // so the final (post-bootstrap) document records the instant its own
     // status slots first hold a real value instead of the "-" placeholder.
-    // Only code running inside the document can observe that instant â€”
+    // Only code running inside the document can observe that instant —
     // polling from here would measure the harness, not the render.
     await page.addInitScript(() => {
       window.__tantuFirstUsefulMs = undefined;
@@ -378,12 +395,12 @@ let hubs2 = null;
     });
     // Set while the staleness check deliberately cuts /api/status: the browser
     // logs each blocked poll as a resource error. That is the harness's own
-    // interference, not dashboard noise â€” CDP's setBlockedURLs produced no
+    // interference, not dashboard noise — CDP's setBlockedURLs produced no
     // Log.entryAdded for it either, so excluding it keeps the check's meaning
     // (unexpected console errors) rather than its mechanism.
     let statusBlocked = false;
     // The stack's first frames are kept: a message like WebKit's
-    // "â€¦ due to access control checks" names no caller, and the caller is the
+    // "… due to access control checks" names no caller, and the caller is the
     // entire question when an engine disagrees with the other two.
     page.on('pageerror', (e) => consoleErrors.push('pageerror: ' + e.message
       + (e.stack ? ' @ ' + String(e.stack).split('\n').slice(0, 3).join(' | ') : '')));
@@ -419,8 +436,8 @@ let hubs2 = null;
       var el=document.querySelector(sel); if(!el) return null;
       var s=getComputedStyle(el); if(s.display==='none') return null;
       // Contrast is a property of painted pixels. An element can pass the
-      // display check above and still generate no boxes â€” its ancestor (an
-      // inactive tab pane) is display:none â€” and then there is nothing on
+      // display check above and still generate no boxes — its ancestor (an
+      // inactive tab pane) is display:none — and then there is nothing on
       // screen to read. Skipping it is the definition of the measurement, not
       // a concession: it also removes a real false-positive class, because
       // WebKit leaves computed colors inside hidden subtrees stale across a
@@ -494,7 +511,7 @@ let hubs2 = null;
     // First useful render under 1 second: the init script above stamped the
     // moment this document's status slots first held a real value, measured
     // from its own navigation start. The bootstrap POST + reload is a separate
-    // document, so its wall time is measured here and logged as evidence â€”
+    // document, so its wall time is measured here and logged as evidence —
     // only the render instant is gated, because the settle loop's 250ms poll
     // granularity is harness latency, not product behaviour.
     const firstUseful = await js('window.__tantuFirstUsefulMs');
@@ -720,8 +737,8 @@ const thumb = await js(`(function(){return new Promise(function(resolve){
     } // end of: only when this engine produced a file the dashboard will preview
 
     // --- paste/drop preview feedback under 100ms (plan section 12.1) ---
-    // Dispatches a real 'paste' event carrying an image file â€” the path the
-    // dashboard documents ("pasting an image anywhere stages it") â€” and
+    // Dispatches a real 'paste' event carrying an image file — the path the
+    // dashboard documents ("pasting an image anywhere stages it") — and
     // measures until the preview card is shown, which stageFileForSend does
     // synchronously: the budget is that the user's paste is acknowledged with
     // visible feedback inside 100ms, not that the image decodes. Engines that
@@ -756,8 +773,8 @@ const thumb = await js(`(function(){return new Promise(function(resolve){
     // --- ordinary UI freeze never over 100ms during state updates (plan
     // section 12.1) --- Sample the main thread for 4s: that window spans at
     // least one status poll and the periodic loads, i.e. real state updates.
-    // A gap between timer ticks is exactly what a freeze is â€” the loop cannot
-    // run while the thread is blocked â€” so the longest gap is the longest
+    // A gap between timer ticks is exactly what a freeze is — the loop cannot
+    // run while the thread is blocked — so the longest gap is the longest
     // freeze the user would have seen.
     const freeze = await js(`(function(){return new Promise(function(resolve){
       var gaps=[], last=performance.now(), start=last, n=0;
@@ -930,7 +947,7 @@ const thumb = await js(`(function(){return new Promise(function(resolve){
     // Reconnect snapshot reconciliation under 2s (plan section 12.1).
     // Release the block with NO manual retry: recovery must come from the
     // dashboard's own polling (1s cadence while stale), so what is measured
-    // is the product's reconnection, not the button's â€” retry-status stays
+    // is the product's reconnection, not the button's — retry-status stays
     // covered by the delegated-action sweep below. The 9s block leaves the
     // poll phase arbitrary, which is safe in the passing direction (recovery
     // is bounded by the 1s stale cadence, not by phase) while a dashboard
@@ -951,7 +968,7 @@ const thumb = await js(`(function(){return new Promise(function(resolve){
     const live2 = await js('(function(){return {b:document.getElementById("staleBanner").style.display, a:document.getElementById("destinationSummary").getAttribute("data-stale")};})()');
     check('staleness clears on recovery', live2 && live2.b === 'none' && live2.a === null, JSON.stringify(live2));
     // Only now, with the Hub answering again, does a /api/status console
-    // error mean something unexpected â€” so only now is one recorded.
+    // error mean something unexpected — so only now is one recorded.
     statusBlocked = false;
 
     // --- contrast, both themes ---
@@ -961,12 +978,12 @@ const thumb = await js(`(function(){return new Promise(function(resolve){
     // what it actually measured and assert that below.
     // CONTRAST_MIN_MEASURED is the floor: every rendered target across every
     // tab, in both themes (visibility must not depend on the theme). It is
-    // also the canary for the machinery itself â€” if tab activation breaks,
+    // also the canary for the machinery itself — if tab activation breaks,
     // whole panes go display:none and the count drops below it.
     //
     // This was 26 and is now 21 for one specific reason, so that nobody has to
     // rediscover it: #nextActionBanner sits in the page header, outside the tab
-    // panes, so it used to be measured once per tab â€” five measurements of the
+    // panes, so it used to be measured once per tab — five measurements of the
     // same element. It now renders only when it has something to steer, because
     // a banner that is always populated is one nobody reads, and in the common
     // case (a peer is connected, nothing is staged) it correctly stays hidden.
@@ -1009,7 +1026,7 @@ const thumb = await js(`(function(){return new Promise(function(resolve){
     // nothing (or measured different sets per theme, meaning visibility
     // flipped with the theme) would otherwise pass unnoticed. Theme flips
     // must not change what is on screen, and the floor catches a wholesale
-    // skip â€” including a regression in the rendered-only rule above.
+    // skip — including a regression in the rendered-only rule above.
     check('contrast sweep saw the same rendered targets in both themes',
       measured.dark === measured.light, JSON.stringify(measured));
     check('contrast sweep measured a full complement of rendered targets',
@@ -1622,13 +1639,13 @@ const OVERFLOW_PROBE = `(function(){
     // Nothing else in this suite, or anywhere else, clicks these controls.
     // A case that reads its element from the wrong place throws before it does
     // anything: no message, no state change, and a suite that stays green
-    // because it never clicked. That is not hypothetical â€” "Cancel sign-in"
+    // because it never clicked. That is not hypothetical — "Cancel sign-in"
     // read its operation id from `this`, which in a listener bound to
     // `document` is `document`, and threw "getAttribute is not a function" on
     // every click while 29/29 checks passed.
     //
-    // So sweep every data-action the page can render â€” including the ones only
-    // live data produces â€” and fail on any that throws. Dialogs, the OS shell,
+    // So sweep every data-action the page can render — including the ones only
+    // live data produces — and fail on any that throws. Dialogs, the OS shell,
     // the clipboard, file choosers and downloads are neutralised; every other
     // call reaches the real Hub, so argument extraction and dispatch are
     // exercised for real rather than against a stub.
@@ -1657,8 +1674,8 @@ const OVERFLOW_PROBE = `(function(){
       // call here. The peer and pairing mutations are answered here too: the
       // sweep synthesises buttons, so it has no real fingerprint or pairing id
       // to send, and those endpoints would answer 400 for a value the product
-      // would never submit. Every other call â€” including the cancel this
-      // sweep exists to prove â€” reaches the real Hub.
+      // would never submit. Every other call — including the cancel this
+      // sweep exists to prove — reaches the real Hub.
       var realApiFetch = window.apiFetch;
       var syntheticData = /^\\/api\\/(peers\\/(active|default|alias|remove)|pair\\/(decision|initiate))$/;
       var fakeOk = function () {
@@ -1693,7 +1710,7 @@ const OVERFLOW_PROBE = `(function(){
         b.setAttribute('data-name', 'uxtest');
         b.setAttribute('data-accept', 'true');
         host.appendChild(b);
-        // An exception thrown inside a listener does not reach this call â€”
+        // An exception thrown inside a listener does not reach this call —
         // the browser reports it to window.onerror instead, which is why the
         // error listener above is the actual assertion.
         b.click();
@@ -2073,20 +2090,20 @@ const OVERFLOW_PROBE = `(function(){
     // favicon, the javascript: URL the sanitization test deliberately feeds,
     // and 502/503/504 from the intentional oversize upload. The last one is
     // WebKit-specific and documented rather than guessed at: WebKit cancels
-    // any fetch issued while a navigation is pending â€” the dashboard's
-    // bootstrap reloads the document â€” and mislabels the cancellation as
-    // "â€¦ due to access control checks", a CORS phrasing for a request that
+    // any fetch issued while a navigation is pending — the dashboard's
+    // bootstrap reloads the document — and mislabels the cancellation as
+    // "… due to access control checks", a CORS phrasing for a request that
     // was never a CORS request (confirmed via a WebKit debug build:
-    // supabase/supabase#20982 â€” "canceled because there was a pending
-    // navigation â€¦ logged with this 'access control' error"; also SO
+    // supabase/supabase#20982 — "canceled because there was a pending
+    // navigation … logged with this 'access control' error"; also SO
     // 63141448, "after reload"). The product's only /api/pair/pending call
     // site is try/caught in full (loadPendingPairings), a real same-origin
-    // CORS defect would still be reported by chromium and firefox â€” whose
-    // CORS messages are not filtered â€” and the check stays a pageerror-only
+    // CORS defect would still be reported by chromium and firefox — whose
+    // CORS messages are not filtered — and the check stays a pageerror-only
     // exception, so any other uncaught exception fails regardless of engine.
     // The pageerror clause reads "the phrase terminates a segment": it was
     // first written as an end-of-entry anchor, which the stack suffix added
-    // above defeats â€” a webkit run failed on exactly this entry while the
+    // above defeats — a webkit run failed on exactly this entry while the
     // same phrase without a stack was filtered. The suffix alternatives ("
     // @ " before the stack, " | " between its lines, end of entry when there
     // is none) restore the documented scope without widening it: the exact
@@ -2103,7 +2120,7 @@ const OVERFLOW_PROBE = `(function(){
     const noiseSamples = [
       // The exact webkit cancellation entry, stack suffix included.
       ['pageerror: /api/pair/pending due to access control checks. @ Fetch API cannot load http://127.0.0.1:9876/api/pair/pending due to access control checks. |     at unknown (http://127.0.0.1:9876/dashboard)', true],
-      // The same phrase with no stack (e.stack absent) â€” the shape the
+      // The same phrase with no stack (e.stack absent) — the shape the
       // filter was originally written against.
       ['pageerror: /api/pair/pending due to access control checks.', true],
       // A real CORS defect in chromium's phrasing must never be filtered.
@@ -2581,13 +2598,21 @@ for (const [name, predicate] of Object.entries(wantStates)) {
     // exit code back, since the summary text looked correct either way.
     const productFailed = pass !== checks.length;
     const infraFailed = hubDeath !== null && productFailed;
+    const tooFewChecks = checks.length < MIN_CHECKS;
     if (infraFailed) {
       console.error('\nuxtest: NOT A PRODUCT RESULT - ' + hubDeath + '\n'
         + 'The Hub under test exited mid-run, so the remaining checks had no\n'
         + 'server to talk to. Re-run on a quiet machine. Last Hub output:\n'
         + (lastHubOut.trim() || '(none)'));
     }
-    process.exitCode = infraFailed ? 4 : (productFailed ? 1 : 0);
+    if (tooFewChecks) {
+      console.error('\nuxtest: NOT A PRODUCT RESULT - only ' + checks.length + ' check(s) ran, and the floor is '
+        + MIN_CHECKS + '.\nA run that checks almost nothing cannot report a product result, and\n'
+        + 'reporting 0/0 checks passed is the failure this floor exists to stop.');
+    }
+    // Exit 4 means "not a product result", which CI already surfaces as a
+    // warning while still failing the job.
+    process.exitCode = (infraFailed || tooFewChecks) ? 4 : (productFailed ? 1 : 0);
   } catch (e) {
     console.error('uxtest ERROR: ' + e.message);
     process.exitCode = 3;

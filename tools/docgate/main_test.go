@@ -201,6 +201,79 @@ func TestCheckForbiddenFailsOnAReintroducedInstruction(t *testing.T) {
 	}
 }
 
+// TestCheckDependencyImportSitesFailsInBothDirections is the gate on the
+// claim that the dependency surface is enumerable.
+//
+// The document's value proposition is "every import site listed above". On
+// 2026-10-20 the list named four golang.org/x/crypto sites and the tree had
+// five, and nothing was checking it.
+func TestCheckDependencyImportSitesFailsInBothDirections(t *testing.T) {
+	const goMod = "module example.com/x\n\ngo 1.26.3\n\nrequire golang.org/x/crypto v0.56.0\n"
+	const importSite = "package transport\n\nimport \"golang.org/x/crypto/ssh\"\n"
+
+	complete := fakeFiles(map[string]string{
+		"go.mod":                         goMod,
+		"internal/transport/ssh.go":      importSite,
+		"internal/transport/ssh_test.go": importSite,
+		"docs/DEPENDENCIES.md": "| `golang.org/x/crypto` | v0.56.0 | SSH | " +
+			"`internal/transport/ssh.go`, `internal/transport/ssh_test.go` |\n",
+	})
+	if problems := checkDependencyImportSites(complete); len(problems) != 0 {
+		t.Fatalf("a complete import-site list was reported as drift: %v", problems)
+	}
+
+	// A site the document does not name.
+	short := fakeFiles(map[string]string{
+		"go.mod":                         goMod,
+		"internal/transport/ssh.go":      importSite,
+		"internal/transport/ssh_test.go": importSite,
+		"docs/DEPENDENCIES.md": "| `golang.org/x/crypto` | v0.56.0 | SSH | " +
+			"`internal/transport/ssh.go` |\n",
+	})
+	if problems := checkDependencyImportSites(short); len(problems) == 0 {
+		t.Fatal("an import site the document does not name was reported as no drift")
+	}
+
+	// A file the document names that does not exist.
+	missing := fakeFiles(map[string]string{
+		"go.mod":                         goMod,
+		"internal/transport/ssh.go":      importSite,
+		"internal/transport/ssh_test.go": importSite,
+		"docs/DEPENDENCIES.md": "| `golang.org/x/crypto` | v0.56.0 | SSH | " +
+			"`internal/transport/ssh.go`, `internal/transport/ssh_test.go`, " +
+			"`internal/transport/gone.go` |\n",
+	})
+	if problems := checkDependencyImportSites(missing); len(problems) == 0 {
+		t.Fatal("a documented import site that does not exist was reported as no drift")
+	}
+
+	// A file the document names that no longer imports a direct dependency.
+	stale := fakeFiles(map[string]string{
+		"go.mod":                         goMod,
+		"internal/transport/ssh.go":      importSite,
+		"internal/transport/ssh_test.go": importSite,
+		"internal/transport/plain.go":    "package transport\n",
+		"docs/DEPENDENCIES.md": "| `golang.org/x/crypto` | v0.56.0 | SSH | " +
+			"`internal/transport/ssh.go`, `internal/transport/ssh_test.go`, " +
+			"`internal/transport/plain.go` |\n",
+	})
+	if problems := checkDependencyImportSites(stale); len(problems) == 0 {
+		t.Fatal("a documented import site that no longer imports anything was reported as no drift")
+	}
+
+	// A comment that quotes an import path is not an import.
+	commented := fakeFiles(map[string]string{
+		"go.mod":                      goMod,
+		"internal/transport/ssh.go":   importSite,
+		"internal/transport/plain.go": "package transport\n\n// import \"golang.org/x/crypto/ssh\"\n",
+		"docs/DEPENDENCIES.md": "| `golang.org/x/crypto` | v0.56.0 | SSH | " +
+			"`internal/transport/ssh.go` |\n",
+	})
+	if problems := checkDependencyImportSites(commented); len(problems) != 0 {
+		t.Fatalf("a comment quoting an import path was counted as an import site: %v", problems)
+	}
+}
+
 // TestCheckDocumentedFlagsFailsBothWays is the gate on the thing users type.
 func TestCheckDocumentedFlagsFailsBothWays(t *testing.T) {
 	claim := documentedFlag{Flag: "--flatten", File: "cmd/send.go", Decl: `"flatten"`, Doc: "README.md"}
@@ -640,6 +713,42 @@ func TestDocumentedGatesAcceptsWhenEveryCIGateIsListed(t *testing.T) {
 		"      - run: go run ./tools/docgate\n      - run: go run ./tools/wfcheck\n"
 	if problems := documentedGateProblems(t, readmeWithGates, ci); len(problems) > 0 {
 		t.Fatalf("a README that lists every gate was reported:\n  %v", problems)
+	}
+}
+
+// The check must see the gates that are not `go run ./tools/...`.
+//
+// It used to see only those three, so staticcheck, govulncheck, `go vet`,
+// `gofmt` and the line-endings check were all invisible to it -- while the
+// README claimed the list was everything CI ran, and the check claimed to
+// enforce it.
+func TestDocumentedGatesSeesGatesThatAreNotTools(t *testing.T) {
+	readme := "# Tantu\n\n### Quality gates you can run locally\n\n" +
+		"```bash\ngo test ./...\ngo run ./tools/encgate\n```\n\n## Next\n"
+	ci := "jobs:\n  quality:\n    steps:\n      - run: go run ./tools/encgate\n" +
+		"      - name: staticcheck\n        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...\n"
+	problems := documentedGateProblems(t, readme, ci)
+	if len(problems) == 0 {
+		t.Fatal("a non-tool quality gate the README does not list was accepted")
+	}
+	if !strings.Contains(problems[0], "staticcheck") {
+		t.Errorf("the problem does not name the gate: %s", problems[0])
+	}
+}
+
+// A gate this check cannot identify must be reported, not ignored. Otherwise
+// a new gate can be added to the quality job without the README or this
+// check knowing, which is the drift the check exists to catch.
+func TestDocumentedGatesReportsAGateItCannotIdentify(t *testing.T) {
+	ci := "jobs:\n  quality:\n    steps:\n      - run: go run ./tools/encgate\n" +
+		"      - run: go run ./tools/docgate\n      - run: go run ./tools/wfcheck\n" +
+		"      - name: A brand new gate\n        run: echo hello\n"
+	problems := documentedGateProblems(t, readmeWithGates, ci)
+	if len(problems) == 0 {
+		t.Fatal("a quality gate this check cannot identify was accepted silently")
+	}
+	if !strings.Contains(problems[0], "cannot identify") {
+		t.Errorf("the problem does not say the gate could not be identified: %s", problems[0])
 	}
 }
 

@@ -9,11 +9,11 @@
   them back) has never run. That is KNOWN-LIMITATIONS 1.5, and `v0.1.0` is
   the version meant to close it.
 - Every tool in the pipeline is pinned, and none should be floated for a
-  release: Go `1.27.1` in both workflows (a security decision as much as a
+  release: Go `1.27.2` in both workflows (a security decision as much as a
   reproducibility one — `govulncheck` judges the standard library against the
   toolchain that builds it, and 1.26.3 carried 9 reachable stdlib
   vulnerabilities), GoReleaser `v2.18.2`, syft `1.52.0`, cosign `2.6.1`
-  (2.x deliberately — see "Artifacts"), staticcheck `v0.8.1`. `go.mod` declares
+  (2.x deliberately — see "Artifacts"), staticcheck `v0.8.2`. `go.mod` declares
   language version `1.26.3`; that is the language the module requires, not the
   toolchain CI builds with.
 - The version is embedded at link time (`-X main.version` and
@@ -122,7 +122,7 @@ every push, judged against the pinned toolchain, and reports 0 findings as of
 release is still cheap:
 
 ```sh
-GOTOOLCHAIN=go1.27.1 go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+GOTOOLCHAIN=go1.27.2 go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 ```
 
 ## Install
@@ -173,8 +173,11 @@ preserved for manual review.
   is repeated non-race runs (`-count=2`) plus CI's `-race` coverage elsewhere.
 - Resume manifests bind metadata and a 64 KiB head hash, not the full payload
   or sender identity; completion after a lost acknowledgement is at-least-once.
-- The shipped archive has never been executed on macOS or Linux: those OSes
-  are verified by the full Go suite in CI on every push (`-race` on both, and
-  the browser harness on Linux), not by running the artifact a user would
-  download. The runtime verification matrix is tracked in
-  `docs/DEV-RECORD.md`.
+- The shipped archive **is** executed on the OS it was packaged for: the
+  `release-artifact` job builds all six archives on every push and runs the
+  archive built **for that platform** — `--version` proves the binary loads
+  and that the ldflags reached it, and `doctor` exercises a clean machine's
+  first run — with Linux and macOS additionally asserting static linkage
+  against the shipped bytes. What is still unverified is keyless signing,
+  which needs the release workflow's OIDC identity and so runs only at tag
+  time (KNOWN-LIMITATIONS 3.18), and the browser harness, which is Linux-only.

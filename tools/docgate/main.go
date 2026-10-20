@@ -101,6 +101,9 @@ func run(args []string) error {
 	for _, f := range checkDocumentedGates(files) {
 		report(f)
 	}
+	for _, f := range checkDependencyImportSites(files) {
+		report(f)
+	}
 
 	if failures > 0 {
 		return fmt.Errorf("docgate: %d documented claim(s) no longer match the code", failures)
@@ -147,7 +150,7 @@ func loadFiles(root string) (map[string]file, error) {
 			return nil
 		}
 		switch strings.ToLower(filepath.Ext(path)) {
-		case ".go", ".md", ".html", ".mjs", ".yml", ".yaml":
+		case ".go", ".md", ".html", ".mjs", ".yml", ".yaml", ".mod", ".sum":
 		default:
 			return nil
 		}
@@ -411,6 +414,38 @@ var phraseClaims = []phraseClaim{
 		Symbols: []string{"Compare this code with the code shown on the remote screen"},
 		Note:    "the pairing-code comparison the README describes, which the CLI's prompt implements",
 	},
+	{
+		// The pins the always-active rules name. AGENTS.md is the file whose
+		// rules apply to every change, and it instructed a staticcheck version
+		// the repository itself records as unable to read the pinned
+		// toolchain's export data.
+		Doc:     "AGENTS.md",
+		Phrases: []string{"staticcheck@v0.8.2"},
+		File:    ".github/workflows/ci.yml",
+		Symbols: []string{"staticcheck@v0.8.2"},
+		Note:    "the staticcheck version the always-active rules tell a contributor to run",
+	},
+	{
+		Doc:     "docs/RELEASE.md",
+		Phrases: []string{"Go `1.27.2`", "staticcheck `v0.8.2`"},
+		File:    ".github/workflows/ci.yml",
+		Symbols: []string{"go-version: '1.27.2'", "staticcheck@v0.8.2"},
+		Note:    "the toolchain and linter versions the release procedure names",
+	},
+	{
+		Doc:     "docs/RELEASE.md",
+		Phrases: []string{"GOTOOLCHAIN=go1.27.2"},
+		File:    ".github/workflows/ci.yml",
+		Symbols: []string{"go-version: '1.27.2'"},
+		Note:    "the toolchain the documented govulncheck command pins, which must be the one CI builds with",
+	},
+	{
+		Doc:     "docs/RELEASE.md",
+		Phrases: []string{"Go `1.27.2`"},
+		File:    ".github/workflows/release.yml",
+		Symbols: []string{"go-version: '1.27.2'"},
+		Note:    "the toolchain the release workflow builds with",
+	},
 }
 
 func checkPhrase(c phraseClaim, files map[string]file) (failure, bool) {
@@ -476,6 +511,146 @@ func checkForbidden(c forbiddenPhrase, files map[string]file) (failure, bool) {
 		}
 	}
 	return failure{}, true
+}
+
+// ---- the dependency surface -------------------------------------------------
+
+// checkDependencyImportSites verifies that docs/DEPENDENCIES.md names every
+// import site of every direct dependency, and names no file that does not
+// import one.
+//
+// The document's value proposition is that the dependency surface is
+// *enumerable* -- "every import site listed above". A list short by one is not
+// a list, and nothing was checking it: on 2026-10-20 the table named four
+// golang.org/x/crypto sites and the tree had five.
+//
+// Both directions matter. A site the document does not name is a place a
+// reviewer will not look. A file the document names that no longer imports
+// anything is a claim about a file that is not there.
+func checkDependencyImportSites(files map[string]file) []failure {
+	const doc = "docs/DEPENDENCIES.md"
+	deps, ok := files[doc]
+	if !ok {
+		return []failure{failf(doc, "not found, so the import-site check examined nothing. It must not "+
+			"pass without running.")}
+	}
+	mod, ok := files["go.mod"]
+	if !ok {
+		return []failure{failf("go.mod", "not found, so the import-site check examined nothing. It must "+
+			"not pass without running.")}
+	}
+	modules := directRequires(mod.body)
+	if len(modules) == 0 {
+		return []failure{failf("go.mod", "no direct requirement was found, so the import-site check "+
+			"examined nothing. It must not pass without running.")}
+	}
+
+	// The tree's import sites, keyed by the file they are in.
+	sites := map[string]bool{}
+	for _, f := range files {
+		if !strings.HasSuffix(f.rel, ".go") {
+			continue
+		}
+		for _, m := range modules {
+			// An import specifier on its own line, optionally aliased. Matching
+			// the line rather than a bare substring matters: a comment that
+			// quotes an import path is not an import, and the gate must not
+			// report its own documentation as a dependency site.
+			re := regexp.MustCompile(`(?m)^\s*(?:[A-Za-z_][A-Za-z0-9_]*\s+)?"` +
+				regexp.QuoteMeta(m) + `/[^"]*"`)
+			if re.MatchString(f.body) {
+				sites[f.rel] = true
+				break
+			}
+		}
+	}
+	if len(sites) == 0 {
+		return []failure{failf("go.mod", "no import site of any direct dependency was found in the tree, "+
+			"so the import-site check examined nothing. It must not pass without running.")}
+	}
+
+	var problems []failure
+	for _, site := range sortedKeys(sites) {
+		if !strings.Contains(deps.body, site) {
+			problems = append(problems, failf(doc, "the tree imports a direct dependency at %s, but this "+
+				"document does not name it. Its claim is that every import site is listed, "+
+				"and a list short by one is not a list", site))
+		}
+	}
+	for _, path := range documentedGoPaths(deps.body) {
+		if _, ok := files[path]; !ok {
+			problems = append(problems, failf(doc, "this document names %s as an import site, "+
+				"but no such file exists", path))
+			continue
+		}
+		if !sites[path] {
+			problems = append(problems, failf(doc, "this document names %s as an import site, "+
+				"but that file no longer imports a direct dependency", path))
+		}
+	}
+	return problems
+}
+
+// directRequires returns the module paths a go.mod requires directly.
+//
+// Only the direct requirements matter: an indirect one is another module's
+// choice, and the document says as much.
+func directRequires(goMod string) []string {
+	var mods []string
+	inBlock := false
+	for _, line := range strings.Split(goMod, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "require (" {
+			inBlock = true
+			continue
+		}
+		if inBlock && trimmed == ")" {
+			inBlock = false
+			continue
+		}
+		if !inBlock && !strings.HasPrefix(trimmed, "require ") {
+			continue
+		}
+		rest := strings.TrimPrefix(trimmed, "require")
+		rest = strings.TrimSpace(rest)
+		if rest == "(" || strings.HasPrefix(rest, "//") {
+			continue
+		}
+		// An indirect requirement is marked with a trailing comment.
+		if idx := strings.Index(rest, "//"); idx >= 0 {
+			rest = strings.TrimSpace(rest[:idx])
+		}
+		fields := strings.Fields(rest)
+		if len(fields) == 0 {
+			continue
+		}
+		mod := fields[0]
+		if !strings.Contains(mod, ".") {
+			continue
+		}
+		mods = append(mods, mod)
+	}
+	return mods
+}
+
+// documentedGoPaths returns the Go file paths a document names in backticks.
+func documentedGoPaths(body string) []string {
+	var out []string
+	for _, m := range regexp.MustCompile("`([^`\\s]*\\.go)`").FindAllStringSubmatch(body, -1) {
+		out = append(out, m[1])
+	}
+	return out
+}
+
+// sortedKeys returns a map's keys in a stable order, so a failure message
+// does not change from run to run.
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // ---- the CLI surface -------------------------------------------------------
@@ -833,6 +1008,31 @@ func checkTrackedArtefacts(root string) []failure {
 
 // ---- the local gate list ----------------------------------------------------
 
+// qualityGateExtractors map the command inside a CI quality step to the token
+// that identifies it in the README.
+//
+// The tokens are what a developer types, not the step's prose name: a name gets
+// renamed and a command does not.
+//
+// A step that matches none of these is a gate this check cannot see, and that
+// is reported rather than ignored. A new gate added to the quality job has to
+// be added here and to the README, and the failure to do either is exactly the
+// drift this check exists to catch -- the drift it had: it saw only the three
+// `go run ./tools/...` steps, so staticcheck, govulncheck, `go vet`, `gofmt`
+// and the line-endings check were all invisible to it, while the README
+// claimed the list was everything CI ran.
+var qualityGateExtractors = []struct {
+	pattern string
+	id      string
+}{
+	{`go run \./tools/[a-z]+`, ""}, // the identifier is the matched text
+	{`staticcheck@`, "staticcheck"},
+	{`govulncheck@`, "govulncheck"},
+	{`go vet \./\.\.\.`, "go vet"},
+	{`gofmt -l \.`, "gofmt"},
+	{`git grep -Il`, "git grep -Il"},
+}
+
 // checkDocumentedGates verifies that every gate the CI quality job runs is
 // listed in the README's "Quality gates you can run locally" section.
 //
@@ -859,12 +1059,9 @@ func checkDocumentedGates(files map[string]file) []failure {
 		return []failure{failf("README.md", "not found, so the documented-gate check examined nothing")}
 	}
 
-	gates := map[string]bool{}
-	for _, m := range regexp.MustCompile(`go run \./(tools/([a-z]+))`).FindAllStringSubmatch(ci.body, -1) {
-		gates["go run ./"+m[1]] = true
-	}
+	gates, unseen := qualityGates(ci.body)
 	if len(gates) == 0 {
-		return []failure{failf(".github/workflows/ci.yml", "no `go run ./tools/...` gate was found; the "+
+		return []failure{failf(".github/workflows/ci.yml", "no quality gate was found; the "+
 			"extraction is broken, not the workflow")}
 	}
 
@@ -891,10 +1088,123 @@ func checkDocumentedGates(files map[string]file) []failure {
 	var problems []failure
 	for _, g := range names {
 		if !strings.Contains(section, g) {
-			problems = append(problems, failf("README.md", "the CI quality job runs `%s` but the "+
-				"\"Quality gates you can run locally\" section does not list it. A gate nobody is told "+
-				"to run is a gate nobody runs", g))
+			problems = append(problems, failf("README.md", "the CI quality job runs a gate identified by "+
+				"`%s` but the \"Quality gates you can run locally\" section does not list it. A gate "+
+				"nobody is told to run is a gate nobody runs", g))
 		}
 	}
+	for _, u := range unseen {
+		problems = append(problems, failf(".github/workflows/ci.yml", "the quality job has a step this "+
+			"check cannot identify (%s), so it cannot tell whether the README documents it. Add it to "+
+			"qualityGateExtractors in tools/docgate and to the README's list", u))
+	}
 	return problems
+}
+
+// qualityGates returns the identifiers of the CI quality job's gates, and a
+// description of any step it could not identify.
+//
+// The quality job is located by its two-space indent, so a job of the same
+// name inside a comment or a string cannot be mistaken for it.
+func qualityGates(ci string) (map[string]bool, []string) {
+	gates := map[string]bool{}
+	var unseen []string
+
+	job := qualityJobBody(ci)
+	if job == "" {
+		return gates, unseen
+	}
+	for _, run := range qualityRunBlocks(job) {
+		id := ""
+		for _, ex := range qualityGateExtractors {
+			if m := regexp.MustCompile(ex.pattern).FindString(run); m != "" {
+				id = ex.id
+				if id == "" {
+					id = m
+				}
+				break
+			}
+		}
+		if id == "" {
+			unseen = append(unseen, firstCommandLine(run))
+			continue
+		}
+		gates[id] = true
+	}
+	return gates, unseen
+}
+
+// qualityJobBody returns the body of the `quality:` job in a workflow.
+func qualityJobBody(ci string) string {
+	const marker = "\n  quality:\n"
+	i := strings.Index(ci, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := ci[i+len(marker):]
+	// The job ends at the next line that starts another job.
+	if m := regexp.MustCompile(`(?m)^  [A-Za-z0-9_-]+:\s*$`).FindStringIndex(rest); m != nil {
+		return rest[:m[0]]
+	}
+	return rest
+}
+
+// qualityRunBlocks returns the run commands of a job's steps.
+//
+// Both forms are collected: the block scalar (`run: |` followed by an indented
+// body) and the inline form (`run: some command`). A gate written inline is a
+// gate like any other, and a check that only saw one form would miss it
+// entirely -- which is what the first version of this did, and why a new
+// inline step in the quality job was not reported.
+func qualityRunBlocks(job string) []string {
+	var blocks []string
+	lines := strings.Split(job, "\n")
+	for i := 0; i < len(lines); i++ {
+		idx := strings.Index(lines[i], "run:")
+		if idx < 0 {
+			continue
+		}
+		// The key must begin the line, after an optional list marker.
+		before := strings.TrimSpace(lines[i][:idx])
+		if before != "" && before != "-" {
+			continue
+		}
+		rest := strings.TrimSpace(lines[i][idx+len("run:"):])
+		switch rest {
+		case "|", "|-", "|+", ">", ">-", ">+":
+			indent := idx
+			var body []string
+			for j := i + 1; j < len(lines); j++ {
+				l := lines[j]
+				if strings.TrimSpace(l) == "" {
+					body = append(body, l)
+					continue
+				}
+				if len(l)-len(strings.TrimLeft(l, " ")) <= indent {
+					break
+				}
+				body = append(body, l)
+			}
+			blocks = append(blocks, strings.Join(body, "\n"))
+			i += len(body)
+		case "":
+			// A `run:` with nothing after it and no body: nothing to run.
+		default:
+			blocks = append(blocks, rest)
+		}
+	}
+	return blocks
+}
+
+// firstCommandLine returns the first line of a run block that is not a
+// comment, for use in a failure message.
+func firstCommandLine(run string) string {
+	for _, line := range strings.Split(run, "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		return t
+	}
+	return "(an empty step)"
 }

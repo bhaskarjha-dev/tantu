@@ -15,7 +15,7 @@
   were invisible to reading and obvious to running.
 - **Run the gates CI runs, not a subset you remember.** The quality job is
   `gofmt -l .`, `go vet ./...`,
-  `go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...`, `go test`, `encgate`,
+  `go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...`, `go test`, `encgate`,
   `docgate`. On 2026-10-06 six commits were pushed on a report that every gate
   was green, and CI was red on the one gate that had never been run locally:
   staticcheck found a watcher function that nothing called, while both documents

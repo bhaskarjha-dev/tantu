@@ -9241,3 +9241,135 @@ so, with the date it became true and a pointer to the row that was false.
 
 Verified: `go build`, `go vet`, `go test` (15 packages), `gofmt -l`, `encgate`,
 `docgate`, `wfcheck` and the four uxtest selfchecks exit 0.
+
+---
+
+## Batch Z114 — a gate's scope is part of what it claims to check (2026-10-20)
+
+Batch Z112's audit found that the encoding gate could not see the browser
+harness. This batch fixed it, and it found real damage the moment it did.
+
+### The scope
+
+`tools/encgate` decided what to read by extension, and the list had no `.mjs`
+and no `.cjs`. So `tools/uxtest/run.mjs`, `settle.cjs` and the four
+`selfcheck-*.cjs` files were never inspected — and neither were `LICENSE`,
+`go.mod`, `go.sum` or the three fuzz corpus seeds, because none of those has an
+extension the list knew either. **243 of 259 tracked files were checked**, and
+the gate's own docstring said "every tracked text file".
+
+The rule is now git's own: a NUL byte means binary, everything else is text. All
+261 tracked files are inspected, and the count is printed, because a scope that
+cannot be seen is a scope that cannot be checked.
+
+### The damage
+
+The moment the scope was widened, the gate went red:
+
+```
+tools/uxtest/run.mjs: 1 mojibake signatures and 1 invisible format characters
+```
+
+Enumerating the file's non-ASCII characters gave the whole picture:
+
+```
+  1 x [U+FEFF]
+ 29 x [U+00E2 U+20AC U+201D]     <- a double-encoded em dash
+  3 x [U+00E2 U+20AC U+00A6]     <- a double-encoded ellipsis
+  1 x [U+2014]                   <- a legitimate em dash
+```
+
+Twenty-nine em dashes and three ellipses, each the CP1252 mis-decode of the
+UTF-8 bytes for the real character, plus a byte-order mark at the top of the
+file. One of them was in a **string the harness prints to the user** — the
+message about a port conflict — so the damage was visible in CI output, and
+nothing in the repository could see it.
+
+This is the whole point of the gate, and the gate had been blind to a third of
+the repository. The register's §6 row about it says the damage "landed in
+log-message emoji, comments and prose" — which is exactly what a harness file
+is made of.
+
+### The repair
+
+At the byte level, by a tool outside the repository, replacing exactly the two
+damaged byte sequences and nothing else:
+
+```
+U+00E2 U+20AC U+201D  ->  U+2014     (29 occurrences)
+U+00E2 U+20AC U+00A6  ->  U+2026     (3 occurrences)
+EF BB BF                            (the byte-order mark, removed)
+```
+
+The one legitimate em dash in the file is a different byte sequence and was left
+alone. `gofmt -w` would not have been safe here, and neither would a
+PowerShell `Get-Content`/`Set-Content` round trip — the first is not a UTF-8
+tool, and the second is what caused the original damage.
+
+### The floor
+
+The gate also had no floor: it printed the same line and exited 0 whether it
+examined 243 files or none, so a silent reduction in scope was indistinguishable
+from a clean tree. `docgate` had that floor — "found no files under %s; refusing
+to report success with nothing to check" — and `encgate` did not. It does now,
+and it prints how many files it inspected.
+
+### The rest of the batch
+
+The audit's pipeline findings, all closed:
+
+- **The pins had drifted again.** `AGENTS.md` — the always-active rules —
+  instructed a staticcheck version the repository itself records as unable to
+  read the pinned toolchain's export data, and `docs/RELEASE.md` named a Go
+  with 11 known vulnerabilities. Both are corrected, and `docgate` now ties the
+  documents to the workflows in both directions, so the drift cannot return
+  silently.
+- **`RELEASE.md` contradicted a Closed register row** — it said the shipped
+  archive had never been executed on macOS or Linux, which row 1.1 says
+  otherwise, and row 1.1's own "Where it is visible" column points at that
+  document. Corrected.
+- **`DEPENDENCIES.md` claimed `govulncheck` had never been observed running in
+  CI** (it runs on every push) and listed four `x/crypto` import sites where
+  the tree has five. Both corrected, and `docgate` now checks the import-site
+  list in both directions — a site the document does not name, and a file the
+  document names that no longer imports anything.
+- **The gate that was supposed to keep the README's gate list honest saw only
+  three of the eight gates CI runs.** It extracted `go run ./tools/...` and
+  required each to be listed, so `staticcheck`, `govulncheck`, `go vet`,
+  `gofmt` and the line-endings check were all invisible to it — and the
+  README's claim that its list was "everything CI runs" was false twice over.
+  The check now reads the quality job's steps, identifies each gate by the
+  command a developer types, and **reports a step it cannot identify** rather
+  than ignoring it, so a new gate cannot be added to CI without the README and
+  the check both knowing.
+- **The browser harness had no minimum-check floor**: 0 checks reported 0/0,
+  `pass === checks.length` held, and the harness exited 0. There is now a floor
+  of 100, well below the smallest real run (Firefox peerless runs 106, with
+  four checks skipped for a capability it does not expose), and the harness
+  exits 4 — "not a product result" — rather than 0.
+- **Three small CI claims that could not fire**: the "produced no screenshots"
+  warning tested for a directory the harness creates unconditionally, so it
+  could never fire, and it tested existence rather than contents; the `infra`
+  variable was assigned in two places and read in neither; and the README told
+  a contributor that `go test ./...` includes `-race`.
+
+### A note on the self-tests
+
+Three of this batch's own gates had holes, found the same way the register
+describes: by applying the break and running it, not by reading the gate.
+
+- The first version of the extended quality-gate check missed a step written
+  as `- run: <command>` rather than as a block scalar, so a new inline gate
+  would have been invisible to it. The check now collects both forms.
+- The first version of the import-site check matched a bare module path, so the
+  gate reported **its own documentation** as a dependency site. It now matches
+  an import specifier on its own line.
+- The first version of the import-site *test* asserted that a file whose only
+  mention of the module is a comment is not an import site — and then listed
+  that file in the document, which the reverse check correctly flagged. The
+  test was wrong, not the check.
+
+Verified: `go build`, `go vet`, `go test` (15 packages), `gofmt -l`,
+`staticcheck v0.8.1`, `encgate`, `docgate`, `wfcheck` and the four uxtest
+selfchecks exit 0; chromium --peers 109/109, webkit --peers 109/109, firefox
+peerless 106/106. All Windows.

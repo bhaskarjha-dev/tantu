@@ -14,7 +14,7 @@ pinned. That is the whole list.
 
 | Module | Version | Used for | Import sites |
 |---|---|---|---|
-| `golang.org/x/crypto` | v0.56.0 | SSH transport (client and test server) | `internal/transport/ssh.go`, `internal/testutil/sshserver.go`, `internal/bridge/e2e_ssh_test.go`, `internal/transport/ssh_test.go` |
+| `golang.org/x/crypto` | v0.56.0 | SSH transport (client and test server) | `internal/transport/ssh.go`, `internal/testutil/sshserver.go`, `internal/bridge/e2e_ssh_test.go`, `internal/transport/ssh_test.go`, `internal/transport/ssh_deadline_test.go` |
 | `golang.org/x/sys` | v0.47.0 | Windows hardlink count on staged partials | `cmd/tantu/staging_linkcount_windows.go`, `internal/hub/staging_linkcount_windows.go` |
 
 `golang.org/x/net`, `golang.org/x/term`, and `golang.org/x/text` appear in
@@ -101,12 +101,19 @@ prevent.
 ## Vulnerability scanning
 
 `govulncheck` is configured in CI (`.github/workflows/ci.yml`) and reports
-vulnerabilities reachable from this module's own code. It has not yet been
-observed executing in CI — tracked as `docs/KNOWN-LIMITATIONS.md` §1.6. Run
-locally with:
+vulnerabilities reachable from this module's own code. It runs in the quality
+job on every push, judged against the pinned toolchain, and the runs have been
+green since #24. Run it locally with:
 
 ```sh
 go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+```
+
+Pin the toolchain to the one CI uses, or the scan judges a different standard
+library than the one that ships:
+
+```sh
+GOTOOLCHAIN=go1.27.2 go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 ```
 
 The two current modules are Google-maintained, widely deployed, and

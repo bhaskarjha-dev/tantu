@@ -261,27 +261,40 @@ go build -o tantu ./cmd/tantu
 
 ### Quality gates you can run locally
 
-Everything CI runs that has no third-party dependency:
+Everything the CI quality job runs, in the order it runs it:
 
 ```bash
-go test ./...                 # every package, including -race on Linux/macOS
-go vet ./... && gofmt -l .
+gofmt -l .                    # gofmt: unformatted files
+go vet ./...                  # go vet
+git grep -Il $'\r' -- '*.go' '*.md' '*.yml' '*.yaml'   # no CRLF committed
 go run ./tools/encgate         # no encoding damage in tracked text files
 go run ./tools/docgate         # documented claims still match the code
 go run ./tools/wfcheck         # every workflow's shell blocks parse as bash
+go test ./...                  # every package (CI adds -race on Linux/macOS)
+```
+
+Two more need a one-time download, so they are worth running before a release
+rather than on every change:
+
+```bash
+go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...   # staticcheck
+go run golang.org/x/vuln/cmd/govulncheck@latest ./...     # govulncheck
 ```
 
 `docgate` fails if this list stops matching the gates the CI quality job runs,
-so a fifth gate cannot be added without being documented here.
+so a new gate cannot be added to CI without being documented here.
 
-Two more need a one-time download and are worth running before a release rather
-than on every change:
+The browser harness and the release build are separate, and are not part of the
+quality job:
 
 ```bash
 cd tools/uxtest && npm ci && npx playwright install chromium firefox webkit
 node run.mjs --browser=chromium            # drives the real dashboard in a real browser
-goreleaser release --snapshot --clean      # builds and signs all 13 artifacts
+goreleaser release --snapshot --clean      # builds all 13 artifacts
 ```
+
+`goreleaser release --snapshot` cannot sign what it builds: keyless signing
+needs the release workflow's OIDC identity, so it happens only at tag time.
 
 The harness prints its own total, and how many checks it skipped and why — a skip
 is always reported on its own line, never folded into the pass count.

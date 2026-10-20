@@ -184,13 +184,65 @@ func TestRunPassesOnCleanDirectory(t *testing.T) {
 	}
 }
 
-func TestRunIgnoresNonTextExtensions(t *testing.T) {
+// TestRunIgnoresBinaryFiles is the rule for what is not text.
+//
+// The gate used to decide by extension, which meant the browser harness --
+// run.mjs, settle.cjs and the four selfcheck-*.cjs files -- was never
+// inspected, and neither were LICENSE, go.mod, go.sum or the fuzz corpus
+// seeds. The rule now is git's own: a NUL byte means binary.
+//
+// A file with no NUL byte is text as far as this repository is concerned. All
+// 261 tracked files are, and the gate prints how many it inspected, so a
+// scope reduction shows up in the log rather than passing silently.
+func TestRunIgnoresBinaryFiles(t *testing.T) {
 	dir := t.TempDir()
 	// A binary asset that happens to contain a C1 byte must not fail the gate.
-	if err := os.WriteFile(filepath.Join(dir, "logo.bin"), []byte{0x81, 0x82, 0xFF}, 0o644); err != nil {
+	// The NUL byte is what makes it binary; without one it is text, and a C1
+	// byte in text is damage.
+	if err := os.WriteFile(filepath.Join(dir, "logo.bin"),
+		[]byte{0x00, 0x81, 0x82, 0xFF}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A clean text file alongside it, so the floor -- "refusing to report
+	// success with nothing to check" -- is not what this test is measuring.
+	if err := os.WriteFile(filepath.Join(dir, "clean.md"), []byte("# ok\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := run([]string{dir}); err != nil {
-		t.Fatalf("run failed on a non-text extension: %v", err)
+		t.Fatalf("run failed on a binary file: %v", err)
+	}
+}
+
+// TestRunInspectsExtensionsTheOldListDidNotKnow is the scope.
+//
+// The harness was outside the gate for the whole of its life, because the
+// allowlist of extensions had no .mjs and no .cjs. That was not theoretical:
+// tools/uxtest/run.mjs held 29 double-encoded em dashes, 3 double-encoded
+// ellipses and a byte-order mark, and no gate in the repository could see
+// them.
+func TestRunInspectsExtensionsTheOldListDidNotKnow(t *testing.T) {
+	dir := t.TempDir()
+	// A double-encoded em dash: what the harness actually contained.
+	damaged := []byte("\u00e2\u20ac\u201d")
+	for _, name := range []string{"harness.mjs", "harness.cjs", "go.mod", "LICENSE"} {
+		if err := os.WriteFile(filepath.Join(dir, name), damaged, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := run([]string{dir}); err == nil {
+		t.Fatal("run accepted files carrying encoding damage, including a .mjs file")
+	}
+}
+
+// TestRunRefusesToPassWithNothingToCheck is the floor.
+//
+// Without it, "I checked 261 files and found nothing" and "I checked 0 files"
+// produce the same line and the same exit code, so a silent reduction in scope
+// is indistinguishable from a clean tree. This repository's own rule, from
+// AGENTS.md: "A check that always passes is worse than no check."
+func TestRunRefusesToPassWithNothingToCheck(t *testing.T) {
+	dir := t.TempDir()
+	if err := run([]string{dir}); err == nil {
+		t.Fatal("run reported success having inspected no files at all")
 	}
 }

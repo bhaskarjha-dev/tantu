@@ -467,7 +467,14 @@ jobs:
               TANTU_TEST_SHOTDIR="$SHOTDIR" node tools/uxtest/run.mjs --browser="$engine" $mode 2>&1 | tee "harness-$slug.log" || run_status=$?
               # Six runs share one directory, so a run that produced no images
               # is worth saying out loud rather than passing as an empty folder.
-              if [ ! -d "$SHOTDIR/$slug" ]; then
+              #
+              # The test is the number of images, not the existence of the
+              # directory. The harness creates that directory before it runs a
+              # single check, so the old `[ ! -d ... ]` could never fire, and
+              # it would not have detected a run that rendered nothing either,
+              # since it tested existence rather than contents.
+              shots=$(find "$SHOTDIR/$slug" -maxdepth 1 -name '*.png' 2>/dev/null | wc -l)
+              if [ "$shots" -eq 0 ]; then
                 printf '::warning::dashboard-acceptance (%s) produced no screenshots at %s\n' "$label" "$SHOTDIR/$slug"
               fi
               # Exit 4 is the harness telling us its Hub died mid-run, which is
@@ -499,6 +506,18 @@ jobs:
               echo "::endgroup::"
             done
           done
+
+          # Did any run end as "not a product result" rather than as a product
+          # failure?
+          #
+          # The two need different words. One means the product is broken; the
+          # other means this machine was. `infra` was assigned in two places
+          # and read in neither, which is a marker of an intent that was never
+          # wired -- so it is read now, and the job says which of the two
+          # happened.
+          if [ "$infra" -eq 1 ]; then
+            printf '::warning::dashboard-acceptance: at least one run was NOT A PRODUCT RESULT (the Hub under test exited mid-run). Those runs prove nothing either way - re-run them.\n'
+          fi
 
           # One extra pass, on one engine, and deliberately not six.
           #

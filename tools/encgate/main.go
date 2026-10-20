@@ -23,6 +23,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -33,11 +34,21 @@ import (
 	"unicode/utf8"
 )
 
-// textExtensions are the tracked file types that carry source or documentation.
-// Anything else is skipped by extension, so no binary is ever read as text.
-var textExtensions = map[string]bool{
-	".go": true, ".md": true, ".yml": true, ".yaml": true,
-	".html": true, ".css": true, ".js": true, ".json": true, ".txt": true,
+// isBinary reports whether the bytes look like a binary file.
+//
+// The rule is git's own: a NUL byte means binary, and everything else is
+// text. The gate used to carry an allowlist of extensions instead, and that
+// list silently skipped six tracked text files -- LICENSE, go.mod, go.sum and
+// the three fuzz corpus seeds -- because none of them has an extension the
+// list knew. It also skipped the entire browser harness, because run.mjs,
+// settle.cjs and the four selfcheck-*.cjs files end in extensions the list
+// did not have.
+//
+// That was not a theoretical gap: the harness held 29 double-encoded em
+// dashes, 3 double-encoded ellipses and a byte-order mark, and no gate in
+// the repository could see them.
+func isBinary(data []byte) bool {
+	return bytes.IndexByte(data, 0) >= 0
 }
 
 func main() {
@@ -92,20 +103,32 @@ func run(args []string) error {
 		return err
 	}
 	var bad []string
+	inspected := 0
 	for _, f := range files {
-		if !textExtensions[strings.ToLower(filepath.Ext(f))] {
-			continue
-		}
 		data, err := os.ReadFile(f)
 		if err != nil {
 			return fmt.Errorf("read %s: %w", f, err)
 		}
+		if isBinary(data) {
+			continue
+		}
+		inspected++
 		if problem := inspect(f, data); problem != "" {
 			bad = append(bad, problem)
 		}
 	}
+	// A floor. Without one, "I checked 259 files and found nothing" and "I
+	// checked 0 files" produce the same line and the same exit code, so a
+	// silent reduction in scope is indistinguishable from a clean tree. The
+	// count is printed for the same reason: a reader should be able to see
+	// what was examined.
+	if inspected == 0 {
+		return fmt.Errorf("encoding gate: inspected no text files; refusing to report success " +
+			"with nothing to check")
+	}
 	if len(bad) == 0 {
-		fmt.Println("encoding gate: all tracked text files are clean UTF-8 with no encoding damage")
+		fmt.Printf("encoding gate: %d tracked text file(s) inspected; all clean UTF-8 with no encoding damage\n",
+			inspected)
 		return nil
 	}
 	sort.Strings(bad)
