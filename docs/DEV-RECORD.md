@@ -9950,3 +9950,136 @@ correlation on one machine, not a mechanism. If the next CI run still fails the
 webkit peers session, the split has not fixed it, and the next thing to look at
 is what a runner accumulates across browser sessions, which this repository has
 no way to measure from the inside.
+
+## Batch D -- the wire layer: a decoder that resumed mid-frame, a version nobody read, and a cap the documents denied (2026-10-20)
+
+Batch D, part one: rows 3.24, 3.25 and 3.26, all in `internal/protocol`.
+
+### 3.24: the decoder resumed mid-frame after a failed body read
+
+The decoder's own comment stated the invariant it did not keep:
+
+    // The body was not consumed.  Mark the decoder terminal so a caller
+    // cannot accidentally parse the old body as the next frame.
+
+Only the oversize-length branch did that. A **short** body read returned the
+raw error and left `terminalErr` nil, so the next `Decode` picked up where
+the failed frame stopped -- and what it picked up was payload, not a frame
+header.
+
+The demonstration is the register's, and it is worth repeating because it is
+the shape of the attack rather than a shape of a bug. The stream is a length
+prefix promising a hundred bytes, sixty of them, and then a frame the peer
+never sent as a frame boundary. The read fails part way through the body --
+which is exactly what a socket read-deadline expiry produces, because
+`io.ReadFull` reports a short read only on a non-EOF error. The old decoder
+returned the raw error and stayed usable, so the second `Decode` read the
+attacker's length prefix and returned a well-formed `drop_send` envelope.
+
+The peer chose those bytes. The receiver believed them.
+
+**The fix** marks the decoder terminal when a body read fails, and also when
+a length prefix arrives partially -- a partial prefix desynchronises the
+stream just as surely as a partial body, and the old code resumed there too.
+
+**A clean EOF is deliberately NOT latched**, and that is the one place the
+fix is subtler than it looks. Nothing was consumed, the stream is at a frame
+boundary, and `io.Reader` explicitly allows a reader to produce data again
+after an EOF -- `bytes.Buffer` does exactly that, and the product's own tests
+write into a buffer after reading past its end. Latching a clean EOF would
+turn "the peer closed" into "this decoder is broken", and the frame that
+arrived afterwards would never be read. So the rule the fix follows is the
+precise one: **terminal when bytes were consumed and the frame did not
+complete.**
+
+The first version of the fix latched every read failure, and the existing
+`TestEOFHandling` caught it -- the test expected a decoder that had seen a
+clean EOF to still read a partial length prefix afterwards. That test was
+right about the behaviour and the fix was wrong about the rule.
+
+**The gates**, and the fixture had to be right before they could mean
+anything. The first version of the failing reader delivered *more* than it
+was supposed to, because the limit was checked before the copy rather than
+inside it, so the body read succeeded and the test failed for the wrong
+reason. The reader now delivers exactly the bytes it is told to and fails
+once, and then serves the rest -- which is what a socket whose read deadline
+expired once does. The attacker's frame is *framed*, because an unframed one
+is not a frame at all and the resumed decoder read its first four bytes as a
+length and reported "message exceeds maximum allowed size" instead of
+demonstrating the attack.
+
+Red proof, applied and run: with the fix reverted, the gate is red with
+
+    the decoder resumed mid-frame and returned "drop_send" -- a frame the
+    peer never sent as a frame boundary
+
+### 3.26: the version was emitted and never read
+
+`Envelope.V` was stamped at the single encode choke point and inspected by
+nothing. A peer announcing `v: 9999` was decoded with no error and no
+rejection. `docs/SPEC-WIRE-VERSIONING.md` described its own status as "Phases
+1-2 implemented (emit + validate + receiver tombstone)", and the word
+"validate" was not true of the code.
+
+**The rule**, and the direction of it is the part that matters:
+
+- A version **above** `ProtocolVersion` is refused. That peer may mean
+  things this release does not know, and the supported topology is
+  same-release only.
+- A version **below** it is accepted, including zero -- the pre-versioning
+  peer that sent no `v` at all. The rollout is additive-only, so an older
+  peer understands a superset of what this release sends, and refusing it
+  would break the compatibility the same document requires.
+
+The error names both versions and says to upgrade both machines, because "the
+other machine is newer" is something a user can act on and "unexpected EOF"
+is not.
+
+**A gate that asserted the defect.** The pre-existing
+`TestEnvelopeExplicitVersionPreserved` encoded `v: 7` and asserted it decoded
+with `V == 7`. That is not a contract; it is the absence of one, written down
+as if it were a contract. It is now the encoder's half of the claim -- an
+explicitly set version is not clobbered -- with the decoder's refusal beside
+it.
+
+### 3.25: the cap the documents denied, and the code was right
+
+`IsControlMessageType` exempts `callback_relay` as well as `drop_data`, and
+the row recorded that this contradicts the function's own comment and two
+documents: "64 KiB typed control-frame cap (enforced on encode and decode)"
+and "64 KiB control frames". A reader sizing a frame budget from either was
+out by a factor of sixty-four.
+
+**Which side moves was decided by the product's own design, and it was not the
+side the row assumed.** The exemption was added deliberately in commit
+`8bc8527` and is defended in the code beside it: the capturing side reads a
+callback body up to 1 MiB (`internal/bridge/aside.go`) and the receiving side
+bounds the body and the header map explicitly (`internal/bridge/bside.go`),
+because the frame budget does not bound them. A 64 KiB cap on a relay frame
+would have contradicted the limit the A-side enforces on what it reads.
+
+So the CODE was right and the DOCUMENTS were wrong, and the documents were
+corrected: both now name the two exempt types and say why, and the two
+self-contradictory comments above the function were replaced with the reason
+rather than another claim.
+
+**The gate is a docgate claim**, and that is the house mechanism for exactly
+this: each document's sentence must be present *and* the code's exemption
+list must be present. Change the exemption set without re-reading the
+documents and the gate fails.
+
+Red proof, applied and run: removing the sentence from
+`docs/ARCHITECTURE.md` turns docgate red with
+
+    ::error title=documentation drift::docs/ARCHITECTURE.md: "except
+    `drop_data` and `callback_relay`" is no longer stated here (the
+    control-frame cap and the message types exempt from it)
+
+### One flake, and what it was not
+
+The first full-suite run after these changes failed
+`TestWebDashboard_RelayInterstitialBrowser`. It passes in isolation, it
+passes with its own package, and it passed on a second full-suite run. It is
+a load flake, not this change -- and it is recorded here rather than
+forgotten, because the failure mode this repository keeps meeting is a
+failure that is dismissed without evidence.

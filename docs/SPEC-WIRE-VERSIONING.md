@@ -5,7 +5,18 @@
 > refuses blind retry but now teaches duplicate-safe key-reuse, since the Hub
 > keeps no payload to resend. `rel_path` (directory structure) added as a
 > fourth additive field — see §3b.
-> **Date:** 2026-09-25 (revised 2026-10-05)
+> **Date:** 2026-09-25 (revised 2026-10-20)
+>
+> **On "validate".** The decoder validates the version: a peer announcing a
+> version ABOVE `ProtocolVersion` is refused with a named error rather than
+> half-understood, and a peer announcing one below it — including a
+> pre-versioning peer that sends no `v` at all — is accepted, because the
+> rollout is additive-only and an older peer understands a superset of what
+> this release sends. The error names both versions and says to upgrade both
+> machines, because "the other machine is newer" is actionable and "unexpected
+> EOF" is not. This was implemented on 2026-10-20; before that the version was
+> emitted and never read, and this status line's word "validate" was not true
+> of the code.
 
 ## 1. Problem
 

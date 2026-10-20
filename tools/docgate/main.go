@@ -446,6 +446,30 @@ var phraseClaims = []phraseClaim{
 		Symbols: []string{"go-version: '1.27.2'"},
 		Note:    "the toolchain the release workflow builds with",
 	},
+	{
+		// The control-frame cap is stated in prose, and the prose has to name
+		// the two message types that are exempt from it.
+		//
+		// The code exempted them deliberately -- the capturing side reads a
+		// callback body up to 1 MiB, and the receiving side bounds the body
+		// and the header map itself -- and the comment above the function
+		// said only one of them. The documents repeated that, so a reader
+		// sizing a frame budget from them was out by a factor of
+		// sixty-four, and nothing said so. See
+		// docs/KNOWN-LIMITATIONS.md row 3.25.
+		Doc:     "docs/ARCHITECTURE.md",
+		Phrases: []string{"64 KiB control", "except `drop_data` and `callback_relay`"},
+		File:    "internal/protocol/codec.go",
+		Symbols: []string{`msgType != "drop_data" && msgType != TypeCallbackRelay`},
+		Note:    "the control-frame cap and the message types exempt from it",
+	},
+	{
+		Doc:     "docs/THREAT-MODEL.md",
+		Phrases: []string{"64 KiB typed control-frame cap", "except the two bulk-carrying types `drop_data` and `callback_relay`"},
+		File:    "internal/protocol/codec.go",
+		Symbols: []string{`msgType != "drop_data" && msgType != TypeCallbackRelay`},
+		Note:    "the control-frame cap and the message types exempt from it",
+	},
 }
 
 func checkPhrase(c phraseClaim, files map[string]file) (failure, bool) {

@@ -22,8 +22,12 @@ const (
 
 // ProtocolVersion is the wire envelope version emitted by this release.
 // Zero (absent on the wire via omitempty) means a pre-versioning peer.
-// Decoders ignore unknown fields, so emitting it is backward compatible in
-// both directions: old peers ignore it, new peers read it. See
+//
+// Emitting it is backward compatible in both directions: old peers ignore
+// unknown fields, so they read a versioned frame without trouble, and new
+// peers read it. Decoders also VALIDATE it -- a peer announcing a version
+// above this one is refused rather than half-understood -- which the
+// emission side alone could never have promised. See
 // docs/SPEC-WIRE-VERSIONING.md for the rollout plan.
 const ProtocolVersion = 1
 

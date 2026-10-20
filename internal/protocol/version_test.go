@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -57,16 +59,36 @@ func TestEnvelopeLegacyDecode(t *testing.T) {
 }
 
 func TestEnvelopeExplicitVersionPreserved(t *testing.T) {
+	// The encoder must not clobber an explicitly set version. It must also
+	// not accept it on the way back in: a version this release does not
+	// implement is refused, because a peer ahead of us may mean things this
+	// decoder does not know. The refusal is what
+	// TestDecoderRefusesAnUnsupportedVersion asserts in detail; this test is
+	// the encoder's half, and the point that the two halves are not the same
+	// claim.
+	//
+	// It asserted the opposite before 2026-10-20: the version was emitted
+	// and read by nothing, so v=7 came back happily. That is the defect row
+	// 3.26 records.
 	var buf bytes.Buffer
 	enc := NewEncoder(&buf)
-	if err := enc.EncodeEnvelope(&Envelope{Type: TypeHeartbeat, Payload: json.RawMessage(`{}`), V: 7}); err != nil {
+	explicit := ProtocolVersion + 5
+	if err := enc.EncodeEnvelope(&Envelope{Type: TypeHeartbeat, Payload: json.RawMessage(`{}`), V: explicit}); err != nil {
 		t.Fatal(err)
 	}
-	env, err := NewDecoder(&buf).Decode()
+	raw, err := json.Marshal(&Envelope{
+		Type:    TypeHeartbeat,
+		Payload: json.RawMessage(`{}`),
+		V:       explicit,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if env.V != 7 {
-		t.Errorf("explicit V = %d, want 7", env.V)
+	if !bytes.Contains(raw, []byte(fmt.Sprintf(`"v":%d`, explicit))) {
+		t.Errorf("an explicitly set version was clobbered by the encoder: %s", raw)
+	}
+	_, err = NewDecoder(&buf).Decode()
+	if !errors.Is(err, ErrUnsupportedVersion) {
+		t.Errorf("decoding v=%d = %v, want ErrUnsupportedVersion", explicit, err)
 	}
 }
