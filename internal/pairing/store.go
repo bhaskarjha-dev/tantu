@@ -287,15 +287,18 @@ func (s *PeerStore) writeAtomic(dst string, data []byte, perm os.FileMode) error
 		// Windows cannot replace an existing destination. Preserve a backup
 		// before retrying so a crash or a failed retry never destroys the only
 		// known-good copy.
-		backupFile, backupErr := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".bak-*")
+		//
+		// The backup's name is DETERMINISTIC. It used to carry a random
+		// suffix, so a crash between the two renames left the only good copy
+		// under a name nothing in the repository could find -- the comment
+		// says the backup exists so "a crash or a failed retry never destroys
+		// the only known-good copy", and a copy under a random name that no
+		// code and no human knows to look for destroys it just as surely.
+		//
+		// The load path restores it, so the window between the two renames
+		// costs the user nothing. See docs/KNOWN-LIMITATIONS.md row 5.7.
+		backupPath, backupErr := preserveDestination(dst)
 		if backupErr != nil {
-			_ = os.Remove(tmpPath)
-			return fmt.Errorf("create replacement backup: %w", backupErr)
-		}
-		backupPath := backupFile.Name()
-		_ = backupFile.Close()
-		_ = os.Remove(backupPath)
-		if backupErr = os.Rename(dst, backupPath); backupErr != nil {
 			_ = os.Remove(tmpPath)
 			return fmt.Errorf("preserve destination before replacement: %w", backupErr)
 		}
@@ -305,6 +308,71 @@ func (s *PeerStore) writeAtomic(dst string, data []byte, perm os.FileMode) error
 			return fmt.Errorf("rename %s to %s: %w", tmpPath, dst, retryErr)
 		}
 		_ = os.Remove(backupPath)
+	}
+	return nil
+}
+
+// backupSuffix is the suffix of the copy writeAtomic preserves when the
+// platform cannot replace a file in place.
+//
+// It is deterministic so that the copy is findable -- by the restore below,
+// and by a person looking at the directory after something went wrong.
+const backupSuffix = ".bak"
+
+// preserveDestination moves the destination aside so a replacement can be
+// renamed into place, and returns where it went.
+//
+// The name is DETERMINISTIC. It used to carry a random suffix, so a crash
+// between the two renames left the only good copy under a name nothing in the
+// repository could find -- the comment said the backup exists so "a crash or
+// a failed retry never destroys the only known-good copy", and a copy under a
+// random name that no code and no human knows to look for destroys it just
+// as surely.
+//
+// It is a function of its own so that a test can produce the interrupted
+// replacement with the product's own step rather than by imitating it. See
+// docs/KNOWN-LIMITATIONS.md row 5.7.
+func preserveDestination(dst string) (string, error) {
+	backup := dst + backupSuffix
+	// A leftover backup from an earlier interrupted replacement would make the
+	// rename below fail. The destination exists -- it is being replaced -- so
+	// a leftover backup is strictly older and is not the only copy of
+	// anything.
+	_ = os.Remove(backup)
+	if err := os.Rename(dst, backup); err != nil {
+		return "", err
+	}
+	return backup, nil
+}
+
+// restoreBackupIfMissing puts a preserved backup back when the file it
+// belongs to is gone.
+//
+// writeAtomic renames the destination aside before renaming the replacement
+// into place, because Windows cannot replace a file in place. A crash between
+// those two renames leaves the destination absent and the backup holding
+// everything. This is called on the load path, so that window costs the user
+// nothing: the next start finds the backup and puts it back.
+//
+// It is the difference between a backup and a decoration. See
+// docs/KNOWN-LIMITATIONS.md row 5.7.
+func restoreBackupIfMissing(path string) error {
+	backup := path + backupSuffix
+	if _, err := os.Stat(backup); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if _, err := os.Stat(path); err == nil {
+		// The real file is there. A leftover backup is older and is not
+		// needed.
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Rename(backup, path); err != nil {
+		return fmt.Errorf("restore %s from %s: %w", path, backup, err)
 	}
 	return nil
 }
@@ -342,9 +410,21 @@ func (s *PeerStore) loadIdentityUnlocked() (*Identity, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			// The same window as peers.json, and worse here: this file holds
+			// the node's long-lived private key, so an interrupted replacement
+			// that left it under a name nothing could find would lose the
+			// identity and every pairing made with it. See
+			// docs/KNOWN-LIMITATIONS.md row 5.7.
+			if restoreErr := restoreBackupIfMissing(path); restoreErr != nil {
+				return nil, restoreErr
+			}
+			data, err = os.ReadFile(path)
+			if err != nil {
+				return nil, nil
+			}
+		} else {
+			return nil, fmt.Errorf("read identity file: %w", err)
 		}
-		return nil, fmt.Errorf("read identity file: %w", err)
 	}
 
 	var id Identity
@@ -413,11 +493,24 @@ func (s *PeerStore) loadPeersMap() (map[string]Peer, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			s.setLastLoadErr(nil)
-			return make(map[string]Peer), nil
+			// The file may be absent because a replacement was interrupted
+			// between the two renames writeAtomic has to make on Windows. The
+			// preserved copy is found and put back, so an interrupted write
+			// costs the user their pairings -- or, for identity.json, their
+			// key. See docs/KNOWN-LIMITATIONS.md row 5.7.
+			if restoreErr := restoreBackupIfMissing(path); restoreErr != nil {
+				s.setLastLoadErr(restoreErr)
+				return nil, restoreErr
+			}
+			data, err = os.ReadFile(path)
+			if err != nil {
+				s.setLastLoadErr(nil)
+				return make(map[string]Peer), nil
+			}
+		} else {
+			s.setLastLoadErr(fmt.Errorf("read peers file: %w", err))
+			return nil, fmt.Errorf("read peers file: %w", err)
 		}
-		s.setLastLoadErr(fmt.Errorf("read peers file: %w", err))
-		return nil, fmt.Errorf("read peers file: %w", err)
 	}
 
 	peers := make(map[string]Peer)

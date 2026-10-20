@@ -182,21 +182,28 @@ type Deadliner interface {
 Nodes establish mutual trust without an external Certificate Authority (CA):
 * Each node auto-generates an ECDSA P-256 private key and self-signed X.509 certificate on initial launch, persisted in `identity.json`.
 * **Short Authentication String (SAS):** A 54-bit word code (six words from a 512-entry list) derived by `pairing.TranscriptSAS` from a hash over the whole pairing transcript: both certificate fingerprints plus both 16-byte nonces contributed in the `pair_hello` each side sends. Inputs are canonicalized so the initiator and responder derive the identical value, the code differs on every attempt, and it is never written to disk or broadcast. `pairing.SASCode` remains only as a short human label for listing a peer in a UI and must never drive a security decision.
-* **Multi-Peer Store (`peers.json`):** Persists an array of paired nodes with metadata:
+* **Multi-Peer Store (`peers.json`):** Persists the trusted peers as a **JSON object keyed by each peer's fingerprint**, whose values are the peer records:
   ```json
   {
-    "peers": [
-      {
-        "fingerprint": "a1b2c3d4...",
-        "alias": "macbook-pro",
-        "name": "air-laptop",
-        "address": "192.168.1.100:9877",
-        "is_default": true,
-        "paired_at": "2026-09-10T20:00:00Z",
-        "last_seen": "2026-09-10T21:30:00Z"
-      }
-    ]
+    "a1b2c3d4...": {
+      "fingerprint": "a1b2c3d4...",
+      "name": "air-laptop",
+      "alias": "macbook-pro",
+      "is_default": true,
+      "address": "192.168.1.100:9877",
+      "cert_pem": "LS0tLS1CRUdJTi...",
+      "first_seen": "2026-09-10T20:00:00Z",
+      "last_seen": "2026-09-10T21:30:00Z",
+      "last_address_confirmed": "2026-09-10T21:30:00Z"
+    }
   }
+  ```
+  The object is keyed by fingerprint, not a `peers` array, and the timestamp of
+  the pairing is `first_seen`, not `paired_at`. `cert_pem` carries the peer's
+  certificate so a later TLS handshake can be pinned to it, and
+  `last_address_confirmed` is when an authenticated handshake last proved that
+  the recorded address still reaches that peer. `alias` and `is_default` are
+  omitted when unset.
   ```
 * **5-Tier Deterministic Fuzzy Resolver (`ResolvePeer(query)`):**
   1. Exact SHA-256 fingerprint match.

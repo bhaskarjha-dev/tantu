@@ -111,31 +111,94 @@ func TestEngine_BroadcastPortTakenStillStartsAndUsesMulticast(t *testing.T) {
 	_ = blocker
 }
 
-// TestEngine_BeaconDoesNotCountWritesToATransportThatIsNotOpen pins the other
-// half. A write to a port nobody is listening on still succeeds -- UDP returns
-// no error and delivers nothing -- so an engine that beaconed a closed
-// transport would count beacons it never actually sent, and report a healthy
-// hub that no peer can see. That is the precise failure the BeaconsSent counter
-// was added to expose, so the counter must not commit it.
-func TestEngine_BeaconDoesNotCountWritesToATransportThatIsNotOpen(t *testing.T) {
-	const port = 19906
+// TestEngine_HealthNamesTheLocalConflictNotTheNetwork is the other half of
+// row 3.21.
+//
+// The sentence used to say "subnet broadcast only (multicast is unavailable on
+// this network)" whenever the mDNS listener was closed. That names the
+// network, and it is almost never the network: the mDNS group is shared, and
+// the usual reason this machine's listener could not open is that the machine
+// cannot join that group at all. A user reading "unavailable on this
+// network" goes to their router.
+//
+// The condition is produced: the broadcast port is free, so the broadcast
+// listener opens, and the mDNS group is one this host cannot join, so the
+// mDNS listener cannot.
+func TestEngine_HealthNamesTheLocalConflictNotTheNetwork(t *testing.T) {
+	engine := startTestEngine(t, DiscoveryConfig{
+		NodeName: "local-conflict", WirePort: 9877, BroadcastPort: 19911,
+		// TEST-NET-3 is reserved by RFC 5737 and is never a real multicast
+		// group, so this host cannot join it: a real bind failure from the
+		// engine's point of view.
+		MulticastAddr: "203.0.113.255:5353",
+		Interval:      50 * time.Millisecond,
+	})
+
+	health := engine.Health()
+	if !health.Broadcast {
+		t.Skip("the subnet broadcast listener did not open on this host, so the sentence names " +
+			"the other cause instead")
+	}
+	if health.Multicast {
+		t.Skip("the mDNS listener opened on this host, so there is no local conflict to name")
+	}
+	if health.MulticastBindError == "" {
+		t.Fatal("the mDNS listener is closed but no reason was recorded for it")
+	}
+	if !strings.Contains(health.Detail, "the mDNS listener could not be opened on this machine") {
+		t.Errorf("the health sentence does not name the local cause: %q", health.Detail)
+	}
+	if strings.Contains(health.Detail, "unavailable on this network") {
+		t.Errorf("the health sentence blames the network for a local failure: %q", health.Detail)
+	}
+}
+
+// TestEngine_AnnouncesEvenWhenItsOwnListenerIsClosed pins the other half.
+//
+// The engine used to gate every send on this machine's own LISTENER, on the
+// reasoning that a write to a port nobody is listening on is "writing into
+// the void". That is true of this machine and not of the LAN: a subnet
+// broadcast is received by OTHER machines' listeners, so whether we can
+// receive one says nothing about whether we can be FOUND.
+//
+// The consequence was that any other process on the machine holding the
+// broadcast port made this hub invisible to every other machine, while the
+// write it suppressed would have succeeded and been heard.
+//
+// The condition is produced: the broadcast port is genuinely occupied, so the
+// engine's own listener cannot open, and the mDNS group cannot be resolved,
+// so the mDNS send is skipped as well. The subnet broadcast is then the only
+// write the engine makes -- and it must make it.
+func TestEngine_AnnouncesEvenWhenItsOwnListenerIsClosed(t *testing.T) {
+	const port = 19909
 	occupyUDP(t, port)
 
 	engine := startTestEngine(t, DiscoveryConfig{
-		NodeName: "closed-transport", WirePort: 9877, BroadcastPort: port, Interval: 50 * time.Millisecond,
+		NodeName: "closed-listener-still-announces", WirePort: 9877, BroadcastPort: port,
+		// A group that cannot be resolved: the mDNS listener cannot open on
+		// it and the mDNS send is skipped, so the subnet broadcast is the
+		// only write under test.
+		MulticastAddr: "not-a-real-group.invalid:5353",
+		Interval:      50 * time.Millisecond,
 	})
 
-	// mDNS is expected to be available in the test environment, so BeaconsSent
-	// may legitimately rise. What must never happen is a beacon being counted
-	// while both transports are reported closed, which is the only state in
-	// which nothing could have been written.
-	deadline := time.Now().Add(400 * time.Millisecond)
+	health := engine.Health()
+	if health.Broadcast {
+		t.Fatal("engine claims the broadcast socket is bound while another process holds that port")
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	var h Health
 	for time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-		health := engine.Health()
-		if !health.Broadcast && !health.Multicast && health.BeaconsSent > 0 {
-			t.Fatalf("counted %d beacon(s) with no transport open: %+v", health.BeaconsSent, health)
+		h = engine.Health()
+		if h.BeaconsSent > 0 || h.SendErrors > 0 {
+			break
 		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if h.BeaconsSent == 0 && h.SendErrors == 0 {
+		t.Fatalf("the engine wrote no beacon at all with its own listener closed, so it is "+
+			"invisible to every other machine on the network: %+v", h)
 	}
 }
 
@@ -174,8 +237,18 @@ func TestEngine_BothTransportsUnavailableIsReportedNotHidden(t *testing.T) {
 	if health.Usable {
 		t.Error("an engine with nothing bound must not report usable")
 	}
-	if !strings.Contains(health.Detail, "cannot reach this network") {
-		t.Errorf("degraded engine does not say discovery cannot reach the network: %q", health.Detail)
+	// The sentence must name the LOCAL cause. It used to say "cannot reach
+	// this network", which sends a user to their router when the cause is
+	// another process on their own machine holding the port -- and here both
+	// causes are exactly that. See docs/KNOWN-LIMITATIONS.md row 3.21.
+	if !strings.Contains(health.Detail, "cannot find nearby hubs") {
+		t.Errorf("degraded engine does not say discovery cannot find nearby hubs: %q", health.Detail)
+	}
+	if !strings.Contains(health.Detail, "could not be opened on this machine") {
+		t.Errorf("the degraded sentence does not name the local cause: %q", health.Detail)
+	}
+	if strings.Contains(health.Detail, "this network") {
+		t.Errorf("the degraded sentence blames the network for a local port conflict: %q", health.Detail)
 	}
 	// Both reasons must be present: naming only one would leave the user to guess
 	// which half of their network is blocked.
@@ -184,11 +257,24 @@ func TestEngine_BothTransportsUnavailableIsReportedNotHidden(t *testing.T) {
 			t.Errorf("LastError does not name %q: %q", want, health.LastError)
 		}
 	}
-	// Give the beacon loop a chance to run, then prove it sent nothing rather
-	// than writing into the void and counting it.
+	// Give the beacon loop a chance to run, then check what it did.
+	//
+	// It used to assert that NOTHING was sent, on the grounds that a write to
+	// a transport nobody is listening on is "writing into the void". That is
+	// true of this machine and not of the LAN: a subnet broadcast is received
+	// by OTHER machines' listeners, so the write reaches peers even when this
+	// machine's own listener could not open. A hub that stopped announcing
+	// because another process on the machine held the port was invisible to
+	// the whole network, which is what row 3.21 records.
+	//
+	// So the engine announces either way, and what is asserted is that it
+	// announced: a beacon was written, whether it was counted as sent or
+	// recorded as an error.
 	time.Sleep(200 * time.Millisecond)
-	if got := engine.Health().BeaconsSent; got != 0 {
-		t.Errorf("engine with no transport counted %d beacon(s) as sent", got)
+	after := engine.Health()
+	if after.BeaconsSent == 0 && after.SendErrors == 0 {
+		t.Errorf("engine with no listener bound wrote no beacon at all: a hub that cannot " +
+			"receive is still findable, and the announcement is what makes it findable")
 	}
 }
 

@@ -61,6 +61,17 @@ type Health struct {
 	// LastError is the most recent failure, redacted of anything a peer
 	// supplied (only this process's own socket errors are recorded).
 	LastError string `json:"last_error,omitempty"`
+	// BroadcastBindError and MulticastBindError say why a LISTENER could not
+	// be opened, when one could not.
+	//
+	// They are here because "the mDNS listener could not be opened on this
+	// machine" and "this network does not carry multicast" are different
+	// faults with different fixes -- the first is usually another process
+	// holding the port, or a local firewall -- and the health sentence used
+	// to report the second for the first, naming the network for a local
+	// conflict. See docs/KNOWN-LIMITATIONS.md row 3.21.
+	BroadcastBindError string `json:"broadcast_bind_error,omitempty"`
+	MulticastBindError string `json:"multicast_bind_error,omitempty"`
 	// Since is when the engine started, so a UI can say "for 4 minutes".
 	Since time.Time `json:"since,omitempty"`
 }
@@ -162,9 +173,11 @@ func (e *Engine) Health() Health {
 	// when both failed, because in the degraded case neither is redundant.
 	var reasons []string
 	if v, ok := e.stats.bcastBindError.Load().(string); ok && v != "" {
+		h.BroadcastBindError = v
 		reasons = append(reasons, v)
 	}
 	if v, ok := e.stats.mcastBindError.Load().(string); ok && v != "" {
+		h.MulticastBindError = v
 		reasons = append(reasons, v)
 	}
 	if len(reasons) > 0 {
@@ -217,13 +230,41 @@ func noHubsYetSentence(transportName string, h Health) string {
 	return prefix + " No nearby hubs have answered yet \u2014 check the other machine is on this network and its Hub is running."
 }
 
+// localBindCauses names why a listener could not be opened, when the product
+// knows.
+//
+// It is the difference between "multicast is unavailable on this network" --
+// which sends a user to their router -- and "the mDNS listener could not be
+// opened on this machine: ...", which is usually another process holding the
+// port. See docs/KNOWN-LIMITATIONS.md row 3.21.
+func localBindCauses(h Health) string {
+	var causes []string
+	if h.BroadcastBindError != "" {
+		causes = append(causes, h.BroadcastBindError)
+	}
+	if h.MulticastBindError != "" {
+		causes = append(causes, h.MulticastBindError)
+	}
+	if len(causes) == 0 {
+		return "no reason was recorded"
+	}
+	return strings.Join(causes, "; ")
+}
+
 func describeHealth(h Health, broadcastStopped, multicastStopped bool) string {
 	usable := h.Broadcast || h.Multicast
 	switch {
 	case !h.Running:
 		return "Discovery is not running on this Hub."
 	case !usable:
-		return "Discovery cannot reach this network: neither multicast nor subnet broadcast could be opened. Pair by entering the other machine's address instead."
+		// Neither listener could be opened. The cause is local -- another
+		// process on this machine holding the port, or a local firewall -- and
+		// the sentence used to name the network for it. The recorded bind
+		// reasons are what is actually known, so they are what is said.
+		return "Discovery cannot find nearby hubs: neither the multicast nor the subnet broadcast " +
+			"listener could not be opened on this machine (" + localBindCauses(h) +
+			"), so beacons from other machines cannot be heard. Pair by entering the other machine's " +
+			"address instead."
 	case h.BeaconsSent == 0 && h.SendErrors > 0:
 		// Sockets are bound, so every "discovery is running on X" sentence below
 		// would be true and useless at once: this hub has announced itself
@@ -246,14 +287,26 @@ func describeHealth(h Health, broadcastStopped, multicastStopped bool) string {
 		}
 		return fmt.Sprintf("Discovery is running on multicast and subnet broadcast; %d nearby hub(s) in reach.", h.Nodes)
 	case h.Broadcast:
-		if h.Nodes == 0 {
-			return noHubsYetSentence("subnet broadcast only (multicast is unavailable on this network)", h)
+		// The transport name says what this machine can RECEIVE, and when the
+		// other listener could not be opened it says why -- which is usually
+		// another process on this machine holding the port, and never a
+		// property of the network. See docs/KNOWN-LIMITATIONS.md row 3.21.
+		multicastNote := "multicast is unavailable on this network"
+		if h.MulticastBindError != "" {
+			multicastNote = "the mDNS listener could not be opened on this machine: " + h.MulticastBindError
 		}
-		return fmt.Sprintf("Discovery is running on subnet broadcast only (multicast is unavailable); %d nearby hub(s) in reach.", h.Nodes)
+		if h.Nodes == 0 {
+			return noHubsYetSentence("subnet broadcast only ("+multicastNote+")", h)
+		}
+		return fmt.Sprintf("Discovery is running on subnet broadcast only (%s); %d nearby hub(s) in reach.", multicastNote, h.Nodes)
 	default:
-		if h.Nodes == 0 {
-			return noHubsYetSentence("multicast only (subnet broadcast is unavailable on this network)", h)
+		broadcastNote := "subnet broadcast is unavailable on this network"
+		if h.BroadcastBindError != "" {
+			broadcastNote = "the subnet broadcast listener could not be opened on this machine: " + h.BroadcastBindError
 		}
-		return fmt.Sprintf("Discovery is running on multicast only; %d nearby hub(s) in reach.", h.Nodes)
+		if h.Nodes == 0 {
+			return noHubsYetSentence("multicast only ("+broadcastNote+")", h)
+		}
+		return fmt.Sprintf("Discovery is running on multicast only (%s); %d nearby hub(s) in reach.", broadcastNote, h.Nodes)
 	}
 }

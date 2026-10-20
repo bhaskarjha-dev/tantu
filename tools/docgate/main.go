@@ -447,6 +447,22 @@ var phraseClaims = []phraseClaim{
 		Note:    "the toolchain the release workflow builds with",
 	},
 	{
+		// The on-disk shape of peers.json, which is a file people write
+		// recovery scripts and migration tools against.
+		//
+		// The document used to show a `peers` ARRAY with a `paired_at`
+		// field. The real file is an object KEYED BY FINGERPRINT whose
+		// records carry `first_seen` and `cert_pem`. A script written from
+		// the document would not have parsed the file, and `docgate` did
+		// not cover on-disk formats at all. See
+		// docs/KNOWN-LIMITATIONS.md row 5.6.
+		Doc:     "docs/ARCHITECTURE.md",
+		Phrases: []string{"`peers` array", "`first_seen`, not `paired_at`"},
+		File:    "internal/pairing/store.go",
+		Symbols: []string{`json:"first_seen"`, `json:"cert_pem"`, `json.MarshalIndent(peers`},
+		Note:    "the on-disk shape of peers.json, which recovery scripts are written against",
+	},
+	{
 		// The control-frame cap is stated in prose, and the prose has to name
 		// the two message types that are exempt from it.
 		//
@@ -521,6 +537,15 @@ var forbiddenPhrases = []forbiddenPhrase{
 		Phrases: []string{"6-character Short Authentication String", "display a 6-character"},
 		Note: "instructions to compare a hex value the product forbids as a security decision; " +
 			"the pairing code is a session-bound word code",
+	},
+	{
+		Doc: "docs/ARCHITECTURE.md",
+		Phrases: []string{
+			"\"peers\": [",
+			"\"paired_at\"",
+		},
+		Note: "the superseded peers.json shape: the file is an object keyed by fingerprint, " +
+			"not a peers array, and the pairing timestamp is first_seen",
 	},
 }
 

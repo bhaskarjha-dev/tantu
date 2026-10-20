@@ -193,9 +193,13 @@ func TestDescribeHealthCoversEveryState(t *testing.T) {
 			mustHave: []string{"not running"},
 		},
 		{
+			// The sentence names the LOCAL cause. It used to say "cannot reach
+			// this network", which sends a user to their router when the
+			// cause is another process on their own machine holding the port.
+			// See docs/KNOWN-LIMITATIONS.md row 3.21.
 			name:     "nothing bound while running",
 			health:   Health{Running: true, Broadcast: false, Multicast: false},
-			mustHave: []string{"cannot reach this network", "Pair by entering"},
+			mustHave: []string{"cannot find nearby hubs", "could not be opened on this machine", "Pair by entering"},
 		},
 		{
 			name:       "both engines live, nothing found",

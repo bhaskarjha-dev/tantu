@@ -10500,3 +10500,138 @@ Row 2.9 (the WebKit engine fault: diagnosed nowhere, worked around, and now
 mitigated by one runner per engine) is the only row that is still open on the
 CI side. The rest of the register's rows are closed, and the closed ones now
 carry the gate that keeps them closed.
+
+## Batch F -- a hub that stopped announcing, a document that described the wrong file, and a backup nobody could find (2026-10-20)
+
+### 3.21: a local port conflict silenced the hub's announcement to the whole LAN
+
+The subnet broadcast was gated on this machine's own LISTENER:
+
+```go
+if e.transportBound(&e.stats.broadcastBound) {
+    send(&net.UDPAddr{IP: net.IPv4bcast, Port: e.cfg.BroadcastPort})
+    ...
+}
+```
+
+The gate's own reasoning was: "A write to a port nobody is listening on still
+succeeds -- UDP gives no delivery guarantee and no error -- so beaconing a
+closed transport would count as sent while reaching nobody".
+
+That is true of **this machine** and not of the LAN. A subnet broadcast is
+received by *other* machines' listeners; whether we can receive one says
+nothing about whether we can be **found**. So the consequence of the gate was
+that any other process on the machine holding UDP 9879 made this hub invisible
+to every other machine -- while the write it suppressed would have succeeded
+and been heard.
+
+**The announcement now depends on the outbound socket, not on the listener.**
+The comment says why, because the old comment is the reason the defect
+survived a reading.
+
+**The health sentence blamed the network for a local conflict.** It said
+"subnet broadcast only (multicast is unavailable on this network)" -- and
+"this network" is almost never the cause: the mDNS group is shared, and the
+usual reason a machine cannot join it is that it cannot join that group at
+all. `Health` now carries the two bind errors, and the sentence names the
+local cause: "the mDNS listener could not be opened on this machine: ...".
+
+**Two gates asserted the defect**, which is the part worth recording.
+`TestEngine_BeaconDoesNotCountWritesToATransportThatIsNotOpen` existed to
+stop the counter counting "beacons it never actually sent" -- and a write
+that leaves the host and is heard by peers IS a beacon sent. The other
+asserted that an engine with nothing bound counts no beacons at all, and now
+asserts the opposite.
+
+The gate that replaces them produces the condition: the broadcast port is
+genuinely occupied, so the engine's own listener cannot open, and the mDNS
+group cannot be resolved, so the subnet broadcast is the only write under
+test -- and a beacon must be written, whether it is counted as sent or
+recorded as an error. That form is portable, which matters: the first
+version of the existing gate had to accept two outcomes because the host
+decides, and this one does not care which happened.
+
+Red proof, applied and run: with the send gate restored, the gate is red with
+
+    the engine wrote no beacon at all with its own listener closed, so it is
+    invisible to every other machine on the network
+
+### 3.23: closed a batch late
+
+The discovery-health watcher's `SendErrors` branch was guarded by
+`!prev.observed`, so it was reachable only on the very first sample, and a
+hub whose beacons started failing at runtime logged nothing, ever.
+
+**The fix landed in Batch Z118** -- a `sendFailing` field, because the
+engine's `SendErrors` counter is cumulative and cannot tell "the beacons are
+failing" from "the beacons have always been failing" -- together with a case
+that models the transition the old state could not express, and a loop gate
+that starts healthy, breaks the beacons, and requires the line to appear.
+
+**The row was simply never updated**, so a fixed defect kept reading as an
+open one. That is the register's own failure mode in miniature: a row that
+records a limitation but does not record its closure, so a reader cannot
+tell which is which -- and the register's rule is that a row is moved when
+it is closed, with the evidence that closed it.
+
+### 5.6: the document described a file that does not exist
+
+`docs/ARCHITECTURE.md` showed `peers.json` as a `peers` **array** with a
+`paired_at` field. The real file is an object **keyed by fingerprint** whose
+records carry `first_seen`, `cert_pem` and `last_address_confirmed`. Anyone
+writing a recovery script or a support article from the document would have
+written a parser for a file that does not exist.
+
+The document now shows the real shape and says so in prose -- a JSON example
+alone is read as a sample rather than as a contract.
+
+**And `docgate` now covers it**, which is the part that makes it stick: a
+phrase claim requires the document to state the keyed shape and the code to
+contain the fields it names, and a forbidden phrase requires the document
+NOT to contain the superseded `"peers": [` array or the `"paired_at"` field.
+
+Red proofs, applied and run: deleting the sentence that names the true shape
+turns the gate red with
+
+    "`peers` array" is no longer stated here (the on-disk shape of
+    peers.json, which recovery scripts are written against)
+
+and re-introducing the old field turns it red with
+
+    "\"paired_at\"" is still stated here
+
+### 5.7: a backup that nothing could find
+
+`os.Rename` cannot replace an existing file on Windows, so `writeAtomic`
+renamed the destination to `peers.json.bak-<random>` and renamed the
+replacement into place. A crash between those two renames left `peers.json`
+**absent** and the only good copy under a random name -- and `grep` finds no
+reader for it, because there was none.
+
+The comment said the backup exists so "a crash or a failed retry never
+destroys the only known-good copy". A copy under a name that no code and no
+human knows to look for destroys it just as surely.
+
+**Two changes, and the second is the one that matters.** The name is now
+deterministic -- `peers.json.bak` -- so the copy is findable. **And the
+product restores it**: the load path, when the file it wants is missing,
+looks for the preserved copy and puts it back, so the next start finds it.
+For `identity.json` it is worse -- that file holds the node's long-lived
+private key -- and it is restored the same way.
+
+**The gates produce the interruption with the product's own step.**
+`preserveDestination` is the function `writeAtomic` uses when the platform
+cannot replace a file in place, and the test calls it rather than imitating
+it -- the first version of the test renamed the file itself, which meant it
+proved the *restore* worked and said nothing about the *name*, and so passed
+against the random name it was supposed to catch.
+
+Red proofs, applied and run: with the random name restored, the gates are
+red with
+
+    the store holds 0 peer(s) after an interrupted replacement, want 1: the
+    preserved copy was not restored, so every pairing is gone
+    the identity is gone after an interrupted replacement: the node's
+    long-lived private key was under a name nothing could find
+    the preserved copy is named "peers.json.bak-3486518609", want a
+    deterministic name derived from the destination

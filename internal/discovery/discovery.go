@@ -656,62 +656,71 @@ func (e *Engine) broadcastBeacon() {
 
 	// 1. Broadcast to 255.255.255.255:port
 	//
-	// Only over a transport that is actually open. A write to a port nobody is
-	// listening on still succeeds -- UDP gives no delivery guarantee and no
-	// error -- so beaconing a closed transport would count as sent while
-	// reaching nobody, which is precisely the "looks healthy, is invisible"
-	// failure this counter exists to expose.
-	if e.transportBound(&e.stats.broadcastBound) {
-		send(&net.UDPAddr{IP: net.IPv4bcast, Port: e.cfg.BroadcastPort})
+	// These are sent whenever the OUTBOUND socket exists. They used to be
+	// gated on this machine's own LISTENER, and that was wrong: a subnet
+	// broadcast is received by OTHER machines' listeners, so whether we can
+	// receive one says nothing about whether we can be FOUND. The gate's own
+	// reasoning -- "a write to a port nobody is listening on still succeeds
+	// ... so beaconing a closed transport would count as sent while reaching
+	// nobody" -- is true of this machine and not of the LAN.
+	//
+	// The consequence of the gate was that any other process on the machine
+	// holding the broadcast port made this hub invisible to every other
+	// machine, while the write it suppressed would have succeeded and been
+	// heard. The listener's bind state says whether we can RECEIVE; it says
+	// nothing about whether we can be found. See
+	// docs/KNOWN-LIMITATIONS.md row 3.21.
+	send(&net.UDPAddr{IP: net.IPv4bcast, Port: e.cfg.BroadcastPort})
 
-		// 2. Broadcast to each interface's directed subnet broadcast address
-		ifaces, err := net.Interfaces()
-		if err != nil {
-			// Interface enumeration failing means the directed broadcasts are
-			// skipped entirely. Previously silent, and the reason a hub behind a
-			// /16 or an unusual netmask was invisible to itself.
-			e.noteError(fmt.Errorf("enumerate interfaces for directed broadcast: %w", err))
-			e.countSendError()
-		} else {
-			for _, iface := range ifaces {
-				if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+	// 2. Broadcast to each interface's directed subnet broadcast address
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		// Interface enumeration failing means the directed broadcasts are
+		// skipped entirely. Previously silent, and the reason a hub behind a
+		// /16 or an unusual netmask was invisible to itself.
+		e.noteError(fmt.Errorf("enumerate interfaces for directed broadcast: %w", err))
+		e.countSendError()
+	} else {
+		for _, iface := range ifaces {
+			if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+				continue
+			}
+			addrs, aErr := iface.Addrs()
+			if aErr != nil {
+				e.countSendError()
+				continue
+			}
+			for _, addr := range addrs {
+				ipnet, ok := addr.(*net.IPNet)
+				if !ok || ipnet.IP.To4() == nil {
 					continue
 				}
-				addrs, aErr := iface.Addrs()
-				if aErr != nil {
-					e.countSendError()
+				ip4 := ipnet.IP.To4()
+				mask := ipnet.Mask
+				if len(mask) != 4 {
 					continue
 				}
-				for _, addr := range addrs {
-					ipnet, ok := addr.(*net.IPNet)
-					if !ok || ipnet.IP.To4() == nil {
-						continue
-					}
-					ip4 := ipnet.IP.To4()
-					mask := ipnet.Mask
-					if len(mask) != 4 {
-						continue
-					}
-					bcastIP := net.IPv4(
-						ip4[0]|^mask[0],
-						ip4[1]|^mask[1],
-						ip4[2]|^mask[2],
-						ip4[3]|^mask[3],
-					)
-					send(&net.UDPAddr{IP: bcastIP, Port: e.cfg.BroadcastPort})
-				}
+				bcastIP := net.IPv4(
+					ip4[0]|^mask[0],
+					ip4[1]|^mask[1],
+					ip4[2]|^mask[2],
+					ip4[3]|^mask[3],
+				)
+				send(&net.UDPAddr{IP: bcastIP, Port: e.cfg.BroadcastPort})
 			}
 		}
 	}
 
 	// 3. Also multicast to 224.0.0.251:5353, which is what carries discovery
 	// when subnet broadcast could not be opened at all.
-	if e.transportBound(&e.stats.multicastBound) {
-		if mcastAddr, mErr := net.ResolveUDPAddr("udp4", e.cfg.multicastGroup()); mErr == nil {
-			send(mcastAddr)
-		} else {
-			e.noteError(fmt.Errorf("resolve mDNS group for beacon: %w", mErr))
-		}
+	//
+	// Sent for the same reason as the broadcasts above: the mDNS group is
+	// shared, and every OTHER machine's responder is listening to it whether
+	// or not this one could join.
+	if mcastAddr, mErr := net.ResolveUDPAddr("udp4", e.cfg.multicastGroup()); mErr == nil {
+		send(mcastAddr)
+	} else {
+		e.noteError(fmt.Errorf("resolve mDNS group for beacon: %w", mErr))
 	}
 
 	atomic.AddInt64(&e.stats.sendErrors, int64(failures))
@@ -720,12 +729,6 @@ func (e *Engine) broadcastBeacon() {
 	if sent > 0 {
 		e.countSend()
 	}
-}
-
-// transportBound reads a bound flag. It takes the field rather than a bool so
-// the beacon path cannot accidentally consult a stale copy.
-func (e *Engine) transportBound(flag *int32) bool {
-	return atomic.LoadInt32(flag) == 1
 }
 
 func (e *Engine) pruneStaleNodes() {
