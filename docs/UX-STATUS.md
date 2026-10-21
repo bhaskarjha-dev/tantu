@@ -397,6 +397,44 @@ the layout extent of the text rather than the painted one.
 **This is not E4 or E5 evidence.** The ladder above is unchanged on
 that axis.
 
+## Batch Q — the pages nobody had looked at
+
+The dashboard has been reviewed since Batch K. The rest of the
+product's pages had not: the OAuth relay confirmation popup, the
+dead-end page beside it, and the two one-pagers a browser is shown
+after a relay succeeds or fails.
+
+They were four hand-styled pages, each with its own copy of the
+design system's colours written as hex. The popup referenced **zero**
+of the dashboard's 99 custom properties — every hex it used happened
+to appear in the dashboard's stylesheet, so the two pages agreed by
+coincidence and would have drifted the moment a token moved. They
+carried the same emoji (a padlock and a check mark) that Batch K
+replaced everywhere else with a drawn icon set. And the whole family
+was invisible to the acceptance suite: the harness checked the
+bookmarklet *box* on the dashboard, and the popup itself was covered
+by a Go test that dumped the DOM out of the system Chrome and looked
+for three substrings.
+
+The tokens, the type scale and the icon set now live in one embedded
+stylesheet that every page is served, so the popup cannot drift from
+the dashboard. The relay pages share one shell, with prefixed class
+names. The pages that were Go string literals are files now, and the
+embedded-bytes test covers all of them. The emoji are the product's
+own drawn glyphs.
+
+The popup and the dead-end page are measured by the acceptance suite
+on the same engines as the dashboard: the contrast sweep in both
+themes, the 24×24 target floor, nothing overflowing at 360px or
+320px, the icons being drawn rather than typed, the autofocused Relay
+button having a visible focus ring, and the page drawing its colours
+from the shared design system. Restoring the emoji and removing the
+theme marker fails four of those gates — and the last one reports
+white text on a white button at **1:1**.
+
+**This is not E4 or E5 evidence.** The ladder above is unchanged on
+that axis.
+
 ## Explicit "not now" adherence
 
 Cloud telemetry, hosted accounts, auto-send, silent retry, hidden default

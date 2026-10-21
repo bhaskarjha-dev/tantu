@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Auth Relayed</title>
+<style>{{THEME}}</style>
+<style>{{RELAY_SHELL}}</style>
+</head>
+<body class="relay-page">
+<div class="relay-box">
+  <div class="relay-icon relay-icon--ok"><span class="ico ico--check" aria-hidden="true"></span></div>
+  <h1 class="relay-title relay-title--ok">Authentication Relayed!</h1>
+  <p class="relay-text">{{MESSAGE}}</p>
+  <p class="relay-hint">This window will close automatically in 3 seconds...</p>
+</div>
+<script>setTimeout(function(){window.close();},3000);</script>
+</body>
+</html>

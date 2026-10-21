@@ -489,6 +489,34 @@ func healthOrNil(h PeerHealth) *PeerHealth {
 	return &h
 }
 
+// themeCSS is the design system: the tokens, the type scale and the icon
+// set, shared by every page the Hub serves.
+//
+// It is one file because the two relay pages used to hand-copy the values
+// they needed from the dashboard's stylesheet. The popup referenced zero of
+// the dashboard's custom properties, so the pages agreed by coincidence and
+// drifted the moment a token moved.
+//
+//go:embed theme.css
+var themeCSS string
+
+// relayShellCSS is the shell the two relay pages share.
+//
+//go:embed relay_shell.css
+var relayShellCSS string
+
+// injectTheme puts the shared design system into a page at its {{THEME}}
+// marker.
+//
+// The marker is a marker rather than a second copy for the same reason the
+// file is shared: a page that carried its own copy of the tokens would
+// drift from the dashboard, and the drift is invisible until somebody
+// compares the two.
+func injectTheme(page string) string {
+	page = strings.ReplaceAll(page, "{{THEME}}", themeCSS)
+	return strings.ReplaceAll(page, "{{RELAY_SHELL}}", relayShellCSS)
+}
+
 // relayInterstitialHTML is the bookmarklet confirmation shell. It carries
 // no credential and authorizes nothing: the full authorization URL reaches
 // the relay endpoint only through an explicit same-origin POST after a click.
@@ -497,6 +525,22 @@ func healthOrNil(h PeerHealth) *PeerHealth {
 //
 //go:embed relay_interstitial.html
 var relayInterstitialHTML string
+
+// relayBlockedHTML is the dead-end page for a link that cannot be relayed.
+//
+//go:embed relay_blocked.html
+var relayBlockedHTML string
+
+// relayFailedHTML is the page a browser is shown when a relay attempt
+// fails.
+//
+//go:embed relay_failed.html
+var relayFailedHTML string
+
+// relayOKHTML is the page a browser is shown when a relay succeeds.
+//
+//go:embed relay_ok.html
+var relayOKHTML string
 
 // renderRelayInterstitial serves the bookmarklet confirmation shell for a
 // relay request that carries no credential. It authorizes nothing: the page
@@ -512,7 +556,7 @@ func (h *Hub) renderRelayInterstitial(w http.ResponseWriter, rawURL string, expi
 		// and a keyboard-reachable way back to the dashboard.
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Relay Error</title><style>body{background:#090b10;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:1rem;box-sizing:border-box;}.box{background:#131722;border:1px solid #232a3b;border-radius:16px;padding:2rem;max-width:460px;width:92%;text-align:center;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);}h1{margin:0 0 0.5rem 0;font-size:1.1rem;}p{color:#94a3b8;font-size:0.9rem;margin:0 0 1rem 0;line-height:1.5;}.btn{display:inline-block;background:#2563eb;color:#fff;min-height:44px;padding:0.6rem 1.25rem;border-radius:8px;font-weight:600;font-size:0.9rem;text-decoration:none;}.btn:focus{outline:2px solid #60a5fa;outline-offset:2px;}@media (prefers-color-scheme: light){body{background:#f4f6fb;color:#16213a;}.box{background:#fff;border-color:#d9e0ec;box-shadow:0 25px 50px -12px rgba(22,33,58,0.25);}p{color:#5b6478;}}@media (prefers-reduced-motion: reduce){*{transition:none!important;}}</style></head><body><div class="box"><h1>This link cannot be relayed</h1><p>Only an http or https authorization URL can be relayed, and this link did not contain one. Nothing was sent to any machine.</p><p>Go back to the OAuth login page and click the Tantu bookmark again, or open the dashboard and use the manual forwarder there.</p><a class="btn" href="/">Open the dashboard</a></div></body></html>`))
+		_, _ = w.Write([]byte(injectTheme(relayBlockedHTML)))
 	}
 	if err := browser.ValidateURL(sanitized); err != nil {
 		renderErr()
@@ -528,9 +572,9 @@ func (h *Hub) renderRelayInterstitial(w http.ResponseWriter, rawURL string, expi
 	}
 	notice := ""
 	if expiredLink {
-		notice = `<p class="note">This saved link already expired — confirm below to continue. Your bookmark still works; nothing needs re-saving.</p>`
+		notice = `<p class="relay-note">This saved link already expired — confirm below to continue. Your bookmark still works; nothing needs re-saving.</p>`
 	}
-	page := relayInterstitialHTML
+	page := injectTheme(relayInterstitialHTML)
 	page = strings.ReplaceAll(page, "{{ORIGIN}}", escapeHTMLText(origin))
 	page = strings.ReplaceAll(page, "{{NOTICE}}", notice)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -578,7 +622,8 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 		// CSP violation on every paste, drop, and file-picker selection.
 		w.Header().Set("Content-Security-Policy", fmt.Sprintf("default-src 'self'; script-src 'self' 'nonce-%s' 'unsafe-hashes' %s; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'", nonce, javascriptCSPHashes(bookmarkletJS)))
 
-		page := strings.ReplaceAll(dashboardHTML, "{{VERSION}}", escapeHTMLText(HubVersion))
+		page := injectTheme(dashboardHTML)
+		page = strings.ReplaceAll(page, "{{VERSION}}", escapeHTMLText(HubVersion))
 		page = strings.ReplaceAll(page, "{{BOOKMARKLET_HREF}}", escapeHTMLText(bookmarkletJS))
 		// Without a capability the bookmarklet href is javascript:void(0), so the
 		// pill would render looking draggable and live while doing nothing. The
@@ -747,9 +792,11 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
 				w.WriteHeader(status)
 				if resp.Status == "success" {
-					fmt.Fprintf(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>✅ Auth Relayed</title><style>body{background:#090b10;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;-webkit-font-smoothing:antialiased;}.box{background:#131722;border:1px solid #232a3b;border-radius:16px;padding:2rem;max-width:460px;width:92%%;text-align:center;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);}.icon{font-size:2.5rem;margin-bottom:0.75rem;}h2{color:#34d399;margin:0 0 0.5rem 0;letter-spacing:-0.01em;}p{color:#8b949e;font-size:0.9rem;margin:0 0 1rem 0;}.hint{color:#64748b;font-size:0.8rem;}@media (prefers-color-scheme: light){body{background:#f4f6fb;color:#16213a;}.box{background:#ffffff;border-color:#d9e0ec;box-shadow:0 25px 50px -12px rgba(22,33,58,0.25);}p{color:#5b6478;}.hint{color:#7b8499;}}</style></head><body><div class="box"><div class="icon">✅</div><h2>Authentication Relayed!</h2><p>%s</p><div class="hint">This window will close automatically in 3 seconds...</div></div><script>setTimeout(function(){window.close();},3000);</script></body></html>`, escapeHTMLText(resp.Message))
+					page := strings.ReplaceAll(injectTheme(relayOKHTML), "{{MESSAGE}}", escapeHTMLText(resp.Message))
+					_, _ = w.Write([]byte(page))
 				} else {
-					fmt.Fprintf(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>❌ Relay Error</title><style>body{background:#090b10;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;-webkit-font-smoothing:antialiased;}.box{background:#131722;border:1px solid #232a3b;border-radius:16px;padding:2rem;max-width:460px;width:92%%;text-align:center;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);}.icon{font-size:2.5rem;margin-bottom:0.75rem;}h2{color:#f87171;margin:0 0 0.5rem 0;letter-spacing:-0.01em;}p{color:#8b949e;font-size:0.9rem;margin:0 0 1rem 0;}.hint{color:#64748b;font-size:0.8rem;}@media (prefers-color-scheme: light){body{background:#f4f6fb;color:#16213a;}.box{background:#ffffff;border-color:#d9e0ec;box-shadow:0 25px 50px -12px rgba(22,33,58,0.25);}p{color:#5b6478;}.hint{color:#7b8499;}}</style></head><body><div class="box"><div class="icon">❌</div><h2>Relay Error</h2><p>%s</p><div class="hint">Check terminal logs or verify your peer is connected.</div></div></body></html>`, escapeHTMLText(resp.Message))
+					page := strings.ReplaceAll(injectTheme(relayFailedHTML), "{{MESSAGE}}", escapeHTMLText(resp.Message))
+					_, _ = w.Write([]byte(page))
 				}
 				return
 			}

@@ -11832,4 +11832,110 @@ screen-reader-only heading, which is one pixel wide by design.
   `go vet` clean, staticcheck clean, encgate, docgate and wfcheck
   green, actionlint clean on both workflows.
 
+## Batch Q -- the pages nobody had looked at (2026-10-21)
+
+The dashboard has been looked at since Batch K. The rest of the
+product's pages had not: the OAuth relay confirmation popup, the
+dead-end page beside it, and the two one-pagers a browser is shown
+after a relay succeeds or fails. Four pages, none of them reviewed,
+and one of them the page the product asks a person to act on.
+
+### What they were
+
+Four hand-styled pages, each with its own copy of the design
+system's colours, written as hex:
+
+    internal/hub/relay_interstitial.html   the confirmation popup
+    internal/hub/web_dashboard.go           the dead-end page
+    internal/hub/web_dashboard.go           "Auth Relayed"
+    internal/hub/web_dashboard.go           "Relay Error"
+
+The popup referenced **zero** of the dashboard's 99 custom
+properties. Every hex value it used happened to appear in the
+dashboard's stylesheet -- so the two pages agreed, by coincidence, and
+would have drifted the moment a token moved. That is the same defect
+as two rules for one thing: the second copy is the one that dies
+quietly, and nothing reports its death.
+
+The popup and the two one-pagers also carried **emoji** -- a padlock
+(U+1F510) and a check (U+2705) -- which is what Batch K replaced
+everywhere else in the product with a drawn icon set.
+
+And the whole family was invisible to the acceptance suite. The
+harness checked the bookmarklet BOX on the dashboard; the popup
+itself was covered by a Go test that dumped the DOM out of the
+*system* Chrome and looked for three substrings. So the one page the
+product asks a person to press a button on had never been measured
+for anything a reader sees.
+
+### The fix
+
+**One design system, several consumers.** The tokens, the type scale
+and the icon set moved out of the dashboard's stylesheet into
+`internal/hub/theme.css`, which is embedded once and served into
+every page at a `{{THEME}}` marker. The type scale moved with them:
+it is a scale, not a dashboard's private arrangement.
+
+**One shell for the relay pages.** `internal/hub/relay_shell.css` --
+the card, the buttons, the note, the hint -- with `relay-` prefixed
+class names, because the dashboard has its own `.btn` and a shared
+file that quietly overrode it would be the worst kind of coupling.
+
+**The pages as files.** The dead-end page and the two one-pagers were
+Go string literals; they are `relay_blocked.html`, `relay_failed.html`
+and `relay_ok.html` now, and every embedded page is covered by
+`TestEmbeddedHTMLMatchesSourceFile` -- which is the point of that
+test: it compares the file on disk with the bytes the binary serves,
+so a page that is edited in one place and not the other fails.
+
+**The emoji, gone.** The popup's padlock and check mark are the
+dashboard's own drawn glyphs now, at the same weight as every other
+mark in the product.
+
+### The gates
+
+The popup and the dead-end page are measured by the acceptance suite,
+in the same run and on the same engines as the dashboard:
+
+- it renders the confirmation and names the origin;
+- a live session enables the Relay button and the destination is named;
+- the **autofocused** Relay button has a visible focus ring (it is
+  focused programmatically, and a programmatic focus does not match
+  `:focus-visible`, so the ring has to come from `:focus`);
+- no emoji in the page;
+- the icons are drawn -- the mask applies and the pseudo-element has
+  a box;
+- the page draws its colours from the shared design system, measured
+  by resolving the token and comparing it with the card's computed
+  background;
+- the contrast sweep, in both themes;
+- nothing overflows at 360px or 320px, and every control reaches
+  24x24.
+
+**Red proof.** Restoring the emoji and removing the theme marker from
+the popup:
+
+    FAIL  relay popup: the autofocused Relay button has a visible focus ring
+    FAIL  relay popup: no emoji in the page  ["🔐"]
+    FAIL  relay popup: the page draws its colours from the shared design system
+          {"cardBg":"rgba(0, 0, 0, 0)","token":"rgb(0, 0, 0)"}
+    FAIL  relay popup: no unreadable text in either theme
+          [{"theme":"dark","sel":"button#btnRelayNow.relay-btn",
+            "text":"Relay now","ratio":1,"need":4.5,...}]
+
+Four gates, four defects, and the last one is the reason the theme is
+shared rather than copied: with the tokens missing, white text on a
+white button measured **1:1**.
+
+### Evidence
+
+- The acceptance suite, in both modes and on all three engines:
+  **chromium 137/137 (peers) and 135/135 (peerless)**, **webkit
+  137/137 and 135/135**, **firefox 135/135 and 133/133**. The counts
+  are sixteen higher than Batch P's because the relay pages are now
+  measured too.
+- `go test ./...` green across fifteen packages, `gofmt -l .` clean,
+  `go vet` clean, staticcheck clean, encgate, docgate and wfcheck
+  green, actionlint clean on both workflows.
+
 

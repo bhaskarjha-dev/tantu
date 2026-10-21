@@ -23,6 +23,9 @@ func TestEmbeddedHTMLMatchesSourceFile(t *testing.T) {
 	}{
 		{"dashboard", "dashboard.html", dashboardHTML},
 		{"relay interstitial", "relay_interstitial.html", relayInterstitialHTML},
+		{"relay blocked", "relay_blocked.html", relayBlockedHTML},
+		{"relay failed", "relay_failed.html", relayFailedHTML},
+		{"relay ok", "relay_ok.html", relayOKHTML},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

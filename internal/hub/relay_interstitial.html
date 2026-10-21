@@ -1,8 +1,38 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Confirm OAuth Relay</title><style>body{background:#090b10;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;-webkit-font-smoothing:antialiased;}.box{background:#131722;border:1px solid #232a3b;border-radius:16px;padding:2rem;max-width:460px;width:92%;text-align:center;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);}.icon{font-size:2.5rem;margin-bottom:0.75rem;}h2{margin:0 0 0.5rem 0;letter-spacing:-0.01em;}h2.ok{color:#34d399;}p{color:#8b949e;font-size:0.9rem;margin:0 0 1rem 0;}p strong{color:#e6edf3;}.note{background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.4);color:#fbbf24;border-radius:8px;padding:0.6rem 0.8rem;font-size:0.85rem;}.hint{color:#94a3b8;font-size:0.8rem;}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;}.btn{background:#2563eb;border:none;color:#fff;min-height:44px;padding:0.6rem 1.25rem;border-radius:8px;font-weight:600;font-size:0.9rem;cursor:pointer;box-shadow:0 4px 14px rgba(37,99,235,0.35);transition:transform 150ms ease-out,opacity 150ms ease-out;}.btn:hover:not(:disabled){transform:translateY(-1px);}.btn:disabled{opacity:0.5;cursor:not-allowed;}.btn-ghost{background:transparent;border:1px solid #323c52;color:#e6edf3;box-shadow:none;}button:focus-visible{outline:2px solid #3b82f6;outline-offset:2px;}
-/* The Relay button is autofocused on load, and a programmatic focus does not
-   match :focus-visible, so the initial focused state had no visible ring at
-   all. :focus covers it without double-drawing on pointer interaction. */
-button:focus{outline:2px solid #60a5fa;outline-offset:2px;}@media (prefers-color-scheme: light){body{background:#f4f6fb;color:#16213a;}.box{background:#ffffff;border-color:#d9e0ec;box-shadow:0 25px 50px -12px rgba(22,33,58,0.25);}p{color:#5b6478;}p strong{color:#16213a;}.hint{color:#5b6478;}.btn-ghost{border-color:#b9c4d8;color:#16213a;}button:focus{outline-color:#1d4ed8;}}@media (prefers-reduced-motion: reduce){.btn{transition:none;}}</style></head><body><main class="box"><h1 class="sr-only">Confirm OAuth relay</h1><div id="confirmView"><div class="icon">🔐</div><h2>Relay this authorization?</h2><p>From: <strong>{{ORIGIN}}</strong></p>{{NOTICE}}<p class="hint" id="peerLine">Checking destination…</p><div id="noSession" style="display:none" class="hint">Dashboard session not established. Open the dashboard from the Hub terminal (press o) — this popup will keep checking, and enable Relay by itself once the session appears.</div><div style="display:flex;gap:0.5rem;justify-content:center;margin-top:1rem;"><button id="btnRelayNow" class="btn" disabled>Relay now</button><button id="btnCancel" class="btn btn-ghost">Cancel</button></div><div class="hint" id="resultLine" role="status" aria-live="polite" style="margin-top:0.75rem;"></div></div><div id="okView" style="display:none"><div class="icon">✅</div><h2 class="ok">Authentication Relayed!</h2><p id="okText"></p><div class="hint" id="okStatus" role="status" aria-live="polite" style="margin-top:0.5rem;">This window closes automatically in 3 seconds. The login continues on the other machine.</div><div style="display:flex;justify-content:center;margin-top:0.75rem;"><button id="okClose" class="btn btn-ghost">Close now</button></div></div></div></main><script>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Confirm OAuth Relay</title>
+<style>{{THEME}}</style>
+<style>{{RELAY_SHELL}}</style>
+</head>
+<body class="relay-page">
+<main class="relay-box">
+  <h1 class="sr-only">Confirm OAuth relay</h1>
+  <div id="confirmView">
+    <div class="relay-icon"><span class="ico ico--lock" aria-hidden="true"></span></div>
+    <h2 class="relay-title">Relay this authorization?</h2>
+    <p class="relay-text">From: <strong>{{ORIGIN}}</strong></p>
+    {{NOTICE}}
+    <p class="relay-hint" id="peerLine">Checking destination.</p>
+    <div id="noSession" style="display:none" class="relay-hint">Dashboard session not established. Open the dashboard from the Hub terminal (press o) &mdash; this popup will keep checking, and enable Relay by itself once the session appears.</div>
+    <div class="relay-actions">
+      <button id="btnRelayNow" class="relay-btn" disabled>Relay now</button>
+      <button id="btnCancel" class="relay-btn relay-btn--ghost">Cancel</button>
+    </div>
+    <div class="relay-hint" id="resultLine" role="status" aria-live="polite" style="margin-top:0.75rem;"></div>
+  </div>
+  <div id="okView" style="display:none">
+    <div class="relay-icon relay-icon--ok"><span class="ico ico--check" aria-hidden="true"></span></div>
+    <h2 class="relay-title relay-title--ok">Authentication Relayed!</h2>
+    <p id="okText" class="relay-text"></p>
+    <div class="relay-hint" id="okStatus" role="status" aria-live="polite" style="margin-top:0.5rem;">This window closes automatically in 3 seconds. The login continues on the other machine.</div>
+    <div class="relay-actions">
+      <button id="okClose" class="relay-btn relay-btn--ghost">Close now</button>
+    </div>
+  </div>
+</main><script>
 const relayURL = new URLSearchParams(window.location.search).get('url') || '';
 function show(el) { el.style.display = 'block'; }
 function hide(el) { el.style.display = 'none'; }

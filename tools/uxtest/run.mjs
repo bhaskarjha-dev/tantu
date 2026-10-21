@@ -1718,6 +1718,145 @@ const OVERFLOW_PROBE = `(function(){
         !!(p.boxes.header && p.boxes.header.h <= 110), JSON.stringify(p.boxes.header));
     }
 
+    // --- the relay pages ---
+    //
+    // The confirmation popup, and the dead-end page beside it.
+    //
+    // They are the only pages a person meets outside the dashboard, and
+    // the acceptance suite had never opened either of them. It checked
+    // the bookmarklet BOX on the dashboard; the popup itself was covered
+    // by a Go test that dumped the DOM out of the system Chrome and
+    // looked for three substrings. So the popup had hand-copied
+    // colours, emoji icons, and no measurement of anything a reader
+    // sees -- and the one page the product asks a person to act on was
+    // the one page nobody had looked at.
+    //
+    // They are measured now, on the same gates as the dashboard: the
+    // contrast sweep in both themes, the 24x24 target floor, and the
+    // narrow-viewport overflow probe.
+    {
+      const relayPage = await context.newPage();
+      const relayTarget = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=x&code=SECRET';
+      await relayPage.goto('http://127.0.0.1:' + WEB_PORT + '/relay?url=' + encodeURIComponent(relayTarget),
+        { waitUntil: 'domcontentloaded' });
+      await relayPage.waitForTimeout(1500);
+
+      // Every probe has to run in the popup's own document: it is a
+      // separate page, and the dashboard's probes read the dashboard.
+      const relayState = await relayPage.evaluate(() => {
+        const btn = document.getElementById('btnRelayNow');
+        const peer = document.getElementById('peerLine');
+        const strong = document.querySelector('.relay-text strong');
+        const cs = btn ? getComputedStyle(btn) : null;
+        return {
+          title: document.title,
+          heading: document.querySelector('.relay-title') ? document.querySelector('.relay-title').textContent.trim() : null,
+          origin: strong ? strong.textContent.trim() : null,
+          relayDisabled: btn ? btn.disabled : null,
+          focusedId: document.activeElement ? document.activeElement.id : null,
+          peerLine: peer ? peer.textContent.trim() : null,
+          outline: cs ? cs.outlineStyle + ' ' + cs.outlineWidth : null,
+          // Emoji are the platform's glyphs, in the platform's colours, at
+          // a size the platform chooses. The rest of the product draws
+          // its own, so the popup does too.
+          emoji: (document.body.textContent.match(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}]/gu) || []),
+          icons: Array.prototype.map.call(document.querySelectorAll('.relay-icon .ico'), (el) => {
+            const s = getComputedStyle(el, '::before');
+            return { mask: !!s.maskImage, w: s.width, h: s.height, bg: s.backgroundColor };
+          }),
+          // The design system has to have reached the page: if the token
+          // is missing, the colour is falling back to the UA default and
+          // the page is the one it used to be.
+          cardBg: getComputedStyle(document.querySelector('.relay-box')).backgroundColor,
+          // The design system has to have reached the page: if the token
+          // is missing, the colour is falling back to the UA default and
+          // the page is the one it used to be. The token is resolved
+          // through a probe element, because a token's own text is a hex
+          // string and the card's computed background is an rgb() one.
+          token: (function () {
+            var d = document.createElement('div');
+            d.style.color = getComputedStyle(document.documentElement).getPropertyValue('--card-bg').trim();
+            document.body.appendChild(d);
+            var v = getComputedStyle(d).color;
+            d.remove();
+            return v;
+          })(),
+        };
+      });
+      check('relay popup: it renders the confirmation and names the origin',
+        !!relayState && /Relay this authorization/.test(relayState.heading || '') &&
+        /accounts\.google\.com/.test(relayState.origin || ''), JSON.stringify(relayState));
+      check('relay popup: a live session enables the Relay button',
+        !!relayState && relayState.relayDisabled === false, JSON.stringify(relayState));
+      check('relay popup: it names where the relay is going',
+        !!relayState && /Destination:/.test(relayState.peerLine || ''), JSON.stringify(relayState));
+      // The Relay button is autofocused, and a programmatic focus does not
+      // match :focus-visible -- so the ring has to come from :focus. If it
+      // comes from nowhere, the button a person is expected to press is
+      // the one thing on the page with no visible focus.
+      check('relay popup: the autofocused Relay button has a visible focus ring',
+        !!relayState && relayState.focusedId === 'btnRelayNow' &&
+        /solid/.test(relayState.outline || ''), JSON.stringify(relayState));
+      check('relay popup: no emoji in the page', !!relayState && relayState.emoji.length === 0,
+        JSON.stringify(relayState && relayState.emoji));
+      check('relay popup: the icons are drawn, from the shared icon set',
+        !!relayState && relayState.icons.length > 0 &&
+        relayState.icons.every((i) => i.mask && parseFloat(i.w) > 0 && parseFloat(i.h) > 0),
+        JSON.stringify(relayState && relayState.icons));
+      check('relay popup: the page draws its colours from the shared design system',
+        !!relayState && relayState.token !== '' && relayState.cardBg === relayState.token,
+        JSON.stringify(relayState && { cardBg: relayState.cardBg, token: relayState.token }));
+
+      // The contrast sweep, both themes, on the popup itself.
+      const relaySweep = { dark: 0, light: 0 };
+      const relaySweepFails = [];
+      for (const s of ['dark', 'light']) {
+        await relayPage.emulateMedia({ colorScheme: s });
+        await relayPage.waitForTimeout(250);
+        const got = await relayPage.evaluate(CONTRAST_SWEEP);
+        if (!got) { relaySweepFails.push({ theme: s, sel: '(sweep returned nothing)' }); continue; }
+        relaySweep[s] += got.checked;
+        for (const f of got.fails) relaySweepFails.push(Object.assign({ theme: s }, f));
+      }
+      check('relay popup: no unreadable text in either theme', relaySweepFails.length === 0,
+        JSON.stringify(relaySweepFails.slice(0, 6)));
+      check('relay popup: the contrast sweep measured the page', relaySweep.dark > 0 && relaySweep.light > 0,
+        JSON.stringify(relaySweep));
+
+      // The narrow viewport, on the popup: it is a 550x380 window, but a
+      // phone browser can open it, and the card has to fit.
+      for (const vp of [[360, 780], [320, 720]]) {
+        await relayPage.setViewportSize({ width: vp[0], height: vp[1] });
+        await relayPage.waitForTimeout(250);
+        const p = await relayPage.evaluate(NARROW);
+        check('relay popup ' + vp[0] + 'px: nothing overflows the viewport',
+          !!p && p.overflowing.length === 0, JSON.stringify(p && p.overflowing.slice(0, 6)));
+        check('relay popup ' + vp[0] + 'px: every control reaches 24x24 (WCAG 2.5.8)',
+          !!p && p.smallTargets.length === 0, JSON.stringify(p && p.smallTargets.slice(0, 8)));
+      }
+
+      // The dead-end page: the same shell, reached with a link that is
+      // not relayable at all.
+      const blocked = await context.newPage();
+      const blockedResp = await blocked.goto('http://127.0.0.1:' + WEB_PORT + '/relay?url=not-a-url',
+        { waitUntil: 'domcontentloaded' });
+      await blocked.waitForTimeout(600);
+      const blockedState = await blocked.evaluate(() => ({
+        heading: document.querySelector('.relay-title') ? document.querySelector('.relay-title').textContent.trim() : null,
+        emoji: (document.body.textContent.match(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu) || []),
+        link: !!document.querySelector('a.relay-btn'),
+      }));
+      check('relay blocked page: it explains itself and offers the way back',
+        !!blockedState && /cannot be relayed/i.test(blockedState.heading || '') && blockedState.link,
+        JSON.stringify(blockedState));
+      check('relay blocked page: no emoji in the page',
+        !!blockedState && blockedState.emoji.length === 0, JSON.stringify(blockedState));
+      check('relay blocked page: it is a dead end, not a success',
+        !!blockedResp && blockedResp.status() === 400, 'status=' + (blockedResp ? blockedResp.status() : '?'));
+      await blocked.close();
+      await relayPage.close();
+    }
+
     // The peer switcher's height must be the one the stylesheet states, not
     // the engine's.
     //
