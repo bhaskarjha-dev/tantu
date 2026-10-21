@@ -11938,4 +11938,51 @@ white button measured **1:1**.
   `go vet` clean, staticcheck clean, encgate, docgate and wfcheck
   green, actionlint clean on both workflows.
 
+### Two runs that were red for reasons that were not the product
+
+The Batch Q commit went red twice, and neither redness was the
+product's. Both are recorded here because a red run on the branch head
+is a thing a reader has to account for, and "it was the runner" is
+only an acceptable answer when it comes with the evidence.
+
+**The macOS leg never ran.** "Release artifact (darwin)" was cancelled
+by GitHub with
+
+    The job was not acquired by Runner of type hosted even after
+    multiple attempts
+
+and a capacity notice for macOS arm64 runners: the job sat for
+fifteen minutes and was cancelled before it ran a step. Every other
+job -- the quality gates, all three test jobs, the three browser
+engines and the aggregate -- passed. There is no API here that can
+re-run a single job (no token), so the programmatic equivalent of
+pressing the button is a new push.
+
+**The performance budget tripped on the runner.** The next run was
+red on `TestPerfBudget_LocalActionAcknowledgement`:
+
+    POST /api/peers/alias (store write): p50=62.3287ms
+    p95=261.4361ms max=265.4571ms budget=250ms
+    (n=30, 0 below clock resolution, 3 over budget)
+
+The same code passed the same job on the run before, and the run
+before that. The measurement says which of the two shapes this is:
+the median is 62.3ms and the maximum 265.5ms, so the tail crossed the
+budget and the middle did not -- the shape the test's own message
+calls "one stalled request", against "a regression moves the median".
+
+**What the number is on each machine.** On the dev box the same
+measurement is p50 3.1-4.0ms, p95 4.7-8.7ms, max 7.0-12.3ms across
+three runs -- between twenty and sixty times inside the budget. On
+the Windows runner the median is 62ms. So the budget's headroom is
+sixty times on the machine the budget was measured on and about four
+times on the machine that has to live with it, and a shared runner
+with a busy disk crosses it now and then.
+
+**Nothing was changed to make it pass.** The budget is the plan's
+number and the plan's number is what the gate asserts; a gate
+relaxed to fit a noisy runner is the thing this repository has spent
+the most effort not doing. The measurement stays as it is, and the
+run is re-run instead.
+
 
