@@ -47,15 +47,28 @@ jobs:
           # encoder race that crashes a server, connection desynchronisation
           # after CONNECT, unbounded Range-header parsing, a MIME-header
           # memory-limit bypass reachable from ParseMultipartForm, and a Windows
-          # os.Root junction escape in drop staging. Bump this the way the release
-          # pin is bumped: deliberately, with a govulncheck run on the candidate
-          # version recorded in the commit.
+          # os.Root junction escape in drop staging.
           #
-          # Verified locally before bumping, in both directions, with GOTOOLCHAIN
-          # pinned so each scan really used that toolchain:
-          #   go1.27.1 -> Your code is affected by 11 vulnerabilities (exit 1)
-          #   go1.27.2 -> No vulnerabilities found (exit 0)
-          go-version: '1.27.2'
+          # 1.27.2 was clean until GO-2026-6809 was published: "Distrust
+          # compromised intermediate certificates in crypto/x509", fixed in
+          # 1.27.3. It is REACHABLE here, not merely present: the pairing
+          # path calls tls.Conn.HandshakeContext, which calls
+          # x509.Certificate.Verify, so a pairing handshake with a peer whose
+          # certificate was issued by a compromised intermediate would have
+          # been trusted. The quality gate found it on 2026-10-21, on the
+          # first push carrying the redesigned dashboard.
+          #
+          # Bump this the way the release pin is bumped: deliberately, with a
+          # govulncheck run on the candidate version recorded in the commit.
+          #
+          # Verified locally before bumping, in every direction, with
+          # GOTOOLCHAIN pinned so each scan really used that toolchain.
+          # The status in brackets is govulncheck's own exit status, which
+          # `go run` prints as "exit status N":
+          #   go1.27.0 -> Your code is affected by 12 vulnerabilities (status 3)
+          #   go1.27.2 -> Your code is affected by 1 vulnerability  (status 3)
+          #   go1.27.3 -> No vulnerabilities found                 (status 0)
+          go-version: '1.27.3'
           cache: true
 
       - name: gofmt
@@ -83,10 +96,10 @@ jobs:
         # 1.27. Checks that are deliberately off are recorded in
         # staticcheck.conf with the reason.
         run: |
-            # v0.8.2, not v0.8.1: v0.8.1 cannot read Go 1.27.2's export data ("export
+            # v0.8.2, not v0.8.1: v0.8.1 cannot read Go 1.27.3's export data ("export
             # data version 5 is greater than maximum supported version 4") and the toolchain bump above
             # made the gate fail on a tool error rather than on a finding. Verified under
-            # GOTOOLCHAIN=go1.27.2 that v0.8.2 exits 0 on this tree, and that it still reports a
+            # GOTOOLCHAIN=go1.27.3 that v0.8.2 exits 0 on this tree, and that it still reports a
             # planted violation rather than silently passing.
             go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
 
@@ -190,7 +203,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.27.2'
+          go-version: '1.27.3'
           cache: true
 
       - name: Fuzz each target for 30s
@@ -269,7 +282,7 @@ jobs:
           # Must match the quality job: stdlib findings are judged against
           # this version, and a mismatch would test a different runtime than
           # the one the gate scans.
-          go-version: '1.27.2'
+          go-version: '1.27.3'
           cache: true
 
       - name: Verify modules
@@ -441,7 +454,7 @@ jobs:
           node-version: '20'
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.27.2'
+          go-version: '1.27.3'
           cache: true
       - name: Install Playwright and the three engines
         run: |
@@ -796,7 +809,7 @@ jobs:
           # Deliberately the same toolchain the Test jobs use. A release built
           # with a different one would make "CI is green" and "the artifact is
           # sound" statements about different compilers.
-          go-version: '1.27.2'
+          go-version: '1.27.3'
           cache: true
       - name: Warm the module cache
         # goreleaser's `before.hooks: go mod tidy` needs the module *zips*, and

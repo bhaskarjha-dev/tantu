@@ -11427,3 +11427,77 @@ is a change nobody can check.
   green.
 - The new focus gate is red-proven, and the two existing focus gates
   still pass beside it.
+
+## Batch N -- a vulnerability the pairing path can reach (2026-10-21)
+
+The quality job was red, and not on the dashboard work. It was red on
+`govulncheck`, which judges the standard library of the toolchain that
+builds the product. The pin was go1.27.2, and the comment beside the
+pin said, in effect, that 1.27.2 was clean. It was: `GO-2026-6809` had
+not been published when that was written.
+
+### What it was
+
+`GO-2026-6809` — "Distrust compromised intermediate certificates in
+crypto/x509" — is fixed in go1.27.3, and it is **reachable here**, not
+merely present. The scan says so itself:
+
+    #1: internal/pairing/pair.go:489:33: pairing.pairResponderWithContext
+        calls tls.Conn.HandshakeContext, which eventually calls
+        x509.Certificate.Verify
+
+That is the exact line where Tantu's central promise is enforced. A
+pairing handshake with a peer whose certificate was issued by a
+compromised intermediate would have been trusted, and the whole product
+is the proposition that a peer you have paired with is a peer you can
+trust without thinking about it. The advisory lands on the one path
+that exists to protect that promise.
+
+### Measured, in every direction
+
+With `GOTOOLCHAIN` pinned so each scan really used that toolchain:
+
+    go1.27.0 -> Your code is affected by 12 vulnerabilities   (status 3)
+    go1.27.2 -> Your code is affected by 1 vulnerability       (status 3)
+    go1.27.3 -> No vulnerabilities found                       (status 0)
+
+The middle line is the one that matters. 1.27.2 was one advisory away
+from clean, and the advisory was the reachable one. A pin one patch
+behind is not "a pin that is pinned"; it is a pin at an unknown
+distance from the thing it protects, and the distance was zero.
+
+### What changed
+
+`go-version` in `.github/workflows/ci.yml` (five places) and
+`.github/workflows/release.yml`, `docs/RELEASE.md`, and the `docgate`
+entries that assert the document and the workflow name the same
+toolchain: **1.27.2 -> 1.27.3**.
+
+### Why reading the repository did not find it
+
+It could not have. Nothing in the repository re-measures the pin; the
+only thing that measures it is `govulncheck`, and it runs in CI. The
+`docgate` entry for the toolchain checks that the *document* and the
+*workflow* agree — and they did: both said 1.27.2, and both were wrong
+in the same way. That is the honest description of what that gate
+covers: agreement, not safety. It is a good gate and it stayed green
+through a red CI, because those are two different questions and the
+gate answers the easier one.
+
+The comment beside the pin is the other half of the story. It recorded
+that 1.27.2 was clean, and gave the two measured lines that justified
+it. That was true when written and stopped being true when the
+advisory was published, and nothing in the file said when it was last
+true. It now records the three measured lines and both advisories, so
+the next reader can see not only that the pin moved but what moved it.
+
+### Evidence
+
+- `GOTOOLCHAIN=go1.27.3 go run golang.org/x/vuln/cmd/govulncheck@latest ./...`
+  → "No vulnerabilities found.", exit status 0.
+- The same scan under 1.27.2 names the reachable advisory and the
+  exact call site.
+- `go test ./...` green across fifteen packages, `gofmt -l .` clean,
+  `go vet` clean, staticcheck clean, encgate, docgate and wfcheck
+  green.
+

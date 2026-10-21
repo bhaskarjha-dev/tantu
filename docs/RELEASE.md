@@ -9,10 +9,13 @@
   them back) has never run. That is KNOWN-LIMITATIONS 1.5, and `v0.1.0` is
   the version meant to close it.
 - Every tool in the pipeline is pinned, and none should be floated for a
-  release: Go `1.27.2` in both workflows (a security decision as much as a
+  release: Go `1.27.3` in both workflows (a security decision as much as a
   reproducibility one — `govulncheck` judges the standard library against the
-  toolchain that builds it, and 1.26.3 carried 9 reachable stdlib
-  vulnerabilities), GoReleaser `v2.18.2`, syft `1.52.0`, cosign `2.6.1`
+  toolchain that builds it, and each of the last three toolchains carried
+  reachable stdlib vulnerabilities: 1.26.3 had 9, 1.27.1 had 11, and 1.27.2 had
+  exactly 1, GO-2026-6809, "Distrust compromised intermediate certificates in
+  crypto/x509", which is reachable through the pairing handshake), GoReleaser
+  `v2.18.2`, syft `1.52.0`, cosign `2.6.1`
   (2.x deliberately — see "Artifacts"), staticcheck `v0.8.2`. `go.mod` declares
   language version `1.26.3`; that is the language the module requires, not the
   toolchain CI builds with.
@@ -153,7 +156,7 @@ every push, judged against the pinned toolchain, and reports 0 findings as of
 release is still cheap:
 
 ```sh
-GOTOOLCHAIN=go1.27.2 go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+GOTOOLCHAIN=go1.27.3 go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 ```
 
 ## Install
