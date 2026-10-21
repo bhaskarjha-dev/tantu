@@ -335,7 +335,11 @@ let hubs2 = null;
       throw new Error('Hub did not answer on ' + WEB_PORT + ' within 30s (' + lastProbeError + ').\n'
         + (hubOut.trim() || '(no output)'));
     }
-    const vtag = (probe.match(/class="version-tag">([^<]*)</) || [])[1] || '';
+    // The version tag carries a title attribute as well as its text, so
+    // the match cannot assume the class attribute is the last one before
+    // the ">" -- it was reading the tag's text out of the markup's
+    // attribute order, which is not what this check is about.
+    const vtag = (probe.match(/class="version-tag"[^>]*>([^<]*)</) || [])[1] || '';
     if (!vtag.includes(head)) throw new Error('served tag ' + vtag + ' does not contain HEAD ' + head);
     console.log('uxtest: serving ' + vtag);
 
@@ -994,7 +998,12 @@ const thumb = await js(`(function(){return new Promise(function(resolve){
     statusBlocked = false;
 
     // --- contrast, both themes ---
-    const TARGETS = ['#nextActionBanner', '#downloadDirPath', '#idSAS', '#logConsole .log-entry', '#logConsole .log-entry span', '.version-tag', '.pill', '.pill.active', '.stat-val', '.hint-text', '.tag-drop', '.tag-error', '.drop-zone-subtext', '#destinationSummary', '#peerLabel', '.stale-banner'];
+    const TARGETS = ['#nextActionBanner', '#downloadDirPath', '#idSAS', '#logConsole .log-entry', '#logConsole .log-entry span', '.version-tag', '.pill', '.pill.active', '.stat-val', '.hint-text', '.tag-drop', '.tag-error', '.drop-zone-subtext', '#destinationSummary', '#peerLabel', '.stale-banner',
+      // The peer switcher is the control that says who you are about to
+      // send to. It renders only when there are peers to switch between,
+      // so it does not exist in the peerless run; where it exists it is
+      // measured like everything else, against the pill it sits in.
+      '#headerPeerSelect'];
     // A failing contrast number is the only thing the loop records, so a
     // sweep that silently measured nothing would still report green: count
     // what it actually measured and assert that below.
@@ -1129,6 +1138,52 @@ const thumb = await js(`(function(){return new Promise(function(resolve){
         var el = all[i];
         if (!visible(el)) continue;
         var txt = ownText(el);
+        // A form control paints its own text, and owns NO text node:
+        // the browser draws the value (or the selected option) in the
+        // element's colour, and draws the placeholder in the
+        // ::placeholder colour. The sweep walked straight past all of
+        // them, so the peer switcher in the header -- the name of the
+        // peer you are about to send to -- was never measured, in
+        // either theme, in any run. It was measuring 2.11:1 in the
+        // light theme, on the white peer pill, and reporting nothing.
+        //
+        // The dashboard has one <select> and five text controls, so
+        // this is deliberately narrow: what is measured is the colour
+        // the browser will actually paint the text in, against the
+        // surface behind it.
+        var fgOverride = null;
+        if (!txt) {
+          var tag = el.tagName;
+          var painted = '';
+          if (tag === 'SELECT') {
+            var chosen = el.selectedOptions && el.selectedOptions.length ? el.selectedOptions[0] : null;
+            painted = String((chosen ? (chosen.textContent || '') : (el.value || '')));
+          } else if (tag === 'TEXTAREA') {
+            painted = String(el.value || '');
+          } else if (tag === 'INPUT') {
+            var itype = (el.type || 'text').toLowerCase();
+            if (['text','password','email','url','tel','number','search','button','submit','reset'].indexOf(itype) >= 0) {
+              painted = String(el.value || '');
+            }
+          }
+          if (painted) {
+            txt = painted.replace(/\\s+/g,' ').trim();
+          } else if (el.placeholder) {
+            // Empty: what the browser paints is the PLACEHOLDER, in the
+            // ::placeholder colour -- not the element's colour. Firefox
+            // applies an opacity on top of that colour, so the opacity
+            // has to be folded into the alpha or the measurement reads
+            // a colour nobody sees.
+            txt = String(el.placeholder).replace(/\\s+/g,' ').trim();
+            try {
+              var phs = getComputedStyle(el, '::placeholder');
+              var phc = parse(phs.color);
+              var pho = parseFloat(phs.opacity);
+              if (phc && !isNaN(pho) && pho < 1) phc.a = phc.a * pho;
+              fgOverride = phc;
+            } catch (_) {}
+          }
+        }
         if (!txt) continue;
         var cs = getComputedStyle(el);
         var clip = cs.backgroundClip || cs.webkitBackgroundClip;
@@ -1138,7 +1193,7 @@ const thumb = await js(`(function(){return new Promise(function(resolve){
           var stops = cs.backgroundImage.match(/rgba?\\([^)]+\\)/g) || [];
           for (var j=0;j<stops.length;j++){ var sc2 = parse(stops[j]); if (sc2) fgs.push(sc2); }
         } else {
-          var fg = parse(cs.color);
+          var fg = fgOverride || parse(cs.color);
           if (fg && fg.a !== 0) fgs.push(fg);
         }
         if (!fgs.length) continue;
@@ -1639,6 +1694,62 @@ const OVERFLOW_PROBE = `(function(){
       // fix, which is what put the tab bar below the fold.
       check('narrow ' + tag + ': the header does not eat the viewport',
         !!(p.boxes.header && p.boxes.header.h <= 110), JSON.stringify(p.boxes.header));
+    }
+
+    // The peer switcher's height must be the one the stylesheet states, not
+    // the engine's.
+    //
+    // A native <select> is sized by the browser unless the height is
+    // declared, and the browsers disagree: on the same page, at 360px, with
+    // peers seeded, chromium rendered it 24px tall and webkit 31px. The
+    // header's budget is 110px, so webkit failed the check above while
+    // chromium passed it -- on seven pixels that no amount of reading the
+    // stylesheet would have shown, because the stylesheet said nothing
+    // about height at all.
+    //
+    // The header check catches the consequence in whichever engine happens
+    // to be running. This one catches the cause in every engine, and it
+    // fails the moment the declaration is removed.
+    const peerSwitcher = await js(`(function(){
+      function declaredHeights(list, el, out){
+        for (var i=0;i<list.length;i++){
+          var r = list[i];
+          // A media rule: descend into it only where it applies, so a
+          // declaration for a wider viewport is not mistaken for the one
+          // in force here.
+          if (r.media && r.cssRules) {
+            var applies = true;
+            try { applies = !r.conditionText || window.matchMedia(r.conditionText).matches; } catch (_) {}
+            if (applies) declaredHeights(r.cssRules, el, out);
+            continue;
+          }
+          if (!r.selectorText || !r.style || !r.style.height) continue;
+          var hit = false;
+          try { hit = el.matches(r.selectorText); } catch (_) {}
+          if (hit) out.push(r.style.height);
+        }
+        return out;
+      }
+      var el = document.getElementById('headerPeerSelect');
+      if (!el) return null;
+      var declared = [];
+      for (var i=0;i<document.styleSheets.length;i++){
+        try { declaredHeights(document.styleSheets[i].cssRules, el, declared); } catch (_) {}
+      }
+      var rect = el.getBoundingClientRect();
+      return { used: rect.height, width: rect.width, declared: declared };
+    })()`);
+    if (!peerSwitcher) {
+      // Not a pass and not a failure: there is no peer switcher until there
+      // are peers to switch between, and the peerless run is a real product
+      // state. The --peers run is where this is exercised.
+      skip('the peer switcher is as tall as the stylesheet says',
+        'no peer switcher: the header shows a plain label until there are peers to switch between');
+    } else {
+      const declaredPx = peerSwitcher.declared.map(h => parseFloat(h)).filter(h => !isNaN(h));
+      check('the peer switcher is as tall as the stylesheet says',
+        declaredPx.length > 0 && declaredPx.every(h => Math.abs(peerSwitcher.used - h) < 0.5),
+        JSON.stringify(peerSwitcher));
     }
     await metrics(1280, 900);
     await sleep(200);

@@ -11501,3 +11501,210 @@ the next reader can see not only that the pin moved but what moved it.
   `go vet` clean, staticcheck clean, encgate, docgate and wfcheck
   green.
 
+## Batch O -- the peer switcher, at a height the engine chose (2026-10-21)
+
+The browser jobs were red on the three dashboard commits that preceded
+this one, and the red was real. Two of the failures were the contrast
+and the overflow that an empty-state design session cannot see. The
+third was this one: the header's height, on the narrowest screen,
+differing by seven pixels between two browsers.
+
+### What CI said
+
+    FAIL narrow 360px: the header does not eat the viewport
+         {"top":0,"w":360,"h":114,"visible":true}          (webkit)
+
+The header has a 110px budget at 360px. Chromium produced 107. WebKit
+produced 114. Same page, same CSS, same viewport.
+
+### Why reading the stylesheet could not have found it
+
+Because the stylesheet said nothing about the thing that differed.
+
+A native `<select>` is sized by the browser unless the height is
+stated, and the browser's choice is not a small one. Measured on the
+same page at 360px, with peers seeded:
+
+    chromium -> the control 24px tall, the pill 39px, the header 107px
+    webkit   -> the control 31px tall, the pill 46px, the header 114px
+
+Seven pixels, decided by software nobody in this repository controls,
+on the one screen where every pixel is contested. The peer switcher
+is a `<select>` because it is a list of peer names, and the list has
+to be a native control so that a keyboard and a screen reader get the
+platform's own behaviour.
+
+The fix is one declaration: `height: 24px` -- the WCAG 2.2 SC 2.5.8
+minimum target size, and the same floor the rule already claimed with
+`min-height: 24px`. The control's size becomes the product's decision
+and the engines agree: **107px in both**.
+
+### The word nobody could read
+
+Looking at the same control for the reason above turned up a second
+defect, which is why the switcher is worth a paragraph rather than a
+line.
+
+The switcher was painted in `--chrome-text`, a chrome colour, on the
+peer pill. The pill is a **card** surface -- `--card-bg`, white in the
+light theme -- even though the band it sits on is the deliberately dark
+header chrome. Light blue on white:
+
+    before:  dark 5.82:1   light 2.11:1
+    after:   dark 15.15:1  light 16.00:1
+
+2.11:1 is not a reading experience. This was the name of the peer you
+are about to send to, in the header, and it was the one word in the
+header that nobody could read in the light theme.
+
+**Why the contrast sweep missed it.** The sweep walks every visible
+element that owns a text node. A `<select>` owns none: its text lives
+in an `<option>`, inside the closed popup, painted by the browser in
+the element's own `color`. So the sweep walked straight past it -- in
+both themes, in every run, on every engine. The sweep now measures
+controls that paint their own text, and the switcher is also on the
+allowlist so it is measured by name.
+
+The colour is now `--text`, because the surface under it is a card.
+
+### The placeholders nobody chose either
+
+The same blindness had a second population behind it. The sweep walks
+elements that own a text node, and a form control owns none: the
+browser draws the value in the element's colour and the **placeholder**
+in the `::placeholder` colour. So the sweep had never measured a
+single placeholder in this product -- and the stylesheet had no
+`::placeholder` rule at all, which means every placeholder in the
+dashboard was painted in **the browser's own default**.
+
+Chromium's default is `rgb(117, 117, 117)`. On the field surface that
+is the surface the fields actually use:
+
+    dark   --surface rgb(15, 20, 32)   -> 3.99:1
+    light  --surface rgb(238, 241, 247) -> 4.07:1
+
+Both under 4.5:1. And in an empty field the placeholder is the **only
+text on the screen**: "Paste code snippet, auth tokens, commands, or
+notes to send immediately to the peer...", "Paste OAuth URL
+(https://...)...", "Search live logs by text, URL, host, or request
+ID...". The instruction the user needs to do the thing was the one
+thing on the field they could not read.
+
+It was engine-dependent too, which is the same defect as the peer
+switcher's height and for the same reason: nothing in this file said
+which colour a reader would get. Firefox paints its own default, with
+an alpha on top of the colour.
+
+The placeholders now use `--text-muted`, the muted colour this design
+already had, with `opacity: 1` stated because Firefox applies its own
+opacity on top:
+
+    dark   --text-muted on --surface -> 5.94:1
+    light  --text-muted on --surface -> 5.29:1
+
+**The red proof.** Deleting the four-line `::placeholder` rule:
+
+    fail  contrast sweep dark textarea#textPayload
+      {"ratio":3.99,"need":4.5,"px":15.2,"fg":"rgb(117,117,117)",
+       "bg":"rgb(15,20,32)"}
+    fail  contrast sweep light input#logSearchInput
+      {"ratio":4.07,"need":4.5,"px":13.6,"fg":"rgb(117,117,117)",
+       "bg":"rgb(238,241,247)"}
+    ...
+    FAIL  contrast sweep: no unreadable text in either theme
+          6 failing element(s)
+
+Six failures across two themes and three tabs -- three fields, each
+measured in both themes. The sweep now measures a control's painted
+value and its placeholder, folding Firefox's placeholder opacity into
+the alpha so the number is the number that is on the screen.
+
+### The gate
+
+The header-height check catches the *consequence*, in whichever engine
+happens to be running -- which is exactly why it caught this on webkit
+and not on chromium, and why it would not have caught it at all in a
+local chromium-only run.
+
+The new check catches the *cause*, in every engine:
+
+    the peer switcher is as tall as the stylesheet says
+
+It reads the stylesheet's own `height` declarations for the switcher --
+descending into media rules only where the media query applies -- and
+compares them with the height the browser actually used. No
+declaration means the engine is choosing, and the check fails.
+
+Red proof, applied and run: deleting the single line `height: 24px;`
+
+    FAIL  the peer switcher is as tall as the stylesheet says
+          {"used":24,"width":144,"declared":[]}
+
+Note what that shows: **chromium's used height was 24px anyway**, so
+the header check still passed, and the new check still failed. That is
+the difference between a gate that catches a symptom in one browser and
+a gate that catches the cause in all of them.
+
+In the peerless run the switcher does not exist -- with no peers there
+is nothing to switch between, and the header says "No trusted peers
+yet" -- so the check is **skipped, and a skip is never a pass**: it is
+counted separately and printed with its reason. The `--peers` run is
+where it is exercised, and CI runs both.
+
+### The other two repairs in this batch
+
+Both were found by CI on the commits that preceded it, and both are
+the same lesson Batch L recorded: **empty states hide real defects.**
+The dashboard was designed against a peerless page, and the two
+defects below exist only when there are peers.
+
+- The active destination pill was filled with `--accent`, and white on
+  `--accent` measures **3.68:1** in the dark theme -- the same figure
+  the active log filter was fixed at, the same mistake, a second time.
+  It uses `--accent-hover` now: **5.17:1** (dark) and **6.70:1**
+  (light), both measured.
+- At 360px the peer switcher ran off the right edge
+  (`select#headerPeerSelect L=230 R=374`): the header's contents had
+  moved into a `.shell`, so the `flex-wrap` on the header wrapped that
+  one child instead of the two things inside it. The wrapping rule
+  moved with the content, to the row that has the two items in it.
+- The version tag is the least important thing in the header and it is
+  what pushes the switcher off the row, so it is capped and
+  ellipsised at narrow widths -- and the full value is in a `title`
+  attribute, so a truncated build string is still readable on hover.
+
+### The harness's own brittleness
+
+The version check read the served page's version tag with
+
+    /class="version-tag">([^<]*)</
+
+which assumed the `class` attribute is the last one before the `>`. The
+`title` attribute above broke it -- the tag stopped being found, the
+check read an empty string, and a **correct** page was reported as
+wrong. The check's intent was never "the class attribute comes last";
+it was "the page carries the version it was built with". The pattern
+now reads `class="version-tag"[^>]*>`, which asserts the same thing
+and stops depending on the attribute order.
+
+### Evidence
+
+- The acceptance suite, in both modes and on all three engines:
+  **chromium 116/116 (peers) and 114/114 (peerless)**, **webkit
+  116/116 and 114/114**, **firefox 114/114 and 112/112**. The contrast
+  sweep measured **192 rendered text nodes per theme** with peers
+  seeded and **164** without, with no failure in either theme on any
+  engine. The peerless counts are one lower than the peers counts
+  because the new gate is *skipped* there, and a skip is not a pass.
+- The new gate is red-proven (above), and the header-height check
+  fails on webkit without the `height` declaration.
+- The placeholder rule is red-proven (above): without it the sweep
+  reports six failing elements across two themes and three tabs.
+- `go test ./...` green across fifteen packages, `gofmt -l .` clean,
+  `go vet` clean, staticcheck clean, encgate, docgate and wfcheck
+  green.
+- What the sweep still cannot see -- text painted by a pseudo-element
+  -- is recorded as register row 4.11, with the one rule in the
+  product rendered and measured by hand (8.82:1 dark, 7.27:1 light).
+
+

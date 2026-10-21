@@ -305,6 +305,56 @@ claimed.
 **This is not E4 or E5 evidence.** The ladder above is unchanged on
 that axis.
 
+## Batch O — the peer switcher, at a height the engine chose
+
+The header's peer switcher is the control that says who you are about
+to send to. Two things about it were wrong, and neither was visible in
+the source.
+
+Its **height was the browser's decision**. A native `<select>` is sized
+by the engine unless the stylesheet says otherwise, and the engines
+disagreed: on the same page, at 360px, with peers seeded, chromium
+rendered the control 24px tall and webkit 31px. The header has a
+110px budget, so webkit's header came to 114px and failed a check
+chromium passed. Seven pixels of the narrowest layout, chosen by
+software nobody in this repository controls. The height is now stated
+— 24px, the WCAG 2.2 SC 2.5.8 minimum target size the rule already
+claimed with `min-height` — so the control's size is the product's
+decision and both engines agree: header 107px in each.
+
+Its **text was unreadable in the light theme**. The switcher was
+painted in `--chrome-text`, a chrome colour, on the peer pill — which
+is a card surface, and white in the light theme. Light blue on white
+measured **2.11:1**. It was the one word in the header nobody could
+read, and the contrast sweep never measured it, in either theme, in any
+run: the sweep walks elements that own a text node, and a `<select>`
+owns none, because its text lives in an `<option>` inside the closed
+popup. The sweep now measures controls that paint their own text, and
+the switcher's colour on a card surface is `--text` — 16.00:1 in the
+light theme, 15.15:1 in the dark one.
+
+The same blindness had **every placeholder in the product** behind it.
+The stylesheet had no `::placeholder` rule at all, so each placeholder
+was painted in the browser's own default: `rgb(117,117,117)`, which is
+**3.99:1** on the dark field surface and **4.07:1** on the light one.
+In an empty field the placeholder is the only text on the screen — the
+instruction the user needs in order to do the thing — and it was the
+one part of the field they could not read. Placeholders now use
+`--text-muted` with `opacity: 1` stated: **5.94:1** dark, **5.29:1**
+light.
+
+The gate that matters here is about the *cause*, not the symptom. The
+header-height check catches the consequence in whichever engine
+happens to be running — which is why it caught this on webkit and not
+on chromium. The new check reads the stylesheet's own `height`
+declarations for the switcher and compares them with the height the
+browser actually used, so it fails the moment the declaration is
+removed, in every engine. It is skipped, never silently passed, in the
+peerless run where the control does not exist.
+
+**This is not E4 or E5 evidence.** The ladder above is unchanged on
+that axis.
+
 ## Explicit "not now" adherence
 
 Cloud telemetry, hosted accounts, auto-send, silent retry, hidden default

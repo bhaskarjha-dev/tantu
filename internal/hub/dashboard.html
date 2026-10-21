@@ -385,6 +385,49 @@
     resize: vertical;
     font-family: inherit;
   }
+  /* Placeholder text is painted by the browser, in the browser's own
+     default colour, unless the stylesheet says otherwise -- and this
+     stylesheet said nothing. Chromium's default is rgb(117, 117, 117),
+     which measures **3.99:1** on the dark field surface (--surface,
+     rgb(15, 20, 32)) and **4.07:1** on the light one (rgb(238, 241,
+     247)). Both are under 4.5:1, and in an empty field the placeholder
+     is the ONLY text on the screen: it is the field's instruction
+     ("Paste OAuth URL...", "Search live logs by text, URL, host, or
+     request ID...").
+
+     It was also engine-dependent, which is the same defect as the peer
+     switcher's height: Firefox paints its own default, with an alpha,
+     and nothing in this file said which colour a reader would get.
+
+     --text-muted is the muted colour this design already has, and it
+     measures 5.94:1 on the dark field and 5.29:1 on the light one.
+     `opacity: 1` is stated because Firefox applies its own opacity to
+     the placeholder on top of the colour, and the computed colour alone
+     would not be what is painted. */
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--text-muted);
+    opacity: 1;
+  }
+  /* Placeholder text is painted by the browser, in the browser's own
+     default colour, unless the stylesheet says otherwise -- and this
+     stylesheet said nothing. Chromium's default is rgb(117, 117, 117),
+     which measures **3.99:1** on the dark field surface (--surface,
+     rgb(15, 20, 32)) and **4.07:1** on the light one (rgb(238, 241,
+     247)). Both are under 4.5:1, and in an empty field the placeholder
+     is the ONLY text on the screen: it is the field's instruction
+     ("Paste OAuth URL...", "Search live logs by text, URL, host, or
+     request ID...").
+
+     It was also engine-dependent, which is the same defect as the peer
+     switcher's height: Firefox paints its own default, with an alpha,
+     and nothing in this file said which colour a reader would get.
+
+     --text-muted is the muted colour this design already has, and it
+     measures 5.94:1 on the dark field and 5.29:1 on the light one.
+     `opacity: 1` is stated because Firefox applies its own opacity to
+     the placeholder on top of the colour, and the computed colour alone
+     would not be what is painted. */
   .btn-primary {
     background: var(--accent-gradient-strong);
     border: none;
@@ -778,13 +821,44 @@
    */
   .header-peer-select {
     background: transparent;
-    color: var(--chrome-text);
+    /* The switcher sits INSIDE the peer pill, and the pill is a card
+       surface (--card-bg) in both themes -- white in the light theme --
+       even though the band it sits on is the deliberately dark header
+       chrome. --chrome-text is a chrome colour: light in both themes,
+       and light blue on the white pill measured 2.11:1 in the light
+       theme, which is not readable at 13.6px.
+
+       The name of the peer you are about to send to is the single most
+       consequential word in the header, and it was the one word in the
+       header nobody could read. The contrast sweep missed it because
+       the sweep walks elements that OWN A TEXT NODE, and a <select>
+       owns none: its text lives in an <option>, in the closed popup.
+       The control was therefore never measured, in either theme, in
+       any run.
+
+       On a card surface the text colour is --text. */
+    color: var(--text);
     border: none;
     font-size: 0.85rem;
     font-weight: 600;
     cursor: pointer;
     max-width: 16rem;
     min-height: 24px;
+    /* The height of a native <select> is the ENGINE's decision unless the
+       height is stated. Measured on the same page, at 360px, with the peer
+       switcher present:
+         chromium -> the control 24px tall, the pill 39px, the header 107px
+         webkit   -> the control 31px tall, the pill 46px, the header 114px
+       Seven pixels of the header's height, on the narrowest screen, chosen
+       by the browser rather than by this file. The header's own budget is
+       110px, so webkit failed a check chromium passed, on a difference no
+       amount of reading the stylesheet would have revealed.
+       Stating the height makes the control's size the product's decision --
+       24px, which is the WCAG 2.2 SC 2.5.8 minimum target size and the
+       same floor `min-height` already claimed. The engines agree from here
+       on, and the check that caught this now passes for the same reason in
+       both. */
+    height: 24px;
   }
   .header-peer-select:focus-visible {
     outline: 2px solid var(--accent-on-chrome);
@@ -1013,11 +1087,43 @@
          name, the version tag wrapped, and the pill was clipped at
          "Devbox (workst". One extra row costs less than three broken
          ones, and at 640px this rule does not apply. */
+      row-gap: 0.5rem;
+    }
+    /* The header's contents moved into a .shell so that the wordmark, the
+       tab rail and the page below would share one measure. That moved the
+       row that actually has to wrap: the header now holds one child, and
+       `flex-wrap` on the header wrapped that one child rather than the
+       two things inside it. So the wrapping rule moved with the content,
+       to the row that has the two items in it.
+
+       Without it, the peer switcher -- which is as wide as its longest
+       option, and an option can be a hostname -- ran off the right edge
+       of a 360px screen. It is a rule about a layout, and the layout
+       moved; the rule did not. */
+    .header-inner {
       flex-wrap: wrap;
       row-gap: 0.5rem;
     }
     /* "🔐 tantu" is one wordmark. Breaking between its emoji and its name
        reads as two unrelated marks. */
+    /* The version tag is the least important thing in the header -- a
+       development build's string -- and at 360px it is what pushes the
+       peer switcher off the row. It is capped and ellipsised here so the
+       header stays one row, and the full value stays in the title
+       attribute and in the text itself.
+
+       The header was allowed a second row (the acceptance suite says so
+       explicitly: "the header may take a second row at 360px; three is
+       the bug"), but a second row it does not need is 50 pixels of
+       viewport the tab bar could have had, and the suite's own limit for
+       the header is 110 -- which a two-row header with a wrapped version
+       tag exceeds in one engine. One row is 51. */
+    .version-tag {
+      max-width: 4.5rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .logo-title { white-space: nowrap; }
     .logo-group { min-width: 0; }
     nav.tabs-nav { padding: 0.75rem 1rem 0; }
@@ -2121,8 +2227,12 @@
     min-width: 0;
   }
   .dest-pill.active {
-    background: var(--accent);
-    border-color: var(--accent);
+    /* The deep accent, not the plain one. White on --accent measured
+       3.68:1 at 13px, under AA for small text -- the same figure the
+       active log filter was fixed at, and the same mistake, a second
+       time. --accent-hover is the fill that clears 4.5:1. */
+    background: var(--accent-hover);
+    border-color: var(--accent-hover);
     color: #fff;
   }
   .dest-pill.active:hover { color: #fff; }
@@ -2387,7 +2497,7 @@
       <div class="logo-group">
         <span class="logo-mark" aria-hidden="true"></span>
         <div class="logo-title">tantu</div>
-        <span class="version-tag">v{{VERSION}}</span>
+        <span class="version-tag" title="v{{VERSION}}">v{{VERSION}}</span>
       </div>
       <div class="peer-status-pill">
         <div class="status-dot" id="peerDot"></div>
