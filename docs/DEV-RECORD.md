@@ -11301,3 +11301,129 @@ and the target sizes are machine-checked and green. Whether the
 result reads as good is a judgement, and this batch made more of those
 judgements than the last one did -- by looking at more of the product,
 rather than by looking harder at less of it.
+
+## Batch M -- three surfaces, and a focus ring I broke and did not see (2026-10-21)
+
+Batch L gave the informational surfaces a shape. Batch M finishes the
+remaining ones, and records the one place where this work made the
+product worse and the repository's own gates were the reason it was
+caught before it shipped.
+
+### The progress bar
+
+It was eight pixels of gradient on a translucent track, with the file
+name and the numbers somewhere else on the page. It is the only thing
+on the screen that says the transfer is happening, so it now has a
+track you can see, a fill that reads as motion, and a label that
+belongs to it.
+
+### The received item
+
+It was the one row in the product with no edge, while every other row
+around it -- a peer, a transfer, an authorisation -- grew one. It has
+the same shape as a record now, with the type on the edge.
+
+### The discovered hub
+
+A LAN peer found by the beacon was drawn in a hand-rolled box that
+matched nothing else on the page. It is a peer row now, in the same
+shape as a trusted peer, because it is the same kind of thing: a
+machine you can send to.
+
+### The focus ring, and the gate that caught it
+
+While restyling the fields, this batch added a rule giving the text
+inputs and the textarea a 2px solid accent outline with a 1px offset.
+
+The fields already had one. A shared rule further up the stylesheet
+gives every focusable control on the page -- inputs, textarea, select,
+button -- a 2px solid accent outline, and the field's own focus state
+additionally turns its border accent-coloured. So the new rule was a
+**second, differently-styled ring on the same control**, and the ring a
+reader saw was the wrong one of the two.
+
+What made it worse is how the rule came to exist. It was written on the
+belief that the fields had no visible focus indicator of their own --
+that the 3px tint around the focused field was all there was, and that
+it was too faint to see. That belief was never measured. It was
+arithmetic in my head about a colour I had not rendered, and it was
+wrong: a keyboard user gets the shared 2px outline, and a mouse user
+gets the border turning accent-coloured.
+
+The rule is gone, and the comment that replaced it says what actually
+happens.
+
+**The gate.** The repository had two focus gates. One asserts that
+every focusable control type has an explicit `:focus-visible` outline
+-- the control must have a ring. The other pins the checkbox's ring to
+the page's geometry, because a second, differently-styled ring on the
+same control is a consistency defect. Neither could see this: the
+fields *did* have a ring, so the first passed, and the checkbox was
+untouched, so the second passed.
+
+The new gate is `TestAControlHasOnlyOneFocusRing`, and it says the
+rule the page actually follows: **a control type may be named by at
+most one general `:focus-visible` rule.** A rule that also names a
+class -- `.header-peer-select:focus-visible`, `.tab-btn:focus-visible`
+-- is a deliberate context override, and the page has several: the
+header and the tab bar are chrome, and their rings are the chrome
+accent rather than the body accent. Those are the design working. A
+rule that names a bare type is the general case, and two general rules
+for the same type mean one of them is dead and the other is what a
+reader sees.
+
+The ring it compares is the outline **and** its offset, because two
+rules that agree on the outline but not on the offset put the ring in
+two different places, and the second one silently wins.
+
+Red proof, applied and run:
+
+    input[type="text"]:focus-visible, textarea:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 1px;
+    }
+
+    -> input[type="text"] has two different focus rings:
+       "outline: 2px solid var(--accent) outline-offset: 1px" and
+       "outline: 2px solid var(--accent) outline-offset: 2px".
+       One control, one ring: a second general rule for the same type
+       means one of them is dead and the other is the one a reader
+       actually sees.
+
+The first version of that gate compared the outline shorthand alone
+and **passed the red proof**. The defect it was written for is in the
+offset, which the shorthand does not carry. That is worth recording:
+the gate was not wrong about the defect, it was wrong about where the
+defect lives, and the only way to find that out was to run the proof
+and watch it not fail.
+
+### The one surface this batch did not touch, and why
+
+The terminal cockpit is a UI too, and it was not looked at. It cannot
+be looked at here: it draws itself with ANSI and box-drawing
+characters and only runs on a terminal, so a capture of it needs a
+pseudo-terminal that this environment does not have.
+
+What can be said is what the code says. Its banner is a measured box
+-- the width is computed from the widest row and capped, the field
+widths are not hardcoded, and there is a gate for the box geometry
+(`cockpit_box_test.go`) and another for what the banner can reach
+(`cockpit_reach_test.go`). The CLI's other outputs -- `status`,
+`doctor`, `--help` -- were run and read, and they are plain-text
+first, which is the right choice for output that goes into a pipe.
+
+So the cockpit is *not* claimed to be good. It is claimed to be
+unreviewed here, which is the honest sentence, and the reason it is
+not in this batch is that a visual change to a surface nobody can see
+is a change nobody can check.
+
+### Evidence
+
+- The acceptance suite: **chromium 114/114, webkit 114/114, firefox
+  112/112**, with the contrast sweep measuring 161 rendered text nodes
+  per theme and no failure in either theme on any engine.
+- `go test ./...` green across fifteen packages, `gofmt -l .` clean,
+  `go vet` clean, staticcheck clean, encgate, docgate and wfcheck
+  green.
+- The new focus gate is red-proven, and the two existing focus gates
+  still pass beside it.

@@ -96,6 +96,98 @@ func TestCheckboxAndRadioShareTheStandardRing(t *testing.T) {
 	}
 }
 
+// TestAControlHasOnlyOneFocusRing is the gate for a defect the others could
+// not see.
+//
+// The page gives every focusable control a 2px solid accent outline through
+// one shared `:focus-visible` rule, and the gate above pins the checkbox's
+// ring to that geometry. Nothing pinned the *other* controls against a
+// second rule naming them: a second `:focus-visible` rule for the text
+// inputs, with a different offset, is a differently-styled ring on the same
+// control -- and every other check in the suite still passes, because the
+// control still has a focus ring, the contrast sweep does not measure
+// outlines, and the accessibility markers are all still present.
+//
+// It is not a hypothetical. This repository wrote such a rule while
+// changing the dashboard's focus styling, on the belief that the fields
+// had no visible ring of their own. They did: the shared rule covers
+// them, and a keyboard user gets the outline from it. What the new rule
+// added was a second ring with a different offset, and the ring a person
+// saw was the wrong one of the two.
+//
+// The rule is that a control type may be named by at most one GENERAL
+// `:focus-visible` rule.
+//
+// A rule that also names a class -- `.header-peer-select:focus-visible`,
+// `.tab-btn:focus-visible` -- is a deliberate context override, and the
+// page has several of those: the header and the tab bar are chrome, and
+// their rings are the chrome accent rather than the body accent. Those
+// are the design working, not a defect.
+//
+// A rule that names a bare type is the general case, and two general
+// rules for the same type mean one of them is dead and the other is what
+// a reader actually sees.
+func TestAControlHasOnlyOneFocusRing(t *testing.T) {
+	code := stripDashboardComments(dashboardHTML)
+	// Every :focus-visible rule in the page, with the outline it declares.
+	re := regexp.MustCompile(`([^{}]+:focus-visible[^{}]*)\{([^{}]*)\}`)
+	// A control type, as a CSS author would write it.
+	types := []string{
+		`input[type="text"]`,
+		"textarea",
+		"select",
+		"button",
+		`input[type="checkbox"]`,
+		`input[type="radio"]`,
+	}
+	seen := map[string][]string{}
+	for _, m := range re.FindAllStringSubmatch(code, -1) {
+		sel := strings.TrimSpace(m[1])
+		body := m[2]
+		ring := ""
+		if o := regexp.MustCompile(`outline\s*:\s*[^;]+`).FindString(body); o != "" {
+			ring = strings.Join(strings.Fields(o), " ")
+		}
+		// The offset is part of the ring. Two rules that agree on the
+		// outline but not on the offset put the ring in two different
+		// places, and the second one silently wins.
+		if off := regexp.MustCompile(`outline-offset\s*:\s*[^;]+`).FindString(body); off != "" {
+			ring += " " + strings.Join(strings.Fields(off), " ")
+		}
+		if ring == "" {
+			continue
+		}
+		for _, part := range strings.Split(sel, ",") {
+			part = strings.TrimSpace(part)
+			// A class or an id qualifies the control, so the rule is a
+			// context override rather than the general case.
+			if strings.Contains(part, ".") || strings.Contains(part, "#") {
+				continue
+			}
+			for _, typ := range types {
+				if part == typ || strings.HasSuffix(part, " "+typ) || strings.Contains(part, typ) {
+					seen[typ] = append(seen[typ], ring)
+				}
+			}
+		}
+	}
+	for _, typ := range types {
+		rings := seen[typ]
+		if len(rings) < 2 {
+			continue
+		}
+		first := rings[0]
+		for _, r := range rings[1:] {
+			if r != first {
+				t.Errorf("%s has two different focus rings: %q and %q. One control, one ring: "+
+					"a second general rule for the same type means one of them is dead and the other "+
+					"is the one a reader actually sees.",
+					typ, first, r)
+			}
+		}
+	}
+}
+
 // TestNoFocusableElementCarriesAnInlineOutlineSuppress is the gate the previous
 // two could not be.
 //

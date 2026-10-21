@@ -323,16 +323,22 @@
     margin-top: 1rem;
     display: none;
   }
+  /* The progress bar. It is the only thing on the screen that says the
+     transfer is happening, so it is given a track you can see and a fill
+     that reads as motion. */
   .progress-bar {
-    height: 8px;
-    background: rgba(255, 255, 255, 0.08);
-    border-radius: 9999px;
+    height: 10px;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-pill);
     overflow: hidden;
+    position: relative;
   }
   .progress-fill {
     height: 100%;
     width: 0%;
     background: var(--accent-gradient);
+    border-radius: var(--radius-pill);
     transition: width 0.2s;
   }
   .progress-meta {
@@ -340,7 +346,7 @@
     justify-content: space-between;
     font-size: 0.8rem;
     color: var(--text-muted);
-    margin-top: 0.4rem;
+    margin-top: 0.45rem;
   }
   .form-group {
     display: flex;
@@ -362,6 +368,18 @@
     border-color: var(--accent);
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
   }
+  /* The focus ring on a field is the shared one further up this file:
+     `input[type="text"]:focus-visible, textarea:focus-visible,
+     select:focus-visible, button:focus-visible` already gives every
+     control a 2px solid accent outline.
+
+     A second rule here, with a different offset, would be a
+     differently-styled ring on the same control -- which is the
+     consistency defect the focus gate in focus_ring_test.go exists to
+     catch. It caught this one: the first version of this rule was
+     written on the belief that the fields had no visible ring at all,
+     which was false, because a keyboard user gets the shared outline and
+     a mouse user gets the border turning accent-coloured. */
   textarea {
     min-height: 100px;
     resize: vertical;
@@ -401,13 +419,28 @@
     background: rgba(255, 255, 255, 0.12);
     border-color: var(--border-light);
   }
+  /* A received item. The same shape as a record: what it is, where it
+     came from, when, and the actions. It has no state to carry on an
+     edge -- a received item is a received item -- so the edge carries
+     the type. */
   .received-item {
-    background: var(--surface);
+    position: relative;
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
-    padding: 0.85rem;
+    background: var(--card-bg);
+    padding: 0.85rem 0.95rem 0.85rem 1.05rem;
     box-shadow: var(--shadow-sm);
     transition: border-color var(--dur-fast) var(--ease-out);
+  }
+  .received-item::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: var(--accent);
+    opacity: 0.5;
   }
   .received-item:hover {
     border-color: var(--border-light);
@@ -415,14 +448,20 @@
   .received-item-header {
     display: flex;
     justify-content: space-between;
-    align-items: center;
-    font-size: 0.8rem;
+    align-items: baseline;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    font-size: var(--fs-sm);
     color: var(--text-muted);
     margin-bottom: 0.5rem;
   }
+  .received-item-header strong {
+    color: var(--text);
+    font-weight: 600;
+  }
   .received-item-content {
     background: var(--surface);
-    border: 1px solid rgba(127, 140, 160, 0.18);
+    border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     padding: 0.6rem 0.75rem;
     font-family: var(--font-mono);
@@ -4006,8 +4045,8 @@ const peerSig = JSON.stringify(peers.map(p => [p.fingerprint, p.name, p.alias, p
       if (signature === discoverySignature) return;
       discoverySignature = signature;
       list.innerHTML = unpaired.map(function(d) {
-        return '<div style="display: flex; justify-content: space-between; align-items: center; background: var(--surface); padding: 0.6rem 0.85rem; border-radius: 6px; border: 1px solid var(--border);">' +
-          '<div>' +
+        return '<div class="peer" style="display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; flex-wrap: wrap;">' +
+          '<div style="min-width: 0;">' +
             '<div class="ico ico--monitor" style="font-weight: 600; font-size: 0.9rem; color: var(--text);">' + escapeHTML(d.name) + '</div>' +
             // Discovery carries no identity: the beacon is an unauthenticated
             // hint, so there is nothing to show and nothing that could be

@@ -262,6 +262,49 @@ failure, and the page looked at populated in both themes at 1600 px
 and 360 px. **This is not E4 or E5 evidence.** The ladder above is
 unchanged on that axis.
 
+## Batch M — three surfaces, and a focus ring this work broke
+
+The progress bar is the only thing on the screen that says a transfer
+is happening, and it was eight pixels of gradient on a translucent
+track with the file name somewhere else on the page. It has a track you
+can see now. The received item was the one row in the product with no
+edge while every row around it grew one, and a LAN peer found by the
+beacon was drawn in a hand-rolled box that matched nothing else; both
+are the shape of their neighbours now.
+
+The third part of this batch is the one worth reading. Restyling the
+fields, this work added a second focus ring to the text inputs and the
+textarea — a 2px accent outline at a 1px offset — on the belief that
+the fields had no visible focus indicator of their own. They did: a
+shared rule gives every focusable control a 2px solid accent outline,
+and the focused field's border turns accent-coloured as well. The new
+rule was a second, differently-styled ring on the same control, and
+the ring a reader saw was the wrong one of the two.
+
+The belief behind it was never measured — it was arithmetic about a
+colour nobody had rendered — and it was wrong.
+
+The repository's two focus gates could not see it: the fields *did*
+have a ring, and the checkbox was untouched. The new gate
+(`TestAControlHasOnlyOneFocusRing`) says the rule the page actually
+follows: a control type may be named by at most one **general**
+`:focus-visible` rule. A rule that also names a class is a deliberate
+context override — the header and the tab bar are chrome, and their
+rings are the chrome accent — and those are the design working. Two
+general rules for one type mean one is dead and the other is what a
+reader sees. It compares the outline *and* its offset, and it is
+red-proven.
+
+The one surface this batch did not touch is the terminal cockpit, and
+the reason is recorded rather than worked around: it draws itself
+with ANSI and box-drawing characters and only runs on a terminal, so
+capturing it needs a pseudo-terminal this environment does not have.
+Its box geometry has gates; its appearance does not, and is not
+claimed.
+
+**This is not E4 or E5 evidence.** The ladder above is unchanged on
+that axis.
+
 ## Explicit "not now" adherence
 
 Cloud telemetry, hosted accounts, auto-send, silent retry, hidden default
