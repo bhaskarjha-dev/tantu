@@ -1841,18 +1841,43 @@ const OVERFLOW_PROBE = `(function(){
       const blockedResp = await blocked.goto('http://127.0.0.1:' + WEB_PORT + '/relay?url=not-a-url',
         { waitUntil: 'domcontentloaded' });
       await blocked.waitForTimeout(600);
-      const blockedState = await blocked.evaluate(() => ({
-        heading: document.querySelector('.relay-title') ? document.querySelector('.relay-title').textContent.trim() : null,
-        emoji: (document.body.textContent.match(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu) || []),
-        link: !!document.querySelector('a.relay-btn'),
-      }));
+      const blockedState = await blocked.evaluate(() => {
+        const icon = document.querySelector('.relay-icon .ico');
+        const ics = icon ? getComputedStyle(icon, '::before') : null;
+        return {
+          heading: document.querySelector('.relay-title') ? document.querySelector('.relay-title').textContent.trim() : null,
+          emoji: (document.body.textContent.match(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu) || []),
+          link: !!document.querySelector('a.relay-btn'),
+          icons: icon ? [{ mask: !!ics.maskImage, w: ics.width, h: ics.height }] : [],
+        };
+      });
       check('relay blocked page: it explains itself and offers the way back',
         !!blockedState && /cannot be relayed/i.test(blockedState.heading || '') && blockedState.link,
         JSON.stringify(blockedState));
       check('relay blocked page: no emoji in the page',
         !!blockedState && blockedState.emoji.length === 0, JSON.stringify(blockedState));
+      check('relay blocked page: the icon is drawn, from the shared icon set',
+        !!blockedState && blockedState.icons.length > 0 &&
+        blockedState.icons.every((i) => i.mask && parseFloat(i.w) > 0 && parseFloat(i.h) > 0),
+        JSON.stringify(blockedState && blockedState.icons));
       check('relay blocked page: it is a dead end, not a success',
         !!blockedResp && blockedResp.status() === 400, 'status=' + (blockedResp ? blockedResp.status() : '?'));
+      // The dead end is a page a person reads, so it gets the same
+      // contrast sweep as the popup.
+      const blockedSweep = { dark: 0, light: 0 };
+      const blockedSweepFails = [];
+      for (const s of ['dark', 'light']) {
+        await blocked.emulateMedia({ colorScheme: s });
+        await blocked.waitForTimeout(250);
+        const got = await blocked.evaluate(CONTRAST_SWEEP);
+        if (!got) { blockedSweepFails.push({ theme: s, sel: '(sweep returned nothing)' }); continue; }
+        blockedSweep[s] += got.checked;
+        for (const f of got.fails) blockedSweepFails.push(Object.assign({ theme: s }, f));
+      }
+      check('relay blocked page: no unreadable text in either theme', blockedSweepFails.length === 0,
+        JSON.stringify(blockedSweepFails.slice(0, 6)));
+      check('relay blocked page: the contrast sweep measured the page',
+        blockedSweep.dark > 0 && blockedSweep.light > 0, JSON.stringify(blockedSweep));
       await blocked.close();
       await relayPage.close();
     }

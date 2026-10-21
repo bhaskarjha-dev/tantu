@@ -11930,9 +11930,9 @@ white button measured **1:1**.
 ### Evidence
 
 - The acceptance suite, in both modes and on all three engines:
-  **chromium 137/137 (peers) and 135/135 (peerless)**, **webkit
-  137/137 and 135/135**, **firefox 135/135 and 133/133**. The counts
-  are sixteen higher than Batch P's because the relay pages are now
+  **chromium 140/140 (peers) and 138/138 (peerless)**, **webkit
+  140/140 and 138/138**, **firefox 138/138 and 136/136**. The counts
+  are twenty higher than Batch P's because the relay pages are now
   measured too.
 - `go test ./...` green across fifteen packages, `gofmt -l .` clean,
   `go vet` clean, staticcheck clean, encgate, docgate and wfcheck
