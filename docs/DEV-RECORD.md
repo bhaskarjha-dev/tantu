@@ -11707,4 +11707,129 @@ and stops depending on the attribute order.
   -- is recorded as register row 4.11, with the one rule in the
   product rendered and measured by hand (8.82:1 dark, 7.27:1 light).
 
+## Batch P -- the card header that could not fit its own title (2026-10-21)
+
+Batch O was green on the acceptance suite and red on CI, and the red was
+not Batch O's. It was a defect that had been in the tree for three
+commits, hidden behind the two failures Batch O fixed.
+
+### What CI said
+
+    FAIL  360px Relay: no page overflow
+      {"w":362,"c":360,"culprits":[
+        {"sel":"div","why":"box","inScroller":false,"over":2,"w":179,
+         "left":183,"right":362,"text":"Refresh Clear"},
+        {"sel":"button.btn-sm.btn-destructive.ico","why":"box","inScroller":false,
+         "over":2,"w":78,"left":284,"right":362,"text":"Clear"}]}
+
+The Relay tab's "Recent Authorizations" card header, two pixels past the
+edge of the screen, on all three engines and in both peer topologies.
+
+### What it was
+
+A card's header row: the title on one side, the actions on the other,
+on one flex line, with nothing to say what happens when they do not
+fit. The title is "Recent Authorizations"; the actions are "Refresh" and
+"Clear".
+
+### Why it survived, and why it looked like a font problem
+
+Two reasons, and the second one is the interesting one.
+
+The first is that each of these rows was an **inline style**. Eight card
+headers existed, four of them with `flex-wrap: wrap` and four without,
+because each was written separately and nobody could see the others. The
+row that broke was one of the four without it.
+
+The second is that the *symptom* was font-dependent, and the symptom is
+not the defect. On the Linux runner the row's content ran past the
+viewport, so the page gained a horizontal scrollbar. On a developer's
+machine the same row **fit** -- by shrinking the title, so that
+"Recent Authorizations" wrapped onto two lines with the buttons squeezed
+against them. Both are the same broken rule, and only one of them
+happens to overflow the screen.
+
+That is why the gate below measures the card header's own content
+rather than the document's width, and why the two engines on this
+machine said nothing about it.
+
+### The fix
+
+One class, `.card-head`, carrying `flex-wrap: wrap`, used by every card
+header. Eight inline styles removed. A card header that cannot fit its
+title and its actions on one line now puts the actions on their own
+line, which is what a card header does.
+
+### The gate
+
+`tools/uxtest/selfcheck-narrow-viewport-card-head.cjs` forces the
+condition instead of waiting for the runner's font: it gives the card
+headers a deliberately wide font stack, and measures every card header
+on every tab, at 320px and 360px, with the native font and the wide one.
+Twenty combinations.
+
+Red proof, applied and run -- deleting one line, `flex-wrap: wrap;`,
+from the class:
+
+    selfcheck: native font at 360px on tab-relay: a card header's
+      contents run 40.9px past its own box (div "Refresh Clear")
+    selfcheck: native font at 320px on tab-relay: a card header's
+      contents run 80.9px past its own box (div "Refresh Clear")
+    selfcheck: wide font at 320px on tab-relay: a card header's
+      contents run 124.9px past its own box (div "Refresh Clear")
+    ... 16 of the 20 combinations failed.
+
+**Sixteen of twenty, with the native font, on a developer's machine.**
+The CI report said two pixels on a runner; the rule was broken by 41
+pixels on a 360px screen and by 81 on a 320px one, everywhere.
+
+### The width no gate had measured
+
+The harness measured the narrow viewport at 360px and 640px. It never
+measured 320px, and at 320px the document overflowed on four of the
+five tabs -- on every machine, not only on the runner.
+
+So the acceptance harness now measures 320px as well, on every tab,
+with the same probe and the same diagnosis. That is five more
+measurements of a page that is already loaded, and it closes the width
+that a 360px phone in a narrow window would actually have.
+
+**And it found two more defects on the first run**, both of the same
+shape as the card header: a row of things that did not fit and had
+nowhere to go.
+
+- The **destination pill** was capped at `max-width: 15rem` -- 240px --
+  and the row it sits in is 175px wide on a 320px screen. So the pill
+  was 15px past the edge of the viewport, and the long peer name
+  inside it was never truncated, because the pill had room for the
+  whole of it. The cap is now `min(15rem, 100%)`: the smaller of a
+  fixed width and the width of the row.
+- The **peer's three actions** (Alias, Set Default, Unpair) are 287px
+  side by side, and `.peer__actions` was `flex: none`, so the row kept
+  that width on a 240px line and hung 17px past the edge. The row is
+  shrinkable now, and the buttons inside it wrap.
+
+**And the probe's own text measurement was wrong.** It reported the
+long peer name as 276px past the viewport, on a span that was showing
+an ellipsis. A range's rectangle is the *layout* extent of the text,
+not the painted one, so a name that the element clips was reported as
+text that runs past the edge. The measurement is for a label that
+runs past its own box **visibly** -- the send button's, which is the
+case it was written for -- so it is skipped when the element clips its
+own overflow. The same change removed a false positive on the
+screen-reader-only heading, which is one pixel wide by design.
+
+### Evidence
+
+- The acceptance suite, in both modes and on all three engines:
+  **chromium 121/121 (peers) and 119/119 (peerless)**, **webkit
+  121/121 and 119/119**, **firefox 119/119 and 117/117** -- the counts
+  are five higher than Batch O's because the narrow-viewport pass now
+  covers two widths instead of one.
+- The new self-check is red-proven (above), and it is now run in CI
+  beside the two self-checks that already reproduce font conditions.
+- `go test ./...` green across fifteen packages, `gofmt -l .` clean,
+  `go vet` clean, staticcheck clean, encgate, docgate and wfcheck
+  green, actionlint clean on both workflows.
+
 

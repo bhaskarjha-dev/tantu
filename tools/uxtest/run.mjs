@@ -1352,11 +1352,23 @@ const OVERFLOW_PROBE = `(function(){
     var over = Math.max(r.right - vw, r.width - vw);
     var why = over > 0.5 ? 'box' : '';
     if (el.children.length === 0) {
-      var tr = null;
-      try { range.selectNodeContents(el); tr = range.getBoundingClientRect(); } catch (e) { tr = null; }
-      if (tr && tr.width) {
-        var textOver = Math.max(tr.right - vw, tr.width - vw);
-        if (textOver > over) { over = textOver; why = 'text'; }
+      // Text the element CLIPS is not text the reader can see, and a
+      // range's rectangle is the layout extent of the text, not the
+      // painted one: a peer name that is 276px long inside a span with
+      // overflow:hidden reported itself as 276px past the viewport
+      // while the span showed an ellipsis. The text measurement is
+      // for a label that runs past its own box VISIBLY -- the send
+      // button's, which is the case it was written for -- so it is
+      // skipped when the element clips its own overflow.
+      var ox = getComputedStyle(el).overflowX;
+      var clips = (ox === 'hidden' || ox === 'clip' || ox === 'auto' || ox === 'scroll');
+      if (!clips) {
+        var tr = null;
+        try { range.selectNodeContents(el); tr = range.getBoundingClientRect(); } catch (e) { tr = null; }
+        if (tr && tr.width) {
+          var textOver = Math.max(tr.right - vw, tr.width - vw);
+          if (textOver > over) { over = textOver; why = 'text'; }
+        }
       }
     }
     if (over <= 0.5) continue;
@@ -1382,30 +1394,40 @@ const OVERFLOW_PROBE = `(function(){
     const zoom = await js('(function(){var d=document.documentElement;return {h:d.scrollWidth>d.clientWidth};})()');
     check('200% zoom: no horizontal scrolling', !zoom.h, JSON.stringify(zoom));
     await shot('zoom200');
-    await metrics(360, 780); await sleep(400);
-    for (const [t, label] of [['tab-drop', 'QuickDrop'], ['tab-relay', 'Relay'], ['tab-peers', 'Peers'], ['tab-transfers', 'Transfers'], ['tab-logs', 'Logs']]) {
-      await tab(t);
-      // On overflow, name the elements responsible rather than only reporting
-      // the two numbers.
-      //
-      // CI reported `{"w":381,"c":360}` for Firefox and WebKit while Chromium
-      // passed, and the run was reproducible across two engines but not locally:
-      // the same harness on this machine passes on all three. "381 is more than
-      // 360" is not actionable -- it does not say what is 381 wide. A separate
-      // probe that loaded at 360px, then 1280->360, then 1280->640->360 all
-      // reported the page clean, which is four different arrangements agreeing
-      // with each other and disagreeing with CI. Rather than pick the most
-      // plausible arrangement and declare the defect unreproducible, the check
-      // now carries its own diagnosis into the log, where the next run on the
-      // failing platform will name the element.
-      const n = await js(OVERFLOW_PROBE);
-      check('360px ' + label + ': no page overflow', n.w <= n.c, JSON.stringify(n));
-      if (n.w > n.c && n.culprits && n.culprits.length) {
-        for (const c of n.culprits.slice(0, 5)) {
-          console.log('uxtest: overflow culprit ' + label + ' ' + JSON.stringify(c));
+    // 320px as well as 360px, because a card header that cannot fit its
+    // title and its actions overflowed the viewport at 320px on every
+    // machine, and this loop only ever looked at 360px and 640px. CI
+    // reported the defect at 360px on the Linux runner's font first, but
+    // the self-check that reproduces it found the same row 80.9px past
+    // its own box at 320px with the native font on a developer's
+    // machine, where no gate had ever looked.
+    for (const vp of [[360, 780], [320, 720]]) {
+      await metrics(vp[0], vp[1]); await sleep(400);
+      for (const [t, label] of [['tab-drop', 'QuickDrop'], ['tab-relay', 'Relay'], ['tab-peers', 'Peers'], ['tab-transfers', 'Transfers'], ['tab-logs', 'Logs']]) {
+        await tab(t);
+        // On overflow, name the elements responsible rather than only reporting
+        // the two numbers.
+        //
+        // CI reported `{"w":381,"c":360}` for Firefox and WebKit while Chromium
+        // passed, and the run was reproducible across two engines but not locally:
+        // the same harness on this machine passes on all three. "381 is more than
+        // 360" is not actionable -- it does not say what is 381 wide. A separate
+        // probe that loaded at 360px, then 1280->360, then 1280->640->360 all
+        // reported the page clean, which are four different arrangements agreeing
+        // with each other and disagreeing with CI. Rather than pick the most
+        // plausible arrangement and declare the defect unreproducible, the check
+        // now carries its own diagnosis into the log, where the next run on the
+        // failing platform will name the element.
+        const n = await js(OVERFLOW_PROBE);
+        check(vp[0] + 'px ' + label + ': no page overflow', n.w <= n.c, JSON.stringify(n));
+        if (n.w > n.c && n.culprits && n.culprits.length) {
+          for (const c of n.culprits.slice(0, 5)) {
+            console.log('uxtest: overflow culprit ' + label + ' ' + JSON.stringify(c));
+          }
         }
       }
     }
+    await metrics(360, 780); await sleep(300);
 
     // The Relay tab is the product's most distinctive feature and until now the
     // harness only clicked into it. Nothing drove the forwarder or looked at the

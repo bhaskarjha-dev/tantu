@@ -477,10 +477,21 @@ jobs:
         # document does not overflow at 320px or 360px with it. Against the code
         # as it stood before the fix it reports the document at 413 wide in a 360
         # viewport.
+        #
+        # The third is the same class of check for a card header: a card's title
+        # and its actions on one line, and the actions pushed past the edge of
+        # the screen when they do not fit. On the Linux runner's font, "Recent
+        # Authorizations" plus "Refresh" and "Clear" measured 362 wide in a 360
+        # viewport -- and it was not this step that found it, but the overflow
+        # the peers run reported on the Relay tab. Every tab is visited, and
+        # both 320px and 360px are measured, because the harness measures the
+        # document at 360px and 640px only, and the card headers live on four
+        # different tabs.
         run: |
           set -o pipefail
           node tools/uxtest/selfcheck-overflow-probe.cjs
           node tools/uxtest/selfcheck-narrow-viewport-button.cjs
+          node tools/uxtest/selfcheck-narrow-viewport-card-head.cjs
           # Third gate about a gate: the engine-failure detector. It exists because
           # on 2026-10-16 a webkit run reported six failures when one engine-level
           # request failure caused five of them, and nothing said so. A detector

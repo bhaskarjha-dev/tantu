@@ -355,6 +355,48 @@ peerless run where the control does not exist.
 **This is not E4 or E5 evidence.** The ladder above is unchanged on
 that axis.
 
+## Batch P — the card header that could not fit its own title
+
+CI was red on Batch O, and the red was not Batch O's. It was a card
+header whose title and actions could not share a line — "Recent
+Authorizations" beside "Refresh" and "Clear" — and the actions were
+pushed past the edge of the screen on the CI runner's font, two pixels
+at 360px.
+
+The interesting part is what the same rule did on a developer's
+machine: nothing visible, because the row *shrank the title* instead.
+"Recent Authorizations" wrapped onto two lines with the buttons
+squeezed against them. Same broken rule, and only one of its two
+outcomes happens to overflow the screen — so the local runs had nothing
+to report and the runner had the whole story.
+
+Eight card headers existed, each written as an inline style, four with
+`flex-wrap` and four without. They are one class now — `.card-head`,
+which wraps — and the inline styles are gone.
+
+The gate measures the card header's own content rather than the
+document's width, because the document's width is the sum of everything
+on the page, and it forces the condition by giving the headers a
+deliberately wide font instead of waiting for a runner's font. Deleting
+the one line `flex-wrap: wrap;` fails **sixteen of twenty**
+combinations, with the native font, on a developer's machine: the Relay
+header ran 40.9px past its own box at 360px and 80.9px at 320px.
+
+And the width nobody had measured: the harness looked at 360px and
+640px, never at 320px, and at 320px the document overflowed on four of
+the five tabs on every machine. The harness measures 320px now, on every
+tab — and the first run at that width found two more rows that could
+not fit and had nowhere to go: the destination pill, capped at 15rem
+(240px) on a 175px row, and the peer's three actions, 287px side by
+side with `flex: none`. The pill's cap is now `min(15rem, 100%)` and
+the action row is shrinkable. The probe's own text measurement was
+wrong as well: it reported a clipped peer name as 276px of overflow
+when the span was showing an ellipsis, because a range's rectangle is
+the layout extent of the text rather than the painted one.
+
+**This is not E4 or E5 evidence.** The ladder above is unchanged on
+that axis.
+
 ## Explicit "not now" adherence
 
 Cloud telemetry, hosted accounts, auto-send, silent retry, hidden default

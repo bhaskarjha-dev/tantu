@@ -293,6 +293,28 @@
     align-items: center;
     gap: 0.5rem;
   }
+  /* A card's header: the title on one side, the actions on the other.
+     It WRAPS, and that is the whole point of the class.
+     
+     At 360px, on the Linux runner's font, "Recent Authorizations" plus
+     "Refresh" and "Clear" measured 362px in a 360px viewport: the
+     actions were pushed two pixels past the edge of the screen, and the
+     page gained a horizontal scrollbar that no developer with a
+     narrower font could see. The same row on Windows fit, which is why
+     it survived several batches of narrow-viewport work.
+     
+     Four of these rows had `flex-wrap` and five did not, because each
+     was an inline style and nobody could see the others. A row that
+     cannot fit its title and its actions on one line has to put the
+     actions on their own line, and that has to be true of every card
+     header rather than of the four somebody remembered. */
+  .card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+  }
   .drop-zone {
     border: 2px dashed var(--border-light);
     border-radius: 12px;
@@ -1974,7 +1996,12 @@
   .peer__actions {
     display: flex;
     gap: 0.35rem;
-    flex: none;
+    /* Shrinkable, not `flex: none`. The three actions are 287px wide
+       side by side, and with `flex: none` the row kept that width on a
+       240px line and hung 17px past the edge of the viewport. The row
+       is allowed to be as narrow as the line it is on, and the buttons
+       inside it wrap. */
+    flex: 0 1 auto;
     flex-wrap: wrap;
   }
   .peer__meta {
@@ -2205,7 +2232,15 @@
     display: inline-flex;
     align-items: center;
     gap: 0.35rem;
-    max-width: 15rem;
+    /* A peer name has no length limit the product controls, so the pill
+       is capped -- and the cap is the SMALLER of a fixed width and the
+       width of the row the pill is in. The fixed cap alone was 15rem,
+       which is 240px, and on a 320px screen the row it sits in is
+       175px: the pill was 15px past the edge of the viewport, and the
+       name inside it was never truncated because the pill had room for
+       the whole of it. The name is still the whole value in the
+       accessible name, and the pill's title carries it. */
+    max-width: min(15rem, 100%);
     padding: 0.25rem 0.6rem;
     border-radius: var(--radius-pill);
     border: 1px solid var(--border);
@@ -2527,7 +2562,7 @@
          grants permanent mutual trust, so it is an announced status region
          with theme-aware classes and full-size targets. -->
     <div id="pendingPairingsBanner" class="pairing-banner" role="status" aria-live="polite" style="display: none;">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; flex-wrap: wrap; gap: 0.5rem;">
+      <div class="card-head" style="margin-bottom: 0.75rem;">
         <h2 class="pairing-banner-title ico ico--lock">Incoming pairing request</h2>
         <span class="pairing-banner-badge">Action required</span>
       </div>
@@ -2549,7 +2584,7 @@
     <div id="tab-drop" class="tab-pane active" role="tabpanel" aria-labelledby="tab-btn-drop">
       <!-- Download Location Bar -->
       <div class="card" style="margin-bottom: 1.25rem; padding: 0.75rem 1.25rem;">
-        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem;">
+        <div class="card-head">
           <div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem;">
             <span class="ico ico--folder" style="color: var(--text-muted);">Downloads location:</span>
             <code id="downloadDirPath" class="mono-chip">...</code>
@@ -2640,7 +2675,7 @@
 
         <!-- Right Pane: Received Items & History -->
         <div class="card" style="display: flex; flex-direction: column;">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+          <div class="card-head" style="margin-bottom: 0.75rem;">
             <h2 class="card-title ico ico--inbox" style="margin-bottom: 0;">Received Items</h2>
             <button class="btn-sm ico ico--refresh" data-action="load-recent">Refresh</button>
           </div>
@@ -2706,7 +2741,7 @@
       </div>
 
       <div class="card">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+        <div class="card-head" style="margin-bottom: 0.75rem;">
           <h2 class="card-title ico ico--lock" style="margin-bottom: 0;">Recent Authorizations</h2>
           <div style="display: flex; gap: 0.5rem;">
             <button class="btn-sm ico ico--refresh" data-action="load-authorizations">Refresh</button>
@@ -2730,7 +2765,7 @@
     <div id="tab-peers" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-peers">
       <!-- Discovered Nearby Hubs (Auto-detected via mDNS/LAN Beacon) -->
       <div id="discoveredHubsCard" class="card" style="display: none; margin-bottom: 1.5rem; border: 1px solid var(--accent); background: rgba(59, 130, 246, 0.05);">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+        <div class="card-head" style="margin-bottom: 0.75rem;">
           <h2 class="card-title ico ico--radio" style="margin-bottom: 0; color: var(--accent);">Discovered Nearby Hubs</h2>
           <span style="font-size: 0.75rem; color: var(--text-muted); background: var(--surface-hover); padding: 0.2rem 0.5rem; border-radius: 4px;">Zero-Typing Discovery</span>
         </div>
@@ -2777,7 +2812,7 @@
         </div>
 
         <div class="card">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+          <div class="card-head" style="margin-bottom: 0.75rem;">
             <h2 class="card-title ico ico--users" style="margin-bottom: 0;">Trusted Peers</h2>
             <button class="btn-sm ico ico--plus" data-action="open-pair-modal">Pair New Device</button>
           </div>
@@ -2860,7 +2895,7 @@
 <!-- TAB: TRANSFERS (sender truth, durable) -->
     <div id="tab-transfers" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-transfers">
       <div class="card">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+        <div class="card-head" style="margin-bottom: 0.75rem;">
           <h2 class="card-title ico ico--transfer" style="margin-bottom: 0;">Transfers</h2>
           <div style="display: flex; gap: 0.5rem;">
             <button class="btn-sm ico ico--refresh" data-action="load-transfers">Refresh</button>
@@ -2883,7 +2918,7 @@
     <!-- TAB 4: LIVE LOGS -->
     <div id="tab-logs" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-logs">
       <div class="card">
-        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1rem;">
+        <div class="card-head" style="margin-bottom: 1rem;">
           <h2 class="card-title ico ico--logs" style="margin-bottom: 0;">Live Diagnostics & Activity Feed</h2>
           <div style="display: flex; gap: 0.5rem;">
             <button class="btn-sm ico ico--download" data-action="export-logs">Export Logs</button>
