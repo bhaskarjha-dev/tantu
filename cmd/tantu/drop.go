@@ -26,6 +26,7 @@ import (
 	"github.com/bhaskarjha-dev/tantu/internal/drop"
 	"github.com/bhaskarjha-dev/tantu/internal/pairing"
 	"github.com/bhaskarjha-dev/tantu/internal/transport"
+	"github.com/bhaskarjha-dev/tantu/internal/webui"
 )
 
 const dropPageHTML = `<!DOCTYPE html>
@@ -33,224 +34,14 @@ const dropPageHTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>📦 QuickDrop</title>
-<style>
-  :root {
-    --bg: #0f1117;
-    --card-bg: #1a1d27;
-    --border: #2d3748;
-    --text: #e2e8f0;
-    --text-muted: #94a3b8;
-    --accent: #3b82f6;
-    --accent-hover: #2563eb;
-    --success: #10b981;
-    --error: #ef4444;
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    background-color: var(--bg);
-    color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-    min-height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 2rem 1rem;
-  }
-  .card {
-    background: var(--card-bg);
-    border: 1px solid var(--border);
-    border-radius: 16px;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-    max-width: 640px;
-    width: 100%;
-    padding: 2.5rem;
-  }
-  header {
-    margin-bottom: 2rem;
-    text-align: center;
-  }
-  h1 {
-    font-size: 1.75rem;
-    font-weight: 700;
-    margin-bottom: 0.5rem;
-  }
-  .peer-badge {
-    display: inline-block;
-    background: rgba(59, 130, 246, 0.15);
-    border: 1px solid rgba(59, 130, 246, 0.3);
-    color: #60a5fa;
-    padding: 0.35rem 0.75rem;
-    border-radius: 9999px;
-    font-size: 0.85rem;
-    margin-top: 0.5rem;
-  }
-  .section {
-    margin-bottom: 2rem;
-  }
-  .section-title {
-    font-size: 0.95rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-muted);
-    margin-bottom: 0.75rem;
-  }
-  .form-group {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-    margin-bottom: 1rem;
-  }
-  textarea {
-    width: 100%;
-    min-height: 110px;
-    background: #0f1117;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    color: var(--text);
-    padding: 0.75rem 1rem;
-    font-size: 0.95rem;
-    font-family: inherit;
-    outline: none;
-    resize: vertical;
-    transition: border-color 0.2s;
-  }
-  textarea:focus, input[type="text"]:focus {
-    border-color: var(--accent);
-  }
-  input[type="text"] {
-    background: #0f1117;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    color: var(--text);
-    padding: 0.6rem 1rem;
-    font-size: 0.9rem;
-    outline: none;
-    transition: border-color 0.2s;
-  }
-  button.action-btn {
-    background: var(--accent);
-    color: white;
-    border: none;
-    border-radius: 8px;
-    padding: 0.75rem 1.5rem;
-    font-weight: 600;
-    font-size: 0.95rem;
-    cursor: pointer;
-    transition: background 0.2s, opacity 0.2s;
-    align-self: flex-start;
-  }
-  button.action-btn:hover:not(:disabled) {
-    background: var(--accent-hover);
-  }
-  button.action-btn:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-  .drop-zone {
-    border: 2px dashed var(--border);
-    border-radius: 12px;
-    padding: 2rem 1rem;
-    text-align: center;
-    background: rgba(255, 255, 255, 0.02);
-    cursor: pointer;
-    transition: border-color 0.2s, background 0.2s;
-  }
-  .drop-zone.dragover {
-    border-color: var(--accent);
-    background: rgba(59, 130, 246, 0.08);
-  }
-  .drop-zone-icon {
-    font-size: 2.2rem;
-    margin-bottom: 0.5rem;
-  }
-  .drop-zone-text {
-    font-size: 0.95rem;
-    color: var(--text-muted);
-  }
-  .drop-zone-file {
-    margin-top: 0.5rem;
-    font-weight: 600;
-    color: var(--accent);
-  }
-  input[type="file"] {
-    display: none;
-  }
-  .status-msg {
-    margin-top: 0.5rem;
-    font-size: 0.875rem;
-    min-height: 1.25rem;
-  }
-  .status-msg.success { color: var(--success); }
-  .status-msg.error { color: var(--error); }
-  .status-msg.sending { color: #60a5fa; }
-  .received-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-  }
-  .received-item {
-    background: #0f1117;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 0.85rem 1rem;
-  }
-  .received-item-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 0.4rem;
-    font-size: 0.85rem;
-    color: var(--text-muted);
-  }
-  .received-item-title {
-    font-weight: 600;
-    color: var(--text);
-  }
-  .received-item-content {
-    font-family: monospace;
-    font-size: 0.9rem;
-    background: rgba(0, 0, 0, 0.3);
-    padding: 0.5rem 0.75rem;
-    border-radius: 6px;
-    white-space: pre-wrap;
-    word-break: break-all;
-    max-height: 150px;
-    overflow-y: auto;
-  }
-  .received-item-actions {
-    margin-top: 0.5rem;
-    display: flex;
-    gap: 0.5rem;
-  }
-  .small-btn {
-    background: rgba(255, 255, 255, 0.08);
-    border: 1px solid var(--border);
-    color: var(--text);
-    padding: 0.3rem 0.6rem;
-    border-radius: 6px;
-    font-size: 0.8rem;
-    cursor: pointer;
-    text-decoration: none;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-  }
-  .small-btn:hover {
-    background: rgba(255, 255, 255, 0.15);
-  }
-  .empty-state {
-    color: var(--text-muted);
-    font-size: 0.875rem;
-    font-style: italic;
-  }
-</style>
+<title>QuickDrop</title>
+<style>{{THEME}}</style>
+<style>{{NODEPAGE}}</style>
 </head>
 <body>
 <div class="card">
   <header>
-    <h1>📦 QuickDrop</h1>
+    <h1><span class="ico ico--drop" aria-hidden="true"></span>QuickDrop</h1>
     <div class="peer-badge">Connected to {{PEER}}</div>
   </header>
 
@@ -271,7 +62,7 @@ const dropPageHTML = `<!DOCTYPE html>
   <div class="section">
     <div class="section-title">Send File</div>
     <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
-      <div class="drop-zone-icon">📁</div>
+      <div class="drop-zone-icon"><span class="ico ico--folder" aria-hidden="true"></span></div>
       <div class="drop-zone-text">Click or drag-and-drop a file here</div>
       <div class="drop-zone-file" id="selectedFileName"></div>
       <input type="file" id="fileInput" onchange="onFileSelected(this.files)">
@@ -284,7 +75,7 @@ const dropPageHTML = `<!DOCTYPE html>
 
   <!-- Section 3: Received Drops -->
   <div class="section">
-    <div class="section-title">Received Drops <span style="font-size: 0.8rem; text-transform: none; color: var(--success); margin-left: 0.5rem;" id="listenBadge">🟢 Listening</span></div>
+    <div class="section-title">Received Drops <span style="font-size: 0.8rem; text-transform: none; color: var(--success-text); margin-left: 0.5rem; display: inline-flex; align-items: center; gap: 0.35rem;" id="listenBadge"><span class="status-dot" aria-hidden="true"></span>Listening</span></div>
     <div class="received-list" id="receivedList">
       <div class="empty-state" id="emptyState">No drops received yet. Waiting for incoming transfers...</div>
     </div>
@@ -335,9 +126,27 @@ const dropPageHTML = `<!DOCTYPE html>
 
   let selectedFile = null;
 
+  // The mark comes from the kind, and the word is set as text.
+  //
+  // The emoji it used to carry were the platform's glyphs, in the platform's
+  // colours, at the platform's size, and the rest of the product draws its
+  // own. The word is still set as text, never as markup, because a status
+  // message can carry a sentence from the server.
+  function marked(kind, text) {
+    const frag = document.createDocumentFragment();
+    const icon = document.createElement('span');
+    icon.className = 'ico ' + kind;
+    icon.setAttribute('aria-hidden', 'true');
+    frag.appendChild(icon);
+    frag.appendChild(document.createTextNode(text));
+    return frag;
+  }
+  const STATUS_ICON = { success: 'ico--check', error: 'ico--alert', sending: 'ico--clock' };
+
   function setStatus(id, text, type) {
     const el = document.getElementById(id);
-    el.textContent = text;
+    el.textContent = '';
+    el.appendChild(marked(STATUS_ICON[type] || 'ico--clock', text));
     el.className = 'status-msg ' + (type || '');
   }
 
@@ -345,12 +154,12 @@ const dropPageHTML = `<!DOCTYPE html>
     const text = document.getElementById('textContent').value;
     const label = document.getElementById('textLabel').value.trim();
     if (!text) {
-      setStatus('textStatus', '❌ Please enter text to send', 'error');
+      setStatus('textStatus', 'Please enter text to send', 'error');
       return;
     }
     const btn = document.getElementById('btnSendText');
     btn.disabled = true;
-    setStatus('textStatus', '⏳ Sending text...', 'sending');
+    setStatus('textStatus', 'Sending text...', 'sending');
 
     apiFetch('/api/send-text', {
       method: 'POST',
@@ -360,15 +169,15 @@ const dropPageHTML = `<!DOCTYPE html>
     .then(r => r.json())
     .then(data => {
       if (data.status === 'success') {
-        setStatus('textStatus', '✅ Sent successfully!', 'success');
+        setStatus('textStatus', 'Sent successfully!', 'success');
         document.getElementById('textContent').value = '';
         document.getElementById('textLabel').value = '';
       } else {
-        setStatus('textStatus', '❌ ' + (data.message || 'Send failed'), 'error');
+        setStatus('textStatus', data.message || 'Send failed', 'error');
       }
     })
     .catch(err => {
-      setStatus('textStatus', '❌ ' + err.message, 'error');
+      setStatus('textStatus', err.message, 'error');
     })
     .finally(() => {
       btn.disabled = false;
@@ -403,17 +212,17 @@ const dropPageHTML = `<!DOCTYPE html>
     .then(r => r.json())
     .then(data => {
       if (data.status === 'success') {
-        setStatus('fileStatus', '✅ File sent: ' + data.name + ' (' + formatBytes(data.size) + ')', 'success');
+        setStatus('fileStatus', 'File sent: ' + data.name + ' (' + formatBytes(data.size) + ')', 'success');
         selectedFile = null;
         document.getElementById('selectedFileName').textContent = '';
         document.getElementById('fileInput').value = '';
       } else {
-        setStatus('fileStatus', '❌ ' + (data.message || 'Send failed'), 'error');
+        setStatus('fileStatus', data.message || 'Send failed', 'error');
         btn.disabled = false;
       }
     })
     .catch(err => {
-      setStatus('fileStatus', '❌ ' + err.message, 'error');
+      setStatus('fileStatus', err.message, 'error');
       btn.disabled = false;
     });
   }
@@ -476,9 +285,10 @@ const dropPageHTML = `<!DOCTYPE html>
     header.className = 'received-item-header';
     const title = document.createElement('span');
     title.className = 'received-item-title';
-    title.textContent = drop.kind === 'file'
-      ? '📁 File: ' + (drop.name || 'file')
-      : '📝 Text' + (drop.name ? ' (' + drop.name + ')' : '');
+    title.appendChild(marked(drop.kind === 'file' ? 'ico--folder' : 'ico--text',
+      drop.kind === 'file'
+        ? 'File: ' + (drop.name || 'file')
+        : 'Text' + (drop.name ? ' (' + drop.name + ')' : '')));
     const time = document.createElement('span');
     time.textContent = new Date().toLocaleTimeString();
     header.appendChild(title);
@@ -496,7 +306,7 @@ const dropPageHTML = `<!DOCTYPE html>
         link.href = drop.url;
         link.download = '';
         link.className = 'small-btn';
-        link.textContent = '⬇️ Download';
+        link.appendChild(marked('ico--download', 'Download'));
         actions.appendChild(link);
       }
     } else {
@@ -506,13 +316,14 @@ const dropPageHTML = `<!DOCTYPE html>
       item.appendChild(content);
       const copy = document.createElement('button');
       copy.className = 'small-btn';
-      copy.textContent = '📋 Copy';
+      copy.appendChild(marked('ico--copy', 'Copy'));
       copy.addEventListener('click', () => {
         const text = String(drop.data || '');
         if (navigator.clipboard && navigator.clipboard.writeText) {
           navigator.clipboard.writeText(text).then(() => {
             const original = copy.textContent;
-            copy.textContent = '✅ Copied!';
+            copy.textContent = '';
+            copy.appendChild(marked('ico--check', 'Copied!'));
             setTimeout(() => { copy.textContent = original; }, 2000);
           }).catch(() => {});
         }
@@ -974,6 +785,13 @@ func runDrop(args []string) {
 	mux.HandleFunc("/api/local/session", handleLocalSessionExchange(localSession))
 	pageContent := strings.ReplaceAll(dropPageHTML, "{{PORT}}", strconv.Itoa(*port))
 	pageContent = strings.ReplaceAll(pageContent, "{{PEER}}", escapeHTML(peerInfo))
+	// The page draws from the product's design system and its shared node
+	// shell, so a QuickDrop page and a Hub page are the same product rather
+	// than two that happen to share a name. The page used to carry its own
+	// palette -- a third set of values, hand-copied -- and its own copy of
+	// the layout, which the relay page carried too.
+	pageContent = strings.ReplaceAll(pageContent, "{{THEME}}", webui.ThemeCSS)
+	pageContent = strings.ReplaceAll(pageContent, "{{NODEPAGE}}", nodePageCSS)
 	if strings.Contains(pageContent, "IPC_TOKEN") {
 		fmt.Fprintln(os.Stderr, "Error: refusing to serve a page that embeds an API credential")
 		os.Exit(1)

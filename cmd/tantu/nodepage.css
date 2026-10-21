@@ -1,0 +1,318 @@
+/* ---------------------------------------------------------------------------
+   The shell the node's two pages share: the QuickDrop page `tantu drop`
+   serves, and the relay page `tantu relay` serves.
+
+   They were the same page, twice: the same card, the same sections, the
+   same fields and the same buttons, written out in both files with
+   small differences, and both carrying a SECOND palette -- a third set
+   of values, hand-copied, in a product whose other pages used the
+   design system. The same defect as two rules for one thing, in a third
+   colour.
+
+   One shell, and it draws from the shared design system, so a node page
+   and a Hub page are visibly the same product.
+   --------------------------------------------------------------------------- */
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem 1rem;
+}
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  max-width: 640px;
+  width: 100%;
+  padding: 2.5rem;
+}
+header {
+  margin-bottom: 2rem;
+  text-align: center;
+}
+h1 {
+  font-size: var(--fs-2xl);
+  font-weight: 700;
+  margin-bottom: 0.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+.peer-badge {
+  display: inline-block;
+  background: var(--surface-hover);
+  border: 1px solid var(--border-light);
+  color: var(--accent-text);
+  padding: 0.35rem 0.75rem;
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-sm);
+  margin-top: 0.5rem;
+}
+.section {
+  margin-bottom: 2rem;
+}
+.section-title {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+/* The relay page puts the field and the button on one line; the drop
+   page stacks them. Both are the same control group, so the layout is
+   a modifier rather than a second rule. */
+.form-group--inline {
+  flex-direction: row;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+input[type="text"], textarea {
+  flex: 1;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  padding: 0.75rem 1rem;
+  font-size: var(--fs-md);
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s;
+}
+textarea {
+  min-height: 110px;
+  resize: vertical;
+}
+input[type="text"]:focus, textarea:focus {
+  border-color: var(--accent);
+}
+/* The focus ring on a field is the shared one: every focusable control
+   on a page gets a 2px solid accent outline, so a reader who tabs
+   through the form can see where they are. A second, differently-
+   styled ring here would be the defect the focus gate in the Hub exists
+   to catch. */
+input[type="text"]:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+button.action-btn, button.submit-btn, .bookmarklet-btn {
+  /* --accent-gradient-strong, not --accent: white on --accent measured
+     3.68:1 at the blue end, which is under AA for a 15px label. The
+     Hub's own primary button made the same choice. */
+  background: var(--accent-gradient-strong);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-md);
+  padding: 0.75rem 1.5rem;
+  font-weight: 600;
+  font-size: var(--fs-md);
+  font-family: inherit;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  transition: background 0.2s, opacity 0.2s;
+  min-height: 44px;
+}
+button.submit-btn {
+  padding: 0 1.25rem;
+}
+.bookmarklet-btn {
+  cursor: grab;
+  user-select: none;
+  transition: background 0.2s, transform 0.1s;
+}
+button.action-btn:hover:not(:disabled),
+button.submit-btn:hover:not(:disabled),
+.bookmarklet-btn:hover {
+  background: var(--accent-hover);
+}
+button.action-btn:disabled, button.submit-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+button.action-btn:focus-visible, button.submit-btn:focus-visible,
+.bookmarklet-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.drop-zone {
+  border: 2px dashed var(--border);
+  border-radius: var(--radius-lg);
+  padding: 2rem 1rem;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.02);
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+}
+.drop-zone.dragover {
+  border-color: var(--accent);
+  background: var(--surface-hover);
+}
+.drop-zone-icon {
+  margin-bottom: 0.5rem;
+  color: var(--text-muted);
+  display: flex;
+  justify-content: center;
+}
+.drop-zone-icon .ico::before {
+  width: 2.2rem;
+  height: 2.2rem;
+  margin-right: 0;
+}
+.drop-zone-text {
+  font-size: var(--fs-md);
+  color: var(--text-muted);
+}
+.drop-zone-file {
+  margin-top: 0.5rem;
+  font-weight: 600;
+  color: var(--accent-text);
+}
+input[type="file"] {
+  display: none;
+}
+.status-msg {
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+  font-size: var(--fs-sm);
+  min-height: 1.25rem;
+  color: var(--text-muted);
+}
+/* The small dot that says a listener is live. The dashboard has its own, on
+   the dark chrome; this is the same mark on a card. */
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+  display: inline-block;
+  flex: none;
+}
+.status-msg.success { color: var(--success-text); }
+.status-msg.error { color: var(--error-text); }
+.status-msg.sending { color: var(--accent-text); }
+.received-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.received-item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0.85rem 1rem;
+}
+.received-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.4rem;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.received-item-title {
+  font-weight: 600;
+  color: var(--text);
+}
+.received-item-content {
+  font-family: var(--font-mono);
+  font-size: var(--fs-md);
+  background: var(--bg);
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.received-item-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+.received-item-actions button {
+  background: var(--surface-hover);
+  border: 1px solid var(--border-light);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 0.35rem 0.65rem;
+  font-size: var(--fs-sm);
+  font-family: inherit;
+  cursor: pointer;
+  min-height: 24px;
+}
+.received-item-actions button:hover {
+  background: var(--border);
+}
+.bookmarklet-box {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-lg);
+  padding: 1.25rem;
+  text-align: center;
+}
+.hint {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin-top: 0.6rem;
+}
+#status {
+  display: none;
+  border-radius: var(--radius-md);
+  padding: 1rem;
+  margin-top: 1.5rem;
+  font-size: var(--fs-base);
+  line-height: 1.4;
+}
+#status.relaying {
+  display: block;
+  background: var(--warning-bg);
+  border: 1px solid var(--warning);
+  color: var(--warning-text);
+}
+#status.success {
+  display: block;
+  background: var(--success-bg);
+  border: 1px solid var(--success);
+  color: var(--success-text);
+}
+#status.error {
+  display: block;
+  background: var(--error-bg);
+  border: 1px solid var(--error);
+  color: var(--error-text);
+}
+.error-link {
+  color: var(--accent-text);
+  text-decoration: underline;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}

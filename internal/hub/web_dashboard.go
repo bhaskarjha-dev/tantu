@@ -27,6 +27,7 @@ import (
 	"github.com/bhaskarjha-dev/tantu/internal/discovery"
 	"github.com/bhaskarjha-dev/tantu/internal/drop"
 	"github.com/bhaskarjha-dev/tantu/internal/pairing"
+	"github.com/bhaskarjha-dev/tantu/internal/webui"
 )
 
 // dashboardHTML is the Hub dashboard: one HTML document embedded from
@@ -489,22 +490,6 @@ func healthOrNil(h PeerHealth) *PeerHealth {
 	return &h
 }
 
-// themeCSS is the design system: the tokens, the type scale and the icon
-// set, shared by every page the Hub serves.
-//
-// It is one file because the two relay pages used to hand-copy the values
-// they needed from the dashboard's stylesheet. The popup referenced zero of
-// the dashboard's custom properties, so the pages agreed by coincidence and
-// drifted the moment a token moved.
-//
-//go:embed theme.css
-var themeCSS string
-
-// relayShellCSS is the shell the two relay pages share.
-//
-//go:embed relay_shell.css
-var relayShellCSS string
-
 // injectTheme puts the shared design system into a page at its {{THEME}}
 // marker.
 //
@@ -513,8 +498,8 @@ var relayShellCSS string
 // drift from the dashboard, and the drift is invisible until somebody
 // compares the two.
 func injectTheme(page string) string {
-	page = strings.ReplaceAll(page, "{{THEME}}", themeCSS)
-	return strings.ReplaceAll(page, "{{RELAY_SHELL}}", relayShellCSS)
+	page = strings.ReplaceAll(page, "{{THEME}}", webui.ThemeCSS)
+	return strings.ReplaceAll(page, "{{RELAY_SHELL}}", webui.RelayShellCSS)
 }
 
 // relayInterstitialHTML is the bookmarklet confirmation shell. It carries
@@ -530,17 +515,6 @@ var relayInterstitialHTML string
 //
 //go:embed relay_blocked.html
 var relayBlockedHTML string
-
-// relayFailedHTML is the page a browser is shown when a relay attempt
-// fails.
-//
-//go:embed relay_failed.html
-var relayFailedHTML string
-
-// relayOKHTML is the page a browser is shown when a relay succeeds.
-//
-//go:embed relay_ok.html
-var relayOKHTML string
 
 // renderRelayInterstitial serves the bookmarklet confirmation shell for a
 // relay request that carries no credential. It authorizes nothing: the page
@@ -792,10 +766,10 @@ func (h *Hub) registerDashboardRoutes(mux *http.ServeMux) {
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
 				w.WriteHeader(status)
 				if resp.Status == "success" {
-					page := strings.ReplaceAll(injectTheme(relayOKHTML), "{{MESSAGE}}", escapeHTMLText(resp.Message))
+					page := strings.ReplaceAll(injectTheme(webui.RelayOKHTML), "{{MESSAGE}}", escapeHTMLText(resp.Message))
 					_, _ = w.Write([]byte(page))
 				} else {
-					page := strings.ReplaceAll(injectTheme(relayFailedHTML), "{{MESSAGE}}", escapeHTMLText(resp.Message))
+					page := strings.ReplaceAll(injectTheme(webui.RelayFailedHTML), "{{MESSAGE}}", escapeHTMLText(resp.Message))
 					_, _ = w.Write([]byte(page))
 				}
 				return

@@ -23,6 +23,7 @@ import (
 	"github.com/bhaskarjha-dev/tantu/internal/browser"
 	"github.com/bhaskarjha-dev/tantu/internal/pairing"
 	"github.com/bhaskarjha-dev/tantu/internal/transport"
+	"github.com/bhaskarjha-dev/tantu/internal/webui"
 )
 
 const relayPageHTML = `<!DOCTYPE html>
@@ -30,182 +31,28 @@ const relayPageHTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>🔐 tantu relay</title>
-<style>
-  :root {
-    --bg: #0f1117;
-    --card-bg: #1a1d27;
-    --border: #2d3748;
-    --text: #e2e8f0;
-    --text-muted: #94a3b8;
-    --accent: #3b82f6;
-    --accent-hover: #2563eb;
-    --success: #10b981;
-    --error: #ef4444;
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    background-color: var(--bg);
-    color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-    min-height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 2rem 1rem;
-  }
-  .card {
-    background: var(--card-bg);
-    border: 1px solid var(--border);
-    border-radius: 16px;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-    max-width: 600px;
-    width: 100%;
-    padding: 2.5rem;
-  }
-  header {
-    margin-bottom: 2rem;
-    text-align: center;
-  }
-  h1 {
-    font-size: 1.75rem;
-    font-weight: 700;
-    margin-bottom: 0.5rem;
-  }
-  .peer-badge {
-    display: inline-block;
-    background: rgba(59, 130, 246, 0.15);
-    border: 1px solid rgba(59, 130, 246, 0.3);
-    color: #60a5fa;
-    padding: 0.35rem 0.75rem;
-    border-radius: 9999px;
-    font-size: 0.85rem;
-    margin-top: 0.5rem;
-  }
-  .section {
-    margin-bottom: 2rem;
-  }
-  .section-title {
-    font-size: 0.95rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-muted);
-    margin-bottom: 0.75rem;
-  }
-  .bookmarklet-box {
-    background: rgba(255, 255, 255, 0.03);
-    border: 1px dashed var(--border);
-    border-radius: 12px;
-    padding: 1.25rem;
-    text-align: center;
-  }
-  .bookmarklet-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
-    background: var(--accent);
-    color: #fff;
-    padding: 0.65rem 1.25rem;
-    border-radius: 8px;
-    font-weight: 600;
-    font-size: 1rem;
-    text-decoration: none;
-    cursor: grab;
-    transition: background 0.2s, transform 0.1s;
-    user-select: none;
-  }
-  .bookmarklet-btn:hover {
-    background: var(--accent-hover);
-    transform: translateY(-1px);
-  }
-  .hint {
-    font-size: 0.8rem;
-    color: var(--text-muted);
-    margin-top: 0.6rem;
-  }
-  .form-group {
-    display: flex;
-    gap: 0.5rem;
-  }
-  input[type="text"] {
-    flex: 1;
-    background: #0f1117;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    color: var(--text);
-    padding: 0.75rem 1rem;
-    font-size: 0.95rem;
-    outline: none;
-    transition: border-color 0.2s;
-  }
-  input[type="text"]:focus {
-    border-color: var(--accent);
-  }
-  button.submit-btn {
-    background: var(--accent);
-    color: white;
-    border: none;
-    border-radius: 8px;
-    padding: 0 1.25rem;
-    font-weight: 600;
-    font-size: 0.95rem;
-    cursor: pointer;
-    transition: background 0.2s;
-  }
-  button.submit-btn:hover {
-    background: var(--accent-hover);
-  }
-  button.submit-btn:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-  #status {
-    display: none;
-    border-radius: 8px;
-    padding: 1rem;
-    margin-top: 1.5rem;
-    font-size: 0.9rem;
-    line-height: 1.4;
-  }
-  #status.relaying {
-    display: block;
-    background: rgba(234, 179, 8, 0.1);
-    border: 1px solid rgba(234, 179, 8, 0.3);
-    color: #facc15;
-  }
-  #status.success {
-    display: block;
-    background: rgba(16, 185, 129, 0.1);
-    border: 1px solid rgba(16, 185, 129, 0.3);
-    color: #34d399;
-  }
-  #status.error {
-    display: block;
-    background: rgba(239, 68, 68, 0.1);
-    border: 1px solid rgba(239, 68, 68, 0.3);
-    color: #f87171;
-  }
-</style>
+<title>tantu relay</title>
+<style>{{THEME}}</style>
+<style>{{NODEPAGE}}</style>
 </head>
 <body>
   <div class="card">
     <header>
-      <h1>🔐 tantu relay</h1>
+      <h1><span class="ico ico--lock" aria-hidden="true"></span>tantu relay</h1>
       <div class="peer-badge">Connected to {{PEER}}</div>
     </header>
 
     <div class="section">
       <div class="section-title">One-Click Bookmarklet</div>
       <div class="bookmarklet-box">
-        <a class="bookmarklet-btn" href="{{BOOKMARKLET_HREF}}">⚡ Tantu</a>
+        <a class="bookmarklet-btn" href="{{BOOKMARKLET_HREF}}"><span class="ico ico--bolt" aria-hidden="true"></span>Tantu</a>
         <div class="hint">Drag this button to your browser bookmarks bar. Click it on any OAuth login tab.</div>
       </div>
     </div>
 
     <div class="section">
       <div class="section-title">Manual Relay</div>
-      <form id="relayForm" class="form-group">
+      <form id="relayForm" class="form-group form-group--inline">
         <input type="text" id="urlInput" placeholder="Paste OAuth URL (https://accounts.google.com/...)" required>
         <button type="submit" id="submitBtn" class="submit-btn">Relay</button>
         <button type="button" id="cancelBtn" class="submit-btn" style="display:none;">Cancel</button>
@@ -220,6 +67,26 @@ const relayPageHTML = `<!DOCTYPE html>
     const btn = document.getElementById('submitBtn');
     const cancelBtn = document.getElementById('cancelBtn');
     const status = document.getElementById('status');
+    // The mark is the product's own drawn glyph -- an element with a class,
+    // not a character -- and every word that came from the server is set as
+    // TEXT. The status used to be built with innerHTML and a message
+    // interpolated into it, so a relayed URL could have become markup.
+    // The label and the message are separate nodes, so the emphasis is
+    // kept and nothing untrusted is ever parsed as markup.
+    function showStatus(kind, label, message) {
+      status.className = kind;
+      status.textContent = '';
+      const icon = document.createElement('span');
+      icon.className = 'ico ' + (kind === 'success' ? 'ico--check' : kind === 'relaying' ? 'ico--clock' : 'ico--alert');
+      icon.setAttribute('aria-hidden', 'true');
+      status.appendChild(icon);
+      if (label) {
+        const strong = document.createElement('strong');
+        strong.textContent = label;
+        status.appendChild(strong);
+      }
+      if (message) status.appendChild(document.createTextNode(' ' + message));
+    }
     // The relay POST blocks for the whole sign-in. Aborting it stops this page
     // waiting; the server-side cancel is what actually releases the peer.
     let relayAbort = null;
@@ -235,12 +102,10 @@ const relayPageHTML = `<!DOCTYPE html>
           body: JSON.stringify({})
         });
         const data = await resp.json();
-        status.className = 'success';
-        status.innerHTML = '🚪 ' + (data.message || 'Sign-in cancelled. You can start again.');
+        showStatus('success', '', data.message || 'Sign-in cancelled. You can start again.');
       } catch (err) {
-        status.className = 'error';
-        status.innerHTML = '❌ <strong>Could not cancel:</strong> ' + err.message +
-          ' The sign-in will end on its own timeout.';
+        showStatus('error', 'Could not cancel:', err.message +
+          ' The sign-in will end on its own timeout.');
       } finally {
         cancelBtn.disabled = false;
         cancelBtn.style.display = 'none';
@@ -259,8 +124,7 @@ const relayPageHTML = `<!DOCTYPE html>
       cancelBtn.disabled = false;
       relayInFlight = true;
       relayAbort = new AbortController();
-      status.className = 'relaying';
-      status.innerHTML = '⏳ Relaying OAuth URL through bridge...';
+      showStatus('relaying', '', 'Relaying OAuth URL through bridge...');
 
       try {
         const resp = await fetch('/relay', {
@@ -272,18 +136,15 @@ const relayPageHTML = `<!DOCTYPE html>
         relayInFlight = false;
         const data = await resp.json();
         if (resp.ok && data.status === 'success') {
-          status.className = 'success';
-          status.innerHTML = '✅ <strong>Authentication completed successfully!</strong>';
+          showStatus('success', 'Authentication completed successfully!', '');
           input.value = '';
         } else {
-          status.className = 'error';
-          status.innerHTML = '❌ <strong>Relay failed:</strong> ' + (data.message || 'Unknown error');
+          showStatus('error', 'Relay failed:', data.message || 'Unknown error');
         }
       } catch (err) {
         relayInFlight = false;
         if (err.name === 'AbortError') return;
-        status.className = 'error';
-        status.innerHTML = '❌ <strong>Connection error:</strong> ' + err.message;
+        showStatus('error', 'Connection error:', err.message);
       } finally {
         btn.disabled = false;
         cancelBtn.style.display = 'none';
@@ -442,6 +303,14 @@ func runRelay(args []string) {
 		pageContent := strings.ReplaceAll(relayPageHTML, "{{PORT}}", strconv.Itoa(*port))
 		pageContent = strings.ReplaceAll(pageContent, "{{PEER}}", escapeHTML(peerInfo))
 		pageContent = strings.ReplaceAll(pageContent, "{{RELAY_TOKEN}}", formTicket)
+		// The page draws from the product's design system and the shared
+		// node shell, so a relay page and a Hub page are the same product
+		// rather than two that happen to share a name. The page used to
+		// carry its own palette -- a third set of values, hand-copied --
+		// and its own copy of the layout, which the QuickDrop page carried
+		// too.
+		pageContent = strings.ReplaceAll(pageContent, "{{THEME}}", webui.ThemeCSS)
+		pageContent = strings.ReplaceAll(pageContent, "{{NODEPAGE}}", nodePageCSS)
 		return strings.ReplaceAll(pageContent, "{{BOOKMARKLET_HREF}}", bookmarkletJS)
 	}
 
@@ -504,7 +373,42 @@ func runRelay(args []string) {
 		if !pageSession.Authorize(r) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusForbidden)
-			_, _ = w.Write([]byte(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>tantu relay — authorization required</title></head><body style="font-family:system-ui;background:#090b10;color:#e6edf3;padding:2rem"><h1>Authorization required</h1><p>Open the one-time link printed in the terminal that started <code>tantu relay</code>. That link carries a single-use bootstrap value that exchanges for a session; this page will then show the bookmarklet and the manual forwarder.</p><p style="color:#8b949e">No relay capability is issued to an unauthenticated caller.</p></body></html>`))
+			// The dead end, on the shared design system: the colours it used
+			// to carry were hand-copied from the Hub's, and a page nobody looks
+			// at is a page whose colours nobody checks.
+			// The landing page for the printed link, and the place the
+			// one-time bootstrap value is exchanged for a session.
+			//
+			// It has to be HERE and not on the page behind the gate: the
+			// server hands out a session cookie and nothing else, and the
+			// value in the address bar's fragment is never sent to a server.
+			// So the page behind the gate could never be reached, and a
+			// person who opened the printed link was told to open the
+			// printed link. The exchange route has been registered since the
+			// page was put behind a session; nothing ever called it.
+			deadEnd := "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">" +
+				"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">" +
+				"<title>tantu relay — authorization required</title>" +
+				"<style>{{THEME}}</style><style>{{NODEPAGE}}</style></head>" +
+				"<body><div class=\"card\"><header><h1>Authorization required</h1></header>" +
+				"<div class=\"status-msg\" id=\"sessionBanner\">Exchanging the one-time link for a session...</div>" +
+				"<p class=\"hint\">No relay capability is issued to an unauthenticated caller.</p>" +
+				"</div>" +
+				"<script>(function(){" +
+				"var banner=document.getElementById('sessionBanner');" +
+				"var supplied=new URLSearchParams(location.hash.slice(1)).get('bootstrap');" +
+				"if(!supplied){banner.textContent='Open the one-time link printed by \\\"tantu relay\\\" in the terminal to authorize this page.';banner.classList.add('error');return;}" +
+				"fetch('/api/local/session',{method:'POST',headers:{'X-Tantu-Local-Bootstrap':supplied}})" +
+				".then(function(res){" +
+				"if(!res.ok){banner.textContent='That bootstrap value is invalid or was already used. Run \\\"tantu relay\\\" again for a fresh link.';banner.classList.add('error');return;}" +
+				"history.replaceState(null,'',location.pathname);" +
+				"location.reload();" +
+				"}).catch(function(){banner.textContent='The Hub could not be reached. Try again.';banner.classList.add('error');});" +
+				"})();</script>" +
+				"</body></html>"
+			deadEnd = strings.ReplaceAll(deadEnd, "{{THEME}}", webui.ThemeCSS)
+			deadEnd = strings.ReplaceAll(deadEnd, "{{NODEPAGE}}", nodePageCSS)
+			_, _ = w.Write([]byte(deadEnd))
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")

@@ -11985,4 +11985,100 @@ relaxed to fit a noisy runner is the thing this repository has spent
 the most effort not doing. The measurement stays as it is, and the
 run is re-run instead.
 
+## Batch R -- the node's own pages, and the one that could not be reached (2026-10-21)
+
+The Hub's pages were reviewed in Batches K to Q. The product has two
+more pages, and they belong to the *other* side of the product: the
+machine that RECEIVES. `tantu drop` serves a QuickDrop page and
+`tantu relay` serves a relay page, and neither had been looked at.
+
+### A third palette
+
+Both of them carried their own `:root` block -- a third set of values
+in a product whose other pages used the design system:
+
+    --bg:       #0f1117     (the Hub's: #090b10)
+    --card-bg:  #1a1d27     (the Hub's: #131722)
+    --border:   #2d3748     (the Hub's: #232a3b)
+    --text:     #e2e8f0     (the Hub's: #e6edf3)
+    --text-muted: #94a3b8   (the Hub's: #8b949e)
+
+and both of them carried a copy of the same layout -- the same card,
+the same sections, the same fields and the same buttons -- written out
+in both files with small differences, and emoji in both.
+
+**One owner.** The tokens, the type scale and the icon set moved into
+`internal/webui`, a package of assets and nothing else, which the
+Hub and the node's commands both draw from. The node's two pages
+share one shell (`cmd/tantu/nodepage.css`), the same shell the
+drop page and the relay page had each been carrying separately.
+
+### The page nobody could reach
+
+`tantu relay` prints a one-time link and serves a page behind a
+session. The link carries the one-time value in the URL **fragment**,
+and the server only ever hands out a **session cookie** -- a fragment
+is never sent to a server, so the value in the address bar had to be
+exchanged by the page.
+
+The QuickDrop page does that. The relay page did not: it had no
+exchange at all. The route has been registered since the page was put
+behind a session, and nothing ever called it.
+
+So the page could not be reached. A person who ran `tantu relay` and
+opened the printed link was shown "Authorization required", and the
+words on that page told them to open the printed link.
+
+It is fixed where it has to be: the landing page for the printed link
+exchanges the value and reloads, and the page behind the gate stays
+gated, so no capability is minted for an unauthenticated caller. The
+one-time value is spent by the first page that uses it, which is why
+the *second* visit shows the dead end -- a real state, and the dead
+end is on the design system too.
+
+### The icons were blocked by the page's own policy
+
+The node's servers set `default-src 'self'` with no `img-src`, so every
+glyph in the shared icon set -- a data: URI used as a CSS mask -- was
+refused. The pages rendered with their layout intact and **no icons at
+all**, and the browser said so only in a console message:
+
+    Loading the image 'data:image/svg+xml,...' violates the following
+    Content Security Policy directive: "default-src 'self'". Note that
+    'img-src' was not explicitly set, so 'default-src' is used as a
+    fallback. The action has been blocked.
+
+The Hub's own policy has always allowed `img-src data:`. The node's
+did not, because the node's pages had never used the icon set.
+
+### The placeholders, again
+
+The node's fields measured **3.99:1** on their placeholders -- the
+browser's default, because the `::placeholder` rule Batch O added was
+in the *dashboard's* stylesheet, not in the design system. The rule
+now lives in `internal/webui/theme.css`, where a placeholder belongs,
+because a placeholder is the same mark on every page.
+
+### The gates
+
+The two node pages are measured by the acceptance suite, on the same
+engines and in the same run as every other page: the server started
+and printed its link, the page draws its colours from the shared
+design system, no emoji, the icons are drawn and **nothing was
+blocked from loading**, the contrast sweep in both themes, and nothing
+overflowing at 360px or 320px with every control at 24x24.
+
+The "nothing was blocked" check is the one that earns its place: a
+blocked icon is a silent failure. The layout is right, the mark is
+missing, and the only evidence is a console message nobody reads.
+
+### Evidence
+
+- The acceptance suite, in both modes and on all three engines:
+  **chromium 160/160 (peers) and 158/158 (peerless)**, **webkit
+  160/160 and 158/158**, **firefox 158/158 and 156/156**.
+- `go test ./...` green across fifteen packages, `gofmt -l .` clean,
+  `go vet` clean, staticcheck clean, encgate, docgate and wfcheck
+  green, actionlint clean on both workflows.
+
 

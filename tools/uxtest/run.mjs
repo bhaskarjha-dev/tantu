@@ -1882,6 +1882,119 @@ const OVERFLOW_PROBE = `(function(){
       await relayPage.close();
     }
 
+    // --- the node's own two pages ---
+    //
+    // `tantu drop` and `tantu relay` serve pages of their own, and they
+    // are the pages a person meets when this machine is the one RECEIVING
+    // -- not the machine sending. They carried a second palette of their
+    // own, a copy of the layout, and emoji, and the acceptance suite had
+    // never opened either of them.
+    //
+    // They are measured now, on the same gates as every other page: the
+    // contrast sweep in both themes, the 24x24 target floor, and the
+    // narrow-viewport overflow probe.
+    {
+      const nodeExe = path.join(WORK, 'tantu-uxtest' + (process.platform === 'win32' ? '.exe' : ''));
+      const nodeStore = path.join(WORK, 'nodestore');
+      fs.mkdirSync(nodeStore, { recursive: true });
+      // The loopback transport needs no paired peer, so the servers start
+      // on a machine that has never paired with anything.
+      const nodeServers = [];
+      for (const [name, args, port] of [
+        ['drop', ['drop', '--transport', 'loopback', '--port', '19875'], 19875],
+        ['relay', ['relay', '--transport', 'loopback', '--port', '19876'], 19876],
+      ]) {
+        const proc = spawn(nodeExe, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        let out = '';
+        proc.stdout.on('data', (d) => { out += d; });
+        proc.stderr.on('data', (d) => { out += d; });
+        const link = await new Promise((resolve) => {
+          const iv = setInterval(() => {
+            const m = out.match(/http:\/\/([^\s]*)\/#bootstrap=([a-f0-9]+)/);
+            if (m) { clearInterval(iv); resolve('http://' + m[1] + '/#bootstrap=' + m[2]); }
+          }, 150);
+          setTimeout(() => { clearInterval(iv); resolve(null); }, 15000);
+        });
+        nodeServers.push({ name, proc, link, out: () => out });
+      }
+      for (const srv of nodeServers) {
+        if (!srv.link) {
+          // A server that never printed its link is a failure, not a skip:
+          // the check below has nothing to measure, and saying so is
+          // better than passing a page that was never served.
+          check('node ' + srv.name + ' page: the server started and printed its one-time link',
+            false, (srv.out() || '').slice(-300));
+          continue;
+        }
+        check('node ' + srv.name + ' page: the server started and printed its one-time link',
+          true, srv.link);
+        const nodePage = await context.newPage();
+        const nodeErrors = [];
+        nodePage.on('console', (m) => { if (m.type() === 'error') nodeErrors.push(m.text()); });
+        await nodePage.goto(srv.link, { waitUntil: 'domcontentloaded' });
+        await nodePage.waitForTimeout(1500);
+        // The one-time value is spent by the first page that uses it, so
+        // the second visit is the same page without a session: that is a
+        // real state, and the dead end has to be legible too.
+        const nodeState = await nodePage.evaluate(() => ({
+          title: document.title,
+          heading: document.querySelector('h1') ? document.querySelector('h1').textContent.trim() : null,
+          emoji: (document.body.textContent.match(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu) || []),
+          icons: Array.prototype.map.call(document.querySelectorAll('.ico'), (el) => {
+            const s = getComputedStyle(el, '::before');
+            return { mask: s.maskImage && s.maskImage !== 'none', w: s.width, h: s.height };
+          }),
+          token: (function () {
+            var d = document.createElement('div');
+            d.style.color = getComputedStyle(document.documentElement).getPropertyValue('--card-bg').trim();
+            document.body.appendChild(d);
+            var v = getComputedStyle(d).color;
+            d.remove();
+            return v;
+          })(),
+          cardBg: document.querySelector('.card') ? getComputedStyle(document.querySelector('.card')).backgroundColor : null,
+        }));
+        check('node ' + srv.name + ' page: it draws its colours from the shared design system',
+          !!nodeState && nodeState.token !== '' && nodeState.cardBg === nodeState.token,
+          JSON.stringify(nodeState && { cardBg: nodeState.cardBg, token: nodeState.token }));
+        check('node ' + srv.name + ' page: no emoji in the page',
+          !!nodeState && nodeState.emoji.length === 0, JSON.stringify(nodeState && nodeState.emoji));
+        check('node ' + srv.name + ' page: the icons are drawn, from the shared icon set',
+          !!nodeState && nodeState.icons.length > 0 &&
+          nodeState.icons.every((i) => i.mask && parseFloat(i.w) > 0 && parseFloat(i.h) > 0),
+          JSON.stringify(nodeState && nodeState.icons));
+        // A blocked icon is a silent failure: the layout is right and the
+        // mark is missing, and the browser says so only in a console
+        // message nobody reads.
+        check('node ' + srv.name + ' page: nothing was blocked from loading',
+          nodeErrors.filter((e) => /Content Security Policy|violates/i.test(e)).length === 0,
+          JSON.stringify(nodeErrors.slice(0, 3)));
+        const nodeSweep = { dark: 0, light: 0 };
+        const nodeSweepFails = [];
+        for (const s of ['dark', 'light']) {
+          await nodePage.emulateMedia({ colorScheme: s });
+          await nodePage.waitForTimeout(250);
+          const got = await nodePage.evaluate(CONTRAST_SWEEP);
+          if (!got) { nodeSweepFails.push({ theme: s, sel: '(sweep returned nothing)' }); continue; }
+          nodeSweep[s] += got.checked;
+          for (const f of got.fails) nodeSweepFails.push(Object.assign({ theme: s }, f));
+        }
+        check('node ' + srv.name + ' page: no unreadable text in either theme', nodeSweepFails.length === 0,
+          JSON.stringify(nodeSweepFails.slice(0, 6)));
+        for (const vp of [[360, 780], [320, 720]]) {
+          await nodePage.setViewportSize({ width: vp[0], height: vp[1] });
+          await nodePage.waitForTimeout(250);
+          const p = await nodePage.evaluate(NARROW);
+          check('node ' + srv.name + ' page ' + vp[0] + 'px: nothing overflows the viewport',
+            !!p && p.overflowing.length === 0, JSON.stringify(p && p.overflowing.slice(0, 6)));
+          check('node ' + srv.name + ' page ' + vp[0] + 'px: every control reaches 24x24 (WCAG 2.5.8)',
+            !!p && p.smallTargets.length === 0, JSON.stringify(p && p.smallTargets.slice(0, 8)));
+        }
+        await nodePage.close();
+      }
+      for (const srv of nodeServers) { try { srv.proc.kill(); } catch (_) {} }
+    }
+
     // The peer switcher's height must be the one the stylesheet states, not
     // the engine's.
     //

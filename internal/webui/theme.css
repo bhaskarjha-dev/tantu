@@ -149,6 +149,36 @@
   --fs-2xl: 1.375rem;    /* 22px  headings */
 }
 
+/* Placeholder text is painted by the browser, in the browser's own
+   default colour, unless the stylesheet says otherwise -- and the
+   stylesheet said nothing. Chromium's default is rgb(117, 117, 117),
+   which measures **3.99:1** on the dark field surface (--surface,
+   rgb(15, 20, 32)) and **4.07:1** on the light one (rgb(238, 241,
+   247)). Both are under 4.5:1, and in an empty field the placeholder
+   is the ONLY text on the screen: it is the field's instruction
+   ("Paste OAuth URL...", "Search live logs by text, URL, host, or
+   request ID...").
+
+   It was also engine-dependent, which is the same defect as the peer
+   switcher's height: Firefox paints its own default, with an alpha, and
+   nothing in the file said which colour a reader would get.
+
+   --text-muted is the muted colour this design already has, and it
+   measures 5.94:1 on the dark field and 5.29:1 on the light one.
+   `opacity: 1` is stated because Firefox applies its own opacity to the
+   placeholder on top of the colour, and the computed colour alone would
+   not be what is painted.
+
+   It lives here, in the design system, because a placeholder is the
+   same mark on every page -- and the node's pages, which had never
+   shared anything with the Hub's, were found measuring 3.99:1 on
+   their own fields. */
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-muted);
+  opacity: 1;
+}
+
 /* ---- The icon set ---- */
 :root {
   --icon-drop: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3v10'/%3E%3Cpath d='M8.5 9.5 12 13l3.5-3.5'/%3E%3Cpath d='M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4'/%3E%3C/svg%3E");

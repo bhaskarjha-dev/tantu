@@ -734,7 +734,15 @@ func localRequestMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+		// img-src allows data: because the pages draw their marks from
+		// the product's icon set, and every glyph in it is a data: URI
+		// used as a CSS mask. Without it the masks were blocked by
+		// default-src 'self' and every mark on the page was invisible:
+		// the browser logged "Loading the image 'data:image/svg+xml,...'
+		// violates the following Content Security Policy directive", and
+		// the page rendered with its layout intact and no icons at all.
+		// The Hub's own policy has always allowed it.
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Add("Vary", "Origin")
 

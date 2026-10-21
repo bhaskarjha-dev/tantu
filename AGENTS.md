@@ -99,6 +99,7 @@ internal/pairing/   Cryptographic identity, SAS verification, peer store
 internal/protocol/  Wire protocol envelope encoding/decoding
 internal/testutil/  Test helpers (SSH server, OAuth mocks)
 internal/transport/ Pluggable transport layer (LAN/mTLS, SSH, loopback)
+internal/webui/     The design system: tokens, type scale, icon set (every page)
 tools/encgate/      Gate: no encoding damage in tracked text files
 tools/docgate/      Gate: documented claims still match the code
 tools/uxtest/       Browser acceptance harness (Playwright, 3 engines)

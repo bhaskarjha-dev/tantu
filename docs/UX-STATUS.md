@@ -435,6 +435,49 @@ white text on a white button at **1:1**.
 **This is not E4 or E5 evidence.** The ladder above is unchanged on
 that axis.
 
+## Batch R — the node's own pages, and the one that could not be reached
+
+The Hub's pages were reviewed in Batches K to Q. The product has two
+more pages, and they belong to the *other* side of the product: the
+machine that receives. `tantu drop` serves a QuickDrop page and
+`tantu relay` serves a relay page, and neither had been looked at.
+
+Both carried a **third palette** — their own `:root` block, a third
+set of values in a product whose other pages used the design system —
+and a copy of the same layout, and emoji. The tokens, the type scale
+and the icon set now live in `internal/webui`, which the Hub and the
+node's commands both draw from, and the node's two pages share one
+shell.
+
+**The relay page could not be reached.** `tantu relay` prints a
+one-time link; the link carries the one-time value in the URL
+fragment, and the server only hands out a session cookie, so the page
+has to exchange it. The QuickDrop page does; the relay page never did.
+The route had been registered since the page was put behind a session
+and nothing ever called it. A person who opened the printed link was
+told to open the printed link. The exchange now happens on the
+landing page, so the page behind the gate stays gated and no
+capability is minted for an unauthenticated caller.
+
+**The icons were blocked by the page's own policy.** The node's
+servers set `default-src 'self'` with no `img-src`, and every glyph in
+the shared icon set is a data: URI used as a CSS mask — so the pages
+rendered with their layout intact and **no icons at all**, and the
+only evidence was a console message about a Content Security Policy
+violation.
+
+**The placeholders were back to the browser's default** at 3.99:1,
+because the rule Batch O added was in the dashboard's stylesheet
+rather than in the design system. It is in the design system now.
+
+The acceptance suite measures both node pages on the same gates as
+every other page: the design system's colours, no emoji, the icons
+drawn and **nothing blocked from loading**, the contrast sweep in
+both themes, and nothing overflowing at 360px or 320px.
+
+**This is not E4 or E5 evidence.** The ladder above is unchanged on
+that axis.
+
 ## Explicit "not now" adherence
 
 Cloud telemetry, hosted accounts, auto-send, silent retry, hidden default

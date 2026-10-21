@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/bhaskarjha-dev/tantu/internal/webui"
 )
 
 // The dashboard pages live in real HTML files compiled into the binary with
@@ -24,8 +26,12 @@ func TestEmbeddedHTMLMatchesSourceFile(t *testing.T) {
 		{"dashboard", "dashboard.html", dashboardHTML},
 		{"relay interstitial", "relay_interstitial.html", relayInterstitialHTML},
 		{"relay blocked", "relay_blocked.html", relayBlockedHTML},
-		{"relay failed", "relay_failed.html", relayFailedHTML},
-		{"relay ok", "relay_ok.html", relayOKHTML},
+		// These two live in internal/webui now, because the node's
+		// `tantu relay` command serves the same two pages: the same
+		// words, the same card, the same mark. Two copies of a page
+		// that says the same thing is two copies to keep in step.
+		{"relay failed", "../webui/relay_failed.html", webui.RelayFailedHTML},
+		{"relay ok", "../webui/relay_ok.html", webui.RelayOKHTML},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
