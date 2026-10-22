@@ -490,15 +490,20 @@ func healthOrNil(h PeerHealth) *PeerHealth {
 	return &h
 }
 
-// injectTheme puts the shared design system into a page at its {{THEME}}
-// marker.
+// injectTheme puts the shared design system into a page at its
+// {{DESIGN_SYSTEM}} marker.
 //
 // The marker is a marker rather than a second copy for the same reason the
 // file is shared: a page that carried its own copy of the tokens would
 // drift from the dashboard, and the drift is invisible until somebody
 // compares the two.
+//
+// ONE marker serves the whole system -- tokens, type scale, icon set and
+// components -- because two markers is two things a page can forget, and a
+// page that includes the theme without the components loses its empty
+// state and its buttons without saying anything about it.
 func injectTheme(page string) string {
-	page = strings.ReplaceAll(page, "{{THEME}}", webui.ThemeCSS)
+	page = strings.ReplaceAll(page, "{{DESIGN_SYSTEM}}", webui.DesignSystemCSS())
 	return strings.ReplaceAll(page, "{{RELAY_SHELL}}", webui.RelayShellCSS)
 }
 

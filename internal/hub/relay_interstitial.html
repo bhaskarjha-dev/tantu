@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Confirm OAuth Relay</title>
-<style>{{THEME}}</style>
+<style>{{DESIGN_SYSTEM}}</style>
 <style>{{RELAY_SHELL}}</style>
 </head>
 <body class="relay-page">
@@ -18,8 +18,8 @@
     <p class="relay-hint" id="peerLine">Checking destination.</p>
     <div id="noSession" style="display:none" class="relay-hint">Dashboard session not established. Open the dashboard from the Hub terminal (press o) &mdash; this popup will keep checking, and enable Relay by itself once the session appears.</div>
     <div class="relay-actions">
-      <button id="btnRelayNow" class="relay-btn" disabled>Relay now</button>
-      <button id="btnCancel" class="relay-btn relay-btn--ghost">Cancel</button>
+      <button id="btnRelayNow" class="btn btn-primary relay-btn" disabled>Relay now</button>
+      <button id="btnCancel" class="btn btn-ghost relay-btn relay-btn--ghost">Cancel</button>
     </div>
     <div class="relay-hint" id="resultLine" role="status" aria-live="polite" style="margin-top:0.75rem;"></div>
   </div>
@@ -29,7 +29,7 @@
     <p id="okText" class="relay-text"></p>
     <div class="relay-hint" id="okStatus" role="status" aria-live="polite" style="margin-top:0.5rem;">This window closes automatically in 3 seconds. The login continues on the other machine.</div>
     <div class="relay-actions">
-      <button id="okClose" class="relay-btn relay-btn--ghost">Close now</button>
+      <button id="okClose" class="btn btn-ghost relay-btn relay-btn--ghost">Close now</button>
     </div>
   </div>
 </main><script>

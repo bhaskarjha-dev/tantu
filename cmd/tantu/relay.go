@@ -32,7 +32,7 @@ const relayPageHTML = `<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>tantu relay</title>
-<style>{{THEME}}</style>
+<style>{{DESIGN_SYSTEM}}</style>
 <style>{{NODEPAGE}}</style>
 </head>
 <body>
@@ -53,11 +53,17 @@ const relayPageHTML = `<!DOCTYPE html>
     <div class="section">
       <div class="section-title">Manual Relay</div>
       <form id="relayForm" class="form-group form-group--inline">
+        <!-- A label, not a placeholder: a placeholder is gone the moment the
+             field is used, so the field loses its name exactly when the
+             reader needs it most. -->
+        <label class="sr-only" for="urlInput">OAuth URL to relay</label>
         <input type="text" id="urlInput" placeholder="Paste OAuth URL (https://accounts.google.com/...)" required>
-        <button type="submit" id="submitBtn" class="submit-btn">Relay</button>
-        <button type="button" id="cancelBtn" class="submit-btn" style="display:none;">Cancel</button>
+        <button type="submit" id="submitBtn" class="btn btn-primary">Relay</button>
+        <button type="button" id="cancelBtn" class="btn btn-ghost" style="display:none;">Cancel</button>
       </form>
-      <div id="status"></div>
+      <!-- A live region: the outcome of a relay is announced, not only
+           painted. -->
+      <div id="status" role="status" aria-live="polite"></div>
     </div>
   </div>
 
@@ -309,7 +315,7 @@ func runRelay(args []string) {
 		// carry its own palette -- a third set of values, hand-copied --
 		// and its own copy of the layout, which the QuickDrop page carried
 		// too.
-		pageContent = strings.ReplaceAll(pageContent, "{{THEME}}", webui.ThemeCSS)
+		pageContent = strings.ReplaceAll(pageContent, "{{DESIGN_SYSTEM}}", webui.DesignSystemCSS())
 		pageContent = strings.ReplaceAll(pageContent, "{{NODEPAGE}}", nodePageCSS)
 		return strings.ReplaceAll(pageContent, "{{BOOKMARKLET_HREF}}", bookmarkletJS)
 	}
@@ -389,9 +395,9 @@ func runRelay(args []string) {
 			deadEnd := "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">" +
 				"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">" +
 				"<title>tantu relay — authorization required</title>" +
-				"<style>{{THEME}}</style><style>{{NODEPAGE}}</style></head>" +
+				"<style>{{DESIGN_SYSTEM}}</style><style>{{NODEPAGE}}</style></head>" +
 				"<body><div class=\"card\"><header><h1>Authorization required</h1></header>" +
-				"<div class=\"status-msg\" id=\"sessionBanner\">Exchanging the one-time link for a session...</div>" +
+				"<div class=\"status-msg\" id=\"sessionBanner\" role=\"status\" aria-live=\"polite\">Exchanging the one-time link for a session...</div>" +
 				"<p class=\"hint\">No relay capability is issued to an unauthenticated caller.</p>" +
 				"</div>" +
 				"<script>(function(){" +
@@ -406,7 +412,7 @@ func runRelay(args []string) {
 				"}).catch(function(){banner.textContent='The Hub could not be reached. Try again.';banner.classList.add('error');});" +
 				"})();</script>" +
 				"</body></html>"
-			deadEnd = strings.ReplaceAll(deadEnd, "{{THEME}}", webui.ThemeCSS)
+			deadEnd = strings.ReplaceAll(deadEnd, "{{DESIGN_SYSTEM}}", webui.DesignSystemCSS())
 			deadEnd = strings.ReplaceAll(deadEnd, "{{NODEPAGE}}", nodePageCSS)
 			_, _ = w.Write([]byte(deadEnd))
 			return

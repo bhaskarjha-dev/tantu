@@ -11,6 +11,15 @@
 
    One shell, and it draws from the shared design system, so a node page
    and a Hub page are visibly the same product.
+
+   What this file does NOT carry, deliberately: the button vocabulary, the
+   focus ring, the visually-hidden utility, the empty state and the type.
+   Those belong to the design system (internal/webui), and this file used
+   to carry its own copies of four of them -- which is how the node pages
+   came to have a primary button a different size and shape from the
+   dashboard's, and an empty state that was a paragraph of body text
+   because the only definition of `.empty-state` in the product lived in
+   a stylesheet these pages never load.
    --------------------------------------------------------------------------- */
 
 body {
@@ -22,7 +31,9 @@ body {
   align-items: center;
   justify-content: center;
   padding: 2rem 1rem;
+  box-sizing: border-box;
 }
+body * { box-sizing: border-box; }
 .card {
   background: var(--card-bg);
   border: 1px solid var(--border);
@@ -68,6 +79,23 @@ h1 {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  /* The title wraps rather than crushing the badge beside it. At 320px the
+     two sat on one line, the title broke in the middle, and the badge was
+     squeezed into whatever was left -- a status mark that has stopped
+     looking like one. */
+  flex-wrap: wrap;
+}
+/* The mark that says a listener is live, beside the section it belongs to. */
+.section-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: var(--fs-sm);
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--success-text);
+  white-space: nowrap;
+  margin-left: 0.25rem;
 }
 .form-group {
   display: flex;
@@ -103,19 +131,11 @@ textarea {
 input[type="text"]:focus, textarea:focus {
   border-color: var(--accent);
 }
-/* The focus ring on a field is the shared one: every focusable control
-   on a page gets a 2px solid accent outline, so a reader who tabs
-   through the form can see where they are. A second, differently-
-   styled ring here would be the defect the focus gate in the Hub exists
-   to catch. */
-input[type="text"]:focus-visible, textarea:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-button.action-btn, button.submit-btn, .bookmarklet-btn {
-  /* --accent-gradient-strong, not --accent: white on --accent measured
-     3.68:1 at the blue end, which is under AA for a 15px label. The
-     Hub's own primary button made the same choice. */
+/* The bookmarklet is the one control on this page that is not a button --
+   it is a thing you DRAG to your bookmarks bar -- so it keeps a page shape
+   of its own, built from the same tokens. Everything else on the page is
+   built from the design system's button vocabulary. */
+.bookmarklet-btn {
   background: var(--accent-gradient-strong);
   color: #fff;
   border: none;
@@ -124,36 +144,18 @@ button.action-btn, button.submit-btn, .bookmarklet-btn {
   font-weight: 600;
   font-size: var(--fs-md);
   font-family: inherit;
-  cursor: pointer;
+  cursor: grab;
+  user-select: none;
   text-decoration: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
-  transition: background 0.2s, opacity 0.2s;
   min-height: 44px;
-}
-button.submit-btn {
-  padding: 0 1.25rem;
-}
-.bookmarklet-btn {
-  cursor: grab;
-  user-select: none;
   transition: background 0.2s, transform 0.1s;
 }
-button.action-btn:hover:not(:disabled),
-button.submit-btn:hover:not(:disabled),
 .bookmarklet-btn:hover {
   background: var(--accent-hover);
-}
-button.action-btn:disabled, button.submit-btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-button.action-btn:focus-visible, button.submit-btn:focus-visible,
-.bookmarklet-btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 .drop-zone {
   border: 2px dashed var(--border);
@@ -187,6 +189,8 @@ button.action-btn:focus-visible, button.submit-btn:focus-visible,
   margin-top: 0.5rem;
   font-weight: 600;
   color: var(--accent-text);
+  /* A long file name must not push the card wider than the card. */
+  overflow-wrap: anywhere;
 }
 input[type="file"] {
   display: none;
@@ -251,20 +255,7 @@ input[type="file"] {
   display: flex;
   gap: 0.5rem;
   margin-top: 0.6rem;
-}
-.received-item-actions button {
-  background: var(--surface-hover);
-  border: 1px solid var(--border-light);
-  color: var(--text);
-  border-radius: var(--radius-sm);
-  padding: 0.35rem 0.65rem;
-  font-size: var(--fs-sm);
-  font-family: inherit;
-  cursor: pointer;
-  min-height: 24px;
-}
-.received-item-actions button:hover {
-  background: var(--border);
+  flex-wrap: wrap;
 }
 .bookmarklet-box {
   background: rgba(255, 255, 255, 0.03);
@@ -313,6 +304,19 @@ input[type="file"] {
   font: inherit;
   cursor: pointer;
 }
+
+/* ---- The narrowest phone ----
+   The card carried 2.5rem of padding at every width, so on a 320px screen
+   the content column was 206px -- a phone-width page with a column
+   narrower than a phone. The dashboard drops to 1rem at the same width;
+   the node pages did not, because the padding was written once and never
+   revisited for the width the product's own pages are tested at. */
+@media (max-width: 420px) {
+  body { padding: 1rem 0.75rem; }
+  .card { padding: 1.5rem 1rem; }
+  h1 { font-size: var(--fs-xl); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }

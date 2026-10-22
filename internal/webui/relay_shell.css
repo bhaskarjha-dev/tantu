@@ -7,9 +7,12 @@
    nobody had looked at, with their own hand-copied colours and their own
    emoji.
 
-   The class names are prefixed because the dashboard has its own .btn and
-   its own .hint-text. A shared file that quietly overrode them would be
-   the worst kind of coupling: invisible until something looked wrong.
+   The class names here are prefixed because the shape belongs to the
+   popup -- the card, the actions row, the status box -- while the
+   button shape, the type, the focus ring and the visually-hidden
+   utility come from the design system. A shared file that quietly
+   overrode the design system's rules would be the worst kind of
+   coupling: invisible until something looked wrong.
    --------------------------------------------------------------------------- */
 
 .relay-page {
@@ -28,18 +31,9 @@
 .relay-page * { box-sizing: border-box; }
 /* The page's real heading, for a screen reader: the visible one is an h2,
    because the popup opens into the middle of a conversation and the h1 is
-   the page's name. */
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
+   the page's name. The .sr-only utility itself lives in the design system
+   (components.css), because it is the same mark on every page and three
+   copies of it is three chances to spell it differently. */
 .relay-box {
   background: var(--card-bg);
   border: 1px solid var(--border);
@@ -104,28 +98,19 @@
   margin-top: 1rem;
   flex-wrap: wrap;
 }
+/* The popup's buttons are the product's buttons: the shape comes from the
+   design system's vocabulary (.btn, .btn-primary, .btn-ghost), and this
+   file carries only what is specific to a popup -- its density, because a
+   popup is read at arm's length on a small card, and its focus behaviour.
+
+   The density is a separate declaration on purpose: the popup's button was
+   once a third copy of the primary button, with its own padding, its own
+   font size and its own radius, and the copies drifted. */
 .relay-btn {
-  /* --accent-gradient-strong, not --accent: white on --accent measured
-     3.68:1 at the blue end, which is under AA for a 15px label. The
-     dashboard's own primary button made the same choice. */
-  background: var(--accent-gradient-strong);
-  border: 1px solid transparent;
-  color: #fff;
   min-height: 44px;
   padding: 0.6rem 1.25rem;
-  border-radius: var(--radius-md);
-  font-weight: 600;
   font-size: var(--fs-base);
-  font-family: inherit;
-  cursor: pointer;
-  text-decoration: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transition: opacity 150ms ease-out;
 }
-.relay-btn:hover:not(:disabled) { opacity: 0.9; }
-.relay-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .relay-btn--ghost {
   background: transparent;
   border-color: var(--border-light);

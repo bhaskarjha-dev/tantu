@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%94%90%3C/text%3E%3C/svg%3E">
 <title>tantu hub</title>
-<style>{{THEME}}</style>
+<style>{{DESIGN_SYSTEM}}</style>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -125,17 +125,6 @@
     outline: 2px solid var(--accent);
     outline-offset: 2px;
     border-radius: 6px;
-  }
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
   }
   .drop-zone:focus-visible {
     outline: 2px solid var(--accent);
@@ -308,40 +297,6 @@
      `opacity: 1` is stated because Firefox applies its own opacity to
      the placeholder on top of the colour, and the computed colour alone
      would not be what is painted. */
-  .btn-primary {
-    background: var(--accent-gradient-strong);
-    border: none;
-    color: #fff;
-    padding: 0.75rem 1.5rem;
-    border-radius: 8px;
-    font-weight: 600;
-    font-size: 0.95rem;
-    cursor: pointer;
-    transition: opacity 0.2s;
-    white-space: nowrap;
-  }
-  .btn-primary:hover {
-    opacity: 0.9;
-  }
-  .btn-primary:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-  .btn-sm {
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid var(--border);
-    color: var(--text);
-    padding: 0.35rem 0.75rem;
-    border-radius: 6px;
-    font-size: 0.8rem;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.2s;
-  }
-  .btn-sm:hover {
-    background: rgba(255, 255, 255, 0.12);
-    border-color: var(--border-light);
-  }
   /* A received item. The same shape as a record: what it is, where it
      came from, when, and the actions. It has no state to carry on an
      edge -- a received item is a received item -- so the edge carries
@@ -463,11 +418,6 @@
     color: var(--text-muted);
     border: 1px solid var(--border);
   }
-  .hint-text {
-    font-size: 0.85rem;
-    color: var(--text-muted);
-    margin-top: 0.75rem;
-  }
   .grid-2 {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -493,10 +443,10 @@
   }
   .stat-label { color: var(--text-muted); }
   .stat-val { font-family: monospace; font-weight: 600; }
-  .stat-val.mono-accent { color: #1d4ed8; }
-  @media (prefers-color-scheme: dark) {
-    .stat-val.mono-accent { color: #93c5fd; }
-  }
+  /* The accent text, from the token rather than a copy of its value: the
+     two are the same colour today, and a copy is a value that drifts the
+     day the token moves. */
+  .stat-val.mono-accent { color: var(--accent-text); }
   .log-console {
     background: #06070a;
     border: 1px solid var(--border);
@@ -784,22 +734,6 @@
   .progress-meta {
     font-variant-numeric: tabular-nums;
   }
-  .btn-primary {
-    border-radius: var(--radius-md);
-    box-shadow: 0 4px 14px rgba(59, 130, 246, 0.35);
-    transition: transform var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
-  }
-  .btn-primary:hover:not(:disabled) {
-    transform: translateY(-1px);
-    box-shadow: 0 6px 18px rgba(59, 130, 246, 0.45);
-  }
-  .btn-primary:active:not(:disabled) {
-    transform: translateY(0);
-  }
-  .btn-sm {
-    border-radius: var(--radius-sm);
-    transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
-  }
   .msg {
     border-radius: var(--radius-md);
     animation: bannerIn var(--dur-med) var(--ease-out);
@@ -837,19 +771,19 @@
   .record-state { margin-top: 0.25rem; }
   .record-next { font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem; }
   /* Monospace accent chip. #60a5fa on white measured 2.27:1 and 2.54:1, so
-     the accent text steps down in the light theme while keeping the tint. */
+     the accent text steps down in the light theme while keeping the tint.
+     The step-down is the token's: --accent-text is #1d4ed8 in the light
+     theme and #93c5fd in the dark one, and this rule used to carry a copy
+     of both values in a second media query of its own. */
   .mono-chip {
     font-family: var(--font-mono);
     font-size: 0.85rem;
     padding: 0.2rem 0.5rem;
     border-radius: var(--radius-sm);
     background: rgba(59, 130, 246, 0.1);
-    color: #1d4ed8;
+    color: var(--accent-text);
     overflow-wrap: anywhere;
     word-break: break-word;
-  }
-  @media (prefers-color-scheme: dark) {
-    .mono-chip { color: #93c5fd; }
   }
   .received-item {
     border-radius: var(--radius-md);
@@ -871,39 +805,6 @@
     height: auto;
     min-height: 12rem;
     max-height: 30rem;
-  }
-  .empty-state {
-    color: var(--text-muted);
-    font-size: 0.85rem;
-    text-align: center;
-    padding: 2rem 0;
-  }
-  .empty-state strong {
-    display: block;
-    color: var(--text);
-    font-size: 0.95rem;
-    margin-bottom: 0.25rem;
-  }
-  input[type="text"]:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
-  /*
-     `checkbox` was missing from the rule above, so the page's only checkbox --
-     the expert immediate-send opt-in, the one way to skip the send
-     confirmation -- fell back to the user agent default ring: `auto 0.8px
-     rgb(238, 238, 238)`. A sub-pixel pale-grey outline on a dark card, and in
-     the light theme a pale grey ring on near-white, which is close to
-     invisible. Every other control on the page gets a deliberate 2px accent
-     ring; this one got whatever the browser felt like.
-
-     Found by walking the real Tab order against a running Hub and reading the
-     computed outline at each stop, which is the only way to notice a control
-     that has no focus style at all rather than a bad one.
-  */
-  input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
   }
   .modal-overlay {
     background: rgba(4, 6, 12, 0.7);
@@ -1437,18 +1338,6 @@
     padding: 2rem 1.5rem;
   }
   /* ---- Small controls ---- */
-  .btn-sm {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    border-radius: var(--radius-md);
-    font-weight: 600;
-    transition: all 0.2s;
-  }
-  .btn-primary {
-    border-radius: var(--radius-md);
-    font-weight: 600;
-  }
   .pill {
     display: inline-flex;
     align-items: center;
@@ -1503,22 +1392,6 @@
   }
   .log-search input {
     padding-left: 2.4rem;
-  }
-  /* ---- Empty states: a card of their own, not a paragraph ---- */
-  .empty-state {
-    border: 1px dashed var(--border);
-    border-radius: var(--radius-lg);
-    background: var(--surface);
-    padding: 1.75rem 1.25rem;
-    color: var(--text-muted);
-    font-size: var(--fs-base);
-    line-height: 1.6;
-  }
-  .empty-state strong {
-    display: block;
-    color: var(--text);
-    font-size: var(--fs-lg);
-    margin-bottom: 0.35rem;
   }
   /* ---- Scrollbars: the page scrolls, so the scrollbar is part of the
          design rather than an operating-system artefact ---- */
@@ -2247,41 +2120,8 @@
     font-size: 0.85rem;
     padding: 0.5rem 0.75rem;
   }
-  .btn-danger {
-    background: var(--error);
-    border: 1px solid var(--error);
-    color: #ffffff;
-    font-weight: 600;
-    min-height: 44px;
-    padding: 0.5rem 1.1rem;
-    border-radius: var(--radius-md);
-    cursor: pointer;
-  }
-  .btn-danger:hover:not(:disabled) { background: var(--error-hover, #dc2626); }
   @media (max-width: 640px) {
     .toast-region { right: 0.5rem; left: 0.5rem; bottom: 0.5rem; width: auto; }
-
-    /* Buttons stop refusing to wrap on a narrow viewport.
-     *
-     * `.btn-primary` and friends carry `white-space: nowrap`, which is right at
-     * desktop widths -- a button that breaks across lines reads as two buttons.
-     * It is wrong here: the send button's label names its destination ("Send text
-     * to this Hub (local-only test)"), so its length is not a design constant
-     * but a function of where the payload is going.
-     *
-     * At 360px that label ran 21-22px past its own box in Firefox and WebKit
-     * and not at all in Chromium, because their default button font is wider.
-     * The page gained a horizontal scrollbar that only existed on two of three
-     * engines and on no machine but CI's, which is why it survived several
-     * batches of narrow-viewport work: the width depended on the font stack the
-     * runner happened to have.
-     *
-     * Wrapping is the fix that does not depend on which font is installed. The
-     * longest single word is short enough to fit comfortably, so this costs at
-     * most one extra line. */
-    .btn-primary, .btn, .btn-secondary, .btn-ghost {
-      white-space: normal;
-    }
   }
 </style>
 </head>
@@ -4389,17 +4229,44 @@ function renderPeersList(peers) {
 
     // decidePairing is shared between the banner and this dialog; this hook
     // keeps the dialog's state honest no matter which surface was clicked.
+    // The pairing status line: the product's own mark, the theme's own
+    // colour, and every word set as TEXT.
+    //
+    // It used to do two things the rest of the product does not. It
+    // carried the platform's emoji -- a green tick and a red cross in
+    // whatever colours the platform chose, at whatever size the platform
+    // chose -- while every other surface drew its own mark from the shared
+    // icon set. And it coloured itself with a literal hex: #f87171 for an
+    // error, #4ade80 for a success, #38bdf8 for a pending state. Those
+    // ignore the theme, and in the light theme the error red measured
+    // 2.9:1 on the modal's white surface, where the design system's
+    // --error-text is #b91c1c precisely because it does not.
+    //
+    // The contrast sweep never caught it, and that is the point worth
+    // recording: the sweep walks the page as it is rendered, and this
+    // text only exists once somebody tries to pair. A literal in a
+    // branch of the script is invisible to a sweep of the default state.
+    function setPairStatus(text, kind) {
+      const el = document.getElementById('pairStatusMsg');
+      if (!el) return;
+      el.textContent = '';
+      const icon = document.createElement('span');
+      icon.className = 'ico ' + (kind === 'success' ? 'ico--check'
+        : kind === 'pending' ? 'ico--clock' : 'ico--alert');
+      icon.setAttribute('aria-hidden', 'true');
+      el.appendChild(icon);
+      el.appendChild(document.createTextNode(' ' + text));
+      el.style.color = kind === 'success' ? 'var(--success-text)'
+        : kind === 'pending' ? 'var(--accent-text)' : 'var(--error-text)';
+    }
+
     function notePairWatchDecision(id, accept) {
       if (!pairWatchTimer) return;
       pairWatchLocalDecision = accept;
       renderPairWatchState(null);
-      const statusMsg = document.getElementById('pairStatusMsg');
-      if (statusMsg) {
-        statusMsg.style.color = accept ? '#4ade80' : '#f87171';
-        statusMsg.innerText = accept
-          ? '✓ Confirmed here — waiting for ' + pairWatchAddr + ' to confirm the same code…'
-          : '✕ You rejected this pairing.';
-      }
+      setPairStatus(accept
+        ? 'Confirmed here — waiting for ' + pairWatchAddr + ' to confirm the same code…'
+        : 'You rejected this pairing.', accept ? 'success' : 'error');
     }
 
     // Pairing outcomes in plain language. The raw errors cross layers the
@@ -4434,17 +4301,14 @@ function renderPeersList(peers) {
     async function initiateWebPairing() {
       const input = document.getElementById('pairRemoteAddrInput');
       const addr = (input.value || '').trim();
-      const statusMsg = document.getElementById('pairStatusMsg');
       const btn = document.getElementById('btnPairConnect');
       if (!addr) {
-        statusMsg.style.color = '#f87171';
-        statusMsg.innerText = 'Please enter a valid peer address (e.g. 192.168.1.50:9877).';
+        setPairStatus('Please enter a valid peer address (e.g. 192.168.1.50:9877).', 'error');
         return;
       }
       btn.disabled = true;
       btn.innerText = 'Pairing...';
-      statusMsg.style.color = '#38bdf8';
-      statusMsg.innerText = 'Connecting to ' + addr + ' for in-band pairing handshake...';
+      setPairStatus('Connecting to ' + addr + ' for in-band pairing handshake...', 'pending');
       startPairingWatch(addr);
       const startedAt = Date.now();
 
@@ -4456,20 +4320,16 @@ function renderPeersList(peers) {
         });
         const data = await res.json();
         if (res.ok && data.accepted === true) {
-          statusMsg.style.color = '#4ade80';
-          statusMsg.innerText = '✅ Successfully paired with ' + (data.peer_name || addr) + ' (SAS: ' + data.peer_sas + ')';
+          setPairStatus('Successfully paired with ' + (data.peer_name || addr) + ' (SAS: ' + data.peer_sas + ')', 'success');
           input.value = '';
           updateStatus();
         } else if (data.status === 'rejected' || data.accepted === false) {
-          statusMsg.style.color = '#f87171';
-          statusMsg.innerText = '❌ ' + pairingRejectionMessage((Date.now() - startedAt) / 1000);
+          setPairStatus(pairingRejectionMessage((Date.now() - startedAt) / 1000), 'error');
         } else {
-          statusMsg.style.color = '#f87171';
-          statusMsg.innerText = '❌ ' + pairingFailureMessage(addr, data.error || res.statusText);
+          setPairStatus(pairingFailureMessage(addr, data.error || res.statusText), 'error');
         }
       } catch (err) {
-        statusMsg.style.color = '#f87171';
-        statusMsg.innerText = '❌ Network error: ' + err.message;
+        setPairStatus('Network error: ' + err.message, 'error');
       } finally {
         stopPairingWatch();
         btn.disabled = false;
@@ -5644,9 +5504,9 @@ function renderPeersList(peers) {
 
       function onSuccess() {
         const oldText = btn.innerHTML;
-        btn.innerHTML = '✅ Copied!';
-        btn.style.color = '#34d399';
-        btn.style.borderColor = '#10b981';
+        btn.innerHTML = 'Copied!';
+        btn.style.color = 'var(--success-text)';
+        btn.style.borderColor = 'var(--success)';
         setTimeout(() => {
           btn.innerHTML = oldText;
           btn.style.color = '';

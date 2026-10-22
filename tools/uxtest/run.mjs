@@ -1302,6 +1302,48 @@ const thumb = await js(`(function(){return new Promise(function(resolve){
     console.log('uxtest: full contrast sweep ' + JSON.stringify(swept) + ', ' + sweepFails.length + ' failure(s)');
     await scheme('dark');
 
+    // --- one typeface, everywhere ---
+    //
+    // A control that does not say which typeface it uses gets the browser's
+    // default, and the browser's default is not the product's. Measured on
+    // this page before the design system's rule was added:
+    //
+    //     body           -apple-system, BlinkMacSystemFont, "Segoe UI", ...
+    //     card title     -apple-system, ...
+    //     primary button -apple-system, ...
+    //     textarea       -apple-system, ...
+    //     TEXT INPUT     Arial          <--
+    //     TAB BUTTON     Arial          <--
+    //
+    // A form control does not inherit font-family unless it is told to, and
+    // two rules set a control's size and colour without mentioning its
+    // family. So the navigation -- the one piece of chrome every reader
+    // meets first -- was set in a different typeface from the page it
+    // navigates, and so was every field a reader types a secret into.
+    //
+    // The design system now says it in one rule. This is the gate for it.
+    const fonts = await js(`(function(){
+      var bodyFont = getComputedStyle(document.body).fontFamily;
+      var all = document.querySelectorAll('button, input, select, textarea');
+      var odd = [];
+      for (var i = 0; i < all.length; i++) {
+        var el = all[i];
+        var cs = getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+        var f = cs.fontFamily;
+        if (f !== bodyFont) {
+          odd.push(el.tagName.toLowerCase() +
+            (el.type ? '[type=' + el.type + ']' : '') +
+            (el.id ? '#' + el.id : '') +
+            (el.className ? '.' + String(el.className).split(' ')[0] : '') +
+            ' => ' + f);
+        }
+      }
+      return { bodyFont: bodyFont, odd: odd };
+    })()`);
+    check('every control is set in the product typeface', fonts && fonts.odd.length === 0,
+      JSON.stringify(fonts && fonts.odd.slice(0, 8)));
+
     // OVERFLOW_PROBE reports the document's scroll and client widths, and when the
 // document is wider than its viewport, the elements responsible.
 //
@@ -1969,6 +2011,169 @@ const OVERFLOW_PROBE = `(function(){
         check('node ' + srv.name + ' page: nothing was blocked from loading',
           nodeErrors.filter((e) => /Content Security Policy|violates/i.test(e)).length === 0,
           JSON.stringify(nodeErrors.slice(0, 3)));
+
+        // --- the node pages: what a reader needs, not just what renders ---
+        //
+        // Everything above proves the page is not broken. These prove it is
+        // any good. The node pages were the least-covered surfaces in the
+        // product: they were checked for contrast, overflow and target size,
+        // and nothing checked whether a person could USE them without a
+        // mouse.
+        //
+        // What was wrong, and what these measure:
+        //   - the drop zone was a div with a click handler, so the one
+        //     control the page exists for was unreachable with a keyboard;
+        //   - the status lines were painted and never announced;
+        //   - the text fields had placeholder-only labels, and a placeholder
+        //     disappears the moment the field is used;
+        //   - the empty state used a class no stylesheet it could reach
+        //     defined, so it rendered as a paragraph of body text;
+        //   - the text inputs and the tab bar resolved to Arial while the
+        //     rest of the product used its own typeface.
+        const nodeA11y = await nodePage.evaluate(() => {
+          const visible = (el) => {
+            const cs = getComputedStyle(el);
+            const r = el.getBoundingClientRect();
+            return cs.display !== 'none' && cs.visibility !== 'hidden' && r.width > 0 && r.height > 0;
+          };
+          const controls = Array.prototype.slice.call(document.querySelectorAll(
+            'a[href], button, input:not([type="hidden"]), select, textarea, [role="button"], [tabindex]:not([tabindex="-1"]), [onclick]'
+          ));
+          const described = [];
+          const named = controls.filter(visible).map((el) => {
+            const byLabel = el.id ? document.querySelector('label[for="' + el.id + '"]') : null;
+            const name = el.getAttribute('aria-label') ||
+              (el.getAttribute('aria-labelledby') ? 'by-id' : '') ||
+              (byLabel ? byLabel.textContent.trim() : '') ||
+              (el.closest('label') ? el.closest('label').textContent.trim() : '') ||
+              (el.textContent || '').trim() ||
+              el.getAttribute('title') || '';
+            const describedBy = name
+              ? (el.getAttribute('aria-label') ? 'aria-label'
+                : (byLabel ? 'label' : 'text'))
+              : (el.getAttribute('placeholder') ? 'placeholder-only' : 'none');
+            described.push(describedBy);
+            return {
+              tag: el.tagName.toLowerCase(),
+              id: el.id || null,
+              role: el.getAttribute('role'),
+              describedBy: describedBy,
+              // A disabled control is not in the tab order, and must not
+              // be: it does nothing. The Send File button is disabled
+              // until a file is chosen, and a gate that demands a tab
+              // stop on it is asking for a control that cannot be used.
+              disabled: !!el.disabled,
+              font: getComputedStyle(el).fontFamily,
+            };
+          });
+          const statuses = Array.prototype.slice.call(document.querySelectorAll(
+            '[id$="Status"], #sessionBanner, #status'
+          )).map((el) => ({
+            id: el.id,
+            role: el.getAttribute('role'),
+            live: el.getAttribute('aria-live'),
+          }));
+          const es = document.querySelector('.empty-state');
+          let empty = { exists: !!es };
+          if (es) {
+            const cs = getComputedStyle(es);
+            const r = es.getBoundingClientRect();
+            empty = {
+              exists: true,
+              borderWidth: cs.borderTopWidth,
+              borderStyle: cs.borderTopStyle,
+              background: cs.backgroundColor,
+              paddingTop: cs.paddingTop,
+              height: Math.round(r.height),
+              fontSize: cs.fontSize,
+              bodyFontSize: getComputedStyle(document.body).fontSize,
+            };
+          }
+          return {
+            named: named,
+            statuses: statuses,
+            empty: empty,
+            // A list that starts empty is a list that must say so. The
+            // QuickDrop page has one; the relay page does not.
+            hasList: !!document.querySelector('.received-list'),
+            bodyFont: getComputedStyle(document.body).fontFamily,
+          };
+        });
+
+        check('node ' + srv.name + ' page: every control has a name that is not only a placeholder',
+          !!nodeA11y && nodeA11y.named.every((c) => c.describedBy !== 'placeholder-only' && c.describedBy !== 'none'),
+          JSON.stringify(nodeA11y && nodeA11y.named.filter((c) => c.describedBy === 'placeholder-only' || c.describedBy === 'none')));
+
+        check('node ' + srv.name + ' page: every status line is a live region',
+          !!nodeA11y && nodeA11y.statuses.length > 0 &&
+          nodeA11y.statuses.every((s) => s.role === 'status' || s.role === 'alert' || !!s.live),
+          JSON.stringify(nodeA11y && nodeA11y.statuses));
+
+        // The empty state has to be a STATE. The node's pages used the class
+        // and got nothing, because the only definition of it in the product
+        // lived in a stylesheet these pages never load: so it rendered as
+        // an ordinary paragraph of body text, at the body's own size, with
+        // no border and no space of its own.
+        //
+        // A page with no empty state has nothing to draw -- the relay page
+        // has no list that starts empty -- so the rule is about the ones
+        // that HAVE one.
+        const emptyIsAnObject = nodeA11y && nodeA11y.empty.exists &&
+          parseFloat(nodeA11y.empty.borderWidth) > 0 &&
+          nodeA11y.empty.borderStyle !== 'none' &&
+          parseFloat(nodeA11y.empty.paddingTop) > 0 &&
+          nodeA11y.empty.height > 0;
+        check('node ' + srv.name + ' page: an empty state, where the page has one, is drawn as an object',
+          !nodeA11y || !nodeA11y.empty.exists || emptyIsAnObject,
+          JSON.stringify(nodeA11y && nodeA11y.empty));
+        // ...and the page whose list starts empty must HAVE one, or the rule
+        // above is vacuous on the one page where it matters.
+        check('node ' + srv.name + ' page: a list that starts empty says so',
+          !nodeA11y || !nodeA11y.hasList || nodeA11y.empty.exists,
+          JSON.stringify(nodeA11y && { hasList: nodeA11y.hasList, empty: nodeA11y.empty }));
+
+        // One typeface. A control that does not say which typeface it uses
+        // gets the browser's default, and the browser's default is not the
+        // product's: the dashboard's text inputs and its tab bar were in
+        // Arial while the rest of the page was in its own stack.
+        const oddFonts = nodeA11y && nodeA11y.named.filter((c) => c.font !== nodeA11y.bodyFont);
+        check('node ' + srv.name + ' page: every control is set in the product typeface',
+          !!nodeA11y && oddFonts.length === 0,
+          JSON.stringify(oddFonts));
+
+        // The REAL tab order: press Tab and see where focus actually lands.
+        // A control that is focusable in the markup but not in the tab order
+        // is a control a keyboard cannot reach, and no static check finds it.
+        await nodePage.evaluate(() => {
+          if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+        });
+        const tabbed = new Set();
+        for (let i = 0; i < 30; i++) {
+          await nodePage.keyboard.press('Tab');
+          const key = await nodePage.evaluate(() => {
+            const el = document.activeElement;
+            if (!el || el === document.body) return null;
+            return el.id || String(el.className || '').split(' ')[0] || el.tagName.toLowerCase();
+          });
+          if (key) tabbed.add(key);
+        }
+        const mustReach = (nodeA11y && nodeA11y.named
+          ? nodeA11y.named.filter((c) => (c.id || c.role === 'button') && !c.disabled).map((c) => c.id || c.tag)
+          : []);
+        const unreachable = mustReach.filter((k) => !tabbed.has(k));
+        check('node ' + srv.name + ' page: every control is reachable by the keyboard',
+          unreachable.length === 0, JSON.stringify({ unreachable: unreachable, tabbed: Array.from(tabbed) }));
+
+        // Console silence. The relay page's FIRST document is served 403 on
+        // purpose -- it is the dead end in front of the gate, and the
+        // browser logs a document 403 whatever we do -- so that one is
+        // expected and named. Anything else is a defect.
+        const expected403 = /403/.test(nodeErrors.join(' '));
+        const unexpected = nodeErrors.filter((e) => !/403/.test(e));
+        check('node ' + srv.name + ' page: no unexpected console error',
+          unexpected.length === 0,
+          JSON.stringify({ unexpected: unexpected.slice(0, 3), expected403: expected403 }));
+
         const nodeSweep = { dark: 0, light: 0 };
         const nodeSweepFails = [];
         for (const s of ['dark', 'light']) {

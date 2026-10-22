@@ -12081,4 +12081,314 @@ missing, and the only evidence is a console message nobody reads.
   `go vet` clean, staticcheck clean, encgate, docgate and wfcheck
   green, actionlint clean on both workflows.
 
+## Batch S -- the pages that were measured, and not used (2026-10-22)
+
+Batch R fixed the node's pages: it gave them one palette, one shell,
+one icon set, and a dead end that could be reached. It also closed with
+the honest sentence "the node pages are measured by the acceptance
+suite" -- and measured is not the same as looked at.
+
+So this batch did the thing Batch R said was missing: **it looked at
+them.** It rendered the two pages, at four widths, in both themes,
+seeded with the state a reader actually meets, and read what came out.
+
+### What the measurement could not see
+
+The node pages were already covered by the browser suite, and every
+one of those checks was true:
+
+    node drop page: it draws its colours from the shared design system  PASS
+    node drop page: no emoji in the page                                  PASS
+    node drop page: the icons are drawn, from the shared icon set        PASS
+    node drop page: nothing was blocked from loading                     PASS
+    node drop page: no unreadable text in either theme                   PASS
+    node drop page 360px: nothing overflows the viewport                 PASS
+    node drop page 360px: every control reaches 24x24                    PASS
+
+Every one of those says the page is **not broken**. None of them says
+the page is **any good**. A page whose only control cannot be reached
+with a keyboard is not broken: it renders, it does not overflow, its
+contrast is fine, and its icons are drawn.
+
+### The five things that were wrong
+
+All of them on the two node pages, and none of them visible in the
+checks above.
+
+**1. The one control the page exists for was unreachable with a
+keyboard.** The drop zone was a `div` with an `onclick`. No `role`, no
+`tabindex`, no key handler -- and the file input beside it was
+`display:none`. A keyboard that could not reach the drop zone could not
+send a file at all. The dashboard's drop zone has had `role="button"`
+and `tabindex="0"` for some time; the node's had neither, and nobody
+had noticed, because the check that would have found it did not exist.
+
+**2. The status lines were painted and never announced.** Sending a
+snippet said "Sent successfully!" on the screen and said nothing at all
+to a screen reader. The dashboard's status lines have been live
+regions for a while. The node's were not.
+
+**3. The fields had placeholder-only labels.** A placeholder is the
+field's *instruction*, not its name: it disappears the moment the field
+is used, so the field loses its name exactly when the reader needs it
+(WCAG 3.3.2, 4.1.2). The node's shell had no `.sr-only` at all, so a
+real label was not available to it even if it had wanted one.
+
+**4. The empty state was a sentence.** This is the one that says the
+most about how the pages had been treated. The QuickDrop page used the
+class `.empty-state`. The only definition of that class in the entire
+product lived in the **dashboard's** stylesheet -- which these pages
+never load. So the class matched nothing, and the empty state rendered
+as an ordinary paragraph of body text: no border, no background, no
+padding, at the body's own size, saying "No drops received yet. Waiting
+for incoming transfers...". Measured after the fact: `borderWidth
+0px, borderStyle none, paddingTop 0px, fontSize 16px, bodyFontSize
+16px`. An empty state that is exactly the body text.
+
+**5. The buttons were a third copy.** `.action-btn` and `.submit-btn`
+were a hand-copied version of the product's primary button, a
+different size and shape from the dashboard's, for the same word. And
+the received-drop actions used `.small-btn`, which **nothing
+defined at all**.
+
+### The root cause, which was one thing
+
+Not five defects. **One.**
+
+The design system had a token layer, a type scale and an icon set, and
+**no components at all**. So every page built its own buttons, its own
+empty state, its own visually-hidden utility and its own focus ring --
+and the node's pages used a class whose owner they could not reach.
+
+The drift was measured, not assumed:
+
+    .sr-only       dashboard.html, relay_shell.css, NOT the node pages
+    .empty-state   dashboard.html twice, NOT the node pages -- which USE it
+    the buttons    dashboard.html, nodepage.css, relay_shell.css
+    the focus ring dashboard.html, nodepage.css, relay_shell.css
+
+`internal/webui/components.css` is that component layer. One owner per
+primitive, and it is served at a **single** `{{DESIGN_SYSTEM}}` marker,
+so a page cannot get the tokens without the components -- which is the
+whole failure, because a second marker is a second thing a page can
+forget.
+
+### Two more defects, found in the dashboard by the same work
+
+Both of the same kind: a rule that depended on something that was not
+there.
+
+**The tab bar and the text inputs were in Arial.** Measured on the
+running dashboard:
+
+    body           -apple-system, BlinkMacSystemFont, "Segoe UI", ...
+    card title     -apple-system, ...
+    primary button -apple-system, ...
+    textarea       -apple-system, ...
+    TEXT INPUT     Arial          <--
+    TAB BUTTON     Arial          <--
+
+A form control does not inherit `font-family` unless it is told to, and
+two rules set a control's size and colour without mentioning its
+family. So the **navigation** -- the one piece of chrome every reader
+meets first -- was set in a different typeface from the page it
+navigates, and so was every field a reader types a secret into. The
+design system's own comment had claimed "one type scale"; it had a
+scale of *sizes* and no rule about *typefaces*.
+
+**The narrow-viewport rule for buttons named three classes that do not
+exist.** The rule that stops a button overflowing its box on a phone
+read:
+
+    .btn-primary, .btn, .btn-secondary, .btn-ghost { white-space: normal; }
+
+`.btn-secondary` and `.btn-ghost` appear **nowhere** in the product,
+and `.btn-sm` -- which does exist -- was not in the list. So the one
+rule written to stop a button overflowing was attached mostly to
+nothing, and would have stayed attached to nothing when a button was
+added with one of those names.
+
+A third, smaller one: the design system zeroes the margin on an icon
+inside a button, on the assumption that the button lays its contents
+out with a gap. **`.btn-primary` was never a flex container.** So the
+margin was removed and nothing replaced it: the glyph sat against its
+own label with no space between them, on the one primary button in the
+product that carries an icon.
+
+### The gates, and their red proofs
+
+The rule this repository keeps: *a documented claim about behaviour is
+a claim that something runs*, and *a new gate must be able to fail*.
+
+**A gate about a file is a gate about the wrong thing.** Moving the
+focus ring into the design system turned `focus_ring_test.go` red --
+and it was **right**: the gate read `dashboardHTML`, the dashboard's own
+source, and the dashboard's focus ring now lives in the stylesheet it
+loads. A gate that fails for the wrong reason teaches its readers to
+ignore it. The gate now reads the **served** page.
+
+`cmd/tantu/nodepage_test.go` is new, and every check in it is a
+function that returns its problems, with a red proof beneath it that
+feeds it deliberately wrong input:
+
+    keyboard reachability     a click-only div           caught
+    key activation            a handler for neither key  caught
+    labels                    a placeholder-only field   caught
+    live regions              a silent status line       caught
+    the button vocabulary     a hand-copied class        caught
+    an inline outline         a suppressed focus ring    caught
+
+Two of those checks caught **the checks themselves**. The button check
+failed because the design system's own *comment* mentioned the two
+class names it had just retired -- the prose was correct and the gate
+was wrong, so it now reads the markup and not the stylesheet. The key
+activation check **panicked** on short input, because it sliced a
+400-character window without clamping it. A gate that panics on input
+is a gate that cannot be trusted.
+
+**The browser suite now measures the rendered node pages.** Fourteen
+new checks, and they are behavioural: the real tab order is walked with
+Tab presses and every visible control must appear in it; every control
+must have a name that is not only a placeholder; every status element
+must be a live region; an empty state must be **drawn as an object**
+(border, background, padding) rather than as body text; every control
+must resolve to the page's typeface; and the console must be silent
+apart from one *named* 403 -- the relay page's first document, which is
+served 403 on purpose because the one-time value lives in a URL
+fragment the server never sees.
+
+**Red proof, on the product.** The four defects were reintroduced into
+the built product -- the drop zone's `tabindex` removed, the status
+line's `role` removed, the relay field's label removed, and the
+design system's `.empty-state` rule renamed -- and the suite went red
+on exactly the four matching checks:
+
+    FAIL node drop page: every status line is a live region
+    FAIL node drop page: an empty state, where the page has one, is drawn as an object
+    FAIL node drop page: every control is reachable by the keyboard
+    FAIL node relay page: every control has a name that is not only a placeholder
+    uxtest: 168/172 checks passed
+
+and nothing else failed. The product was then restored.
+
+### The same work, in the dashboard's own script
+
+The pairing dialog's status line did two things no other surface does.
+It coloured itself with a literal hex -- `#f87171` for an error,
+`#4ade80` for a success, `#38bdf8` for a pending state -- and those
+ignore the theme. In the light theme the error red measured **2.9:1**
+on the modal's white surface, where the design system's `--error-text`
+is `#b91c1c` precisely because it does not. And it carried the
+platform's emoji, in the platform's colours, at the platform's size,
+while every other surface draws its own mark from the shared icon set.
+
+The contrast sweep never caught it, and that is the part worth
+recording: **the sweep walks the page as it is rendered, and this text
+only exists once somebody tries to pair.** A literal in a branch of the
+script is invisible to a sweep of the default state. It is now the
+design system's marks and tokens, and the words are set as text.
+
+Two more copies of a token's value, in the dashboard's own CSS:
+`.stat-val.mono-accent` and `.mono-chip` each carried `#1d4ed8` and
+`#93c5fd` in a media query of their own -- the exact values of
+`--accent-text` in the two themes. Same colour today, and a copy is a
+value that drifts the day the owner moves.
+
+### The gates for "one owner per rule"
+
+Two, and both are about the dashboard's own `:root` block, which is
+allowed to exist -- the dashboard owns the frame, the gutter and the
+tab band's surfaces, and only the dashboard has a frame.
+
+- **It may not define a token the theme already owns.** The theme's
+  token names are read from `theme.css` rather than listed, so a token
+  added to the theme tomorrow is covered tomorrow.
+- **A token of its own must be given a value in the base as well as in
+  the light theme.** A token valued only in the light theme is one the
+  dark theme was never given.
+
+Both have red proofs. And both were **wrong on their first run**, in
+the same way: they searched "the page" for a `:root` and found the
+THEME's, so they reported that the dashboard had redefined `--bg` and
+that every one of its own tokens was light-only. The dashboard had
+redefined nothing. A gate that reads the wrong region fails for the
+wrong reason, and a gate that fails for the wrong reason teaches its
+readers to ignore it.
+
+### The gate that caught my own mistake
+
+The pairing edit above shipped a stray `)`:
+
+    el.style.color = kind === 'success' ? 'var(--success-text)'
+      : kind === 'pending' ? 'var(--accent-text)' : 'var(--error-text)');
+
+**Every Go gate passed with it.** The dashboard's own script was dead:
+the syntax error was at parse time, so nothing in the page ran, and the
+dashboard showed an empty shell. `gofmt`, `go vet`, staticcheck,
+`go test ./...`, encgate, docgate and wfcheck were all green, because
+none of them parses JavaScript.
+
+The browser suite caught it, in the check that exists for exactly this:
+"zero unexpected console errors", reporting `pageerror: Unexpected
+token ')'`. That is the whole argument for a behavioural gate, and it is
+also the honest limit of the fast ones: **the Go suite cannot see a
+JavaScript syntax error, and the browser job is what sees it.**
+
+It is worth being precise about what that cost. The failure was
+confined to one function and the page still *rendered* -- the shell, the
+chrome, the tab bar, the cards -- so a person glancing at a screenshot
+would have seen a dashboard. It was empty of behaviour, not of layout.
+The gate that named the cause was the one that listens to the browser's
+own errors.
+
+### The cockpit
+
+The register's 4.12 says the cockpit's appearance has never been
+reviewed, because it needs a pseudo-terminal this environment does not
+have. That is still true of the **interactive** cockpit. But the
+**banner** can be captured -- it is printed to stdout before the
+alternate screen is entered -- so it was run and read:
+
+    ┌──────────────────────────────────────────────────────────────────┐
+    │  🚀 tantu v1.0.0-dev+23aea34 (Unified Symmetric Hub)            │
+    │                                                                  │
+    │  ➜ Dashboard:  http://127.0.0.1:9876/               (press o)  │
+    │  ➜ Network:    127.0.0.1:9877 (loopback mTLS multiplexer)      │
+    │  ➜ Peer:       Loopback Mode (Local Only)                      │
+    └──────────────────────────────────────────────────────────────────┘
+
+      Shortcuts: [o] open  [s] file  [t] text  [l] sign-ins  [c] clear  [p] peer  [v] verbose  [q] quit
+
+The box draws as intended: the rule is closed, the title is centred,
+the three `➜` lines align in a column, the peer label column lines up
+across all three, and the shortcuts sit below the box rather than
+inside it. That is **one static frame of a mostly-interactive
+surface**, and the row is narrowed rather than closed.
+
+### The capture tool
+
+The dashboard has `populated.mjs`, which seeds realistic state and
+captures every tab. The node's pages had **nothing** -- which is how
+their empty state came to be an unstyled paragraph, and how the
+button geometry came to differ from the dashboard's, without anyone
+looking.
+
+`tools/uxtest/nodepages.mjs` is that tool for the node's pages: it
+starts `tantu drop` and `tantu relay`, seeds the state a reader meets
+-- a peer connected, a snippet sent, a file chosen, a drop received --
+and captures each surface in both themes at 1280, 768, 360 and 320px.
+
+### Evidence
+
+- The acceptance suite, on all three engines, with the final build:
+  **chromium 173/173**, **firefox 171/171**, **webkit 173/173**.
+  Chromium and WebKit each carry two engine-specific skips that Firefox
+  does not, which is where the two checks differ.
+- Red proof on the product: the four defects above turned the four
+  matching checks red and nothing else (168/172).
+- `go test ./...` green across fifteen packages, `gofmt -l .` clean,
+  `go vet` clean, staticcheck clean, encgate, docgate and wfcheck green.
+- The node pages looked at, not only measured: `tools/uxtest/nodepages.mjs`,
+  captured in both themes at four widths, before and after.
+
 

@@ -35,7 +35,7 @@ const dropPageHTML = `<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>QuickDrop</title>
-<style>{{THEME}}</style>
+<style>{{DESIGN_SYSTEM}}</style>
 <style>{{NODEPAGE}}</style>
 </head>
 <body>
@@ -45,39 +45,65 @@ const dropPageHTML = `<!DOCTYPE html>
     <div class="peer-badge">Connected to {{PEER}}</div>
   </header>
 
-  <div class="status-msg" id="sessionBanner">Authorizing this page...</div>
+  <div class="status-msg" id="sessionBanner" role="status" aria-live="polite">Authorizing this page...</div>
 
   <!-- Section 1: Send Text -->
   <div class="section">
     <div class="section-title">Send Text</div>
     <div class="form-group">
+      <!-- A label, not a placeholder. A placeholder is the field's
+           instruction, not its name: it disappears the moment the field is
+           used, so a screen reader reads an empty name and a person
+           looking back at an empty field reads no label at all. -->
+      <label class="sr-only" for="textLabel">Label for this snippet (optional)</label>
       <input type="text" id="textLabel" placeholder="Optional label (e.g. API key, error trace)">
+      <label class="sr-only" for="textContent">Text to send to your peer</label>
       <textarea id="textContent" placeholder="Paste or type text to send to paired machine..."></textarea>
-      <button class="action-btn" id="btnSendText" onclick="sendText()">Send Text</button>
+      <button class="btn btn-primary" id="btnSendText" onclick="sendText()">Send Text</button>
     </div>
-    <div class="status-msg" id="textStatus"></div>
+    <!-- A live region, so the outcome of a send is announced rather than
+         only painted. The dashboard's status lines are live regions for
+         the same reason. -->
+    <div class="status-msg" id="textStatus" role="status" aria-live="polite"></div>
   </div>
 
   <!-- Section 2: Send File -->
   <div class="section">
     <div class="section-title">Send File</div>
-    <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
-      <div class="drop-zone-icon"><span class="ico ico--folder" aria-hidden="true"></span></div>
-      <div class="drop-zone-text">Click or drag-and-drop a file here</div>
-      <div class="drop-zone-file" id="selectedFileName"></div>
+    <div class="form-group">
+      <!-- The drop zone IS the control: the file input is hidden, so a
+           keyboard that cannot reach this element cannot send a file at
+           all. It was a div with a click handler and no role, no tabindex
+           and no key handler -- the one control on the page was
+           completely unreachable without a mouse.
+
+           The accessible name contains the visible text, because a
+           voice-control user says what they see (WCAG 2.5.3). -->
+      <div class="drop-zone" id="dropZone" role="button" tabindex="0"
+           aria-label="Click or drag-and-drop a file here - choose a file to send to your peer"
+           onclick="document.getElementById('fileInput').click()"
+           onkeydown="if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') { event.preventDefault(); document.getElementById('fileInput').click(); }">
+        <div class="drop-zone-icon"><span class="ico ico--folder" aria-hidden="true"></span></div>
+        <div class="drop-zone-text">Click or drag-and-drop a file here</div>
+        <div class="drop-zone-file" id="selectedFileName"></div>
+      </div>
       <input type="file" id="fileInput" onchange="onFileSelected(this.files)">
+      <button class="btn btn-primary" id="btnSendFile" onclick="sendFile()" disabled>Send File</button>
     </div>
-    <div style="margin-top: 0.75rem;">
-      <button class="action-btn" id="btnSendFile" onclick="sendFile()" disabled>Send File</button>
-    </div>
-    <div class="status-msg" id="fileStatus"></div>
+    <div class="status-msg" id="fileStatus" role="status" aria-live="polite"></div>
   </div>
 
   <!-- Section 3: Received Drops -->
   <div class="section">
-    <div class="section-title">Received Drops <span style="font-size: 0.8rem; text-transform: none; color: var(--success-text); margin-left: 0.5rem; display: inline-flex; align-items: center; gap: 0.35rem;" id="listenBadge"><span class="status-dot" aria-hidden="true"></span>Listening</span></div>
+    <div class="section-title">Received Drops <span class="section-badge" id="listenBadge"><span class="status-dot" aria-hidden="true"></span>Listening</span></div>
     <div class="received-list" id="receivedList">
-      <div class="empty-state" id="emptyState">No drops received yet. Waiting for incoming transfers...</div>
+      <!-- The empty state is an object, not a sentence. It used to carry
+           the class the dashboard defines and nothing that styled it, so
+           it rendered as an ordinary paragraph of body text. -->
+      <div class="empty-state" id="emptyState">
+        <strong>No drops received yet</strong>
+        Snippets and files your peer sends appear here as they arrive.
+      </div>
     </div>
   </div>
 </div>
@@ -305,7 +331,7 @@ const dropPageHTML = `<!DOCTYPE html>
         const link = document.createElement('a');
         link.href = drop.url;
         link.download = '';
-        link.className = 'small-btn';
+        link.className = 'btn btn-sm';
         link.appendChild(marked('ico--download', 'Download'));
         actions.appendChild(link);
       }
@@ -315,7 +341,7 @@ const dropPageHTML = `<!DOCTYPE html>
       content.textContent = drop.data || '';
       item.appendChild(content);
       const copy = document.createElement('button');
-      copy.className = 'small-btn';
+      copy.className = 'btn btn-sm';
       copy.appendChild(marked('ico--copy', 'Copy'));
       copy.addEventListener('click', () => {
         const text = String(drop.data || '');
@@ -790,7 +816,7 @@ func runDrop(args []string) {
 	// than two that happen to share a name. The page used to carry its own
 	// palette -- a third set of values, hand-copied -- and its own copy of
 	// the layout, which the relay page carried too.
-	pageContent = strings.ReplaceAll(pageContent, "{{THEME}}", webui.ThemeCSS)
+	pageContent = strings.ReplaceAll(pageContent, "{{DESIGN_SYSTEM}}", webui.DesignSystemCSS())
 	pageContent = strings.ReplaceAll(pageContent, "{{NODEPAGE}}", nodePageCSS)
 	if strings.Contains(pageContent, "IPC_TOKEN") {
 		fmt.Fprintln(os.Stderr, "Error: refusing to serve a page that embeds an API credential")

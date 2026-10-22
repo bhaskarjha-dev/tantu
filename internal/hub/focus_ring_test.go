@@ -32,7 +32,7 @@ var outlineDecl = regexp.MustCompile(`outline\s*:`)
 
 func hasExplicitOutlineFor(t *testing.T, typeSelector string) bool {
 	t.Helper()
-	code := stripDashboardComments(dashboardHTML)
+	code := stripDashboardComments(servedDashboardCSS(t))
 	// Rule selectors containing :focus-visible with an outline declaration.
 	re := regexp.MustCompile(`([^{}]+:focus-visible[^{}]*)\{([^{}]*)\}`)
 	for _, m := range re.FindAllStringSubmatch(code, -1) {
@@ -82,7 +82,7 @@ func TestEveryFocusableControlTypeHasAnExplicitFocusRing(t *testing.T) {
 // accent and geometry as every other control, rather than merely existing. A
 // second, differently-styled focus ring would still be a consistency defect.
 func TestCheckboxAndRadioShareTheStandardRing(t *testing.T) {
-	code := stripDashboardComments(dashboardHTML)
+	code := stripDashboardComments(servedDashboardCSS(t))
 	re := regexp.MustCompile(`input\[type="checkbox"\]:focus-visible[^{]*\{([^}]*)\}`)
 	m := re.FindStringSubmatch(code)
 	if m == nil {
@@ -128,7 +128,7 @@ func TestCheckboxAndRadioShareTheStandardRing(t *testing.T) {
 // rules for the same type mean one of them is dead and the other is what
 // a reader actually sees.
 func TestAControlHasOnlyOneFocusRing(t *testing.T) {
-	code := stripDashboardComments(dashboardHTML)
+	code := stripDashboardComments(servedDashboardCSS(t))
 	// Every :focus-visible rule in the page, with the outline it declares.
 	re := regexp.MustCompile(`([^{}]+:focus-visible[^{}]*)\{([^{}]*)\}`)
 	// A control type, as a CSS author would write it.
@@ -219,7 +219,7 @@ func TestNoFocusableElementCarriesAnInlineOutlineSuppress(t *testing.T) {
 	inlineOutlineSuppress := regexp.MustCompile(
 		`(?i)<(?:button|input|select|textarea|a)\b[^>]*\sstyle\s*=\s*"[^"]*\boutline\s*:\s*(?:none|0)\b`)
 
-	for _, m := range inlineOutlineSuppress.FindAllString(stripDashboardComments(dashboardHTML), -1) {
+	for _, m := range inlineOutlineSuppress.FindAllString(stripDashboardComments(servedDashboardPage(t)), -1) {
 		// Trim to a readable length; the match may run into the rest of a long
 		// style attribute and a 400-character line helps nobody.
 		shown := m
@@ -237,7 +237,7 @@ func TestNoFocusableElementCarriesAnInlineOutlineSuppress(t *testing.T) {
 // ring is a correctness problem rather than a cosmetic one: it decides which
 // machine receives the file.
 func TestPeerSwitcherKeepsItsFocusRing(t *testing.T) {
-	code := stripDashboardComments(dashboardHTML)
+	code := stripDashboardComments(servedDashboardCSS(t))
 	rule := regexp.MustCompile(`(?s)\.header-peer-select:focus-visible[^{]*\{([^}]*)\}`)
 	m := rule.FindStringSubmatch(code)
 	if m == nil {

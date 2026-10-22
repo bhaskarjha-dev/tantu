@@ -99,8 +99,61 @@ func TestPagesDoNotCarryTheirOwnPalette(t *testing.T) {
 		if strings.Contains(body, ":root {") {
 			t.Errorf("%s defines its own :root block; a page that carries its own colours has left the design system", name)
 		}
-		if !strings.Contains(body, "{{THEME}}") {
+		if !strings.Contains(body, "{{DESIGN_SYSTEM}}") {
 			t.Errorf("%s does not include the shared design system", name)
+		}
+	}
+}
+
+// The design system marker only ever appears as a style include, or as the
+// literal the server substitutes it with.
+//
+// The marker is a hole in the page, and the server fills it with the whole
+// design system -- tokens, type scale, icon set and components. If the
+// marker ever appears somewhere else, the server fills that hole too, and
+// the page carries the system twice: the same rule written twice, which is
+// the same defect as two owners, with the second copy the one that dies
+// quietly.
+//
+// A page file may hold more than one marker -- the node's relay command
+// serves two pages, the relay page and the dead end in front of it -- so
+// the count is not the rule. The shape is.
+func TestTheDesignSystemMarkerOnlyEverAppearsAsAStyleInclude(t *testing.T) {
+	const marker = "{{DESIGN_SYSTEM}}"
+	for name, body := range readPages(t) {
+		if !strings.Contains(body, marker) {
+			t.Errorf("%s does not include the shared design system", name)
+			continue
+		}
+		// Every occurrence must be a style include, or the quoted literal
+		// the server substitutes it with. Strip those and nothing may be
+		// left over.
+		leftover := strings.ReplaceAll(body, "<style>"+marker+"</style>", "")
+		leftover = strings.ReplaceAll(leftover, `"`+marker+`"`, "")
+		if strings.Contains(leftover, marker) {
+			t.Errorf("%s uses the design system marker somewhere other than a <style> include", name)
+		}
+	}
+}
+
+// The design system is served as one stylesheet, so a page cannot get the
+// tokens without the components.
+//
+// This is the assertion that keeps the component layer honest. When the
+// theme and the components were two markers, a page could include one and
+// not the other, and the node's pages did exactly that: they used
+// `.empty-state` and had no definition of it anywhere they could reach.
+func TestTheDesignSystemCarriesBothTheThemeAndTheComponents(t *testing.T) {
+	ds := DesignSystemCSS()
+	for _, want := range []string{
+		"--accent:",    // the tokens
+		"--icon-drop:", // the icon set
+		".sr-only {",   // the components
+		".empty-state {",
+		".btn-primary {",
+	} {
+		if !strings.Contains(ds, want) {
+			t.Errorf("the served design system does not carry %q", want)
 		}
 	}
 }

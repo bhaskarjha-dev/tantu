@@ -1,6 +1,6 @@
 # Surface Migration Matrix
 
-> **Status:** living matrix. **Last reviewed:** 2026-09-29.
+> **Status:** living matrix. **Last reviewed:** 2026-10-22.
 > **Purpose:** the plan (v6.0 §2.1, §9.7) requires that no retained surface
 > teaches a second, contradictory product model. This file is where each
 > surface's audience, canonical status, and relationship to the Hub is written
@@ -66,6 +66,18 @@ normal path and must not become one silently.
    must both carry `--peer` all the way to the peer. A batch that silently
    routed to the active peer would deliver to a machine the user did not name
    while reporting success — the worst outcome this product can produce.
+8. **One owner per component, and every surface gets it.** A surface may
+   carry its own *shape* — the QuickDrop card, the relay popup, the
+   dashboard's tabs — but the components a surface is built from
+   (the button vocabulary, the empty state, the visually-hidden utility,
+   the focus ring, the typeface) are owned by the design system and
+   served to every page at one marker. The failure this rule exists to
+   prevent is concrete and measured: the node's pages used the class
+   `.empty-state`, and the only definition of it in the product lived in
+   the dashboard's stylesheet, which those pages never load — so their
+   empty state rendered as an unstyled paragraph of body text. A surface
+   that redefines a component is not "styled differently"; it is a
+   second owner, and the two drift.
 
 ## Known divergences still open
 

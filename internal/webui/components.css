@@ -1,0 +1,270 @@
+/* ---------------------------------------------------------------------------
+   The component layer: the primitives every page in the product is built from.
+
+   The design system owned tokens, a type scale and an icon set, and nothing
+   else. Every page then built its own buttons, its own empty state, its own
+   visually-hidden utility and its own focus ring -- which is the same defect
+   as two rules for one thing, in four places at once:
+
+     .sr-only        dashboard.html, relay_shell.css, and NOT the node pages
+     .empty-state    dashboard.html twice, and NOT the node pages -- which
+                     USE the class, so their empty state rendered as an
+                     unstyled paragraph of body text
+     the buttons     dashboard.html (.btn-primary, .btn-sm), nodepage.css
+                     (.action-btn, .submit-btn), relay_shell.css (.relay-btn)
+     the focus ring  dashboard.html, nodepage.css, relay_shell.css
+
+   Three consequences, all of them visible on a screen rather than in a
+   stylesheet. The node pages' empty state was a sentence instead of a
+   state. The node pages' primary button was a different shape from the
+   dashboard's, for the same word. And the dashboard's narrow-viewport rule
+   that lets buttons wrap named `.btn`, `.btn-secondary` and `.btn-ghost` --
+   three classes that exist nowhere in the product, so the one rule written
+   to stop a button overflowing its box was attached to nothing.
+
+   This file is that component layer. One owner per primitive. A page that
+   needs a new colour adds a token in theme.css; a page that needs a new
+   shape adds it here; and every page gets it.
+   --------------------------------------------------------------------------- */
+
+/* ---- One typeface, everywhere ----
+   A control that does not say which typeface it uses gets the browser's
+   default, and the browser's default is not the product's.
+
+   Measured on the running dashboard: the body, the card titles, the
+   buttons and the textarea all resolved to the design system's
+   --font-sans. The text inputs and the TAB BAR resolved to Arial -- the
+   user agent's control font -- because a form control does not inherit
+   font-family unless it is told to, and two rules in the page set a
+   control's size and colour without mentioning its family.
+
+   So the navigation, which is the one piece of chrome every reader meets
+   first, was set in a different typeface from the page it navigates, and
+   so was every field a reader types a secret into. This is the whole
+   reason the type scale is a scale and not a list of sizes. */
+input,
+textarea,
+select,
+button {
+  font-family: inherit;
+}
+
+/* ---- Visually hidden, still announced ----
+   The one utility that says "this text is for a screen reader and nobody
+   else". It was written out twice -- once per page family -- and the node
+   pages did not have it at all, so a label they needed could only be a
+   placeholder: text that disappears the moment the field is used, and
+   which WCAG 3.3.2 does not accept as a label. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---- The empty state ----
+   A state, not a sentence. The node pages use the class and got nothing,
+   because the only definition of it lived inside the dashboard's own
+   stylesheet, which those pages never load. */
+.empty-state {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  padding: 1.75rem 1.25rem;
+  color: var(--text-muted);
+  font-size: var(--fs-base);
+  line-height: 1.6;
+}
+.empty-state strong {
+  display: block;
+  color: var(--text);
+  font-size: var(--fs-lg);
+  margin-bottom: 0.35rem;
+}
+
+/* ---- The button vocabulary ----
+   Four shapes and no others, so that "a button" means one thing across the
+   dashboard, the node pages, the relay popup and the cockpit's HTML.
+
+   The geometry every button shares is declared ONCE, on a selector list,
+   rather than once per variant. A variant that forgot to carry the focus
+   ring -- the checkbox did, in this repository's history -- is then
+   impossible to write.
+
+   The list is a flex container with a gap, and that is not a style
+   preference: the design system already zeroes the margin on an icon
+   inside a button, on the assumption that the button lays its contents
+   out with a gap. The assumption was never true of .btn-primary, which
+   was an inline-block, so the icon's margin was removed and nothing
+   replaced it -- the glyph sat against its own label with no space
+   between them. */
+.btn,
+.btn-primary,
+.btn-sm,
+.btn-ghost,
+.btn-danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  font-family: inherit;
+  line-height: 1.2;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+/* The primary action: the thing the surface exists to do. */
+.btn-primary {
+  background: var(--accent-gradient-strong);
+  border: none;
+  color: #fff;
+  padding: 0.75rem 1.5rem;
+  border-radius: var(--radius-md);
+  font-weight: 600;
+  font-size: 0.95rem;
+  white-space: nowrap;
+  box-shadow: 0 4px 14px rgba(59, 130, 246, 0.35);
+  transition: transform var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+.btn-primary:hover {
+  opacity: 0.9;
+}
+.btn-primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(59, 130, 246, 0.45);
+}
+.btn-primary:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+/* The small control: a secondary action, a row action, a card header
+   action. */
+.btn-sm {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 0.35rem 0.75rem;
+  border-radius: var(--radius-md);
+  font-size: 0.8rem;
+  font-weight: 600;
+  transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.btn-sm:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: var(--border-light);
+}
+
+/* The quiet control: a destructive action, or any action that must not be
+   the loudest thing on the page. The label carries the warning; the
+   confirmation dialog carries the decision. */
+.btn-ghost {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+}
+.btn-ghost:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+/* The destructive control: named, red, and still a confirmation away from
+   the thing it destroys. */
+.btn-danger {
+  background: var(--error);
+  border: 1px solid var(--error);
+  /* White on the error red, and it has to be white: the design system's
+     --error-text is a *text* colour, darkened for the light theme, and
+     it is far too dark to read on the red itself. */
+  color: #ffffff;
+  font-weight: 600;
+  min-height: 44px;
+  padding: 0.5rem 1.1rem;
+  border-radius: var(--radius-md);
+}
+.btn-danger:hover:not(:disabled) {
+  background: var(--error-hover, #dc2626);
+}
+
+.btn:disabled,
+.btn-primary:disabled,
+.btn-sm:disabled,
+.btn-ghost:disabled,
+.btn-danger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---- The focus ring ----
+   One rule, naming every control type the product ships. It used to be
+   three rules in three files, and the checkbox was missing from the list in
+   all of them -- so the page's only checkbox fell back to the user agent's
+   sub-pixel pale grey, which on the light theme is close to invisible. */
+input[type="text"]:focus-visible,
+input[type="search"]:focus-visible,
+input[type="url"]:focus-visible,
+input[type="email"]:focus-visible,
+input[type="password"]:focus-visible,
+input[type="number"]:focus-visible,
+input[type="file"]:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+button:focus-visible,
+[role="button"]:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+input[type="checkbox"]:focus-visible,
+input[type="radio"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---- The hint ----
+   Secondary text under a control or a card. */
+.hint-text {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-top: 0.75rem;
+}
+
+/* ---- Narrow viewports ----
+   A button whose label names its destination -- "Send text to this Hub
+   (local-only test)" -- has no fixed width, so `white-space: nowrap` is
+   wrong on a narrow viewport: the label runs past its own box and the page
+   grows a horizontal scrollbar.
+
+   The rule that fixed it named `.btn-primary, .btn, .btn-secondary,
+   .btn-ghost`. Two of those four classes exist nowhere in the product, and
+   the class that does exist without a rule of its own -- `.btn-sm` -- was
+   not in the list. So the rule was attached mostly to nothing.
+
+   Here it is attached to every button shape there is, which is the only way
+   the rule can stay true as buttons are added. */
+@media (max-width: 640px) {
+  .btn,
+  .btn-primary,
+  .btn-sm,
+  .btn-ghost,
+  .btn-danger {
+    white-space: normal;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn,
+  .btn-primary,
+  .btn-sm,
+  .btn-ghost,
+  .btn-danger {
+    transition: none;
+  }
+  .btn-primary:hover:not(:disabled) {
+    transform: none;
+  }
+}
