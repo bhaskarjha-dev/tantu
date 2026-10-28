@@ -581,8 +581,17 @@ let hubs2 = null;
     // peer pills and once in a line under it. The check follows the
     // design: a label that names the field, and a value that names
     // somewhere.
+    //
+    // The label may be either "Destination" or "Sending to". Both name
+    // what the value is FOR; "Sending to" says it as the action it
+    // governs, which is how the reader meets it -- the send button says
+    // "Send text to Devbox (workstation)" and the switcher says "or
+    // send to", so the band above them says the same thing in the same
+    // words. The check is that the value is labelled and the label is
+    // about where a send goes, not that one particular word is used.
     check('destination always visible',
-      sess && /.+/.test((sess.dest || '').trim()) && /destination/i.test(sess.label || ''),
+      sess && /.+/.test((sess.dest || '').trim()) &&
+      /destination|sending to/i.test(sess.label || ''),
       sess && (sess.dest + ' [' + sess.label + ']'));
     check('one-time token stripped from the URL', sess && !/tantu_bootstrap/.test(sess.url), sess && sess.url);
 
@@ -1469,6 +1478,132 @@ const OVERFLOW_PROBE = `(function(){
         }
       }
     }
+
+    // --- the shape of the surfaces, measured on the rendered page ---
+    //
+    // The Go gates assert what the page IS: one band, a destination that
+    // is a heading, a name that is not cut off, a procedure that is a
+    // list. These assert what the page LOOKS LIKE once the browser has
+    // laid it out -- because a source-level claim about a heading can be
+    // true and the heading can still be 15px on the screen, which is
+    // exactly what happened with the destination.
+    await metrics(1440, 900); await sleep(400);
+
+    await tab('tab-drop');
+    const sendShape = await js(`(function(){
+      var bars = document.querySelectorAll('#tab-drop .bar');
+      var dest = document.getElementById('destinationSummary');
+      var grid = document.querySelector('#tab-drop .grid-2');
+      var bottoms = [];
+      if (grid) {
+        for (var i = 0; i < grid.children.length; i++) {
+          bottoms.push(Math.round(grid.children[i].getBoundingClientRect().bottom));
+        }
+      }
+      return {
+        bands: bars.length,
+        destInBand: !!(bars.length && dest && bars[0].contains(dest)),
+        destSize: dest ? parseFloat(getComputedStyle(dest).fontSize) : 0,
+        columnBottoms: bottoms,
+      };
+    })()`);
+    check('the send surface opens with one band, and the destination is in it',
+      !!sendShape && sendShape.bands === 1 && sendShape.destInBand, JSON.stringify(sendShape));
+    check('the destination is set at the size of a heading, not of body text',
+      !!sendShape && sendShape.destSize >= 16, JSON.stringify(sendShape));
+    // The two columns end together, so the page has no hole in the middle
+    // of it. It used to: the right column's card stopped 200px above the
+    // left column's last card and left a void that read as an unfinished
+    // page.
+    //
+    // The tolerance is one card's bottom margin -- the received card
+    // carries the same 1.5rem every card does, and that margin is
+    // supposed to be there. A 24px difference is the margin; a 200px one
+    // is a hole.
+    check('the send surface\'s two columns end together',
+      !!sendShape && sendShape.columnBottoms.length === 2 &&
+      Math.abs(sendShape.columnBottoms[0] - sendShape.columnBottoms[1]) <= 40,
+      JSON.stringify(sendShape));
+    // And the empty state sits in the middle of the room the list will
+    // take, rather than pinned to the top of a tall empty card.
+    const emptyPlaced = await js(`(function(){
+      var list = document.getElementById('receivedDropsList');
+      var es = list ? list.querySelector('.empty-state') : null;
+      if (!list || !es) return null;
+      var lr = list.getBoundingClientRect(), er = es.getBoundingClientRect();
+      if (lr.height < 120) return { skipped: true };
+      return {
+        delta: Math.round(Math.abs((lr.top + lr.height / 2) - (er.top + er.height / 2))),
+        listHeight: Math.round(lr.height),
+      };
+    })()`);
+    check('the received list\'s empty state is centred in the room the list will take',
+      !emptyPlaced || emptyPlaced.skipped || emptyPlaced.delta <= 80, JSON.stringify(emptyPlaced));
+
+    await tab('tab-peers');
+    const peerNames = await js(`(function(){
+      var names = [].slice.call(document.querySelectorAll('.peer__name'));
+      var out = [];
+      for (var i = 0; i < names.length; i++) {
+        var el = names[i];
+        out.push({
+          text: el.textContent.slice(0, 44),
+          clipped: el.scrollWidth > el.clientWidth + 1,
+        });
+      }
+      return out;
+    })()`);
+    check('no peer name is cut off', Array.isArray(peerNames) && peerNames.every((n) => !n.clipped),
+      JSON.stringify(peerNames));
+
+    await tab('tab-relay');
+    const relaySteps = await js(`(function(){
+      var s = [].slice.call(document.querySelectorAll('.bookmarklet-box .step'));
+      var titles = [];
+      for (var i = 0; i < s.length; i++) {
+        var t = s[i].querySelector('.step__title');
+        titles.push(t ? t.textContent.trim() : '');
+      }
+      var box = document.querySelector('.bookmarklet-box');
+      return { count: s.length, titles: titles, boxShown: !!box };
+    })()`);
+    check('the relay tab states its recommended path as numbered steps',
+      !!relaySteps && relaySteps.count >= 3 && relaySteps.titles.every((t) => t.length > 0),
+      JSON.stringify(relaySteps));
+
+    await tab('tab-logs');
+    const consoleFill = await js(`(function(){
+      var c = document.getElementById('logConsole');
+      if (!c) return null;
+      var r = c.getBoundingClientRect();
+      var card = c.closest('.card');
+      var cr = card ? card.getBoundingClientRect() : null;
+      return {
+        height: Math.round(r.height),
+        viewport: window.innerHeight,
+        // The space between the bottom of the console and the bottom of
+        // the card that holds it. A console that FILLS leaves only the
+        // card's own padding; one that is capped at a fixed height
+        // leaves the leftover space inside the card, and the page below
+        // it is empty.
+        slackInCard: cr ? Math.round(cr.bottom - r.bottom) : null,
+        cardHeight: cr ? Math.round(cr.height) : null,
+        // How much of the page is below the fold. The page's own bottom
+        // padding is 48px and the engines disagree about whether that
+        // counts as a scroll, so the tolerance is one padding's worth.
+        //
+        // This is the secondary condition; the teeth are in
+        // slackInCard. A console capped at a fixed height leaves its
+        // leftover space inside the card, and slackInCard is that
+        // leftover -- 161px instead of 25.
+        overflow: Math.max(0, document.documentElement.scrollHeight - window.innerHeight),
+      };
+    })()`);
+    check('the live log console fills the page it is on',
+      !!consoleFill && consoleFill.slackInCard !== null && consoleFill.slackInCard <= 48 &&
+      consoleFill.overflow <= 64,
+      JSON.stringify(consoleFill));
+
     await metrics(360, 780); await sleep(300);
 
     // The Relay tab is the product's most distinctive feature and until now the

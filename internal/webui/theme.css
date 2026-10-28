@@ -149,6 +149,37 @@
   --fs-2xl: 1.375rem;    /* 22px  headings */
 }
 
+/* A spacing scale, in rem, on a quarter-rem grid.
+ *
+ * The dashboard's spacing was already consistent -- every gap was a
+ * multiple of 0.25rem -- but it was written out as a literal in every
+ * rule, so nothing could be changed as a system and nothing could be
+ * checked. A rhythm that cannot be tuned is a rhythm that has drifted.
+ *
+ * The scale is deliberately short. A long scale with forty steps is a
+ * scale nobody picks from: the point is that there are fewer choices
+ * than there were, and that the choices are named.
+ *
+ *   --sp-1  0.25rem   4px    hairline gaps, icon-to-text
+ *   --sp-2  0.5rem    8px    inside a control, chip padding
+ *   --sp-3  0.75rem   12px   between related things, label-to-value
+ *   --sp-4  1rem      16px   between blocks, card padding
+ *   --sp-5  1.25rem   20px   between groups, a bar's own padding
+ *   --sp-6  1.5rem    24px   a card's padding
+ *   --sp-8  2rem      32px   between major sections
+ *   --sp-10 2.5rem    40px   a hero's padding
+ */
+:root {
+  --sp-1: 0.25rem;
+  --sp-2: 0.5rem;
+  --sp-3: 0.75rem;
+  --sp-4: 1rem;
+  --sp-5: 1.25rem;
+  --sp-6: 1.5rem;
+  --sp-8: 2rem;
+  --sp-10: 2.5rem;
+}
+
 /* Placeholder text is painted by the browser, in the browser's own
    default colour, unless the stylesheet says otherwise -- and the
    stylesheet said nothing. Chromium's default is rgb(117, 117, 117),

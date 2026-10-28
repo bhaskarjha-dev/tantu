@@ -75,7 +75,7 @@ button {
   border: 1px dashed var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface);
-  padding: 1.75rem 1.25rem;
+  padding: var(--sp-8) var(--sp-5);
   color: var(--text-muted);
   font-size: var(--fs-base);
   line-height: 1.6;
@@ -123,7 +123,7 @@ button {
   background: var(--accent-gradient-strong);
   border: none;
   color: #fff;
-  padding: 0.75rem 1.5rem;
+  padding: var(--sp-3) var(--sp-6);
   border-radius: var(--radius-md);
   font-weight: 600;
   font-size: 0.95rem;
@@ -148,7 +148,7 @@ button {
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid var(--border);
   color: var(--text);
-  padding: 0.35rem 0.75rem;
+  padding: 0.35rem var(--sp-3);
   border-radius: var(--radius-md);
   font-size: 0.8rem;
   font-weight: 600;
@@ -183,7 +183,7 @@ button {
   color: #ffffff;
   font-weight: 600;
   min-height: 44px;
-  padding: 0.5rem 1.1rem;
+  padding: var(--sp-2) var(--sp-4);
   border-radius: var(--radius-md);
 }
 .btn-danger:hover:not(:disabled) {
@@ -267,4 +267,297 @@ input[type="radio"]:focus-visible {
   .btn-primary:hover:not(:disabled) {
     transform: none;
   }
+}
+
+/* ---- The hidden attribute, honoured ----
+   `hidden` is how a page says "this is not here right now", and the
+   browser's own rule for it lives in the user-agent stylesheet, where any
+   author rule beats it. So the moment a page set `display` on an
+   element -- which the design system does for many of them -- the
+   element the author had hidden came back and stayed.
+
+   The page's own JavaScript already used the `hidden` property rather
+   than `style.display`, so the intent was right and the mechanism was
+   unreliable. This makes the attribute mean what it says, everywhere,
+   once. */
+[hidden] {
+  display: none !important;
+}
+
+/* ---- The bar ----
+   A full-width strip that carries one thing, without pretending to be a
+   card.
+
+   The dashboard built these as `.card` with its padding overridden inline
+   -- "a card, but flat" -- so a strip and a card looked the same while
+   meaning different things, and the page filled up with bands that all
+   carried equal weight. A bar is its own shape: a strip with a bottom
+   margin that says "this is a band of context above the work". */
+.bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-4) var(--sp-5);
+  margin-bottom: var(--sp-5);
+}
+.bar__body {
+  flex: 1 1 20rem;
+  min-width: 0;
+}
+.bar__actions {
+  display: flex;
+  gap: var(--sp-2);
+  flex: none;
+  margin-left: auto;
+}
+
+/* ---- The destination ----
+   The one value a reader must be able to find at a glance before they
+   send anything: where it is going.
+
+   It is the most important thing on the send surface and it was drawn as
+   one more full-width band with a 15px value in a 1176px row, sharing its
+   visual weight with a downloads path and a "for testing only" caveat. It
+   is a heading here, not a line of metadata. */
+.dest {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.dest__label {
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  flex: none;
+}
+.dest__current {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--text);
+  min-width: 0;
+  flex: 1 1 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dest__switcher {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+}
+.dest__switch-label {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--text-muted);
+  flex: none;
+}
+.dest__pills {
+  display: flex;
+  gap: var(--sp-1);
+  flex-wrap: wrap;
+}
+
+/* ---- The meta row ----
+   A label and its value, as a pair.
+
+   The dashboard drew these by hand -- a grid in one card, a flex row in
+   another, a chip in a third -- so the same fact looked different on
+   every surface it appeared on. */
+.meta {
+  display: grid;
+  grid-template-columns: minmax(7rem, max-content) minmax(0, 1fr);
+  gap: var(--sp-2) var(--sp-4);
+  align-items: baseline;
+}
+.meta__label {
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+.meta__value {
+  color: var(--text);
+  font-weight: 600;
+  /* A fingerprint or a path is one unbroken string. Breaking it anywhere
+     lets it wrap, but a reader comparing two of them by eye needs the
+     break to be in the same place in both -- which is what
+     overflow-wrap: anywhere gives, and what the default does not. */
+  overflow-wrap: anywhere;
+}
+.meta__value--mono {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: var(--fs-sm);
+}
+
+/* ---- The message ----
+   An outcome, told plainly.
+
+   It used to live in the dashboard's own stylesheet, which meant the
+   surfaces that also had something to say -- the node's pages, the relay
+   popup -- could not use it without copying it, and one of them had
+   copied it. A message is a product-wide shape: an outcome, a mark, the
+   one next step, and the identifier to quote in a bug report.
+
+   Flat, because it is a message and not an object: the relay page drew
+   its failures as a CARD inside a CARD inside the page, three borders and
+   three backgrounds to say one thing. */
+.msg {
+  display: none;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5);
+  margin-top: var(--sp-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  background: var(--surface);
+  font-size: var(--fs-base);
+  line-height: 1.5;
+  animation: bannerIn var(--dur-med) var(--ease-out);
+}
+.msg--error,
+.msg--success,
+.msg--warning,
+.msg--info {
+  display: flex;
+}
+.msg__icon {
+  flex: none;
+  margin-top: 0.1rem;
+  color: var(--accent);
+}
+.msg__body {
+  flex: 1;
+  min-width: 0;
+}
+.msg__title {
+  font-weight: 600;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.msg__detail {
+  color: var(--text-muted);
+  margin-top: 0.2rem;
+  overflow-wrap: anywhere;
+}
+.msg__next {
+  color: var(--text-muted);
+  margin-top: var(--sp-1);
+  padding-top: var(--sp-1);
+  border-top: 1px dashed var(--border);
+  overflow-wrap: anywhere;
+}
+.msg__next-label {
+  display: inline-block;
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text);
+  margin-right: 0.4rem;
+}
+.msg__id {
+  display: inline-block;
+  margin-top: var(--sp-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.1rem 0.35rem;
+}
+.msg--error { border-left-color: var(--error); }
+.msg--error .msg__icon { color: var(--error-text); }
+.msg--success { border-left-color: var(--success); }
+.msg--success .msg__icon { color: var(--success-text); }
+.msg--warning { border-left-color: var(--warning); }
+.msg--warning .msg__icon { color: var(--warning-text); }
+.msg--info { border-left-color: var(--accent); }
+.msg--info .msg__icon { color: var(--accent-text); }
+
+@keyframes bannerIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ---- Inline code ----
+   The product's language quotes commands in backticks -- "Use `tantu
+   status` to verify trust" -- and those backticks used to be shown to
+   the reader as backticks. Every code span in the product looks the
+   same, so it is one rule and it lives here. */
+code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.05rem 0.3rem;
+  color: var(--text);
+}
+
+/* ---- The chip ----
+   A value that is not a sentence: a path, an identifier, a code. */
+.chip {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  padding: 0.15rem var(--sp-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+/* ---- The steps ----
+   A procedure, in order.
+
+   The relay page's recommended path was a paragraph of prose describing
+   three steps. People do not follow prose; they follow a list. */
+.steps {
+  counter-reset: step;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.step {
+  counter-increment: step;
+  display: grid;
+  grid-template-columns: 1.75rem minmax(0, 1fr);
+  gap: var(--sp-3);
+  align-items: start;
+}
+.step::before {
+  content: counter(step);
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  background: var(--accent-text);
+  color: var(--bg);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+}
+.step__title {
+  font-weight: 600;
+  color: var(--text);
+}
+.step__text {
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
 }

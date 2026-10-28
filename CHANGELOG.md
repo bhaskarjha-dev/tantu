@@ -83,7 +83,69 @@ rollback procedures.
   derived from `ci.yml`, so adding a gate to the quality job makes the check
   demand it be documented without anyone editing the check.
 
+### Added
+- **`docs/REPO-INVENTORY.md` — every tracked file, classified by what
+  breaks without it.** The repository is 298 files, and a person
+  arriving could not tell which were load-bearing, which were
+  supporting cast and which were cruft. The inventory answers one
+  question per file in four classes: **extremely important** (73 —
+  the wire format, the trust model, the data path, the encrypted
+  channel, the design system, the build, the gates, the licence),
+  **very important** (31 — a documented capability or a class of
+  evidence), **important** (194 — quality, coverage, maintainability),
+  and **useless** (0). It also carries the order in which things may be
+  deleted safely, because "important" is not the same as
+  "indispensable". The inventory is checked by `tools/docgate`, both
+  ways: every tracked path must be classified, every path the
+  inventory names must still exist, the class vocabulary must be
+  spelled one way, and the summary table's counts are recomputed from
+  the rows beneath them rather than trusted.
+
 ### Changed
+- **The send surface opens with one band, and the destination is the
+  first thing on it.** It had two full-width bands -- a downloads path
+  first, then the destination -- so the prime position on the page went
+  to a file path and the one value you must be able to find at a glance
+  before sending anything was a 15px line in a 1176px row. They are one
+  band now: the destination on the left at the size of a heading, the
+  downloads path on the right at the size of a path.
+- **The destination is set by the design system, and it is the size of a
+  heading.** The dashboard carried its own `#destinationSummary` rule
+  with a font size in it, and an ID rule outranks the class the design
+  system sets -- so the destination rendered at 15px while the design
+  system said 16px. It looked right in a diff and was wrong on the
+  screen.
+- **The page no longer contradicts itself about where a send goes.** The
+  drop zone said "Delivered to this Hub" while the header above it said
+  "Sending to Devbox (workstation)". The drop zone now says how the
+  bytes travel and nothing about where they go; the destination is
+  stated once, where it is unmissable.
+- **A peer's name is no longer cut off.** The name shared a row with
+  the actions, and since one peer was the default and the others were
+  not, the row's shape changed with its button count -- so the name was
+  truncated to whatever was left over. A peer's name is how you tell
+  two machines apart, so it now has the whole row and wraps. The
+  fingerprint (64 hex characters) is now a button that copies it.
+- **The identity SAS has one name.** The Local Hub Identity card called
+  it the "SAS Verification Code", which is the name of the *pairing*
+  code -- and comparing the identity SAS, which is this machine's own
+  short name in a peer's list, proves nothing. The same product already
+  called the same value "This machine's identity SAS ... not the pairing
+  code" on another screen. It is "Identity SAS" everywhere now.
+- **The relay tab's recommended path is a list.** It was a paragraph
+  containing three instructions, and a reader following prose has to find
+  the steps inside it. It is three numbered steps, each with a title,
+  with the thing you drag in a column of its own.
+- **The live log console fills the page.** It is the one part of the
+  product that grows without bound, and it was capped at 30rem inside a
+  page that kept 40% of itself empty below it.
+- **The design system grew a spacing scale and a component layer.** The
+  spacing was already consistent -- every gap was a multiple of
+  0.25rem -- but it was a literal in every rule, so nothing could be
+  changed as a system and nothing could be checked. The message
+  component moved out of the dashboard's stylesheet into the design
+  system, so the surfaces that also have something to say can use it
+  without copying it.
 - Removed `notify()`'s toast action button. No caller had ever passed its
   options, so ~30 lines of registry, handler and CSS described a capability that
   did not exist. It is also the wrong surface: a toast is transient, and

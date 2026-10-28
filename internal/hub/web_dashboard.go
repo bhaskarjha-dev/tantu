@@ -334,11 +334,24 @@ func (h *Hub) securityMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// publicRelayError is the message the dashboard shows when a relay fails.
+//
+// It deliberately does not leak the internal error: the underlying
+// failure can carry a URL, a host, or a peer address, and this string
+// goes into a page the reader can screenshot.
+//
+// It used to say "relay flow failed", which is a restatement of the
+// title the dashboard puts above it -- "Relay failed" -- and so told the
+// reader nothing. The dashboard's message is three parts: what happened,
+// WHY, and the next step. This is the WHY, and the one thing the Hub
+// genuinely knows at this point is that the sign-in did not arrive. For a
+// product that carries someone's credentials, that is the part a reader
+// needs to hear.
 func publicRelayError(err error) string {
 	if err == nil {
-		return "relay flow failed"
+		return "The sign-in did not reach your peer."
 	}
-	return "relay flow failed"
+	return "The sign-in did not reach your peer."
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

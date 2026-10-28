@@ -12391,4 +12391,253 @@ and captures each surface in both themes at 1280, 768, 360 and 320px.
 - The node pages looked at, not only measured: `tools/uxtest/nodepages.mjs`,
   captured in both themes at four widths, before and after.
 
+## Batch T -- the surfaces, read for what they are trying to be (2026-10-25)
+
+Batch S made the node's pages usable. This batch took the whole
+interface and read it for a different question: not "is this broken?"
+but **"what is this page trying to be, and is it that?"**
+
+Every surface was captured -- every tab, both themes, populated and
+empty, and a phone -- and read. What follows is what the screenshots
+showed, and it is not a list of bugs. It is a list of places where the
+page and its own intention had come apart.
+
+WHAT THE SCREENSHOTS SHOWED
+
+**1. The destination was a line of body text, and the less important
+thing had the better position.** The send surface opened with TWO
+full-width bands: a downloads path, and then the destination. The
+downloads path came FIRST, so the prime position on the page went to a
+file path, and the one value a reader must be able to find at a glance
+before they send anything was a 15px line in a 1176px row.
+
+They are now ONE band: the destination on the left at the size of a
+heading, the downloads path on the right at the size of a path.
+
+**2. The page had a hole in the middle of it.** The send surface is two
+columns. The right column's card ended 200px above the left column's
+last card, so the bottom-right quadrant of the primary screen was
+empty -- a void that reads as an unfinished page rather than as room to
+grow. The received card now runs its column's full height and the list
+scrolls inside it, and the empty state sits in the middle of that room
+rather than pinned to the top of a tall empty card.
+
+**3. The page contradicted itself about where a send would go.** The
+drop zone said "Delivered to this Hub over the local loopback
+transport" while the header above it said "Sending to Devbox
+(workstation)". Two different destinations on one screen, one of them
+wrong. The drop zone now says how the bytes travel and nothing about
+where they go; the destination is stated once, in the header, where it
+is unmissable.
+
+**4. The control the product is most careful about looked like a
+link.** The destination carried a 3px accent bar down its left edge,
+from when it was a tinted box of its own. As a heading in a row that
+made the value look like something you click. The bar is gone.
+
+**5. A peer name was cut off -- and the row's SHAPE depended on which
+buttons it had.** The name shared a row with the actions, and one peer
+was the default while the others were not, so one row had two buttons
+and the others had three, and the name was truncated to whatever was
+left over. A peer name is how a reader tells two machines apart, so it
+is not the thing that should be cut. It now has the whole row and
+wraps; the actions have a row of their own.
+
+**6. The fingerprint could not be taken away.** 64 hex characters,
+truncated to 16, in a row. It is the one value a reader wants when
+they want to check two machines by hand, so it is now a button that
+copies it, carrying the whole value in its accessible name.
+
+**7. Two screens of one product called the same value two different
+names.** The pairing ceremony shows a SIX-WORD code, derived from the
+live handshake, and the reader compares that between the two machines.
+The Local Hub Identity card called a DIFFERENT value -- six hex
+characters, this machine's own short name in a peer's list, identical
+on every attempt -- the "SAS Verification Code". That is the name of
+the pairing code, and comparing the identity SAS proves nothing. The
+same product already called it "This machine's identity SAS ... not
+the pairing code" on another screen. It is now "Identity SAS"
+everywhere, and the peer rows say the same thing.
+
+**8. A three-step procedure was a paragraph.** The relay tab's
+recommended path was described in prose containing three instructions,
+and a reader following prose has to find the steps inside it. It is
+now three numbered steps, each with a title and a sentence, with the
+thing you drag in its own column -- a large blue card with a paragraph
+in its top-left corner had become a card that fills its width.
+
+**9. The live log console was a black box three lines deep, with 40%
+of the page empty below it.** A console is the one part of this
+product that grows without bound, and it was capped at 30rem. It now
+takes the height the page has left over and scrolls inside.
+
+**10. The relay failure said the same thing twice.** The title said
+"Relay failed" and the detail said "relay flow failed", which is a
+restatement rather than a reason. The server's public message is
+deliberately vague -- the underlying error can carry a URL, a host or a
+peer address, and it goes into a page a reader can screenshot. But the
+one thing the Hub DOES know at that point is that the sign-in did not
+arrive, and for a product that carries someone's credentials that is
+the part a reader needs to hear.
+
+THE FOUNDATION: A SPACING SCALE, AND A COMPONENT LAYER THAT IS ONE OWNER
+
+Two things were missing from the design system, and both were the cause
+of the above.
+
+**A spacing scale.** The dashboard's spacing was already consistent --
+every gap was a multiple of 0.25rem -- but it was a literal in every
+rule, so nothing could be changed as a system and nothing could be
+checked. A rhythm that cannot be tuned is a rhythm that has drifted.
+The scale is eight steps on a quarter-rem grid, and the design
+system's component layer now uses it for every layout value.
+
+**A component layer with one owner.** The message component lived in
+the dashboard's stylesheet, which meant the surfaces that also had
+something to say could not use it without copying it. It lives in the
+design system now, and the dashboard's copy is gone. The destination
+bar, the bar, the meta row, the chip and the steps are new primitives,
+owned in one place.
+
+The destination is the sharpest example of why this matters. The
+dashboard carried `#destinationSummary { font-size: var(--fs-md) }`, and
+an ID rule outranks the class the design system sets -- so the
+destination rendered at 15px while the design system said 16px. The
+value looked right in a diff and wrong on the screen, and no gate
+noticed, because the gate read the file and the file said `--fs-lg`.
+
+THE GATES, AND THEIR RED PROOFS
+
+`internal/hub/dashboard_ux_test.go` is new: one band and the
+destination in it, the destination set by the design system and sized
+as a heading, a peer name that is not truncated, a fingerprint that can
+be taken away, one name for the identity SAS, a procedure that is a
+list, a console that fills the page, a spacing scale that exists, and a
+component layer whose rhythm comes from it. Each has a red proof.
+
+**And the browser suite now measures the RENDERED page**, because a
+source-level claim about a heading can be true and the heading can still
+be 15px on the screen: the send surface opens with one band, the
+destination is at least 16px as drawn, the two columns end together,
+the empty state is centred in the room the list will take, no peer name
+is clipped by its own box, the relay tab states three numbered steps,
+and the console fills at least half the viewport.
+
+One of the new Go gates caught the DESIGN SYSTEM's own comment: the
+identity-SAS gate searched the page for the old label and found it --
+in the comment explaining why the label had changed. The gate now reads
+the page with its comments stripped, because a comment is not a label.
+
+Evidence
+
+- The acceptance suite, on all three engines, with the final build.
+- `go test ./...` green, `gofmt -l .` clean, `go vet` clean, staticcheck
+  clean, encgate, docgate and wfcheck green.
+- Every surface looked at: `tools/uxtest/populated.mjs` in both themes
+  at desktop and phone widths, and `tools/uxtest/nodepages.mjs` for the
+  node's own pages.
+
+## Batch U -- the map of the map (2026-10-26)
+
+The repository is 298 tracked files. A person arriving cannot tell which
+of them are load-bearing, which are supporting cast, and which are
+cruft -- and the cost of guessing wrong is not a broken build. It is a
+**quietly wrong product**: a removed test, a dropped error contract, a
+design token quietly re-inlined, and nothing goes red.
+
+`docs/REPO-INVENTORY.md` is the map. It answers one question per file:
+*what breaks if this goes away?* -- and it answers it in four classes,
+each defined by consequence rather than by taste.
+
+THE FOUR CLASSES
+
+**EXTREMELY IMPORTANT** breaks a promise the product makes to the people
+who use it: the wire format, the trust model, the data path, the
+encrypted channel, the design system every surface draws from, the build,
+the gates, the licence, or the rules the work is judged against.
+
+**VERY IMPORTANT** breaks a documented capability, or a whole class of
+evidence about the product -- and the product still builds, still runs,
+and still behaves correctly on the paths it still covers.
+
+**IMPORTANT** degrades quality, coverage, or maintainability. The
+product still builds, still runs, and still behaves the same.
+
+**USELESS** changes nothing that matters.
+
+The counts: **73 extremely important, 31 very important, 194 important,
+0 useless.** And that last zero is a finding rather than a
+manufactured bucket: nothing *tracked* in this repository is useless.
+The genuinely useless things are on disk and untracked, and they are
+listed in the inventory's own last section -- two stray `go build`
+binaries in the repository root (6.7 MB of nothing), the build output in
+`dist/`, a hundred megabytes of Playwright, and a scratch directory
+holding a working document that does not belong in the repository.
+
+The two stray binaries were deleted by this batch. The rest are
+gitignored and are nobody's problem until somebody commits them.
+
+WHAT THE GATE FOUND, AND WHAT IT FOUND ABOUT ITSELF
+
+The inventory is a claim about the repository, so `tools/docgate` now
+checks it -- and the checks found things, which is the only reason to
+believe a check.
+
+**A tracked file that no row classified.** The gate refuses the
+document until every tracked path has a class. It found five within
+minutes: the three fuzz-corpus seeds, the Hub's own hardlink counters,
+and the two new files this batch was writing.
+
+**A table that classified a file which no longer existed.** The other
+direction of drift, and the one that reads as a claim about nothing.
+
+**A class spelled two ways.** The root and package tables wrote
+`**EXTREMELY**` and `**VERY**`; the summary and the definition used the
+full names. A reader could not tell whether those were the same
+classes, and no script could count them. The vocabulary is now exactly
+four names, and the gate says so.
+
+**A summary table that had drifted from its own rows.** The counts in
+the summary were written by hand. The gate recomputes them from the
+tables beneath it and compares. It found that the hand-written total
+was 297 while the repository held 298.
+
+**And the gate was wrong twice, which is the part worth recording.**
+Its first assumption -- that a file name on its own says which file it
+means -- was false: this repository has three files called `main.go`,
+two called `hub.go` and three called `e2e_test.go`. So the resolution
+now takes the section's directory first, which is what a human reading
+the table does anyway. Then it turned out that `README.md` is a tracked
+path in its own right at the root *and* a second file under
+`tools/uxtest/`, and the leaf was matching the root one twice over,
+quietly classifying the wrong file and leaving the right one
+unclassified. Both were found because the gate was checking a claim
+rather than trusting the prose beside it.
+
+THE REST OF THE REPO, AS THE INVENTORY SEES IT
+
+`internal/protocol/`, `internal/pairing/`, `internal/drop/`,
+`internal/transport/`, `internal/bridge/`, `internal/hub/`,
+`cmd/tantu/` and `internal/webui/` are the extremely important
+packages, and the inventory says what breaks without each.
+
+The most interesting entry is not a package. It is the three files in
+`internal/bridge/testdata/fuzz/FuzzCallbackExpectation/`: the fuzz
+corpus. **They are the only things in the repository whose deletion is
+silent.** The fuzz test still passes, having simply never been shown the
+cases it was written for. A test that cannot fail is worse than no test,
+and a corpus that cannot be seen is a corpus that will not be.
+
+The inventory also carries an order in which things may be deleted
+safely, because "important" is not the same as "indispensable" and a
+person cutting scope needs to know which is which.
+
+Evidence
+
+- `go test ./...` green across fifteen packages, `gofmt -l .` clean,
+  `go vet` clean, staticcheck clean, encgate, docgate and wfcheck green.
+- The acceptance suite, on all three engines.
+- Every tracked path classified and checked, both ways, by a gate that
+  has been seen to fail.
+
 

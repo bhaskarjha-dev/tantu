@@ -107,11 +107,14 @@ func run(args []string) error {
 	for _, f := range checkDependencyImportSites(files) {
 		report(f)
 	}
+	for _, f := range checkRepoInventory(root, files) {
+		report(f)
+	}
 
 	if failures > 0 {
 		return fmt.Errorf("docgate: %d documented claim(s) no longer match the code", failures)
 	}
-	fmt.Printf("docgate: %d constant claim(s), %d documented phrase(s), %d forbidden phrase(s), the CLI command surface, the KNOWN-LIMITATIONS row shape, %d documented flag(s), %d environment variable(s), every CI quality gate documented locally and run by the release workflow all match the code; %d tracked path(s) contain no generated artefacts\n",
+	fmt.Printf("docgate: %d constant claim(s), %d documented phrase(s), %d forbidden phrase(s), the CLI command surface, the KNOWN-LIMITATIONS row shape, %d documented flag(s), %d environment variable(s), every CI quality gate documented locally and run by the release workflow, and the repository inventory all match the code; %d tracked path(s) contain no generated artefacts\n",
 		len(constantClaims), len(phraseClaims), len(forbiddenPhrases), len(documentedFlags), len(documentedEnvVars), countTrackedFiles(root))
 	return nil
 }

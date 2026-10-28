@@ -78,6 +78,27 @@ normal path and must not become one silently.
    empty state rendered as an unstyled paragraph of body text. A surface
    that redefines a component is not "styled differently"; it is a
    second owner, and the two drift.
+9. **The value the reader most needs takes the leading position, and it
+   is stated once.** Rule 2 says a destination is never chosen silently.
+   This says how the reader finds it. On the send surface the
+   destination is the one value that must be findable at a glance, so it
+   leads — it is the first thing in the first band, at the size of a
+   heading, and the rest of the band is secondary. It is stated **once**,
+   in one treatment: the send surface used to name it in the band, in the
+   drop zone's sub-line, and in the send button's label, in three
+   different treatments, and the band and the sub-line disagreed with
+   each other about where a send would go. Repeating a value is not the
+   same as making it clear, and two statements of it are two chances to
+   contradict each other.
+10. **A surface states the shape of what it is, not just what it does.**
+    A procedure is a list, not a paragraph: the relay tab's recommended
+    path was described in prose containing three instructions, and a
+    reader following prose has to find the steps inside it. A name is not
+    truncated away: a peer's name is how two machines are told apart, so
+    it wraps rather than shrinking to fit the buttons beside it. And an
+    empty state is drawn as an object, because "nothing here yet" in the
+    same weight as everything else reads as an oversight rather than as a
+    state.
 
 ## Known divergences still open
 

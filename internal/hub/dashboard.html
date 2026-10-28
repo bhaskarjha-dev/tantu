@@ -549,17 +549,11 @@
       border-color: rgba(37, 99, 235, 0.45);
     }
   }
-  /* The destination itself. It used to be a tinted box of its own,
-     which made it look like a second control next to the peer pills
-     that switch it -- and the page said "Destination:" twice. It is
-     now a value on the chrome of the card, and the pills below it are
-     the switcher. */
-  #destinationSummary {
-    font-size: var(--fs-md);
-    font-weight: 600;
-    color: var(--text);
-    overflow-wrap: anywhere;
-  }
+  /* The destination is a shared primitive: the design system owns it
+     (internal/webui/components.css), including its type. An ID rule here
+     would outrank the class and quietly put the destination back to 15px
+     -- which is how the page came to have a heading set at the size of
+     body text. */
   #filePreviewCard {
     border: 1px solid var(--accent);
     background: rgba(59,130,246,0.06);
@@ -734,14 +728,6 @@
   .progress-meta {
     font-variant-numeric: tabular-nums;
   }
-  .msg {
-    border-radius: var(--radius-md);
-    animation: bannerIn var(--dur-med) var(--ease-out);
-  }
-  @keyframes bannerIn {
-    from { opacity: 0; transform: translateY(-4px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
   .status-chip {
     display: inline-block;
     padding: 0.15rem 0.6rem;
@@ -840,10 +826,6 @@
   }
   .bookmarklet-btn:hover {
     transform: translateY(-1px);
-  }
-  #destinationSummary {
-    border-radius: var(--radius-md);
-    border-left: 3px solid var(--accent);
   }
   #filePreviewCard {
     border-radius: var(--radius-lg);
@@ -1064,9 +1046,14 @@
     flex-wrap: wrap;
   }
   .stale-actions { display: none; gap: 0.5rem; }
+  /* The stale marker.
+     The destination is never hidden -- that would be a worse lie -- but it
+     is labelled as last-known so it can never be read as current. It used
+     to carry an accent bar down its left edge, which was right when the
+     destination was a tinted box of its own and made it look like a
+     control; as a heading in a row it made the value look like a link. */
   #destinationSummary[data-stale="true"] {
-    border-left-color: var(--warning);
-    background: var(--warning-bg);
+    color: var(--warning-text);
   }
   #destinationSummary[data-stale="true"]::after {
     content: " · last known";
@@ -1186,6 +1173,10 @@
   main.tab-content {
     max-width: calc(var(--shell-max) + 2 * var(--gutter));
     padding: var(--pad-y) var(--gutter) calc(var(--pad-y) * 1.5);
+    /* A column, so that a tab pane can ask to fill the height. Every
+       other tab is sized by its content and is unaffected. */
+    display: flex;
+    flex-direction: column;
   }
   nav.tabs-nav {
     padding: 0.75rem var(--gutter);
@@ -1336,6 +1327,70 @@
       var(--card-bg);
     box-shadow: var(--shadow-md), var(--card-edge);
     padding: 2rem 1.5rem;
+    /* Left-aligned, because it now holds a list of steps. Centred prose
+       was the right shape for a paragraph and the wrong shape for a
+       procedure: a centred step number with a centred instruction
+       beside it reads as a caption, not as an instruction. */
+    text-align: left;
+  }
+  /* The steps on the left, the thing you drag on the right.
+     The card is the width of the page, and the steps are not, so a
+     single column left half the hero empty -- a large blue box with a
+     paragraph in its top-left corner. The drag target is the one thing
+     on this page that has to be found and picked up, so it gets a column
+     of its own, at the height of the steps it belongs to. */
+  .bookmarklet-box__body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--sp-8);
+    align-items: start;
+    margin-top: var(--sp-4);
+  }
+  .bookmarklet-box__drag {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: var(--sp-5);
+    border: 1px dashed var(--border-light);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+  }
+  .bookmarklet-box__drag-hint {
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  @media (max-width: 720px) {
+    .bookmarklet-box__body {
+      grid-template-columns: minmax(0, 1fr);
+      gap: var(--sp-5);
+    }
+    .bookmarklet-box__drag {
+      align-items: flex-start;
+    }
+  }
+  .bookmarklet-box .steps {
+    margin-top: 0;
+  }
+  /* The drag target itself: bigger than a text button, because it is
+     picked up with a mouse and dropped on a bar. */
+  .bookmarklet-box .bookmarklet-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: var(--sp-3);
+    padding: 0.85rem 1.75rem;
+    font-size: var(--fs-lg);
+    cursor: grab;
+  }
+  .bookmarklet-box .bookmarklet-btn:active {
+    cursor: grabbing;
+  }
+  .bookmarklet-box .hint-text {
+    margin-top: var(--sp-4);
   }
   /* ---- Small controls ---- */
   .pill {
@@ -1438,88 +1493,14 @@
      in the log. The old banner put all three in one coloured run, so
      the one part a reader needs most -- the next action -- was the
      hardest to find. */
-  .msg {
-    display: none;
-    align-items: flex-start;
-    gap: 0.7rem;
-    padding: 0.85rem 1rem;
-    margin-top: 1rem;
-    border-radius: var(--radius-md);
-    border: 1px solid var(--border);
-    border-left: 3px solid var(--accent);
-    background: var(--surface);
-    font-size: var(--fs-base);
-    line-height: 1.5;
-  }
-  .msg--error, .msg--success, .msg--warning, .msg--info {
-    display: flex;
-  }
-  .msg__icon {
-    flex: none;
-    margin-top: 0.1rem;
-    color: var(--accent);
-  }
-  .msg__body {
-    flex: 1;
-    min-width: 0;
-  }
-  .msg__title {
-    font-weight: 600;
-    color: var(--text);
-    overflow-wrap: anywhere;
-  }
-  .msg__detail {
-    color: var(--text-muted);
-    margin-top: 0.2rem;
-    overflow-wrap: anywhere;
-  }
-  .msg__next {
-    color: var(--text-muted);
-    margin-top: 0.45rem;
-    padding-top: 0.45rem;
-    border-top: 1px dashed var(--border);
-    overflow-wrap: anywhere;
-  }
-  .msg__next-label {
-    display: inline-block;
-    font-size: var(--fs-2xs);
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--text);
-    margin-right: 0.4rem;
-  }
-  .msg__id {
-    display: inline-block;
-    margin-top: 0.45rem;
-    font-family: var(--font-mono);
-    font-size: var(--fs-2xs);
-    color: var(--text-muted);
-    background: var(--card-bg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    padding: 0.1rem 0.35rem;
-  }
-  .msg--error { border-left-color: var(--error); }
-  .msg--error .msg__icon { color: var(--error-text); }
-  .msg--success { border-left-color: var(--success); }
-  .msg--success .msg__icon { color: var(--success-text); }
-  .msg--warning { border-left-color: var(--warning); }
-  .msg--warning .msg__icon { color: var(--warning-text); }
-  .msg--info { border-left-color: var(--accent); }
-  .msg--info .msg__icon { color: var(--accent-text); }
-  /* Inline code in a message. The product's language quotes commands in
-     backticks -- "Use `tantu status` to verify trust" -- and those
-     backticks used to be shown to the reader as backticks. */
-  .msg code, .record code, .hint-text code, .peer__meta code {
-    font-family: var(--font-mono);
-    font-size: 0.92em;
-    background: var(--card-bg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    padding: 0.05rem 0.3rem;
-    color: var(--text);
-  }
+  /* The message -- an outcome, told plainly -- is a shared primitive and
+     lives in the design system (internal/webui/components.css). It used
+     to live here, which meant the surfaces that also had something to
+     say could not use it without copying it, and one of them had. The
+     rule it replaced here also gave the whole component a coloured left
+     edge, a title, a detail and a next step -- three weights of
+     information where the one the reader needs most was the hardest to
+     find. */
 
   /* ---- The record ----
      A transfer, an authorisation, a received item. Each has a state,
@@ -1594,55 +1575,74 @@
 
   /* ---- The peer row ----
      A name that can be arbitrarily long, two badges, three actions and
-     three facts. Laid out as inline content it wrapped into three
-     different shapes; as a grid it is the same shape for every peer. */
+     three facts.
+
+     It used to be one row: the name and its badges on the left, the
+     three actions on the right. The actions are 287px wide together, so
+     the name got whatever was left -- and because one peer was the
+     default and the others were not, one row had two buttons and the
+     others had three, so one peer's name was cut short and another's was
+     not. The row's shape depended on which buttons it happened to have.
+
+     The name is how a reader tells two machines apart, so it is not the
+     thing that should be cut. It now has the whole row, and the actions
+     have a row of their own under the facts. */
   .peer {
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
     background: var(--surface);
-    padding: 0.85rem 1rem;
+    padding: var(--sp-4);
   }
   .peer__head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-    flex-wrap: wrap;
+    display: block;
   }
   .peer__id {
     display: flex;
-    align-items: center;
-    gap: 0.5rem;
+    align-items: baseline;
+    gap: var(--sp-2);
+    flex-wrap: wrap;
     min-width: 0;
-    flex: 1 1 12rem;
   }
   .peer__name {
     font-weight: 600;
     color: var(--text);
     /* A peer name is the one string on this page with no length limit
-       the product controls, so it is truncated rather than allowed to
-       reflow the row. The accessible name keeps the whole value. */
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+       the product controls, and it is the string a reader uses to tell
+       two machines apart. It wraps. A row that is taller than its
+       neighbours is a row that is taller because it has more to say. */
+    overflow-wrap: anywhere;
     min-width: 0;
   }
   .peer__actions {
     display: flex;
-    gap: 0.35rem;
-    /* Shrinkable, not `flex: none`. The three actions are 287px wide
-       side by side, and with `flex: none` the row kept that width on a
-       240px line and hung 17px past the edge of the viewport. The row
-       is allowed to be as narrow as the line it is on, and the buttons
-       inside it wrap. */
-    flex: 0 1 auto;
+    gap: var(--sp-2);
     flex-wrap: wrap;
+    justify-content: flex-end;
+    margin-top: var(--sp-3);
+  }
+  /* The fingerprint, as something you can take away.
+     It is 64 hex characters: too long to read on a row and too long to
+     compare by eye, and it is the one value a reader wants to copy when
+     they want to check two machines by hand. So it is a button that
+     copies, carrying the whole value in its accessible name. */
+  .peer__fp {
+    font-family: var(--font-mono);
+    font-size: inherit;
+    background: var(--surface-hover);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    padding: 0 0.3rem;
+    cursor: pointer;
+  }
+  .peer__fp:hover {
+    border-color: var(--border-light);
   }
   .peer__meta {
     display: flex;
-    gap: 1rem;
+    gap: var(--sp-4);
     flex-wrap: wrap;
-    margin-top: 0.5rem;
+    margin-top: var(--sp-2);
     font-size: var(--fs-xs);
     color: var(--text-muted);
   }
@@ -1813,48 +1813,45 @@
   }
 
   /* ---- The destination bar ----
-     One statement of where a send will go, and the peers that can be
-     chosen instead. The old page said "Destination:" twice -- once as
-     a row of peer pills, and again in a line under it -- and the pills
-     had no length limit, so one long peer name pushed the whole row
-     off the page. */
-  .dest {
+     The destination is a shared primitive: the design system owns it
+     (internal/webui/components.css), because the one value a reader must
+     find at a glance before they send anything is the same primitive
+     wherever a send happens from. What the page owns is the send header
+     that composes it -- below. */
+
+  /* ---- The send header ----
+     One band: the destination on the left, at the size a heading
+     deserves, and the downloads path on the right, at the size a path
+     deserves. The page had them as two full-width bands, with the
+     downloads path first -- so the prime position went to a file path
+     and the destination was a 15px line in a 1176px row. */
+  .send-bar {
+    align-items: flex-start;
+    gap: var(--sp-5);
+  }
+  .send-bar__main {
+    flex: 1 1 22rem;
+    min-width: 0;
+  }
+  .send-bar__aside {
     display: flex;
     align-items: center;
-    gap: 0.6rem;
+    gap: var(--sp-2);
     flex-wrap: wrap;
+    flex: 0 1 auto;
+    min-width: 0;
+    padding-top: var(--sp-1);
   }
-  .dest__label {
+  .send-bar__aside-label {
     font-size: var(--fs-xs);
     font-weight: 700;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--text-muted);
     flex: none;
   }
-  /* The resolved destination, in the weight it deserves: it is the one
-     thing a reader must be able to find at a glance. */
-  .dest__current {
-    font-weight: 600;
-    color: var(--text);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    min-width: 0;
-    flex: 1 1 10rem;
-  }
-  .dest__switcher {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    min-width: 0;
-    flex: 1 1 100%;
-  }
-  .dest__switch-label {
-    font-size: var(--fs-xs);
-    font-weight: 600;
-    color: var(--text-muted);
-    flex: none;
+  .send-bar__aside .chip {
+    max-width: 22rem;
   }
   .dest__pills {
     display: flex;
@@ -1927,6 +1924,34 @@
   .log-console {
     border-radius: var(--radius-md);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  }
+
+  /* ---- The live log console fills the page ----
+     A console is the one part of this product that grows without bound,
+     and it was capped at 30rem inside a page that kept 40% of itself
+     empty below it. The page had a black box three lines deep and then
+     a large white nothing.
+
+     The console now takes the height the page has left over, and scrolls
+     inside it. The tab pane asks for the height; nothing else on the
+     page changes. */
+  .tab-pane.active.tab-pane--fill {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+  }
+  .tab-pane--fill > .card {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    margin-bottom: 0;
+  }
+  .tab-pane--fill .log-console {
+    flex: 1;
+    min-height: 12rem;
+    max-height: none;
   }
 
   /* ---- The progress row ----
@@ -2123,6 +2148,103 @@
   @media (max-width: 640px) {
     .toast-region { right: 0.5rem; left: 0.5rem; bottom: 0.5rem; width: auto; }
   }
+
+  /* ---- The composition of the send surface ----
+     These are the page's own shapes, built from the design system's
+     primitives. They are here rather than in the design system because
+     they are this page's composition, not the product's vocabulary. */
+
+  /* The send column. Two cards, stacked, with a consistent gap -- it was
+     an inline style, so the rhythm was set by hand at one place and could
+     not be changed anywhere else. */
+  .compose {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-5);
+    min-width: 0;
+  }
+  .compose__actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: var(--sp-3);
+  }
+
+  /* The two-pane grid that FILLS.
+     The plain .grid-2 leaves each card at its natural height, which is
+     right for two cards of different sizes and wrong for a pane that
+     should run the height of the column: on the send surface the right
+     column ended 200px above the left column's last card and left a
+     hole in the middle of the screen that read as an unfinished page.
+     With the fill, the received card runs the column's full height and
+     the list scrolls inside it, so the space reads as room to grow. */
+  .grid-2--fill {
+    align-items: stretch;
+  }
+  .grid-2--fill > * {
+    min-height: 0;
+  }
+  .card--fill {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .received-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+    /* A scrollbar inside the card, not a card that stops: the list is
+       the one part of this page that grows without bound. */
+    padding-right: var(--sp-1);
+  }
+  /* An empty list, centred in the room the list will take.
+     The card fills its column so the page has no hole in it, and an
+     empty state pinned to the top of that card left the emptiness
+     looking like an oversight rather than like room to grow. */
+  .received-list > .empty-state:only-child {
+    margin: auto 0;
+  }
+
+  /* The expert toggle.
+     A short label and a separate reassurance. The old control was one
+     sentence that mixed what it is called, what it skips and why it is
+     safe, so the reader had to parse a clause to find out what to
+     click. */
+  .expert-toggle {
+    margin-top: var(--sp-4);
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
+  }
+  .expert-toggle__label {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    min-height: 24px;
+    cursor: pointer;
+  }
+  .expert-toggle__title {
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--text);
+  }
+  .expert-toggle__hint {
+    font-size: var(--fs-xs);
+    color: var(--text-muted);
+    padding-left: 1.6rem;
+  }
+
+  /* The empty state's route forward, centred under the text it belongs
+     to -- it was an inline flex row with a hand-set margin. */
+  .empty-state__actions {
+    margin-top: var(--sp-4);
+    display: flex;
+    gap: var(--sp-2);
+    justify-content: center;
+    flex-wrap: wrap;
+  }
 </style>
 </head>
 <body>
@@ -2183,47 +2305,52 @@
 
     <!-- TAB 1: QUICKDROP -->
     <div id="tab-drop" class="tab-pane active" role="tabpanel" aria-labelledby="tab-btn-drop">
-      <!-- Download Location Bar -->
-      <div class="card" style="margin-bottom: 1.25rem; padding: 0.75rem 1.25rem;">
-        <div class="card-head">
-          <div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem;">
-            <span class="ico ico--folder" style="color: var(--text-muted);">Downloads location:</span>
-            <code id="downloadDirPath" class="mono-chip">...</code>
-          </div>
-          <div style="display: flex; gap: 0.5rem;">
-            <button class="btn-sm ico ico--pencil" data-action="change-download-dir">Change</button>
-            <button class="btn-sm ico ico--folder-open" data-action="open-folder">Open Folder</button>
-          </div>
-        </div>
-      </div>
+      <!-- THE SEND HEADER.
+           One band, not two.
 
-      <!-- Shared send destination: one visible control governing file,
-           image, clipboard, and text sends alike. -->
-      <!-- The destination. One statement of where a send will go, and the
-           peers that can be chosen instead. The page used to say
-           "Destination:" twice -- once over a row of peer pills, and again
-           in a line underneath -- and the pills had no length limit, so
-           one long peer name pushed the row past the edge of the card. -->
-      <div class="card" style="margin-bottom: 1.25rem; padding: 0.85rem 1.25rem;">
-        <div class="dest">
-          <span class="dest__label">Destination</span>
-          <div id="destinationSummary" role="status" aria-live="polite" class="dest__current">Checking…</div>
-          <div id="dropPeerSelector" class="dest__switcher" style="display: none;">
-            <span class="dest__switch-label">Switch to</span>
+           The page had a full-width band for the downloads path and a
+           full-width band for the destination, and the downloads path --
+           the less important of the two -- came FIRST, so the prime
+           position on the page went to a file path and the one value a
+           reader must be able to find at a glance was a 15px line in a
+           1176px row.
+
+           Now they are one band: the destination on the left, at the size
+           a heading deserves, and the downloads path on the right, at the
+           size a path deserves. The destination appears twice on purpose
+           -- once here, persistently, and once in the send button, at the
+           moment of action -- but it appears twice with one treatment,
+           not three times with three. -->
+      <div class="bar send-bar">
+        <!-- Shared send destination: one visible control governing file,
+             image, clipboard, and text sends alike. -->
+        <div class="send-bar__main">
+          <div class="dest">
+            <span class="dest__label">Sending to</span>
+            <div id="destinationSummary" role="status" aria-live="polite" class="dest__current">Checking…</div>
+          </div>
+          <div id="dropPeerSelector" class="dest__switcher" hidden>
+            <span class="dest__switch-label">or send to</span>
             <div id="dropPeerPills" class="dest__pills"></div>
           </div>
+        </div>
+        <div class="send-bar__aside">
+          <span class="send-bar__aside-label">Downloads to</span>
+          <code id="downloadDirPath" class="chip">...</code>
+          <button class="btn-sm ico ico--pencil" data-action="change-download-dir">Change</button>
+          <button class="btn-sm ico ico--folder-open" data-action="open-folder">Open Folder</button>
         </div>
       </div>
 
       <!-- Responsive Dual-Pane Layout -->
-      <div class="grid-2">
+      <div class="grid-2 grid-2--fill">
         <!-- Left Pane: Outbound Sending -->
-        <div style="display: flex; flex-direction: column; gap: 1.25rem;">
+        <div class="compose">
           <div class="card">
             <h2 class="card-title ico ico--send">Send File or Image (up to 5GB)</h2>
             <div class="drop-zone" id="dropZone" data-action="choose-file" tabindex="0" role="button" aria-label="Drag and drop files here, or click to browse - choose a file to send to your peer">
               <div class="drop-zone-icon" aria-hidden="true"></div>
-              <div class="drop-zone-text">Drag & drop files here, or click to browse</div>
+              <div class="drop-zone-text">Drag &amp; drop files here, or click to browse</div>
               <div class="drop-zone-subtext" id="dropZoneTransportNote">Direct encrypted peer-to-peer streaming • no intermediate server</div>
             </div>
             <input type="file" id="fileInput" aria-label="File to send to your peer" style="display: none;">
@@ -2243,10 +2370,18 @@
                 <button type="button" class="btn-sm" id="btnCancelPreview" data-action="cancel-preview">Cancel</button>
               </div>
             </div>
-            <label style="display: flex; gap: 0.5rem; align-items: center; min-height: 24px; font-size: 0.8rem; color: var(--text-muted); margin-top: 0.75rem;">
-              <input type="checkbox" id="expertImmediateSend"> Expert immediate-send for this session (skip preview; destination stays visible)
-            </label>
-            
+            <!-- The expert toggle. A short label and a separate reassurance:
+                 the old one was a single sentence that mixed the control's
+                 name, what it skips, and why it is safe, so the reader had
+                 to parse a clause to find out what to click. -->
+            <div class="expert-toggle">
+              <label class="expert-toggle__label" for="expertImmediateSend">
+                <input type="checkbox" id="expertImmediateSend">
+                <span class="expert-toggle__title">Skip the preview</span>
+              </label>
+              <span class="expert-toggle__hint">Sends the moment you pick a file. The destination stays on screen either way.</span>
+            </div>
+
             <div class="progress-container" id="uploadProgress">
               <div class="progress-bar" role="progressbar" aria-label="File upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-describedby="progressFile" id="progressBar">
                 <div class="progress-fill" id="progressFill"></div>
@@ -2268,23 +2403,28 @@
             <h2 class="card-title ico ico--text">Quick Text &amp; Snippet Sharing</h2>
             <label class="sr-only" for="textPayload">Text snippet to send</label>
             <textarea id="textPayload" placeholder="Paste code snippet, auth tokens, commands, or notes to send immediately to the peer..."></textarea>
-            <div style="display: flex; justify-content: flex-end; margin-top: 0.75rem;">
+            <div class="compose__actions">
               <button class="btn-primary" id="btnSendText" data-action="send-text">Send to Peer</button>
             </div>
           </div>
         </div>
 
         <!-- Right Pane: Received Items & History -->
-        <div class="card" style="display: flex; flex-direction: column;">
-          <div class="card-head" style="margin-bottom: 0.75rem;">
-            <h2 class="card-title ico ico--inbox" style="margin-bottom: 0;">Received Items</h2>
+        <!-- card--fill: the card grows to the height of the column, and the
+             list scrolls inside it. The page used to stop short -- the
+             right column's card ended 200px above the left column's last
+             card and left a hole in the middle of the screen that read as
+             an unfinished page rather than as room to grow. -->
+        <div class="card card--fill">
+          <div class="card-head">
+            <h2 class="card-title ico ico--inbox">Received Items</h2>
             <button class="btn-sm ico ico--refresh" data-action="load-recent">Refresh</button>
           </div>
-          <div id="receivedDropsList" style="flex: 1; overflow-y: auto; max-height: 580px; display: flex; flex-direction: column; gap: 0.75rem;">
+          <div id="receivedDropsList" class="received-list">
             <div class="empty-state">
               <strong>Nothing received yet</strong>
-              Snippets and files your peer sends appear here in real time.<br>Items are session-only and clear when the Hub restarts.
-              <div style="margin-top:0.9rem; display:flex; gap:0.5rem; justify-content:center; flex-wrap:wrap;">
+              Snippets and files your peer sends appear here in real time. Items are session-only and clear when the Hub restarts.
+              <div class="empty-state__actions">
                 <!-- No "Refresh" here: the card header already carries one
                      directly above, and two identical controls 600px apart read
                      as two different actions. An empty state earns a button by
@@ -2303,13 +2443,45 @@
     <div id="tab-relay" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-relay">
       <div class="bookmarklet-box {{BOOKMARKLET_STATE}}">
         <span class="path-label path-label--primary">One click &mdash; recommended</span>
-        <a class="bookmarklet-btn ico ico--bolt" href="{{BOOKMARKLET_HREF}}">Tantu</a>
-        <div class="hint-text" style="margin-top: 0.75rem;">Drag <strong>Tantu</strong> to your Bookmarks Bar once. Then, on any login page, click it and confirm &mdash; that page&rsquo;s URL is relayed to your peer, with nothing to copy or paste. The saved bookmark never expires, and carries no ticket or secret.</div>
-        <p class="hint-text bookmarklet-unavailable-note" style="margin-top: 0.75rem;">The bookmark is unavailable because this page has no Hub session. Run <code>tantu dashboard</code> in a terminal for a fresh link, then drag this button. The forwarder below works either way.</p>
+        <div class="bookmarklet-box__body">
+        <!-- Three steps, not a paragraph.
+             The recommended path was described in two prose blocks: "Drag
+             Tantu to your Bookmarks Bar once. Then, on any login page,
+             click it and confirm -- that page's URL is relayed to your
+             peer, with nothing to copy or paste. The saved bookmark never
+             expires, and carries no ticket or secret." That is three
+             instructions, and a reader following prose has to find the
+             steps inside it. A reader following a list does not. -->
+        <ol class="steps">
+          <li class="step">
+            <div>
+              <div class="step__title">Drag this to your Bookmarks Bar</div>
+              <div class="step__text">It is a link, not a program. It never expires, and it carries no ticket or secret.</div>
+            </div>
+          </li>
+          <li class="step">
+            <div>
+              <div class="step__title">On any sign-in page, click Tantu</div>
+              <div class="step__text">A small window opens and asks whether to relay that page&rsquo;s URL.</div>
+            </div>
+          </li>
+          <li class="step">
+            <div>
+              <div class="step__title">Confirm, and the sign-in is relayed to your peer</div>
+              <div class="step__text">Nothing is copied, pasted, or stored. Your peer receives the URL and the sign-in continues there.</div>
+            </div>
+          </li>
+        </ol>
+        <div class="bookmarklet-box__drag">
+          <a class="bookmarklet-btn ico ico--bolt" href="{{BOOKMARKLET_HREF}}">Tantu</a>
+          <span class="bookmarklet-box__drag-hint">drag me</span>
+        </div>
+        </div>
+        <p class="hint-text bookmarklet-unavailable-note">The bookmark is unavailable because this page has no Hub session. Run <code>tantu dashboard</code> in a terminal for a fresh link, then drag this button. The forwarder below works either way.</p>
         <!-- The fallback belongs next to the primary path, not on another tab:
              a user who cannot install a bookmark should not have to go looking
              for the alternative. -->
-        <div class="hint-text" style="margin-top: 0.75rem;">Can&rsquo;t drag, or on a managed browser? Paste the URL into the forwarder below &mdash; same result, one extra step.</div>
+        <div class="hint-text">Can&rsquo;t drag, or on a managed browser? Paste the URL into the forwarder below &mdash; same result, one extra step.</div>
       </div>
 
       <div class="card">
@@ -2395,8 +2567,21 @@
             <span class="stat-val" id="idTransport">-</span>
           </div>
           <div class="stat-row">
-            <span class="stat-label">SAS Verification Code</span>
-            <span class="stat-val mono-accent" id="idSAS">-</span>
+            <!-- "Identity SAS", not "SAS Verification Code".
+                 The pairing ceremony shows a SIX-WORD code, derived from
+                 the live handshake, and the reader compares that between
+                 the two machines. This is a different value: six hex
+                 characters, this machine's own short name in a peer's
+                 list, identical on every attempt. The old label called
+                 it the "verification code", which is the one thing a
+                 reader must NOT compare -- and the same product called
+                 the pairing dialog's copy of this same value "This
+                 machine's identity SAS ... not the pairing code". Two
+                 screens of one product, two names for one value, and
+                 the name on this screen invited exactly the comparison
+                 that proves nothing. -->
+            <span class="stat-label">Identity SAS</span>
+            <span class="stat-val mono-accent" id="idSAS" title="This machine’s own short code in a peer’s list. It is not the pairing code.">-</span>
           </div>
           <div class="stat-row">
             <span class="stat-label">P2P Listen Socket</span>
@@ -2517,7 +2702,7 @@
     </div>
 
     <!-- TAB 4: LIVE LOGS -->
-    <div id="tab-logs" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-logs">
+    <div id="tab-logs" class="tab-pane tab-pane--fill" role="tabpanel" aria-labelledby="tab-btn-logs">
       <div class="card">
         <div class="card-head" style="margin-bottom: 1rem;">
           <h2 class="card-title ico ico--logs" style="margin-bottom: 0;">Live Diagnostics & Activity Feed</h2>
@@ -3027,6 +3212,13 @@
         case 'copy-snippet':
           copySnippet(receivedActionValues[target.getAttribute('data-value')] || '', target);
           break;
+        case 'copy-fingerprint':
+          // The peer's full fingerprint, which is 64 hex characters and
+          // does not fit on a row. It is the value a reader takes away
+          // when they want to check two machines by hand, so it is
+          // something they can take.
+          copySnippet(target.getAttribute('data-value') || '', target);
+          break;
         case 'open-url':
           openURL(receivedActionValues[target.getAttribute('data-value')] || '');
           break;
@@ -3449,8 +3641,14 @@
         // transport. Name the transport actually in use instead.
         const transportNote = document.getElementById('dropZoneTransportNote');
         if (transportNote) {
+          // The transport, and nothing else. This line used to say
+          // "Delivered to this Hub" while the header above it said
+          // "Sending to Devbox (workstation)" -- two different
+          // destinations on one screen, one of them wrong. The
+          // destination is stated once, in the header, where it is
+          // unmissable; this line says how the bytes travel.
           transportNote.textContent = (lastTransport === 'loopback')
-            ? 'Delivered to this Hub over the local loopback transport • for testing only'
+            ? 'Local loopback transport • for testing only'
             : 'Direct encrypted ' + lastTransport + ' streaming • no intermediate server';
         }
         const peersList = document.getElementById('peersList');
@@ -3504,12 +3702,12 @@ const peerSig = JSON.stringify(peers.map(p => [p.fingerprint, p.name, p.alias, p
                 'No paired peers yet',
                 'Pairing establishes mutual TLS trust between two machines. Do it once per machine pair; it needs a verification code that matches on both screens.',
                 [{ action: 'open-pair-modal', label: '+ Pair a device' }, { action: 'refresh-discovery', label: 'Look for nearby hubs' }]);
-          if (dropSelector) dropSelector.style.display = 'none';
+          if (dropSelector) dropSelector.hidden = true;
         } else if (peers.length === 1) {
           const p = peers[0];
           peerLabel.innerText = (p.name || 'Peer') + ' · Trusted';
           peerDot.className = 'status-dot';
-          if (dropSelector) dropSelector.style.display = 'none';
+          if (dropSelector) dropSelector.hidden = true;
           renderPeersList(peers);
         } else {
           // Multiple peers
@@ -3546,7 +3744,7 @@ const peerSig = JSON.stringify(peers.map(p => [p.fingerprint, p.name, p.alias, p
           // the length of is truncated rather than allowed to push the
           // row off the card.
           if (dropSelector && dropPills) {
-            dropSelector.style.display = 'flex';
+            dropSelector.hidden = false;
             dropPills.innerHTML = peers.map(p => {
               const isSelected = (p.fingerprint === selectedPeerTarget);
               const pillClass = isSelected ? 'dest-pill active' : 'dest-pill';
@@ -3951,6 +4149,14 @@ function renderPeersList(peers) {
         // the length of, so the name is truncated and the row keeps its
         // shape; the full value stays in the title attribute and in the
         // accessible name.
+        //
+        // Then the truncation moved to the wrong thing. The name shares
+        // its row with the actions, and one peer was the default and the
+        // others were not -- so one row had two buttons and the others
+        // had three, and the name was cut to whatever was left over. The
+        // name is how a reader tells two machines apart, so it is not the
+        // thing that should be cut: it has the whole row now, and the
+        // actions have a row of their own.
         return '<div class="peer">' +
           peerHealthChip(pr) +
           '<div class="peer__head">' +
@@ -3958,21 +4164,27 @@ function renderPeersList(peers) {
               '<span class="peer__name" title="' + escapeHTML(peerName) + '">' + escapeHTML(peerName) + '</span>' +
               defaultBadge + activeBadge +
             '</div>' +
-            '<div class="peer__actions">' +
-              '<button class="btn-sm ico ico--pencil" data-action="edit-alias" data-value="' + escapeHTML(pr.fingerprint) + '" data-alias="' + escapeHTML(pr.alias || pr.name || '') + '">Alias</button>' +
-              defaultBtn +
-              // The destructive action is a quiet button with a red label
-              // rather than a red-outlined one. A red outline on every row
-              // made the loudest thing on the page the thing nobody meant
-              // to press; the confirmation dialog is still what stands
-              // between a click and an unpair.
-              '<button class="btn-sm btn-destructive ico ico--trash" data-action="unpair-peer" data-value="' + escapeHTML(pr.fingerprint) + '" data-name="' + escapeHTML(pr.name || '') + '">Unpair</button>' +
-            '</div>' +
           '</div>' +
           '<div class="peer__meta">' +
             '<span>Address <strong>' + escapeHTML(pr.address) + '</strong></span>' +
-            '<span>SAS <strong style="color:var(--accent-text);">' + escapeHTML(pr.sas || '-') + '</strong></span>' +
-            '<span>FP <code title="' + escapeHTML(pr.fingerprint || '') + '">' + escapeHTML(fpShort) + '</code></span>' +
+            '<span title="This machine’s own short code in the peer list. It is not the pairing code.">Identity SAS <strong style="color:var(--accent-text);">' + escapeHTML(pr.sas || '-') + '</strong></span>' +
+            // The fingerprint, as a button that copies it. It is 64 hex
+            // characters: too long to read here and too long to compare
+            // by eye, and it is the one value a reader wants to take
+            // away when they want to check two machines by hand.
+            '<span>FP <button type="button" class="peer__fp" data-action="copy-fingerprint" data-value="' +
+              escapeHTML(pr.fingerprint || '') + '" title="Copy this peer’s full fingerprint" aria-label="Copy this peer’s full fingerprint, ' +
+              escapeHTML(pr.fingerprint || '') + '">' + escapeHTML(fpShort) + '</button></span>' +
+          '</div>' +
+          '<div class="peer__actions">' +
+            '<button class="btn-sm ico ico--pencil" data-action="edit-alias" data-value="' + escapeHTML(pr.fingerprint) + '" data-alias="' + escapeHTML(pr.alias || pr.name || '') + '">Alias</button>' +
+            defaultBtn +
+            // The destructive action is a quiet button with a red label
+            // rather than a red-outlined one. A red outline on every row
+            // made the loudest thing on the page the thing nobody meant
+            // to press; the confirmation dialog is still what stands
+            // between a click and an unpair.
+            '<button class="btn-sm btn-destructive ico ico--trash" data-action="unpair-peer" data-value="' + escapeHTML(pr.fingerprint) + '" data-name="' + escapeHTML(pr.name || '') + '">Unpair</button>' +
           '</div>' +
         '</div>';
       }).join('');
