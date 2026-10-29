@@ -91,7 +91,10 @@ func TestTheDestinationIsSetByTheDesignSystem(t *testing.T) {
 // The destination must be a heading, not a line of body text.
 //
 // It is the one value a reader must be able to find at a glance before
-// they send anything, and it was set at the size of body text.
+// they send anything, and it was set at the size of body text -- the same
+// size as everything else on the page, so it had no hierarchy of its own.
+// It is now the size of a card title, which is what "the thing you must
+// not misread" looks like.
 func TestTheDestinationIsSizedAsAHeading(t *testing.T) {
 	ds := webui.DesignSystemCSS()
 	if !strings.Contains(ds, ".dest__current {") {
@@ -101,10 +104,14 @@ func TestTheDestinationIsSizedAsAHeading(t *testing.T) {
 	if m == nil {
 		t.Fatal("the design system's destination rule could not be read")
 	}
-	if !strings.Contains(m[1], "font-size: var(--fs-lg)") {
+	if !strings.Contains(m[1], "font-size: var(--fs-xl)") {
 		t.Errorf("the destination is not set at the size of a heading:\n  %s\n"+
 			"It is the one value a reader must find at a glance; it must not be the size of body text.",
 			strings.TrimSpace(m[1]))
+	}
+	// And it must be bigger than the body text it sits in.
+	if strings.Contains(m[1], "font-size: var(--fs-lg)") {
+		t.Errorf("the destination is set at the same size as body text:\n  %s", strings.TrimSpace(m[1]))
 	}
 }
 

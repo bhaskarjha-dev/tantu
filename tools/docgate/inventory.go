@@ -15,7 +15,6 @@ package main
 // that decays fastest.
 
 import (
-	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -124,18 +123,36 @@ func checkRepoInventory(root string, files map[string]file) []failure {
 			len(unclassified), strings.Join(unclassified, ", ")))
 	}
 
-	// And every path the inventory names must still exist. This catches the
-	// other direction of drift: a table that classifies a file which has
-	// since been renamed or deleted, which reads as a claim about a file
-	// that is not there.
-	for _, named := range inventoryPaths(body) {
+	// And every path the inventory names as a repository file must still
+	// be one. This is checked against GIT'S INDEX, not against the
+	// filesystem.
+	//
+	// That distinction is the whole bug this replaced. The check used to
+	// stat the path, and the inventory's table of UNTRACKED artefacts
+	// names paths that are not in the repository -- so on a machine where
+	// those artefacts happen to exist the check passed, and on a clean
+	// checkout it failed. The same gate, the same commit, two answers,
+	// and the difference was a scratch directory on one laptop.
+	//
+	// Git is the authority on what is in the repository. The filesystem
+	// is the authority on what is on this machine, which is a different
+	// question.
+	trackedSet := map[string]bool{}
+	for _, rel := range tracked {
+		if rel != "" {
+			trackedSet[rel] = true
+		}
+	}
+	for _, named := range inventoryClaims(body) {
 		if named == repoInventoryDoc {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(named))); err != nil {
+		if !trackedSet[named] {
 			problems = append(problems, failf(repoInventoryDoc,
-				"the inventory classifies %q, which does not exist in the repository. A table that "+
-					"describes a file which is not there is a claim about nothing.", named))
+				"the inventory classifies %q, which is not a tracked file in the repository. A table "+
+					"that describes a file which is not there is a claim about nothing -- and if it is "+
+					"meant to describe an untracked artefact, it belongs in the section marked as "+
+					"untracked.", named))
 		}
 	}
 
@@ -152,6 +169,55 @@ func checkRepoInventory(root string, files map[string]file) []failure {
 	problems = append(problems, checkInventorySummary(body, tracked)...)
 
 	return problems
+}
+
+// untrackedRegionStart and untrackedRegionEnd mark the part of the
+// inventory that talks about things which are deliberately NOT in the
+// repository.
+//
+// The marker is explicit and bounded on purpose. The alternative --
+// deciding from the prose, or from a heading's wording -- is a gate that
+// breaks when somebody rewords a heading, and a gate that breaks on a
+// reword is a gate people stop reading.
+const (
+	untrackedRegionStart = "<!-- untracked-artefacts:begin -->"
+	untrackedRegionEnd   = "<!-- untracked-artefacts:end -->"
+)
+
+// inventoryClaims returns the repository paths the inventory claims to
+// describe -- that is, every path it names OUTSIDE the untracked region.
+//
+// A path inside the untracked region is a statement about this machine's
+// disk, not about the repository, and the gate has nothing to say about
+// it.
+func inventoryClaims(body string) []string {
+	start := strings.Index(body, untrackedRegionStart)
+	if start < 0 {
+		return inventoryPaths(body)
+	}
+	rest := body[start+len(untrackedRegionStart):]
+	end := strings.Index(rest, untrackedRegionEnd)
+	if end < 0 {
+		// An unterminated region: treat everything after the start marker
+		// as untracked, rather than treating the marker as a claim.
+		return inventoryPaths(body[:start])
+	}
+	return inventoryPaths(body[:start] + rest[end+len(untrackedRegionEnd):])
+}
+
+// inventoryUntrackedClaims returns the paths the inventory names inside the
+// untracked region. They are reported so that a path which is neither
+// tracked nor declared untracked can be told from one that is.
+func inventoryUntrackedClaims(body string) []string {
+	i := strings.Index(body, untrackedRegionStart)
+	if i < 0 {
+		return nil
+	}
+	rest := body[i+len(untrackedRegionStart):]
+	if j := strings.Index(rest, untrackedRegionEnd); j >= 0 {
+		rest = rest[:j]
+	}
+	return inventoryPaths(rest)
 }
 
 // checkInventoryProseCount checks the number the document opens with.

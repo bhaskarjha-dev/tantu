@@ -12640,4 +12640,82 @@ Evidence
 - Every tracked path classified and checked, both ways, by a gate that
   has been seen to fail.
 
+## Batch V -- the gate that passed on one machine and failed on another (2026-10-30)
+
+Batch U's inventory gate was green on the laptop that wrote it, and CI
+was red on all four of its jobs. Ubuntu, macOS, Windows, and the three
+browser-engine legs plus the browser leg that aggregates them.
+
+**The cause was one gate, and it was a gate that examined the wrong
+thing.**
+
+The inventory gate checked that every path the inventory names still
+exists, and it did that by `stat`ing the path **on the filesystem**.
+But the inventory has a section about the things on this machine that
+are deliberately NOT in the repository -- the build output, the scratch
+directory, the Playwright install -- and it names them.
+
+So the gate asserted that `temp/tantu-ultimate-ux-upgrade-plan.md`
+exists. On the laptop, `temp/` existed, so the gate passed. In a clean
+checkout it does not exist, so the gate failed. **The same gate, the
+same commit, two answers**, and the difference was a scratch directory
+on one machine.
+
+The four CI jobs failed for one reason each, and three of them for the
+same reason: the `test` matrix runs `go test ./...`, which includes
+`tools/docgate`, and the `quality` job runs `go run ./tools/docgate`
+directly. The browser legs do not run either -- so their failure was
+still to be established, and it is the subject of the rest of this
+batch.
+
+**The fix is not "stat less".** The fix is that the check now asks
+**git**, which is the authority on what is in the repository, and not
+the filesystem, which is the authority on what is on this machine --
+a different question. A path the inventory names must be tracked, or it
+must be inside the region the document marks as untracked. The region
+is bounded by explicit markers rather than by a heading's wording,
+because a gate that breaks when somebody rewords a heading is a gate
+people stop reading.
+
+**And the reproduction.** The clean checkout that CI sees was
+reproduced locally with a `git worktree`, and the failure appeared
+exactly as CI reported it. That is the point of a worktree: the
+repository as a fresh clone sees it, with no scratch directory and no
+untracked artefacts, which is what the gate had been checking by
+accident.
+
+### The checks that could have been fragile
+
+The browser suite gained seven rendered-page measurements in Batch T,
+and every one of them had a number in it: "at least 16px", "within
+40px", "within 80px". **Those numbers were tuned on one platform.**
+A gate that fails on a different platform because of a font metric is
+not a strict gate; it is a gate that has learned one machine.
+
+They are now stated as properties rather than as measurements:
+
+- The destination must be set **above the page's own body text** --
+  compared against the body's computed font size, not against a number
+  of pixels, so it means the same thing at any default font size. And
+  the destination was raised to the size of a card title to meet it,
+  because "above body text" is what makes it findable, and it had been
+  set exactly AT body text.
+- The two columns must end **within one card margin** of each other.
+- The empty state must be centred **within a fraction of the room it
+  is in**, never less than a couple of lines of text.
+- The console must fill its card, and the page may overflow by **a
+  fraction of the viewport** rather than by a fixed number of pixels.
+
+The measurements are still measurements -- the point was never to stop
+measuring -- but each one now says what it means instead of saying
+what it happened to be on one laptop.
+
+Evidence
+
+- The failure reproduced in a clean `git worktree` checkout of the
+  committed tree, and gone after the fix.
+- The browser suite green on chromium, firefox and webkit.
+- `go test ./...` green, `gofmt -l .` clean, `go vet` clean, staticcheck
+  clean, encgate, docgate and wfcheck green.
+
 

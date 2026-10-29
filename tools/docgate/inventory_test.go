@@ -238,6 +238,68 @@ func TestTheInventoryProseCountIsChecked(t *testing.T) {
 	}
 }
 
+// A path the inventory names must be a TRACKED path -- unless the
+// inventory says it is not.
+//
+// This is the red proof for the bug CI found: the gate used to stat the
+// path on the FILESYSTEM, and the inventory's table of untracked
+// artefacts names paths that are not in the repository. On a machine
+// where those artefacts happened to exist the check passed; on a clean
+// checkout it failed. The same gate, the same commit, two answers, and
+// the difference was a scratch directory on one laptop.
+//
+// Git is the authority on what is in the repository. The filesystem is
+// the authority on what is on this machine, which is a different question.
+func TestTheInventoryChecksPathsAgainstGitNotTheFilesystem(t *testing.T) {
+	dir := initRepo(t, "go.mod")
+	// The path is NOT tracked, and it does NOT exist on this machine --
+	// exactly the state a clean checkout is in.
+	writeInventory(t, dir, "# Inventory\n\n"+
+		"The repository is 1 tracked files.\n\n"+
+		"## Root\n\n"+
+		"| `go.mod` | **EXTREMELY IMPORTANT** | the build |\n\n"+
+		"| `Root` | 1 | 1 | 0 | 0 | 0 |\n"+
+		"| **Total** | **1** | **1** | **0** | **0** | **0** |\n\n"+
+		untrackedRegionStart+"\n"+
+		"| `temp/scratch-plan.md` | **USELESS** | a working document on this machine |\n"+
+		untrackedRegionEnd+"\n")
+
+	if problems := inventoryProblems(t, dir); len(problems) > 0 {
+		t.Fatalf("an untracked path named in the untracked region was reported:\n  %v", problems)
+	}
+
+	// The same path named OUTSIDE the untracked region IS a claim about
+	// the repository, and it is a false one.
+	writeInventory(t, dir, "# Inventory\n\n"+
+		"The repository is 1 tracked files.\n\n"+
+		"## Root\n\n"+
+		"| `go.mod` | **EXTREMELY IMPORTANT** | the build |\n"+
+		"| `temp/scratch-plan.md` | **EXTREMELY IMPORTANT** | it is not in the repository |\n\n"+
+		"| `Root` | 1 | 1 | 0 | 0 | 0 |\n"+
+		"| **Total** | **1** | **1** | **0** | **0** | **0** |\n")
+
+	problems := inventoryProblems(t, dir)
+	if len(problems) == 0 {
+		t.Fatal("an untracked path named as a repository file was accepted")
+	}
+	if !strings.Contains(strings.Join(problems, "\n"), "scratch-plan.md") {
+		t.Errorf("the failure does not name the path: %v", problems)
+	}
+}
+
+// The untracked region is bounded, so a path named after it is a claim
+// about the repository again.
+func TestTheUntrackedRegionIsBounded(t *testing.T) {
+	body := untrackedRegionStart + "\n| `temp/a.md` | **USELESS** | x |\n" + untrackedRegionEnd +
+		"\n| `temp/b.md` | **EXTREMELY IMPORTANT** | y |\n"
+	if claims := inventoryClaims(body); len(claims) != 1 || !strings.Contains(claims[0], "b.md") {
+		t.Errorf("the untracked region leaked past its end marker: %v", claims)
+	}
+	if untracked := inventoryUntrackedClaims(body); len(untracked) != 1 || !strings.Contains(untracked[0], "a.md") {
+		t.Errorf("the untracked region did not capture its own paths: %v", untracked)
+	}
+}
+
 // A class spelled two ways is a class nobody can count.
 //
 // The first version of this repository's inventory wrote "**EXTREMELY**"

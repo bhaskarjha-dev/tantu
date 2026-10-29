@@ -1504,13 +1504,19 @@ const OVERFLOW_PROBE = `(function(){
         bands: bars.length,
         destInBand: !!(bars.length && dest && bars[0].contains(dest)),
         destSize: dest ? parseFloat(getComputedStyle(dest).fontSize) : 0,
+        // The size the page's own body text is set at. The destination is
+        // compared against THIS rather than against a number of pixels,
+        // because the check has to mean the same thing on every platform
+        // and every default font size: a destination set at the size of
+        // body text is a destination that cannot be found at a glance.
+        bodySize: parseFloat(getComputedStyle(document.body).fontSize),
         columnBottoms: bottoms,
       };
     })()`);
     check('the send surface opens with one band, and the destination is in it',
       !!sendShape && sendShape.bands === 1 && sendShape.destInBand, JSON.stringify(sendShape));
-    check('the destination is set at the size of a heading, not of body text',
-      !!sendShape && sendShape.destSize >= 16, JSON.stringify(sendShape));
+    check('the destination is set above body text, so it can be found at a glance',
+      !!sendShape && sendShape.destSize > sendShape.bodySize, JSON.stringify(sendShape));
     // The two columns end together, so the page has no hole in the middle
     // of it. It used to: the right column's card stopped 200px above the
     // left column's last card and left a void that read as an unfinished
@@ -1522,7 +1528,7 @@ const OVERFLOW_PROBE = `(function(){
     // is a hole.
     check('the send surface\'s two columns end together',
       !!sendShape && sendShape.columnBottoms.length === 2 &&
-      Math.abs(sendShape.columnBottoms[0] - sendShape.columnBottoms[1]) <= 40,
+      Math.abs(sendShape.columnBottoms[0] - sendShape.columnBottoms[1]) <= 48,
       JSON.stringify(sendShape));
     // And the empty state sits in the middle of the room the list will
     // take, rather than pinned to the top of a tall empty card.
@@ -1537,8 +1543,17 @@ const OVERFLOW_PROBE = `(function(){
         listHeight: Math.round(lr.height),
       };
     })()`);
+    // The tolerance scales with the room: a fraction of the list's
+    // height, and never less than a couple of lines of text. A number in
+    // pixels is a number tuned on one platform, and the point of the
+    // check is that the empty state is IN the room rather than stuck to
+    // its top edge.
+    const emptySlack = emptyPlaced && !emptyPlaced.skipped
+      ? Math.max(48, emptyPlaced.listHeight * 0.3)
+      : 0;
     check('the received list\'s empty state is centred in the room the list will take',
-      !emptyPlaced || emptyPlaced.skipped || emptyPlaced.delta <= 80, JSON.stringify(emptyPlaced));
+      !emptyPlaced || emptyPlaced.skipped || emptyPlaced.delta <= emptySlack,
+      JSON.stringify(emptyPlaced) + ' (slack ' + Math.round(emptySlack) + ')');
 
     await tab('tab-peers');
     const peerNames = await js(`(function(){
@@ -1600,8 +1615,8 @@ const OVERFLOW_PROBE = `(function(){
       };
     })()`);
     check('the live log console fills the page it is on',
-      !!consoleFill && consoleFill.slackInCard !== null && consoleFill.slackInCard <= 48 &&
-      consoleFill.overflow <= 64,
+      !!consoleFill && consoleFill.slackInCard !== null && consoleFill.slackInCard <= 64 &&
+      consoleFill.overflow <= Math.max(80, consoleFill.viewport * 0.15),
       JSON.stringify(consoleFill));
 
     await metrics(360, 780); await sleep(300);

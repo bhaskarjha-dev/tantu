@@ -448,7 +448,12 @@ true.
 
 ## The genuinely useless things (none of them tracked)
 
-These were on disk when this document was written. **None is in git**, and
+<!-- untracked-artefacts:begin -->
+<!-- Everything between these two markers is about THIS MACHINE'S DISK, not
+     about the repository. The gate knows the difference: a path named here
+     is not expected to be tracked, and a path named anywhere else is. -->
+
+These are on disk when this document is written. **None is in git**, and
 none should be.
 
 | Artefact | Class | What it is | What to do |
@@ -458,12 +463,13 @@ none should be.
 | `dist/` | **USELESS** *as a location* | Build output: the binaries and the two-laptop test kit. | Keep it if you are about to test on two laptops; it regenerates in seconds. It is gitignored. |
 | `tools/uxtest/node_modules/` | **USELESS** *as a location* | 100 MB of Playwright. | Never commit it. The lockfile pins the version; `npm ci` restores it. |
 
+<!-- untracked-artefacts:end -->
+
 The distinction matters: **"useless" describes a file's *contribution*, not
-its origin.** `temp/tantu-ultimate-ux-upgrade-plan.md` is a 79 KB plan
-with real content and the wrong location; `docgate.exe` is a binary with
-no content and no location worth keeping. Both are outside the
-repository's history, and neither is in the classified tables above,
-because the tables classify *tracked* files.
+its origin.** The 79 KB upgrade plan in `temp/` is real work in the wrong
+location; `docgate.exe` is a binary with no content and no location worth
+keeping. Both are outside the repository's history, and neither is in the
+classified tables above, because the tables classify *tracked* files.
 
 ---
 
@@ -501,9 +507,25 @@ repository drifts the moment somebody adds a file. So it is gated.
 
 1. **Every tracked path is classified.** A new file that nobody has
    said what it is for fails the gate.
-2. **Every path the inventory names still exists.** A file that has
-   been renamed or deleted fails the gate, because a table that
-   describes a file which is not there is a claim about nothing.
+2. **Every path the inventory names as a repository file must be a
+   tracked one.** A file that has been renamed or deleted fails the
+   gate, because a table that describes a file which is not there is a
+   claim about nothing.
+
+   This is checked against **git's index**, not against the
+   filesystem, and that distinction is not a detail. The first version
+   of this check stat'ed the path, and the table of untracked artefacts
+   below names paths that are not in the repository -- so on a machine
+   where those artefacts happened to exist the check passed, and on a
+   clean checkout it failed. **The same gate, the same commit, two
+   answers**, and the difference was a scratch directory on one laptop.
+   Git is the authority on what is in the repository; the filesystem is
+   the authority on what is on this machine, which is a different
+   question.
+
+   The paths that are deliberately not tracked are named inside a
+   marked region, so the gate knows the difference between a claim
+   about the repository and a note about this machine's disk.
 3. **The class vocabulary is exactly the four names.** The first
    version of this document spelled the classes `**EXTREMELY**` and
    `**VERY**` in some tables and `**EXTREMELY IMPORTANT**` in others.
