@@ -1331,26 +1331,52 @@ const thumb = await js(`(function(){return new Promise(function(resolve){
     // navigates, and so was every field a reader types a secret into.
     //
     // The design system now says it in one rule. This is the gate for it.
+    //
+    // The product has TWO stacks -- a sans and a mono -- and a value meant
+    // to be compared character by character (a hex fingerprint, a path, a
+    // code snippet) is DELIBERATELY mono. So the rule is not "everything
+    // is sans"; it is "everything is one of the product's own stacks, read
+    // from the design system's tokens rather than written out here". A
+    // control that resolves to the browser's default -- Arial -- matches
+    // neither, and fails.
     const fonts = await js(`(function(){
       var bodyFont = getComputedStyle(document.body).fontFamily;
+      var root = getComputedStyle(document.documentElement);
+      // WebKit returns a computed font-family that does not match the
+      // declared one: it inserts a space into every hyphenated family
+      // name ("-apple- y tem", "BlinkMacSy temFont", "an - erif") and
+      // drops the quotes. A string comparison against the declared stack
+      // therefore fails on WebKit for a control that is perfectly
+      // correct -- which is what it did.
+      //
+      // So the comparison is made on the FIRST family of the stack -- the
+      // one that will actually be used -- with whitespace and quotes
+      // removed. That is stable across all three engines, and it keeps
+      // the teeth: a control that resolves to the browser's default has
+      // "Arial" first, which is in neither stack.
+      function norm(s) { return String(s).replace(/[\\s"']/g, ''); }
+      function firstFamily(s) { return norm(String(s).split(',')[0]); }
+      var allowed = [root.getPropertyValue('--font-sans'), root.getPropertyValue('--font-mono')]
+        .map(function (s) { return firstFamily(s); })
+        .filter(function (s) { return s.length > 0; });
       var all = document.querySelectorAll('button, input, select, textarea');
       var odd = [];
       for (var i = 0; i < all.length; i++) {
         var el = all[i];
         var cs = getComputedStyle(el);
         if (cs.display === 'none' || cs.visibility === 'hidden') continue;
-        var f = cs.fontFamily;
-        if (f !== bodyFont) {
+        var f = firstFamily(cs.fontFamily);
+        if (allowed.indexOf(f) < 0) {
           odd.push(el.tagName.toLowerCase() +
             (el.type ? '[type=' + el.type + ']' : '') +
             (el.id ? '#' + el.id : '') +
             (el.className ? '.' + String(el.className).split(' ')[0] : '') +
-            ' => ' + f);
+            ' => ' + cs.fontFamily);
         }
       }
-      return { bodyFont: bodyFont, odd: odd };
+      return { bodyFont: bodyFont, allowed: allowed, odd: odd };
     })()`);
-    check('every control is set in the product typeface', fonts && fonts.odd.length === 0,
+    check('every control is set in a product typeface', fonts && fonts.odd.length === 0,
       JSON.stringify(fonts && fonts.odd.slice(0, 8)));
 
     // OVERFLOW_PROBE reports the document's scroll and client widths, and when the
@@ -2181,6 +2207,13 @@ const OVERFLOW_PROBE = `(function(){
         //   - the text inputs and the tab bar resolved to Arial while the
         //     rest of the product used its own typeface.
         const nodeA11y = await nodePage.evaluate(() => {
+          const root = getComputedStyle(document.documentElement);
+          // The first family in a stack is the one that will be used, and
+          // it is the only part of the stack every engine writes the same
+          // way: WebKit inserts spaces into the hyphenated names and
+          // rewrites the trailing generic, so the whole stack does not
+          // compare equal to itself.
+          const firstFamilyOf = (s) => String(s).split(',')[0].replace(/[\s"']/g, '');
           const visible = (el) => {
             const cs = getComputedStyle(el);
             const r = el.getBoundingClientRect();
@@ -2213,7 +2246,12 @@ const OVERFLOW_PROBE = `(function(){
               // until a file is chosen, and a gate that demands a tab
               // stop on it is asking for a control that cannot be used.
               disabled: !!el.disabled,
-              font: getComputedStyle(el).fontFamily,
+              // Normalised for the same reason as the dashboard's
+              // check: WebKit does not write a font stack the way it
+              // was declared, so the FIRST FAMILY -- the one that will
+              // actually be used -- is compared, with whitespace and
+              // quotes removed.
+              font: firstFamilyOf(getComputedStyle(el).fontFamily),
             };
           });
           const statuses = Array.prototype.slice.call(document.querySelectorAll(
@@ -2247,6 +2285,13 @@ const OVERFLOW_PROBE = `(function(){
             // QuickDrop page has one; the relay page does not.
             hasList: !!document.querySelector('.received-list'),
             bodyFont: getComputedStyle(document.body).fontFamily,
+            // The product's two stacks, from its own tokens. A value that
+            // is meant to be compared character by character is
+            // deliberately mono; a control in the browser's default is
+            // neither.
+            productFonts: [root.getPropertyValue('--font-sans'), root.getPropertyValue('--font-mono')]
+              .map(function (s) { return firstFamilyOf(s); })
+              .filter(function (s) { return s.length > 0; }),
           };
         });
 
@@ -2286,8 +2331,21 @@ const OVERFLOW_PROBE = `(function(){
         // gets the browser's default, and the browser's default is not the
         // product's: the dashboard's text inputs and its tab bar were in
         // Arial while the rest of the page was in its own stack.
-        const oddFonts = nodeA11y && nodeA11y.named.filter((c) => c.font !== nodeA11y.bodyFont);
-        check('node ' + srv.name + ' page: every control is set in the product typeface',
+        //
+        // The product has TWO stacks -- a sans and a mono -- and a value
+        // that is meant to be compared character by character (a hex
+        // fingerprint, a path, a code snippet) is DELIBERATELY mono. So the
+        // rule is not "everything is sans"; it is "everything is one of the
+        // product's own stacks, read from the design system's tokens
+        // rather than written out here". A control that resolves to the
+        // browser's default -- Arial -- matches neither, and fails.
+        //
+        // Both sides are NORMALISED before they are compared, because
+        // WebKit does not write a font stack the way it was declared: it
+        // drops the quotes around the family names, so the same stack
+        // compares unequal to itself.
+        const oddFonts = nodeA11y && nodeA11y.named.filter((c) => !nodeA11y.productFonts.includes(c.font));
+        check('node ' + srv.name + ' page: every control is set in a product typeface',
           !!nodeA11y && oddFonts.length === 0,
           JSON.stringify(oddFonts));
 

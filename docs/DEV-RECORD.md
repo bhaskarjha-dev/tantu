@@ -12718,4 +12718,104 @@ Evidence
 - `go test ./...` green, `gofmt -l .` clean, `go vet` clean, staticcheck
   clean, encgate, docgate and wfcheck green.
 
+### Running CI's own platform, rather than reasoning about it
+
+The failure was reproduced in a `git worktree` checkout, but that is
+still this machine. The browser legs had not been reproduced at all, and
+"the browser legs also failed" was a fact with no cause attached to it.
+
+So CI's platform was brought up locally: **WSL, Ubuntu 24.04, Go
+1.27.3, Node 20, and Playwright's three engines** -- the versions the
+workflow pins, on the image the workflow runs. A fresh clone, the
+workflow's own steps, in order:
+
+- `go run ./tools/docgate`, `go run ./tools/encgate`,
+  `go run ./tools/wfcheck`, `gofmt -l .`, `go test ./...` -- all green.
+- The five narrow-viewport self-checks -- all green.
+- The acceptance harness on **chromium 180/180, firefox 178/178,
+  webkit 180/180** -- all green.
+
+A platform that reproduces CI is worth more than a careful argument
+about why it might. And the whole surface can now be checked against
+the runner's own font stack, which is the condition the narrow-viewport
+work exists for: **the runner resolves a fallback face that no
+developer's machine has**, and every gate that depends on text metrics
+has to be exercised there.
+
+One thing the run found in the code rather than in the output: the send
+band's path chip was capped at `22rem` -- 352px, which is **wider than a
+320px viewport**, so on a narrow screen the cap did not cap anything.
+On this machine the path was short enough that it never showed. The cap
+is now a percentage of its own container, so it can never exceed the
+bar, and a long path wraps instead of pushing the page sideways.
+
+### The check that was wrong, and the mode that found it
+
+The browser legs failed too, and the reason was mine.
+
+The typeface gate says that every control must be set in the product's
+typeface -- the rule that exists because the dashboard's text inputs and
+its tab bar were once in **Arial**, the browser's default, while the
+rest of the page was in the product's stack. I implemented it as
+"every control's font-family must equal the body's".
+
+But the product has **two** stacks: `--font-sans` and `--font-mono`. A
+value that is meant to be compared character by character -- a hex
+fingerprint, a path, a code snippet -- is *deliberately* mono, and the
+repository has always used `--font-mono` for exactly those. So the gate
+was demanding that a fingerprint be set in a proportional face, and the
+first thing it caught was **the copyable fingerprint button this same
+batch had added**, correctly set in mono.
+
+The rule is now "every control is set in **one of the product's own
+stacks, read from the design system's tokens**" rather than "in the sans
+one". It keeps its teeth -- a control that resolves to the browser's
+default matches neither stack and still fails -- and it stops insisting
+that a hex string be set in a proportional face.
+
+**And then the fix failed on WebKit, for a third reason.** The
+comparison was a string comparison, and WebKit's computed
+`font-family` is not the declared one:
+
+    -apple- y tem, BlinkMacSy temFont, Segoe UI, Roboto, Helvetica Neue, Arial,  an - erif
+
+WebKit inserts a space into every hyphenated family name, drops the
+quotes, and rewrites the trailing generic -- `sans-serif` comes back as
+`an - erif`, two characters short -- so the same stack does not compare
+equal to itself, and a control that was *perfectly correct* failed a
+check that compared it character for character against the declared
+stack.
+
+Removing whitespace and quotes is not enough, because two characters
+are gone rather than spaced. The comparison is now made on **the first
+family of the stack** -- which is the one that will actually be used --
+with whitespace and quotes removed. That is stable on all three
+engines, and it keeps the teeth: a control that resolves to the
+browser's default has `Arial` first, which is in neither stack, and
+still fails.
+
+That is the third lesson of this batch, and it is about the shape of a
+measurement rather than about fonts: **a check that compares two
+strings has to know how each engine writes that string.** Three
+engines, three spellings, one of them a spelling no font stack is
+written in.
+
+**Why it took a CI run and not a local one.** The fingerprint button
+only exists when there are peers to fingerprint. The peerless rig has
+no peers, so there is no fingerprint to fail on, and the gate passed
+locally every time. **CI runs BOTH topologies on every engine** -- the
+peerless rig and the `--peers` rig -- and this batch had only ever run
+the peerless one locally.
+
+That is the whole lesson, and it is worth more than the bug:
+
+> **The local run and the CI run are not the same run.** This repository
+> has two rigs, and a gate that only one of them can fail is a gate that
+> will be found red on a Tuesday by somebody who did not write it.
+> The rig that exercises the state is the one that has to be run.
+
+A green local run is evidence about the rig you ran. The peerless rig
+had nothing to say about a fingerprint button, and its silence was
+mistaken for agreement.
+
 

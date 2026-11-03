@@ -8,6 +8,12 @@ rollback procedures.
 ## Unreleased
 
 ### Fixed
+- **A long downloads path could push the page sideways on a narrow
+  screen.** The path chip in the send header was capped at `22rem` —
+  352px, which is *wider* than a 320px viewport, so on a phone the cap
+  did not cap anything and a long path could overflow the screen. The
+  cap is now a percentage of its own container, so it can never exceed
+  the bar, and a long path wraps instead.
 - **Quitting the Hub during a transfer killed it instead of letting it finish.**
   Shutdown closed every in-flight connection the instant it began, so a session
   that was seconds from done was killed at the ninety percent mark, and the

@@ -1851,7 +1851,13 @@
     flex: none;
   }
   .send-bar__aside .chip {
-    max-width: 22rem;
+    /* A percentage of its own container, never a number of rems.
+       A fixed 22rem is 352px, which is WIDER than a 320px viewport, so on
+       a narrow screen the cap did not cap anything: the path could push
+       the bar past the edge of the screen. The path wraps instead -- it
+       is a path, and a wrapped path is still a path. */
+    max-width: 100%;
+    min-width: 0;
   }
   .dest__pills {
     display: flex;
